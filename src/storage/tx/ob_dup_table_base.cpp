@@ -265,6 +265,17 @@ int ObDupTableLSCheckpoint::ObLSDupTableMeta::copy(const ObLSDupTableMeta &dup_l
   return ret;
 }
 
+bool ObDupTableLSCheckpoint::is_useful_meta() const
+{
+  SpinRLockGuard r_guard(ckpt_rw_lock_);
+  bool useful =
+      dup_ls_meta_.is_valid()
+      && (!dup_ls_meta_.lease_item_array_.empty() || dup_ls_meta_.lease_log_applied_scn_.is_valid()
+          || dup_ls_meta_.readable_tablets_base_scn_.is_valid()
+          || dup_ls_meta_.readable_tablets_min_base_applied_scn_.is_valid());
+  return useful;
+}
+
 int ObDupTableLSCheckpoint::get_dup_ls_meta(ObLSDupTableMeta &dup_ls_meta_replica) const
 {
   int ret = OB_SUCCESS;
@@ -371,6 +382,18 @@ int ObDupTableLSCheckpoint::update_ckpt_after_lease_log_synced(
                   K(for_replay), K(modify_readable_sets), K(contain_all_readable));
   }
 
+  if (OB_SUCC(ret)) {
+    if (dup_ls_meta_.readable_tablets_base_scn_.is_valid()
+        && dup_ls_meta_.readable_tablets_base_scn_ == scn) {
+      if (!contain_all_readable) {
+        readable_ckpt_base_scn_is_accurate_ = false;
+        DUP_TABLE_LOG(INFO, "[CKPT] check ckpt base scn not accurate", K(ret), KPC(this), K(scn),
+                      K(for_replay), K(modify_readable_sets), K(contain_all_readable));
+      } else {
+        readable_ckpt_base_scn_is_accurate_ = true;
+      }
+    }
+  }
   return ret;
 }
 
@@ -389,6 +412,10 @@ bool ObDupTableLSCheckpoint::contain_all_readable_on_replica() const
                     K(contain_all_readable), KPC(this));
     }
 
+  } else if (!readable_ckpt_base_scn_is_accurate_) {
+    contain_all_readable = false;
+    DUP_TABLE_LOG(INFO, "[CKPT] readable base scn is not accurate, not contain all readable set",
+                  K(contain_all_readable), KPC(this));
   } else {
     if (!dup_ls_meta_.readable_tablets_base_scn_.is_valid()
         && !dup_ls_meta_.readable_tablets_min_base_applied_scn_.is_valid()) {
@@ -473,6 +500,7 @@ int ObDupTableLSCheckpoint::online()
 
   lease_log_rec_scn_.reset();
   start_replay_scn_.reset();
+  readable_ckpt_base_scn_is_accurate_ = true;
 
   DUP_TABLE_LOG(INFO, "Dup Table LS Checkpoint Online", K(ret), KPC(this));
   return ret;
@@ -705,10 +733,29 @@ int ObDupTableLogOperator::sync_log_succ_(const bool for_replay)
 
   bool modify_readable = false;
   bool contain_all_readable = false;
+  int64_t logging_readable_cnt = 0;
+  const int64_t all_readable_set_cnt
+                 = tablet_mgr_ptr_->get_readable_tablet_set_count();
+  ObDupTableLSCheckpoint::ObLSDupTableMeta tmp_dup_ls_meta;
 
   if (OB_SUCC(ret)) {
-    if (stat_log_.readable_cnt_ == tablet_mgr_ptr_->get_readable_tablet_set_count()) {
+    if (stat_log_.logging_readable_cnt_ >= 0) {
+      logging_readable_cnt = stat_log_.logging_readable_cnt_;
+    } else {
+      // for each logging id to check contain all readable
+      for (int64_t i = 0; i < logging_tablet_set_ids_.count(); i++) {
+        if (logging_tablet_set_ids_.at(i).is_readable_set()) {
+          logging_readable_cnt++;
+        }
+      }
+    }
+    if (stat_log_.readable_cnt_ > 0 && logging_readable_cnt > 0
+        && stat_log_.readable_cnt_ == logging_readable_cnt) {
       contain_all_readable = true;
+    }
+    if (!contain_all_readable) {
+      DUP_TABLE_LOG(DEBUG, "this tablet log not contain all readable set", K(ret), K(logging_scn_),
+                    K(stat_log_), K(logging_readable_cnt), K(all_readable_set_cnt));
     }
   }
 

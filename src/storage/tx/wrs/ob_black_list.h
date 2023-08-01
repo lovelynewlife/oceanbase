@@ -23,16 +23,17 @@
 // 判断时间戳是否赶上/落后的缓冲时间(ns)，避免阈值附近的日志流反复加入/移出黑名单
 #define BLACK_LIST_WHITEWASH_INTERVAL_NS  1000000000  // 1s
 // 黑名单信息打印时间间隔(us)
-#define BLACK_LIST_PRINT_INTERVAL         10000000    // 10s
+#define BLACK_LIST_PRINT_INTERVAL         5000000    // 5s
 // 清理超时对象的时间间隔(us)，这些对象不会出现在 SQLResult 中，比如切换server之后旧server上的日志流
 #define BLACK_LIST_CLEAN_UP_INTERVAL      5000000     // 5s
 // 最大连续失败次数，连续刷新黑名单失败 达到 该次数则清空黑名单
 #define BLACK_LIST_MAX_FAIL_COUNT         3
 
 // 查询 __all_virtual_ls_info 的语句，设置了2s超时时间
+// select /*+query_timeout(2000000)*/ a.svr_ip, a.svr_port, a.tenant_id, a.ls_id, a.role, nvl(b.weak_read_scn, 1) as weak_read_scn, nvl(b.migrate_status, 0) as migrate_status, nvl(b.tx_blocked, 0) as tx_blocked from oceanbase.__all_virtual_ls_meta_table a left join oceanbase.__all_virtual_ls_info b on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.tenant_id and a.ls_id = b.ls_id;
 #define BLACK_LIST_SELECT_LS_INFO_STMT \
   "select /*+query_timeout(2000000)*/ a.svr_ip, a.svr_port, a.tenant_id, a.ls_id, a.role, \
-  nvl(b.weak_read_scn, 1) as weak_read_scn, nvl(b.migrate_status, 0) as migrate_status \
+  nvl(b.weak_read_scn, 1) as weak_read_scn, nvl(b.migrate_status, 0) as migrate_status, nvl(b.tx_blocked, 0) as tx_blocked \
   from oceanbase.__all_virtual_ls_meta_table a left join oceanbase.__all_virtual_ls_info b \
   on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.tenant_id and a.ls_id = b.ls_id;"
 
@@ -127,9 +128,10 @@ public:
   ObLsInfo()
     : ls_state_(-1),
       weak_read_scn_(0),
-      migrate_status_(OB_MIGRATE_STATUS_MAX)
+      migrate_status_(OB_MIGRATE_STATUS_MAX),
+      tx_blocked_(false)
       {}
-  int init(const int64_t ls_state, int64_t weak_read_scn, ObMigrateStatus migrate_status)
+  int init(const int64_t ls_state, int64_t weak_read_scn, ObMigrateStatus migrate_status, bool tx_blocked)
   {
     int ret = OB_SUCCESS;
     if (OB_MIGRATE_STATUS_MAX == migrate_status) {
@@ -138,6 +140,7 @@ public:
       ls_state_ = ls_state;
       weak_read_scn_ = weak_read_scn;
       migrate_status_ = migrate_status;
+      tx_blocked_ = tx_blocked;
     }
     return ret;
   }
@@ -146,7 +149,7 @@ public:
   {
     return OB_MIGRATE_STATUS_MAX != migrate_status_;
   }
-  TO_STRING_KV(K_(ls_state), K_(weak_read_scn), K_(migrate_status));
+  TO_STRING_KV(K_(ls_state), K_(weak_read_scn), K_(migrate_status), K_(tx_blocked));
 
   // 日志流状态（角色）：LEADER(1)、FOLLOWER(2)，其他角色对于日志流是没有意义的
   int64_t ls_state_;
@@ -154,6 +157,8 @@ public:
   int64_t weak_read_scn_;
   // 迁移状态，正在迁移的日志流一定不可读
   ObMigrateStatus migrate_status_;
+  // transaction ls blocked
+  bool tx_blocked_;
 };
 
 // blacklist value
@@ -375,6 +380,7 @@ private:
   int do_clean_up_();
   int get_info_from_result_(sqlclient::ObMySQLResult &result, ObBLKey &bl_key, ObLsInfo &ls_info);
   int64_t get_tenant_max_stale_time_(uint64_t tenant_id);
+  bool check_need_skip_leader_(const uint64_t tenant_id);
   void print_stat_();
 
 private:

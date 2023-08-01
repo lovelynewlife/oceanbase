@@ -1854,7 +1854,6 @@ int ObTabletRestoreDag::init(
     tablet_restore_ctx_.is_leader_ = param.is_leader_;
     tablet_restore_ctx_.meta_index_store_ = param.meta_index_store_;
     tablet_restore_ctx_.second_meta_index_store_ = param.second_meta_index_store_;
-    // TODO: yanfeng make sure this is right
     tablet_restore_ctx_.replica_type_ = REPLICA_TYPE_FULL;
     tablet_restore_ctx_.ha_table_info_mgr_ = param.ha_table_info_mgr_;
     tablet_restore_ctx_.need_check_seq_ = param.need_check_seq_;
@@ -2728,8 +2727,6 @@ int ObTabletFinishRestoreTask::process()
     }
   } else if (OB_FAIL(update_restore_status_())) {
     LOG_WARN("failed to update restore status", K(ret), KPC(tablet_restore_ctx_));
-  } else if (OB_FAIL(check_tablet_valid_())) {
-    LOG_WARN("failed to check tablet valid", K(ret), KPC(tablet_restore_ctx_));
   }
 
   if (OB_SUCCESS != (tmp_ret = record_server_event_())) {
@@ -2798,25 +2795,6 @@ int ObTabletFinishRestoreTask::update_restore_status_()
       FLOG_INFO("succeed to update restore", K(tablet_restore_ctx_->tablet_id_),
           K(tablet_restore_ctx_->action_), K(tablet_restore_status));
     }
-  }
-  return ret;
-}
-
-int ObTabletFinishRestoreTask::check_tablet_valid_()
-{
-  int ret = OB_SUCCESS;
-  ObTabletHandle tablet_handle;
-  ObTablet *tablet = nullptr;
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("tablet finish restore task do not init", K(ret));
-  } else if (OB_FAIL(ls_->ha_get_tablet(tablet_restore_ctx_->tablet_id_, tablet_handle))) {
-    LOG_WARN("failed to get tablet", K(ret), KPC(tablet_restore_ctx_));
-  } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tablet should not be NULL", K(ret), KP(tablet), KPC(tablet_restore_ctx_));
-  } else if (OB_FAIL(tablet->check_valid())) {
-    LOG_WARN("failed to check valid", K(ret), KPC(tablet));
   }
   return ret;
 }

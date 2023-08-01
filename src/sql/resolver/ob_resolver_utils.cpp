@@ -1392,6 +1392,7 @@ int ObResolverUtils::resolve_synonym_object_recursively(ObSchemaChecker &schema_
   int ret = OB_SUCCESS;
   uint64_t synonym_id = OB_INVALID_ID;
   bool exist_with_synonym = false;
+  bool exist_non_syn_object = false;
   if (OB_FAIL(schema_checker.get_synonym_schema(
       tenant_id, database_id, synonym_name, object_database_id,
       synonym_id, object_name, exist_with_synonym, search_public_schema))) {
@@ -1404,9 +1405,12 @@ int ObResolverUtils::resolve_synonym_object_recursively(ObSchemaChecker &schema_
         ret = OB_SUCCESS;
       } else {
         LOG_WARN("failed to add synonym id to synonym checker",
-                 K(ret), K(tenant_id), K(database_id), K(synonym_name));
+                K(ret), K(tenant_id), K(database_id), K(synonym_name));
       }
-    } else {
+    } else if (OB_FAIL(schema_checker.check_exist_same_name_object_with_synonym(tenant_id,
+                                                                                database_id,
+                                                                                object_name,
+                                                                                exist_non_syn_object)) || !exist_non_syn_object) {
       OZ (SMART_CALL(resolve_synonym_object_recursively(
         schema_checker, synonym_checker, tenant_id,
         object_database_id, object_name, object_database_id, object_name, exist_with_synonym,
@@ -2064,13 +2068,18 @@ int ObResolverUtils::resolve_const(const ParseNode *node,
     val.set_result_flag(NOT_NULL_FLAG);
     switch (node->type_) {
     case T_HEX_STRING: {
-      ObString str_val;
-      str_val.assign_ptr(const_cast<char *>(node->str_value_), static_cast<int32_t>(node->str_len_));
-      val.set_hex_string(str_val);
-      val.set_collation_level(CS_LEVEL_COERCIBLE);
-      val.set_scale(0);
-      val.set_length(static_cast<int32_t>(node->str_len_));
-      val.set_param_meta(val.get_meta());
+      if (node->str_len_ > OB_MAX_LONGTEXT_LENGTH) {
+        ret = OB_ERR_INVALID_INPUT_ARGUMENT;
+        LOG_WARN("input str len is over size", K(ret), K(node->str_len_));
+      } else {
+        ObString str_val;
+        str_val.assign_ptr(const_cast<char *>(node->str_value_), static_cast<int32_t>(node->str_len_));
+        val.set_hex_string(str_val);
+        val.set_collation_level(CS_LEVEL_COERCIBLE);
+        val.set_scale(0);
+        val.set_length(static_cast<int32_t>(node->str_len_));
+        val.set_param_meta(val.get_meta());
+      }
       break;
     }
     case T_VARCHAR:
@@ -2114,7 +2123,10 @@ int ObResolverUtils::resolve_const(const ParseNode *node,
 //          val.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 //          LOG_DEBUG("oracle use default cs_type", K(val), K(connection_collation));
 //        } else if (0 == node->num_child_) {
-        if (0 == node->num_child_) {
+        if (node->str_len_ > OB_MAX_LONGTEXT_LENGTH) {
+          ret = OB_ERR_INVALID_INPUT_ARGUMENT;
+          LOG_WARN("input str len is over size", K(ret), K(node->str_len_));
+        } else if (0 == node->num_child_) {
           // for STRING without collation, e.g. show tables like STRING;
           if (lib::is_mysql_mode() && is_nchar) {
             ObString charset(strlen("utf8mb4"), "utf8mb4");
@@ -4402,6 +4414,19 @@ int ObResolverUtils::resolve_generated_column_expr(ObResolverParams &params,
         } else if (OB_FAIL(generated_column.add_cascaded_column_id(col_schema->get_column_id()))) {
           LOG_WARN("add cascaded column id to generated column failed", K(ret));
         } else {
+          if (col_schema->get_udt_set_id() > 0) {
+            ObSEArray<ObColumnSchemaV2 *, 1> hidden_cols;
+            if (OB_FAIL(tbl_schema.get_column_schema_in_same_col_group(col_schema->get_column_id(), col_schema->get_udt_set_id(), hidden_cols))) {
+              LOG_WARN("get column schema in same col group failed", K(ret), K(col_schema->get_udt_set_id()));
+            } else {
+              for (int i = 0; i < hidden_cols.count() && OB_SUCC(ret); i++) {
+                uint64_t cascaded_column_id = hidden_cols.at(i)->get_column_id();
+                if (OB_FAIL(generated_column.add_cascaded_column_id(cascaded_column_id))) {
+                  LOG_WARN("add cascaded column id to generated column failed", K(ret), K(cascaded_column_id));
+                }
+              }
+            }
+          }
           col_schema->add_column_flag(GENERATED_DEPS_CASCADE_FLAG);
           OZ (real_exprs.push_back(q_name.ref_expr_));
         }

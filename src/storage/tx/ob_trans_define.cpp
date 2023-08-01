@@ -866,6 +866,17 @@ void ObTxMDSRange::range_sync_failed(ObTxMDSCache &cache)
   cache.update_sync_failed_range(range_array_);
 }
 
+int ObTxMDSRange::assign(const ObTxMDSRange &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(range_array_.assign(other.range_array_))) {
+    TRANS_LOG(WARN, "assign range array failed", K(ret));
+  } else {
+    tx_ctx_ = other.tx_ctx_;
+  }
+  return ret;
+}
+
 void ObTxMDSCache::reset()
 {
   // allocator_.reset();
@@ -896,7 +907,7 @@ int ObTxMDSCache::insert_mds_node(const ObTxBufferNode &buf_node)
   if (!buf_node.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "insert MDS buf node", K(ret));
-  } else if (mds_list_.push_back(buf_node)) {
+  } else if (OB_FAIL(mds_list_.push_back(buf_node))) {
     TRANS_LOG(WARN, "push back MDS buf node", K(ret));
   } else {
     unsubmitted_size_ += buf_node.get_serialize_size();

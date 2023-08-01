@@ -37,7 +37,11 @@ class ObLS;
 class ObTablet;
 class ObITable;
 class ObTabletDDLKvMgr;
-
+enum ProhibitMediumTask
+{
+  TRANSFER = 0,
+  MEDIUM = 1
+};
 class ObFastFreezeChecker
 {
 public:
@@ -147,7 +151,6 @@ public:
     int64_t finish_cnt_;
     int64_t wait_rs_validate_cnt_;
   };
-
 public:
   ObTenantTabletScheduler();
   ~ObTenantTabletScheduler();
@@ -177,9 +180,11 @@ public:
   void stop_major_merge();
   void resume_major_merge();
   OB_INLINE bool could_major_merge_start() const { return major_merge_status_; }
-  void stop_schedule_medium(); // may block for waiting lock
-  void resume_schedule_medium();
-  OB_INLINE bool could_schedule_medium() const { return allow_schedule_medium_flag_; }
+  int check_tablet_could_schedule_by_status(const ObTablet &tablet, bool &could_schedule_merge);
+  int stop_ls_schedule_medium(const share::ObLSID &ls_id); // may block for waiting lock
+  int clear_prohibit_medium_flag(const share::ObLSID &ls_id, const ProhibitMediumTask &task);
+  int ls_start_schedule_medium(const share::ObLSID &ls_id, bool &ls_could_schedule_medium);
+  void print_prohibit_medium_ls_info(char *buf, const int64_t buf_len);
   int64_t get_frozen_version() const;
   int64_t get_merged_version() const { return merged_version_; }
   int64_t get_inner_table_merged_scn() const { return ATOMIC_LOAD(&inner_table_merged_scn_); }
@@ -205,6 +210,7 @@ public:
   int schedule_load_bloomfilter(const blocksstable::MacroBlockId &macro_id);
   static bool check_tx_table_ready(ObLS &ls, const share::SCN &check_scn);
   static int check_ls_state(ObLS &ls, bool &need_merge);
+  static int check_ls_state_in_major(ObLS &ls, bool &need_merge);
   template <class T>
   static int schedule_tablet_minor_merge(
       ObLSHandle &ls_handle,
@@ -239,6 +245,18 @@ private:
       ObLSHandle &ls_handle,
       bool &all_ls_weak_read_ts_ready,
       int64_t &schedule_tablet_cnt);
+  OB_INLINE int schedule_tablet_medium(
+    ObLSHandle &ls_handle,
+    ObTabletHandle &tablet_handle,
+    const int64_t major_frozen_scn,
+    const share::SCN &weak_read_ts,
+    const bool could_major_merge,
+    const bool enable_adaptive_compaction,
+    const bool ls_could_schedule_medium,
+    compaction::ObLSLocality ls_locality,
+    int64_t &merge_version,
+    bool &is_leader,
+    bool &tablet_merge_finish);
   int schedule_ls_minor_merge(
       ObLSHandle &ls_handle,
       int64_t &schedule_tablet_cnt);
@@ -330,7 +348,7 @@ private:
   ObCompactionScheduleIterator medium_ls_tablet_iter_;
   int64_t error_tablet_cnt_; // for diagnose
   mutable obsys::ObRWLock allow_schedule_medium_lock_;
-  mutable bool allow_schedule_medium_flag_;
+  common::hash::ObHashMap<share::ObLSID, ProhibitMediumTask> prohibit_medium_ls_id_map_;
   compaction::ObStorageLocalityCache ls_locality_cache_;
 };
 

@@ -850,7 +850,7 @@ int ObLSBackupCtx::open(
   } else if (OB_FAIL(tablet_stat_.init(
                  param.tenant_id_, param.backup_set_desc_.backup_set_id_, param.ls_id_, backup_data_type))) {
     LOG_WARN("failed to init tablet stat", K(ret), K(param), K(backup_data_type));
-  } else if (OB_FAIL(tablet_holder_.init(param.ls_id_))) {
+  } else if (OB_FAIL(tablet_holder_.init(param.tenant_id_, param.ls_id_))) {
     LOG_WARN("failed to init tablet holder", K(ret), K(param));
   } else if (OB_FAIL(stat_mgr_.init(param.backup_dest_, param.backup_set_desc_, param.tenant_id_, param.ls_id_))) {
     LOG_WARN("failed to init stat", K(ret));
@@ -1405,7 +1405,7 @@ int ObLSBackupCtx::prepare_tablet_id_reader_(ObILSTabletIdReader *&reader)
   const share::ObBackupSetDesc &backup_set_desc = param_.backup_set_desc_;
   const share::ObLSID &ls_id = param_.ls_id_;
   const ObLSTabletIdReaderType type = LS_TABLET_ID_READER;
-  if (OB_ISNULL(tmp_reader = ObLSBackupFactory::get_ls_tablet_id_reader(type))) {
+  if (OB_ISNULL(tmp_reader = ObLSBackupFactory::get_ls_tablet_id_reader(type, tenant_id))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to get ls tablet id reader", K(ret), K(type));
   } else if (OB_FAIL(tmp_reader->init(backup_dest, tenant_id, backup_set_desc, ls_id))) {

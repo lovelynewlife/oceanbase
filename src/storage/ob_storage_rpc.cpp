@@ -931,7 +931,8 @@ OB_SERIALIZE_MEMBER(ObCheckTransferTabletBackfillRes, backfill_finished_);
 
 ObStorageChangeMemberArg::ObStorageChangeMemberArg()
   : tenant_id_(OB_INVALID_ID),
-    ls_id_()
+    ls_id_(),
+    need_get_config_version_(true)
 {
 }
 
@@ -947,7 +948,7 @@ void ObStorageChangeMemberArg::reset()
   ls_id_.reset();
 }
 
-OB_SERIALIZE_MEMBER(ObStorageChangeMemberArg, tenant_id_, ls_id_);
+OB_SERIALIZE_MEMBER(ObStorageChangeMemberArg, tenant_id_, ls_id_, need_get_config_version_);
 
 ObStorageChangeMemberRes::ObStorageChangeMemberRes()
   : config_version_(),
@@ -1678,8 +1679,8 @@ int ObFetchLSInfoP::process()
           migration_status, KPC(ls));
     } else if (OB_FAIL(ObStorageHAUtils::get_server_version(result_.version_))) {
       LOG_WARN("failed to get server version", K(ret), K_(arg));
-    } else if (OB_FAIL(MTL(logservice::ObLogService*)->get_palf_role(ls->get_ls_id(), role, proposal_id))) {
-      STORAGE_LOG(WARN, "failed to get palf role", K(ret), K(arg_), "meta package", result_.ls_meta_package_);
+    } else if (OB_FAIL(log_handler->get_role(role, proposal_id))) {
+      LOG_WARN("failed to get role", K(ret), K(arg_));
     } else if (is_strong_leader(role)) {
       result_.is_log_sync_ = true;
     } else if (OB_FAIL(log_handler->is_in_sync(is_log_sync, is_need_rebuild))) {
@@ -1990,6 +1991,8 @@ int ObCheckStartTransferTabletsP::process()
   return ret;
 }
 
+// In addition to the tablet in the recovery process, if the major sstable does not exist on the tablet, the transfer start will fail.
+// For tablets with ddl sstable, you need to wait for ddl merge to complete
 int ObCheckStartTransferTabletsP::check_transfer_out_tablet_sstable_(const ObTablet *tablet)
 {
   int ret = OB_SUCCESS;
@@ -2004,8 +2007,9 @@ int ObCheckStartTransferTabletsP::check_transfer_out_tablet_sstable_(const ObTab
     // do nothing
   } else if (OB_FAIL(tablet->get_ddl_sstables(ddl_iter))) {
     LOG_WARN("failed to get ddl sstable", K(ret));
-  } else if (ddl_iter.is_valid()) {
-    // do nothing
+  } else if (ddl_iter.is_valid()) { // indicates the existence of ddl sstable
+    ret = OB_MAJOR_SSTABLE_NOT_EXIST;
+    LOG_WARN("major sstable do not exit, need to wait ddl merge", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_);
   } else if (tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
     ret = OB_INVALID_TABLE_STORE;
     LOG_WARN("neither major sstable nor ddl sstable exists", K(ret), K(ddl_iter));
@@ -2749,6 +2753,7 @@ int ObStorageGetConfigVersionAndTransferScnP::process()
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = arg_.tenant_id_;
   const share::ObLSID &ls_id = arg_.ls_id_;
+  const bool need_get_config_version = arg_.need_get_config_version_;
   MTL_SWITCH(tenant_id) {
     ObLSHandle ls_handle;
     ObLSService *ls_service = NULL;
@@ -2762,7 +2767,8 @@ int ObStorageGetConfigVersionAndTransferScnP::process()
     } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("log stream should not be NULL", KR(ret), K(arg_), KP(ls));
-    } else if (OB_FAIL(ls->get_config_version_and_transfer_scn(result_.config_version_,
+    } else if (OB_FAIL(ls->get_config_version_and_transfer_scn(need_get_config_version,
+                                                               result_.config_version_,
                                                                result_.transfer_scn_))) {
       LOG_WARN("failed to get config version and transfer scn", K(ret), K(tenant_id), K(ls_id));
     } else {
@@ -3529,6 +3535,7 @@ int ObStorageRpc::get_config_version_and_transfer_scn(
     const uint64_t tenant_id,
     const ObStorageHASrcInfo &src_info,
     const share::ObLSID &ls_id,
+    const bool need_get_config_version,
     palf::LogConfigVersion &config_version,
     share::SCN &transfer_scn)
 {
@@ -3546,8 +3553,11 @@ int ObStorageRpc::get_config_version_and_transfer_scn(
     ObStorageChangeMemberRes res;
     arg.tenant_id_ = tenant_id;
     arg.ls_id_ = ls_id;
+    arg.need_get_config_version_ = need_get_config_version;
+    const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
     if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
                            .by(tenant_id)
+                           .timeout(timeout)
                            .dst_cluster_id(src_info.cluster_id_)
                            .get_config_version_and_transfer_scn(arg, res))) {
       LOG_WARN("failed to get config version and transfer scn", K(ret), K(src_info), K(arg));
@@ -3668,6 +3678,7 @@ int ObStorageRpc::lock_config_change(
     arg.lock_timeout_ = lock_timeout;
     const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
     if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
                            .timeout(timeout)
                            .dst_cluster_id(src_info.cluster_id_)
                            .lock_config_change(arg, res))) {
@@ -3701,6 +3712,7 @@ int ObStorageRpc::unlock_config_change(
     arg.lock_timeout_ = lock_timeout;
     const int64_t timeout = GCONF.sys_bkgd_migration_change_member_list_timeout;
     if (OB_FAIL(rpc_proxy_->to(src_info.src_addr_)
+                           .by(tenant_id)
                            .timeout(timeout)
                            .dst_cluster_id(src_info.cluster_id_)
                            .unlock_config_change(arg, res))) {

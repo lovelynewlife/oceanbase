@@ -350,7 +350,7 @@ int ObDupTabletScanTask::execute_for_dup_ls_()
     }
     // refresh dup_table_ls on leader and follower
 
-    if (!cur_ls_ptr->get_dup_table_ls_handler()->has_dup_tablet()) {
+    if (!cur_ls_ptr->get_dup_table_ls_handler()->check_tablet_set_exist()) {
       // do nothing
     } else if (OB_FAIL(dup_loop_worker_->append_dup_table_ls(cur_ls_ptr->get_ls_id()))) {
       DUP_TABLE_LOG(WARN, "refresh dup_table ls failed", K(ret));
@@ -1218,7 +1218,7 @@ int ObDupTableLSHandler::replay(const void *buffer,
     if (OB_NOT_NULL(log_operator_)) {
       log_operator_->reuse();
     }
-  } else if (no_dup_tablet_before_replay && has_dup_tablet()
+  } else if (no_dup_tablet_before_replay && check_tablet_set_exist()
              && OB_TMP_FAIL(
                  MTL(ObTransService *)->get_dup_table_loop_worker().append_dup_table_ls(ls_id_))) {
     DUP_TABLE_LOG(WARN, "refresh dup table ls failed", K(tmp_ret), K(ls_id_), K(lsn), K(ts_ns));
@@ -1340,6 +1340,9 @@ int ObDupTableLSHandler::switch_to_leader()
     if (OB_NO_NEED_UPDATE == ret) {
       ret = OB_SUCCESS;
     }
+  } else if (dup_ls_ckpt_.is_useful_meta() && !is_inited()) {
+    ret = OB_LS_NEED_REVOKE;
+    DUP_TABLE_LOG(WARN, "switch to leader failed  without ckpt recovery", K(ret), KPC(this));
   } else if (OB_FAIL(leader_takeover_(is_resume))) {
     DUP_TABLE_LOG(WARN, "leader takeover failed for dup table", K(ret), KPC(this));
   }
@@ -1463,6 +1466,9 @@ int ObDupTableLSHandler::set_dup_table_ls_meta(
                   KPC(this));
   } else if (need_flush_slog && OB_FAIL(dup_ls_ckpt_.flush())) {
     DUP_TABLE_LOG(WARN, "flush slog failed", K(ret), K(need_flush_slog), K(dup_ls_meta), KPC(this));
+  } else if (dup_ls_ckpt_.is_useful_meta() && OB_FAIL(init(true/*is_dup_table*/))) {
+    DUP_TABLE_LOG(WARN, "init dup table ls handler in recovery  failed", K(ret), KPC(this));
+    ret = OB_SUCCESS;
   }
 
   return ret;

@@ -1838,7 +1838,19 @@ int ObRawExprUtils::check_deterministic_single(const ObRawExpr *expr,
   int ret = OB_SUCCESS;
   CK (OB_NOT_NULL(expr));
   if (OB_SUCC(ret) && ObResolverUtils::DISABLE_CHECK != check_status) {
-    if (expr->is_sys_func_expr()) {
+    if (is_oracle_mode()
+        && (ObResolverUtils::CHECK_FOR_GENERATED_COLUMN == check_status
+            || ObResolverUtils::CHECK_FOR_FUNCTION_INDEX == check_status)
+        && T_OP_IS == expr->get_expr_type()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Use ISNULL() in generated column or functional index");
+      LOG_WARN("special function is not suppored in generated column", K(ret), KPC(expr));
+    } else if (is_oracle_mode()
+              && T_FUN_SYS_DEFAULT == expr->get_expr_type()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Use DEFAULT() in generated column or functional index or check constraint");
+      LOG_WARN("special function is not suppored in generated column", K(ret), KPC(expr));
+    } else if (expr->is_sys_func_expr()) {
       bool is_non_pure_func = false;
       if (OB_FAIL(expr->is_non_pure_sys_func_expr(is_non_pure_func))) {
         LOG_WARN("check is non pure sys func expr failed", K(ret));
@@ -3233,6 +3245,21 @@ int ObRawExprUtils::extract_set_op_exprs(const ObRawExpr *raw_expr,
   return ret;
 }
 
+int ObRawExprUtils::extract_set_op_exprs(const ObIArray<ObRawExpr*> &exprs,
+                                         common::ObIArray<ObRawExpr*> &set_op_exprs)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < exprs.count(); ++i) {
+    if (OB_ISNULL(exprs.at(i))) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("Expr is NULL", K(ret), K(i));
+    } else if (OB_FAIL(extract_set_op_exprs(exprs.at(i), set_op_exprs))) {
+      LOG_WARN("Failed to extract column exprs", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObRawExprUtils::extract_column_exprs(const ObRawExpr *raw_expr,
                                          ObIArray<ObRawExpr*> &column_exprs,
                                          bool need_pseudo_column)
@@ -3904,6 +3931,20 @@ const ObColumnRefRawExpr *ObRawExprUtils::get_column_ref_expr_recursively(const 
   return res;
 }
 
+ObRawExpr *ObRawExprUtils::get_sql_udt_type_expr_recursively(ObRawExpr *expr)
+{
+  ObRawExpr *res = NULL;
+  if (OB_ISNULL(expr)) {
+  } else if (ob_is_user_defined_sql_type(expr->get_result_type().get_type())) {
+    res = expr;
+  } else {
+    for (int i = 0; OB_ISNULL(res) && i < expr->get_param_count(); i++) {
+      res = get_sql_udt_type_expr_recursively(expr->get_param_expr(i));
+    }
+  }
+  return res;
+}
+
 ObRawExpr *ObRawExprUtils::skip_implicit_cast(ObRawExpr *e)
 {
   ObRawExpr *res = e;
@@ -4377,7 +4418,9 @@ int ObRawExprUtils::build_column_conv_expr(ObRawExprFactory &expr_factory,
                                               expr_factory,
                                               col_ref.get_data_type(),
                                               col_ref.get_collation_type(),
-                                              col_ref.get_accuracy().get_accuracy(),
+                                              (col_ref.get_data_type() != ObUserDefinedSQLType)
+                                                ? col_ref.get_accuracy().get_accuracy()
+                                                : col_ref.get_subschema_id(),
                                               !col_ref.is_not_null_for_write(),
                                               &column_conv_info,
                                               &col_ref.get_enum_set_values(),
@@ -6961,7 +7004,7 @@ int ObRawExprUtils::build_inner_aggr_code_expr(ObRawExprFactory &factory,
 
 int ObRawExprUtils::build_inner_wf_aggr_status_expr(ObRawExprFactory &factory,
                                                     const ObSQLSessionInfo &session_info,
-                                                    ObRawExpr *&out)
+                                                    ObOpPseudoColumnRawExpr *&out)
 {
   int ret = OB_SUCCESS;
   ObOpPseudoColumnRawExpr *expr = NULL;

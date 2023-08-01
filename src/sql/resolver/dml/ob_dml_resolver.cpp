@@ -3615,13 +3615,7 @@ int ObDMLResolver::resolve_table_drop_oracle_temp_table(TableItem *&table_item)
       ret = OB_TABLE_NOT_EXIST;
       LOG_WARN("get table schema failed", K_(table_item->table_name), K(ret));
     } else if (OB_NOT_NULL(table_schema) && table_schema->is_oracle_tmp_table()) {
-      if (OB_FAIL(session_info_->drop_reused_oracle_temp_tables())) {
-        LOG_WARN("fail to drop reused oracle temporary tables", K(ret));
-      } else {
-        session_info_->set_has_temp_table_flag();
-        LOG_DEBUG("succeed to drop oracle temporary table in case of session id reused",
-                  K(session_info_->get_sessid_for_table()));
-      }
+      session_info_->set_has_temp_table_flag();
     }
   }
   return ret;
@@ -4111,9 +4105,36 @@ int ObDMLResolver::resolve_table_column_expr(const ObQualifiedName &q_name, ObRa
     LOG_WARN("session info is null", K_(session_info), K(get_stmt()));
   } else {
     const TableItem *table_item = NULL;
-    if (OB_FAIL(column_namespace_checker_.check_table_column_namespace(q_name, table_item,
+    if (lib::is_oracle_mode() && 0 == get_stmt()->get_table_size()
+        && q_name.tbl_name_.empty() && 0 == q_name.col_name_.case_compare("DUMMY")) {
+      ObConstRawExpr *c_expr = NULL;
+      const char *ptr_value = "X";
+      ObString string_value(ptr_value);
+      if (OB_FAIL(ObRawExprUtils::build_const_string_expr(*params_.expr_factory_, ObCharType,
+                  ptr_value, session_info_->get_nls_collation(), c_expr))) {
+        LOG_WARN("fail to create const string c_expr", K(ret));
+      } else {
+        ObSysFunRawExpr *cast_expr = NULL;
+        ObExprResType res_type;
+        res_type.set_type(ObVarcharType);
+        res_type.set_length(1);
+        res_type.set_length_semantics(LS_BYTE);
+        res_type.set_collation_level(CS_LEVEL_IMPLICIT);
+        res_type.set_collation_type(session_info_->get_nls_collation());
+        if (OB_FAIL(ObRawExprUtils::create_cast_expr(*params_.expr_factory_, c_expr,
+                    res_type, cast_expr, session_info_))) {
+          LOG_WARN("create cast expr for dummy failed", K(ret));
+        } else if (OB_FAIL(cast_expr->clear_flag(IS_INNER_ADDED_EXPR))) {
+          LOG_WARN("failed to clear flag for cast expr", K(ret));
+        } else if (OB_FAIL(cast_expr->formalize(session_info_))) {
+          LOG_WARN("failed to formalize cast expr", K(ret));
+        } else {
+          real_ref_expr = cast_expr;
+        }
+      }
+    } else if (OB_FAIL(column_namespace_checker_.check_table_column_namespace(q_name, table_item,
                                                                        get_stmt()->is_insert_all_stmt()))) {
-      LOG_WARN_IGNORE_COL_NOTFOUND(ret, "column don't found in table", K(ret), K(q_name));
+      LOG_WARN_IGNORE_COL_NOTFOUND(ret, "column not found in table", K(ret), K(q_name));
     } else if (table_item->is_joined_table()) {
       const JoinedTable &joined_table = static_cast<const JoinedTable&>(*table_item);
       if (OB_FAIL(resolve_join_table_column_item(joined_table, q_name.col_name_, real_ref_expr))) {
@@ -9303,6 +9324,8 @@ int ObDMLResolver::resolve_generated_table_column_item(const TableItem &table_it
             if (OB_FAIL(col_expr->set_enum_set_values(select_expr->get_enum_set_values()))) {
               LOG_WARN("failed to set_enum_set_values", K(ret));
             }
+          } else if (ob_is_geometry(select_expr->get_data_type()) && !select_expr->is_column_ref_expr()) {
+            col_expr->set_srs_id(OB_DEFAULT_COLUMN_SRS_ID);
           }
           is_break = true;
 
@@ -13696,44 +13719,101 @@ int ObDMLResolver::resolve_pq_distribute_window_hint(const ParseNode &node,
   int ret = OB_SUCCESS;
   hint = NULL;
   ObWindowDistHint *win_dist = NULL;
+  ObSEArray<ObWindowDistHint::WinDistOption, 2> win_dist_options;
   ObString qb_name;
-  const ParseNode *dist_methods_node = NULL;
-  CK(T_PQ_DISTRIBUTE_WINDOW == node.type_ && 2 == node.num_child_);
-  if (OB_ISNULL(dist_methods_node = node.children_[1])
-      || OB_UNLIKELY(T_DISTRIBUTE_METHOD_LIST != dist_methods_node->type_)) {
+  if (OB_UNLIKELY(T_PQ_DISTRIBUTE_WINDOW != node.type_ || 2 != node.num_child_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected pq_distribute_window hint node", K(ret), K(dist_methods_node));
+    LOG_WARN("unexpected pq_distribute_window hint node", K(ret), K(node.type_), K(node.num_child_));
+  } else if (OB_FAIL(resolve_win_dist_options(node.children_[1], win_dist_options))) {
+    LOG_WARN("failed to resolve win dist options", K(ret));
+  } else if (win_dist_options.empty()) {
+    /* do nothing */
   } else if (OB_FAIL(resolve_qb_name_node(node.children_[0], qb_name))) {
     LOG_WARN("failed to resolve query block name", K(ret));
+  } else if (OB_FAIL(ObQueryHint::create_hint(allocator_, T_PQ_DISTRIBUTE_WINDOW, win_dist))) {
+    LOG_WARN("failed to create hint", K(ret));
+  } else if (OB_FAIL(win_dist->set_win_dist_options(win_dist_options))) {
+    LOG_WARN("failed to set win dist options", K(ret));
   } else {
+    win_dist->set_qb_name(qb_name);
+    hint = win_dist;
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_win_dist_options(const ParseNode *option_list,
+                                            ObIArray<ObWindowDistHint::WinDistOption> &win_dist_options)
+{
+  int ret = OB_SUCCESS;
+  win_dist_options.reuse();
+  if (OB_ISNULL(option_list) || OB_UNLIKELY(T_METHOD_OPT_LIST != option_list->type_)) {
+    //ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected win func option list in hint node", K(ret), K(option_list));
+  } else {
+    ObWindowDistHint::WinDistOption dist_option;
     bool is_valid = true;
-    ObSEArray<WinDistAlgo, 2> dist_methods;
-    WinDistAlgo method = WinDistAlgo::NONE;
-    for (int64_t i = 0; is_valid && OB_SUCC(ret) && i < dist_methods_node->num_child_; ++i) {
-      if (OB_ISNULL(dist_methods_node->children_[i])) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null", K(ret), K(i));
-      } else {
-        switch (dist_methods_node->children_[i]->type_) {
-          case T_DISTRIBUTE_NONE:   method = WinDistAlgo::NONE;   break;
-          case T_DISTRIBUTE_HASH:   method = WinDistAlgo::HASH;   break;
-          case T_DISTRIBUTE_RANGE:  method = WinDistAlgo::RANGE;  break;
-          case T_DISTRIBUTE_LIST:   method = WinDistAlgo::LIST;   break;
-          default: is_valid = false;  break;
-        }
-        if (is_valid && OB_FAIL(dist_methods.push_back(method))) {
+    for (int64_t i = 0; is_valid && OB_SUCC(ret) && i < option_list->num_child_; ++i) {
+      if (OB_FAIL(resolve_win_dist_option(option_list->children_[i], dist_option, is_valid))) {
+        LOG_WARN("failed to resolve win dist option", K(ret), K(i));
+      } else if (!is_valid) {
+        win_dist_options.reuse();
+      } else if (OB_FAIL(win_dist_options.push_back(dist_option))) {
+        LOG_WARN("failed to push back", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_win_dist_option(const ParseNode *option,
+                                           ObWindowDistHint::WinDistOption &dist_option,
+                                           bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  is_valid = false;
+  dist_option.reset();
+  const ParseNode *win_idxs = NULL;
+  const ParseNode *dist_method = NULL;
+  if (OB_ISNULL(option) || OB_UNLIKELY(T_METHOD_OPT != option->type_ || 2 != option->num_child_)
+      || OB_ISNULL(dist_method = option->children_[1])
+      || OB_UNLIKELY(NULL != (win_idxs = option->children_[0])
+                     && T_WIN_FUNC_IDX_LIST != win_idxs->type_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected win func option in hint node", K(ret), K(option), K(win_idxs), K(dist_method));
+  } else {
+    is_valid = true;
+    const ParseNode *idx_node = NULL;
+    const int64_t hash_sort_flag  = 1;
+    const int64_t push_down_flag  = 1 << 1;
+    switch (dist_method->type_) {
+      case T_DISTRIBUTE_NONE: {
+        dist_option.algo_ = WinDistAlgo::WIN_DIST_NONE;
+        dist_option.use_hash_sort_ = dist_method->value_ & hash_sort_flag;
+        break;
+      }
+      case T_DISTRIBUTE_HASH: {
+        dist_option.algo_ = WinDistAlgo::WIN_DIST_HASH;
+        dist_option.use_hash_sort_ = dist_method->value_ & hash_sort_flag;
+        dist_option.is_push_down_ = dist_method->value_ & push_down_flag;
+        break;
+      }
+      case T_DISTRIBUTE_RANGE:  dist_option.algo_ = WinDistAlgo::WIN_DIST_RANGE;  break;
+      case T_DISTRIBUTE_LIST:   dist_option.algo_ = WinDistAlgo::WIN_DIST_LIST;   break;
+      default: is_valid = false;  break;
+    }
+
+    if (OB_SUCC(ret) && NULL != win_idxs) {
+      for (int64_t i = 0; is_valid && OB_SUCC(ret) && i < win_idxs->num_child_; ++i) {
+        if (OB_ISNULL(idx_node = win_idxs->children_[i])) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null", K(ret), K(i));
+        } else if (OB_FAIL(dist_option.win_func_idxs_.push_back(idx_node->value_))) {
           LOG_WARN("failed to push back", K(ret));
         }
       }
     }
-    if (OB_FAIL(ret) || !is_valid) {
-    } else if (OB_FAIL(ObQueryHint::create_hint(allocator_, node.type_, win_dist))) {
-      LOG_WARN("failed to create hint", K(ret));
-    } else if (OB_FAIL(win_dist->get_algos().assign(dist_methods))) {
-      LOG_WARN("failed to assign dist methods", K(ret));
-    } else {
-      win_dist->set_qb_name(qb_name);
-      hint = win_dist;
+    if (OB_SUCC(ret)) {
+      is_valid &= dist_option.is_valid();
     }
   }
   return ret;

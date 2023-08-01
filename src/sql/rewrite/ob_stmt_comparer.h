@@ -50,6 +50,7 @@ enum QueryRelation
   bool is_cond_equal_;
   bool is_group_equal_;
   bool is_having_equal_;
+  bool is_order_equal_;
   bool is_select_item_equal_;
   bool is_distinct_equal_;
   
@@ -62,6 +63,7 @@ enum QueryRelation
     is_cond_equal_(false),
     is_group_equal_(false),
     is_having_equal_(false),
+    is_order_equal_(false),
     is_select_item_equal_(false),
     is_distinct_equal_(false)
     {}
@@ -77,7 +79,9 @@ enum QueryRelation
                K_(having_map),
                K_(select_item_map),
                K_(equal_param_map),
-               K_(view_select_item_map));
+               K_(view_select_item_map),
+               K_(is_order_equal),
+               K_(is_distinct_equal));
 };
 
 struct StmtCompareHelper {
@@ -227,6 +231,13 @@ public:
                                     ObStmtMapInfo &map_info,
                                     ObIArray<int64_t> &condition_map,
                                     int64_t &match_count);
+
+  static int compute_orderby_map(const ObDMLStmt *first,
+                                 const ObDMLStmt *second,
+                                 const ObIArray<OrderItem> &first_orders,
+                                 const ObIArray<OrderItem> &second_orders,
+                                 ObStmtMapInfo &map_info,
+                                 int64_t &match_count);
 
   static int compute_from_items_map(const ObDMLStmt *first,
                                     const ObDMLStmt *second,

@@ -43,11 +43,19 @@ struct ObSPICursor
   ObSPICursor(ObIAllocator &allocator) :
     row_store_(), row_desc_(), allocator_(&allocator), cur_(0), fields_(allocator) {}
 
+  ~ObSPICursor()
+  {
+    for (int64_t i = 0; i < complex_objs_.count(); ++i) {
+      (void)(pl::ObUserDefinedType::destruct_obj(complex_objs_.at(i)));
+    }
+  }
+
   ObRARowStore row_store_;
   ObArray<ObDataType> row_desc_; //ObRowStore里数据自带的Meta可能是T_NULL，所以这里自备一份
   ObIAllocator* allocator_;
   int64_t cur_;
   common::ColumnsFieldArray fields_;
+  ObArray<ObObj> complex_objs_;
 };
 
 struct ObSPIOutParams
@@ -103,7 +111,7 @@ public:
       need_end_nested_stmt_(EST_NEED_NOT),
       mem_context_(nullptr),
       mem_context_destroy_guard_(mem_context_),
-      allocator_(ObModIds::OB_PL_TEMP),
+      allocator_(ObModIds::OB_PL_TEMP, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       result_set_(NULL),
       sql_ctx_(),
       schema_guard_(share::schema::ObSchemaMgrItem::MOD_SPI_RESULT_SET),
@@ -187,7 +195,8 @@ private:
   int end_nested_session(ObSQLSessionInfo &session);
   int alloc_saved_value(sql::ObSQLSessionInfo::StmtSavedValue *&session_value);
 public:
-  static int check_nested_stmt_legal(ObExecContext &exec_ctx, stmt::StmtType stmt_type, bool for_update = false);
+  static int is_set_global_var(ObSQLSessionInfo &session, const ObString &sql, bool &has_global_variable);
+  static int check_nested_stmt_legal(ObExecContext &exec_ctx, const ObString &sql, stmt::StmtType stmt_type, bool for_update = false);
   int start_trans(ObExecContext &ctx);
   int set_cursor_env(ObSQLSessionInfo &session);
   int reset_cursor_env(ObSQLSessionInfo &session);
@@ -195,7 +204,7 @@ public:
                         stmt::StmtType type = stmt::StmtType::T_NONE,
                         bool is_for_update = false);
   void end_cursor_stmt(pl::ObPLExecCtx *pl_ctx, int &result);
-  int start_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, stmt::StmtType stmt_type, bool for_update);
+  int start_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, const ObString &sql, stmt::StmtType stmt_type, bool for_update);
   void end_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, int &result);
 private:
   bool is_inited_;

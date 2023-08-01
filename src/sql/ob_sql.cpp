@@ -1063,7 +1063,7 @@ int ObSql::do_real_prepare(const ObString &sql,
               && !(ObStmt::is_dml_write_stmt(stmt_type) && // returning into from oci not supported
                    static_cast<ObDelUpdStmt*>(basic_stmt)->get_returning_into_exprs().count() > 0)
               && enable_udr
-              && OB_FAIL(ObUDRUtils::match_udr_item(sql, session, allocator, item_guard))) {
+              && OB_FAIL(ObUDRUtils::match_udr_item(sql, session, ectx, allocator, item_guard))) {
       if (!ObSQLUtils::check_need_disconnect_parser_err(ret)) {
         ectx.set_need_disconnect(false);
       }
@@ -1082,11 +1082,9 @@ int ObSql::do_real_prepare(const ObString &sql,
                                                                   parse_result.result_tree_,
                                                                   param_store,
                                                                   session.get_local_collation_connection()))) {
-        LOG_WARN("parameterize syntax tree failed", K(ret));
-        if (OB_INVALID_ARGUMENT == ret) {
-          pc_ctx.ps_need_parameterized_ = false;
-          ret = OB_SUCCESS;
-        }
+        LOG_INFO("parameterize syntax tree failed", K(ret));
+        pc_ctx.ps_need_parameterized_ = false;
+        ret = OB_SUCCESS;
       }
       if (OB_SUCC(ret)) {
         if (!pc_ctx.ps_need_parameterized_) {
@@ -4465,15 +4463,15 @@ int ObSql::after_get_plan(ObPlanCacheCtx &pc_ctx,
         }
       }
     }
-    if (OB_SUCC(ret) && NULL != phy_plan && !session.get_is_deserialized()) {
+    if (OB_SUCC(ret) && NULL != phy_plan && !session.get_is_deserialized() && !session.is_inner()) {
       bool has_session_tmp_table = phy_plan->is_contain_oracle_session_level_temporary_table()
         || phy_plan->contains_temp_table();
       bool has_txn_tmp_table = phy_plan->is_contain_oracle_trx_level_temporary_table();
       if (has_session_tmp_table || has_txn_tmp_table) {
-        if (!session.is_inner() && session.is_txn_free_route_temp()) {
+        if (session.is_txn_free_route_temp()) {
           ret = OB_TRANS_FREE_ROUTE_NOT_SUPPORTED;
           LOG_WARN("access temp table is supported to be executed on txn temporary node", KR(ret), K(session.get_txn_free_route_ctx()));
-        } else if (has_session_tmp_table) {
+        } else {
           bool is_already_set = false;
           if (OB_FAIL(session.get_session_temp_table_used(is_already_set))) {
             LOG_WARN("fail to get session temp table used", K(ret));
@@ -4483,6 +4481,15 @@ int ObSql::after_get_plan(ObPlanCacheCtx &pc_ctx,
             LOG_WARN("fail to set session temp table used", K(ret));
           }
           LOG_DEBUG("plan contain oracle session level temporary table detected", K(is_already_set));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(append_array_no_dup(session.get_gtt_session_scope_ids(),
+                                        phy_plan->get_gtt_session_scope_ids()))) {
+          LOG_WARN("fail to append array", K(ret));
+        } else if (OB_FAIL(append_array_no_dup(session.get_gtt_trans_scope_ids(),
+                                               phy_plan->get_gtt_trans_scope_ids()))) {
+          LOG_WARN("fail to append array", K(ret));
         }
       }
     }

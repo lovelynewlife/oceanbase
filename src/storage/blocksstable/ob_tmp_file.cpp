@@ -472,10 +472,10 @@ int ObTmpFileExtent::read(const ObTmpFileIOInfo &io_info, const int64_t offset, 
   if (OB_UNLIKELY(!is_alloced_)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "ObTmpFileExtent has not been allocated", K(ret));
-  } else if (OB_UNLIKELY(offset < 0 || offset >= offset_ || size <= 0
-      || offset + size > offset_) || OB_ISNULL(buf)) {
+  } else if (OB_UNLIKELY(offset < 0 || offset >= get_offset() || size <= 0
+      || offset + size > get_offset()) || OB_ISNULL(buf)) {
     ret = OB_INVALID_ARGUMENT;
-    STORAGE_LOG(WARN, "invalid argument", K(ret), K(offset), K(offset_), K(size), K(buf));
+    STORAGE_LOG(WARN, "invalid argument", K(ret), K(offset), K(get_offset()), K(size), K(buf));
   } else {
     ObTmpBlockIOInfo info;
     info.buf_ =  buf;
@@ -506,25 +506,25 @@ int ObTmpFileExtent::write(const ObTmpFileIOInfo &io_info,int64_t &size, char *&
   } else if (OB_UNLIKELY(!is_alloced_)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "ObTmpFileExtent has not been allocated", K(ret));
-  } else if (offset_ == page_nums_ * ObTmpMacroBlock::get_default_page_size()) {
+  } else if (get_offset() == page_nums_ * ObTmpMacroBlock::get_default_page_size()) {
     need_close = true;
   } else {
     SpinWLockGuard guard(lock_);
     if (!is_closed()) {
-      remain = page_nums_ * ObTmpMacroBlock::get_default_page_size() - offset_;
+      remain = page_nums_ * ObTmpMacroBlock::get_default_page_size() - get_offset();
       write_size = std::min(remain, size);
       ObTmpBlockIOInfo info;
       info.block_id_ = block_id_;
       info.buf_ =  buf;
       info.io_desc_ = io_info.io_desc_;
-      info.offset_ = start_page_id_ * ObTmpMacroBlock::get_default_page_size() + offset_;
+      info.offset_ = start_page_id_ * ObTmpMacroBlock::get_default_page_size() + get_offset();
       info.size_ = write_size;
       info.tenant_id_ = io_info.tenant_id_;
       if (OB_FAIL(OB_TMP_FILE_STORE.write(owner_->get_tenant_id(), info))) {
         STORAGE_LOG(WARN, "fail to write the extent", K(ret));
       } else {
-        offset_ += write_size;
-        g_offset_end_ = offset_ + g_offset_start_;
+        ATOMIC_FAA(&offset_, write_size);
+        g_offset_end_ = get_offset() + g_offset_start_;
         buf += write_size;
         size -= write_size;
         if (remain == write_size) {
@@ -547,7 +547,7 @@ void ObTmpFileExtent::reset()
   fd_ = -1;
   g_offset_start_ = 0;
   g_offset_end_ = 0;
-  offset_ = 0;
+  ATOMIC_SET(&offset_, 0);
   owner_ = NULL;
   start_page_id_ = -1;
   page_nums_ = 0;
@@ -592,11 +592,11 @@ bool ObTmpFileExtent::close(uint8_t &free_page_start_id, uint8_t &free_page_nums
   free_page_nums = 0;
   SpinWLockGuard guard(lock_);
   if (!is_closed()) {
-    if (!force && 0 != page_nums_ && 0 == offset_) {
+    if (!force && 0 != page_nums_ && 0 == get_offset()) {
       // Nothing to do. This extent is alloced just now, so it cannot be closed.
     } else {
-      if (offset_ != page_nums_ * ObTmpMacroBlock::get_default_page_size()) {
-        uint8_t offset_page_id = common::upper_align(offset_, ObTmpMacroBlock::get_default_page_size())
+      if (get_offset() != page_nums_ * ObTmpMacroBlock::get_default_page_size()) {
+        uint8_t offset_page_id = common::upper_align(get_offset(), ObTmpMacroBlock::get_default_page_size())
                              / ObTmpMacroBlock::get_default_page_size();
         free_page_nums = page_nums_ - offset_page_id;
         free_page_start_id = start_page_id_ + offset_page_id;
@@ -622,6 +622,8 @@ int ObTmpFileExtent::try_sync_block()
   } else if (OB_FAIL(OB_TMP_FILE_STORE.wash_block(owner_->get_tenant_id(), block_id_, handle))) {
     // try to flush the block to the disk. If fails, do nothing.
     STORAGE_LOG(DEBUG, "fail to sync block", K(ret), K(owner_->get_tenant_id()), K(block_id_));
+  } else {
+    STORAGE_LOG(DEBUG, "succeed to sync wash block", K(block_id_));
   }
 
   return ret;
@@ -1102,11 +1104,14 @@ int ObTmpFile::aio_write(const ObTmpFileIOInfo &io_info, ObTmpFileIOHandle &hand
             allocator_->free(extent);
             extent = NULL;
           }
+          if (OB_NOT_NULL(tmp)) {
+            tmp = NULL;
+          }
         }
       } else {
         // this extent has allocated, no one page, invalid extent(tmp->is_alloced = false).
         ret = OB_INVALID_ERROR;
-        STORAGE_LOG(WARN, "invalid extent", K(ret));
+        STORAGE_LOG(WARN, "invalid extent", K(ret), KPC(tmp), KPC(this));
       }
       if (OB_SUCC(ret)) {
         if (OB_ISNULL(tmp)) {
@@ -1119,6 +1124,10 @@ int ObTmpFile::aio_write(const ObTmpFileIOInfo &io_info, ObTmpFileIOHandle &hand
             STORAGE_LOG(WARN, "set block id failed", K(ret));
           }
         }
+      }
+
+      if (OB_EAGAIN == ret) {
+        ret = OB_SUCCESS;
       }
     }
     handle.sub_data_size(io_info.size_ - size);

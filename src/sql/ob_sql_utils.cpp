@@ -3140,13 +3140,6 @@ int ObImplicitCursorInfo::merge_cursor(const ObImplicitCursorInfo &other)
   return ret;
 }
 
-int64_t ObLinkStmtParam::get_param_len()
-{
-  return PARAM_LEN;
-}
-
-const int64_t ObLinkStmtParam::PARAM_LEN = sizeof(char) * 2 + sizeof(uint16_t);
-
 bool ObSQLUtils::is_same_type_for_compare(const ObObjMeta &meta1, const ObObjMeta &meta2)
 {
   bool is_same = false;
@@ -4074,7 +4067,14 @@ bool ObSQLUtils::is_one_part_table_can_skip_part_calc(const ObTableSchema &schem
   if (!schema.is_partitioned_table()) {
     can_skip = true;
   } else if (schema.get_all_part_num() == 1 && schema.is_hash_part()) {
-    can_skip = true;
+    if (PARTITION_LEVEL_ONE == schema.get_part_level()) {
+      can_skip = true;
+    } else if (PARTITION_LEVEL_TWO == schema.get_part_level()
+              && schema.is_hash_subpart()) {
+      can_skip = true;
+    } else {
+      can_skip = false;
+    }
   } else {
     can_skip = false;
   }

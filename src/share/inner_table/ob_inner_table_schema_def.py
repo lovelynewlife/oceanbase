@@ -5748,6 +5748,15 @@ def_table_schema(
   ],
 )
 
+# 474 : __all_tenant_scheduler_job_classes
+# 475 : __all_recover_table_job
+# 476 : __all_recover_table_job_history
+# 477 : __all_import_table_job
+# 478 : __all_import_table_job_history
+# 479 : __all_import_table_task
+# 480 : __all_import_table_task_history
+# 481 : __all_import_stmt_exec_history
+
 #
 # 余留位置
 
@@ -10833,6 +10842,7 @@ def_table_schema(
   ('rebuild_seq', 'int'),
   ('tablet_change_checkpoint_scn', 'uint'),
   ('transfer_scn', 'uint'),
+  ('tx_blocked', 'int'),
   ],
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
@@ -12242,12 +12252,12 @@ def_table_schema(
   ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
   ('svr_port', 'int'),
   ('tenant_id', 'int'),
-  ('tablet buffer', 'varchar:128'),
+  ('tablet_buffer', 'varchar:128'),
   ],
 
   normal_columns = [
   ('tablet', 'varchar:128'),
-	('pool type', 'varchar:128'),
+	('pool_type', 'varchar:128'),
   ('ls_id', 'int'),
   ('tablet_id', 'int'),
   ('in_map', 'bool'),
@@ -12271,10 +12281,32 @@ def_table_schema(**gen_iterate_private_virtual_table_def(
   in_tenant_space = True,
   keywords = all_def_keywords['__all_tenant_event_history']))
 
-#
-# 12416: __all_virtual_balance_task_helper
+def_table_schema(**gen_iterate_private_virtual_table_def(
+  table_id = '12416',
+  table_name = '__all_virtual_balance_task_helper',
+  keywords = all_def_keywords['__all_balance_task_helper']))
 
-# 12417: __all_virtual_balance_group_ls_stat
+def_table_schema(**gen_iterate_private_virtual_table_def(
+  table_id = '12417',
+  table_name = '__all_virtual_balance_group_ls_stat',
+  keywords = all_def_keywords['__all_balance_group_ls_stat']))
+
+# 12418: __all_virtual_cgroup_info
+# 12419: __all_virtual_cgroup_config
+
+# 12420: __all_virtual_flt_config
+
+# 12421: __all_virtual_tenant_scheduler_job_class
+
+# 12422: __all_virtual_recover_table_job
+# 12423: __all_virtual_recover_table_job_history
+# 12424: __all_virtual_import_table_job
+# 12425: __all_virtual_import_table_job_history
+# 12426: __all_virtual_import_table_task
+# 12427: __all_virtual_import_table_task_history
+# 12428: __all_virtual_import_stmt_exec_history
+
+#
 # 余留位置
 #
 
@@ -12515,7 +12547,7 @@ def_table_schema(**no_direct_access(gen_oracle_mapping_real_virtual_table_def('1
 def_table_schema(**gen_oracle_mapping_real_virtual_table_def('15281', all_def_keywords['__all_tenant_rewrite_rules']))
 def_table_schema(**no_direct_access(gen_sys_agent_virtual_table_def('15282', all_def_keywords['__all_tenant'])))
 
-# 15283: __all_virtual_tenant_info_agent
+# 15283: __all_virtual_tenant_info_agent abandoned
 
 def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15284', all_def_keywords['__all_virtual_sql_plan'])))
 # 15285 abandoned
@@ -12541,6 +12573,14 @@ def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15298'
 def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15303', all_def_keywords['__all_virtual_arbitration_member_info'])))
 def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15304', all_def_keywords['__all_virtual_arbitration_service_status'])))
 def_table_schema(**gen_oracle_mapping_virtual_table_def('15305', all_def_keywords['__all_virtual_obj_lock']))
+
+# 15306: __all_virtual_recover_table_job
+# 15307: __all_virtual_recover_table_job_history
+# 15308: __all_virtual_import_table_job
+# 15309: __all_virtual_import_table_job_history
+# 15310: __all_virtual_import_table_task
+# 15311: __all_virtual_import_table_task_history
+# 15312: __all_virtual_import_stmt_exec_history
 
 #######################################################################
 # oracle agent table index is defined after the System table Index area
@@ -12652,7 +12692,14 @@ def_table_schema(**gen_oracle_mapping_virtual_table_def('15399', all_def_keyword
 
 # 15401: __all_virtual_data_activity_metrics
 
-# 15402: __all_virtual_ls
+def_table_schema(**gen_oracle_mapping_real_virtual_table_def('15402', all_def_keywords['__all_ls']))
+# 15403: __all_virtual_flt_config
+
+# 15404: __all_virtual_tenant_scheduler_job_run_detail
+
+# 15405: __all_virtual_session_info
+
+# 15406: __all_virtual_tenant_scheduler_job_class
 
 # 余留位置
 
@@ -16437,7 +16484,10 @@ SELECT A.TENANT_ID,
         END) AS LOG_MODE,
        ARBITRATION_SERVICE_STATUS,
        UNIT_NUM,
-       COMPATIBLE
+       COMPATIBLE,
+       (CASE
+            WHEN (MOD(A.TENANT_ID, 2)) = 1 THEN 1
+            ELSE B.MAX_LS_ID END) AS MAX_LS_ID
 FROM OCEANBASE.__ALL_VIRTUAL_TENANT_MYSQL_SYS_AGENT AS A
 LEFT JOIN OCEANBASE.__ALL_VIRTUAL_TENANT_INFO AS B
     ON A.TENANT_ID = B.TENANT_ID
@@ -19213,6 +19263,7 @@ def_table_schema(
     CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN I.TABLE_NAME
         ELSE SUBSTR(I.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(I.TABLE_NAME, 7)))
         END AS CHAR(128)) AS INDEX_NAME,
+    CAST(DT.TABLE_NAME AS CHAR(128)) AS TABLE_NAME,
 
     CAST(CASE I.PART_LEVEL
          WHEN 2 THEN 'YES'
@@ -19268,6 +19319,8 @@ def_table_schema(
     CAST(NULL AS CHAR(3)) AS ORPHANED_ENTRIES
     FROM
     OCEANBASE.__ALL_VIRTUAL_TABLE I
+    JOIN OCEANBASE.__ALL_VIRTUAL_TABLE DT
+    ON I.TENANT_ID = DT.TENANT_ID AND I.DATA_TABLE_ID = DT.TABLE_ID
     JOIN OCEANBASE.__ALL_VIRTUAL_DATABASE D
     ON I.TENANT_ID = D.TENANT_ID
        AND I.DATABASE_ID = D.DATABASE_ID
@@ -19306,6 +19359,7 @@ def_table_schema(
     CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN I.TABLE_NAME
         ELSE SUBSTR(I.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(I.TABLE_NAME, 7)))
         END AS CHAR(128)) AS INDEX_NAME,
+    CAST(DT.TABLE_NAME AS CHAR(128)) AS TABLE_NAME,
     CAST(PART.PART_NAME AS CHAR(128)) PARTITION_NAME,
     CAST(PART.SUB_PART_NAME AS CHAR(128))  SUBPARTITION_NAME,
     CAST(CASE WHEN length(PART.HIGH_BOUND_VAL) > 0 THEN PART.HIGH_BOUND_VAL
@@ -19348,6 +19402,8 @@ def_table_schema(
     CAST(NULL AS CHAR(6)) AS DOMIDX_OPSTATUS,
     CAST(NULL AS CHAR(1000)) AS PARAMETERS
     FROM OCEANBASE.__ALL_VIRTUAL_TABLE I
+    JOIN OCEANBASE.__ALL_VIRTUAL_TABLE DT
+    ON I.TENANT_ID = DT.TENANT_ID AND I.DATA_TABLE_ID = DT.TABLE_ID
     JOIN OCEANBASE.__ALL_VIRTUAL_DATABASE D
     ON I.TENANT_ID = D.TENANT_ID
        AND I.DATABASE_ID = D.DATABASE_ID
@@ -20468,6 +20524,7 @@ def_table_schema(
     CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN I.TABLE_NAME
         ELSE SUBSTR(I.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(I.TABLE_NAME, 7)))
         END AS CHAR(128)) AS INDEX_NAME,
+    CAST(DT.TABLE_NAME AS CHAR(128)) AS TABLE_NAME,
 
     CAST(CASE I.PART_LEVEL
          WHEN 2 THEN 'YES'
@@ -20523,6 +20580,8 @@ def_table_schema(
     CAST(NULL AS CHAR(3)) AS ORPHANED_ENTRIES
     FROM
     OCEANBASE.__ALL_TABLE I
+    JOIN OCEANBASE.__ALL_TABLE DT
+    ON I.TENANT_ID = DT.TENANT_ID AND I.DATA_TABLE_ID = DT.TABLE_ID
     JOIN OCEANBASE.__ALL_DATABASE D
     ON I.TENANT_ID = D.TENANT_ID
        AND I.DATABASE_ID = D.DATABASE_ID
@@ -20563,6 +20622,7 @@ def_table_schema(
     CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN I.TABLE_NAME
         ELSE SUBSTR(I.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(I.TABLE_NAME, 7)))
         END AS CHAR(128)) AS INDEX_NAME,
+    CAST(DT.TABLE_NAME AS CHAR(128)) AS TABLE_NAME,
     CAST(PART.PART_NAME AS CHAR(128)) PARTITION_NAME,
     CAST(PART.SUB_PART_NAME AS CHAR(128))  SUBPARTITION_NAME,
     CAST(CASE WHEN length(PART.HIGH_BOUND_VAL) > 0 THEN PART.HIGH_BOUND_VAL
@@ -20605,6 +20665,8 @@ def_table_schema(
     CAST(NULL AS CHAR(6)) AS DOMIDX_OPSTATUS,
     CAST(NULL AS CHAR(1000)) AS PARAMETERS
     FROM OCEANBASE.__ALL_TABLE I
+    JOIN OCEANBASE.__ALL_TABLE DT
+    ON I.TENANT_ID = DT.TENANT_ID AND I.DATA_TABLE_ID = DT.TABLE_ID
     JOIN OCEANBASE.__ALL_DATABASE D
     ON I.TENANT_ID = D.TENANT_ID
        AND I.DATABASE_ID = D.DATABASE_ID
@@ -21158,6 +21220,10 @@ def_table_schema(
       CREATE_TIME,
       DIAGNOSE_INFO
     FROM oceanbase.__all_virtual_compaction_diagnose_info
+    WHERE
+      STATUS != "RS_UNCOMPACTED"
+    AND
+      STATUS != "NOT_SCHEDULE"
 """.replace("\n", " ")
 )
 
@@ -27829,8 +27895,74 @@ def_table_schema(
 # 21442: DBA_OB_MVIEW_REFRESH_STMT_STATS
 # 21443: DBA_WR_CONTROL
 # 21444: CDB_WR_CONTROL
-# 21445: DBA_OB_LS_HISTORY
-# 21446: CDB_OB_LS_HISTORY
+def_table_schema(
+  owner           = 'msy164651',
+  table_name      = 'DBA_OB_LS_HISTORY',
+  table_id        = '21445',
+  table_type      = 'SYSTEM_VIEW',
+  in_tenant_space = True,
+  gm_columns      = [],
+  rowkey_columns  = [],
+  normal_columns  = [],
+  view_definition =
+  """
+    SELECT
+          (CASE
+               WHEN A.LS_ID IS NULL THEN B.LS_ID
+               ELSE A.LS_ID END) AS LS_ID,
+          (CASE
+               WHEN A.LS_GROUP_ID IS NULL THEN B.LS_GROUP_ID
+               ELSE A.LS_GROUP_ID END) AS LS_GROUP_ID,
+          (CASE
+               WHEN A.STATUS IS NULL THEN B.STATUS
+               ELSE A.STATUS END) AS STATUS,
+          (CASE
+               WHEN A.FLAG IS NULL THEN B.FLAG
+               ELSE A.FLAG END) AS FLAG,
+          (CASE
+               WHEN A.LS_ID = 1 THEN 0
+               ELSE B.CREATE_SCN END) AS CREATE_SCN
+    FROM OCEANBASE.DBA_OB_LS AS A
+         FULL JOIN OCEANBASE.__ALL_LS AS B
+              ON A.LS_ID = B.LS_ID
+  """.replace("\n", " "),
+)
+
+def_table_schema(
+  owner           = 'msy164651',
+  table_name      = 'CDB_OB_LS_HISTORY',
+  table_id        = '21446',
+  table_type      = 'SYSTEM_VIEW',
+  gm_columns      = [],
+  rowkey_columns  = [],
+  normal_columns  = [],
+  view_definition =
+  """
+    SELECT
+          (CASE
+               WHEN A.TENANT_ID IS NULL THEN B.TENANT_ID
+               ELSE A.TENANT_ID END) AS TENANT_ID,
+          (CASE
+               WHEN A.LS_ID IS NULL THEN B.LS_ID
+               ELSE A.LS_ID END) AS LS_ID,
+          (CASE
+               WHEN A.LS_GROUP_ID IS NULL THEN B.LS_GROUP_ID
+               ELSE A.LS_GROUP_ID END) AS LS_GROUP_ID,
+          (CASE
+               WHEN A.STATUS IS NULL THEN B.STATUS
+               ELSE A.STATUS END) AS STATUS,
+          (CASE
+               WHEN A.FLAG IS NULL THEN B.FLAG
+               ELSE A.FLAG END) AS FLAG,
+          (CASE
+               WHEN A.LS_ID = 1 THEN 0
+               ELSE B.CREATE_SCN END) AS CREATE_SCN
+    FROM OCEANBASE.CDB_OB_LS AS A
+         FULL JOIN OCEANBASE.__ALL_VIRTUAL_LS AS B
+              ON A.LS_ID = B.LS_ID AND A.TENANT_ID = B.TENANT_ID
+  """.replace("\n", " "),
+)
+
 
 def_table_schema(
   owner           = 'wanhong.wwh',
@@ -27896,6 +28028,27 @@ def_table_schema(
   FROM OCEANBASE.__ALL_VIRTUAL_TENANT_EVENT_HISTORY
   """.replace("\n", " ")
 )
+# 21449: GV$OB_FLT_TRACE_CONFIG
+# 21459：GV$OB_SESSION
+# 21460：V$OB_SESSION
+
+# 21461: GV$OB_PL_CACHE_OBJECT
+# 21462: V$OB_PL_CACHE_OBJECT
+
+# 21463: CDB_OB_RECOVER_TABLE_JOBS
+# 21464: DBA_OB_RECOVER_TABLE_JOBS
+# 21465: CDB_OB_RECOVER_TABLE_JOB_HISTORY
+# 21466: DBA_OB_RECOVER_TABLE_JOB_HISTORY
+# 21467: CDB_OB_IMPORT_TABLE_JOBS
+# 21468: DBA_OB_IMPORT_TABLE_JOBS
+# 21469: CDB_OB_IMPORT_TABLE_JOB_HISTORY
+# 21470: DBA_OB_IMPORT_TABLE_JOB_HISTORY
+# 21471: CDB_OB_IMPORT_TABLE_TASKS
+# 21472: DBA_OB_IMPORT_TABLE_TASKS
+# 21473: CDB_OB_IMPORT_TABLE_TASK_HISTORY
+# 21474: DBA_OB_IMPORT_TABLE_TASK_HISTORY
+# 21475: CDB_OB_IMPORT_STMT_EXEC_HISTORY
+# 21476: DBA_OB_IMPORT_STMT_EXEC_HISTORY
 
 #
 # 余留位置
@@ -44339,7 +44492,10 @@ SELECT A.TENANT_ID,
         END) AS LOG_MODE,
        ARBITRATION_SERVICE_STATUS,
        UNIT_NUM,
-       COMPATIBLE
+       COMPATIBLE,
+       (CASE
+            WHEN (MOD(A.TENANT_ID, 2)) = 1 THEN 1
+            ELSE B.MAX_LS_ID END) AS MAX_LS_ID
 FROM SYS.ALL_VIRTUAL_TENANT_SYS_AGENT A
 LEFT JOIN SYS.ALL_VIRTUAL_TENANT_INFO B
     ON A.TENANT_ID = B.TENANT_ID
@@ -45717,8 +45873,40 @@ JOIN SYS.ALL_VIRTUAL_OPTSTAT_GLOBAL_PREFS_REAL_AGENT GP
 # 25255: DBA_OB_MVIEW_REFRESH_STMT_STATS
 # 25256: DBMS_LOCK_ALLOCATED
 # 25257: DBA_WR_CONTROL
-# 25258: DBA_OB_LS_HISTORY
-
+def_table_schema(
+  owner           = 'msy164651',
+  table_name      = 'DBA_OB_LS_HISTORY',
+  name_postfix    = '_ORA',
+  database_id     = 'OB_ORA_SYS_DATABASE_ID',
+  table_id        = '25258',
+  table_type      = 'SYSTEM_VIEW',
+  in_tenant_space = True,
+  gm_columns      = [],
+  rowkey_columns  = [],
+  normal_columns  = [],
+  view_definition =
+  """
+    SELECT
+          (CASE
+               WHEN A.LS_ID IS NULL THEN B.LS_ID
+               ELSE A.LS_ID END) AS LS_ID,
+          (CASE
+               WHEN A.LS_GROUP_ID IS NULL THEN B.LS_GROUP_ID
+               ELSE A.LS_GROUP_ID END) AS LS_GROUP_ID,
+          (CASE
+               WHEN A.STATUS IS NULL THEN B.STATUS
+               ELSE A.STATUS END) AS STATUS,
+          (CASE
+               WHEN A.FLAG IS NULL THEN B.FLAG
+               ELSE A.FLAG END) AS FLAG,
+          (CASE
+               WHEN A.LS_ID = 1 THEN 0
+               ELSE B.CREATE_SCN END) AS CREATE_SCN
+    FROM SYS.DBA_OB_LS A
+         FULL JOIN SYS.ALL_VIRTUAL_LS_REAL_AGENT B
+              ON A.LS_ID = B.LS_ID
+  """.replace("\n", " "),
+)
 def_table_schema(
   owner           = 'wanhong.wwh',
   table_name      = 'DBA_OB_TENANT_EVENT_HISTORY',
@@ -45754,7 +45942,17 @@ def_table_schema(
   """.replace("\n", " ")
 )
 
-#
+# 25260: DBA_SCHEDULER_JOB_RUN_DETAILS
+# 25261: DBA_SCHEDULER_JOB_CLASSES
+
+# 25262: DBA_OB_RECOVER_TABLE_JOBS
+# 25263: DBA_OB_RECOVER_TABLE_JOB_HISTORY
+# 25264: DBA_OB_IMPORT_TABLE_JOBS
+# 25265: DBA_OB_IMPORT_TABLE_JOB_HISTORY
+# 25266: DBA_OB_IMPORT_TABLE_TASKS
+# 25267: DBA_OB_IMPORT_TABLE_TASK_HISTORY
+# 25268: DBA_OB_IMPORT_STMT_EXEC_HISTORY
+
 # 余留位置
 
 #### End Data Dictionary View
@@ -50172,6 +50370,10 @@ def_table_schema(
       CREATE_TIME,
       DIAGNOSE_INFO
     FROM SYS.ALL_VIRTUAL_COMPACTION_DIAGNOSE_INFO
+    WHERE
+      STATUS != 'RS_UNCOMPACTED'
+    AND
+      STATUS != 'NOT_SCHEDULE'
 """.replace("\n", " ")
 )
 
@@ -51784,7 +51986,11 @@ def_table_schema(
   FROM SYS.ALL_VIRTUAL_LS_LOG_RESTORE_STATUS;
   """.replace("\n", " ")
 )
-
+# 28195: GV$OB_FLT_TRACE_CONFIG
+# 28196: GV$OB_SESSION
+# 28197: V$OB_SESSION
+# 28198: GV$OB_PL_CACHE_OBJECT
+# 28199: V$OB_PL_CACHE_OBJECT
 ################################################################################
 # Lob Table (50000, 70000)
 ################################################################################

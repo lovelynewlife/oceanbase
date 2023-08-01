@@ -611,25 +611,12 @@ int ObTenantIOManager::mtl_init(ObTenantIOManager *&io_service)
   return ret;
 }
 
-void ObTenantIOManager::mtl_stop(ObTenantIOManager *&io_service)
-{
-  const uint64_t tenant_id = MTL_ID();
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(OB_IO_MANAGER.remove_tenant_io_manager(tenant_id))) {
-    if (OB_HASH_NOT_EXIST != ret) {
-      LOG_WARN("remove tenant io manager failed", K(ret), K(tenant_id));
-    } else {
-      ret = OB_SUCCESS;
-    }
-  }
-}
-
-void ObTenantIOManager::mtl_wait(ObTenantIOManager *&io_service)
+void ObTenantIOManager::mtl_destroy(ObTenantIOManager *&io_service)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   while (OB_NOT_NULL(io_service) && OB_SUCC(ret)) {
-    if (io_service->get_ref_cnt() == 0) {
+    if (io_service->get_ref_cnt() == 1) {
       break;
     } else {
       if (REACH_TIME_INTERVAL(1000L * 1000L)) { //1s
@@ -638,17 +625,24 @@ void ObTenantIOManager::mtl_wait(ObTenantIOManager *&io_service)
       ob_usleep((useconds_t)10L * 1000L); //10ms
     }
   }
-}
 
-void ObTenantIOManager::mtl_destroy(ObTenantIOManager *&io_service)
-{
-  int ret = OB_SUCCESS;
-  if (OB_NOT_NULL(io_service) && io_service->get_ref_cnt() == 0) {
-    io_service->~ObTenantIOManager();
-    OB_IO_MANAGER.allocator_.free(io_service);
-  } else if (OB_NOT_NULL(io_service) && io_service->get_ref_cnt() != 0) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("ERROR: tenant io manager ref_cnt is not zero", K(ret));
+  const uint64_t tenant_id = MTL_ID();
+  if (OB_FAIL(OB_IO_MANAGER.remove_tenant_io_manager(tenant_id))) {
+    if (OB_HASH_NOT_EXIST != ret) {
+      LOG_WARN("remove tenant io manager failed", K(ret), K(tenant_id));
+    } else {
+      ret = OB_SUCCESS;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_NOT_NULL(io_service) && io_service->get_ref_cnt() == 0) {
+      io_service->~ObTenantIOManager();
+      OB_IO_MANAGER.allocator_.free(io_service);
+      io_service = nullptr;
+    } else if (OB_NOT_NULL(io_service) && io_service->get_ref_cnt() != 0) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("ERROR: tenant io manager ref_cnt is not zero", K(ret));
+    }
   }
 }
 
@@ -692,7 +686,9 @@ int ObTenantIOManager::init(const uint64_t tenant_id,
   } else if (OB_FAIL(alloc_io_clock(io_allocator_, io_clock_))) {
     LOG_WARN("alloc io clock failed", K(ret));
   } else if (OB_FAIL(io_usage_.init(io_config.group_num_))) {
-     LOG_WARN("init io usage failed", K(ret), K(io_usage_));
+     LOG_WARN("init io usage failed", K(ret), K(io_usage_), K(io_config.group_num_));
+  } else if (OB_FAIL(io_backup_usage_.init())) {
+     LOG_WARN("init io usage failed", K(ret), K(io_backup_usage_), K(SYS_RESOURCE_GROUP_CNT));
   } else if (OB_FAIL(io_clock_->init(io_config, &io_usage_))) {
     LOG_WARN("init io clock failed", K(ret), K(io_config));
   } else if (OB_FAIL(io_scheduler->init_group_queues(tenant_id, io_config.group_num_, &io_allocator_))) {
@@ -887,7 +883,7 @@ int ObTenantIOManager::update_basic_io_config(const ObTenantIOConfig &io_config)
         if (OB_FAIL(io_clock_->update_io_clocks(io_config_))) {
           LOG_WARN("refresh io clock failed", K(ret), K(io_config_));
         } else {
-          LOG_INFO("update basic io config success", K(tenant_id_), K(io_config_), K(io_config));
+          LOG_INFO("update basic io config success", K(tenant_id_), K(io_config_), K(io_config), K(io_clock_));
         }
       }
     }
@@ -947,8 +943,11 @@ int ObTenantIOManager::init_group_index_map(const int64_t tenant_id,
 
 int ObTenantIOManager::get_group_index(const int64_t group_id, uint64_t &index)
 {
-  int ret = group_id_index_map_.get_refactored(group_id, index);
-  if (OB_FAIL(ret)) {
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_user_group(group_id))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid group id", K(ret), K(group_id));
+  } else if (OB_FAIL(group_id_index_map_.get_refactored(group_id, index))) {
     if(OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("get index from map failed", K(ret), K(group_id), K(index));
     }
@@ -1013,7 +1012,7 @@ int ObTenantIOManager::modify_io_config(const uint64_t group_id,
   } else {
     uint64_t index = INT64_MAX;
     DRWLock::WRLockGuard guard(io_config_lock_);
-    if (group_id < RESOURCE_GROUP_START_ID && group_id > 0) {
+    if (OB_UNLIKELY(!is_valid_resource_group(group_id))) {
       ret = OB_INVALID_CONFIG;
       LOG_WARN("invalid group id", K(ret), K(tenant_id_), K(group_id));
     } else if (min_percent < 0 || min_percent > 100 ||
@@ -1079,9 +1078,9 @@ int ObTenantIOManager::add_group_io_config(const int64_t group_id,
   } else if (OB_UNLIKELY(!is_working())) {
     ret = OB_STATE_NOT_MATCH;
     LOG_WARN("tenant not working", K(ret), K(tenant_id_));
-  } else if (group_id < RESOURCE_GROUP_START_ID || min_percent < 0 || min_percent > 100 ||
-            max_percent < 0 || max_percent > 100 || max_percent < min_percent ||
-            weight_percent < 0 || weight_percent > 100) {
+  } else if (OB_UNLIKELY(!is_user_group(group_id)) || min_percent < 0 || min_percent > 100 ||
+             max_percent < 0 || max_percent > 100 || max_percent < min_percent ||
+             weight_percent < 0 || weight_percent > 100) {
     ret = OB_INVALID_CONFIG;
     LOG_WARN("invalid group config", K(ret), K(group_id), K(min_percent), K(max_percent), K(weight_percent));
   } else {
@@ -1132,7 +1131,7 @@ int ObTenantIOManager::reset_consumer_group_config(const int64_t group_id)
   } else if (OB_UNLIKELY(!is_working())) {
     ret = OB_STATE_NOT_MATCH;
     LOG_WARN("tenant not working", K(ret), K(tenant_id_));
-  } else if (group_id < RESOURCE_GROUP_START_ID) {
+  } else if (OB_UNLIKELY(!is_user_group(group_id))) {
     ret = OB_INVALID_CONFIG;
     LOG_WARN("cannot reset other group io config", K(ret), K(group_id));
   } else {
@@ -1171,7 +1170,7 @@ int ObTenantIOManager::delete_consumer_group_config(const int64_t group_id)
   } else if (OB_UNLIKELY(!is_working())) {
     ret = OB_STATE_NOT_MATCH;
     LOG_WARN("tenant not working", K(ret), K(tenant_id_));
-  } else if (group_id < RESOURCE_GROUP_START_ID) {
+  } else if (OB_UNLIKELY(!is_user_group(group_id))) {
     ret = OB_INVALID_CONFIG;
     LOG_WARN("cannot delete other group io config", K(ret), K(group_id));
   } else {
@@ -1289,7 +1288,10 @@ void ObTenantIOManager::print_io_status()
     bool need_print_io_config = false;
     ObIOUsage::AvgItems avg_iops, avg_size, avg_rt;
     io_usage_.calculate_io_usage();
+    io_backup_usage_.calculate_io_usage();
+    ObSysIOUsage::SysAvgItems sys_avg_iops, sys_avg_size, sys_avg_rt;
     io_usage_.get_io_usage(avg_iops, avg_size, avg_rt);
+    io_backup_usage_.get_io_usage(sys_avg_iops, sys_avg_size, sys_avg_rt);
     for (int64_t i = 1; i < io_usage_.get_io_usage_num(); ++i) {
       if (io_config_.group_configs_.at(i-1).deleted_) {
         continue;
@@ -1333,6 +1335,33 @@ void ObTenantIOManager::print_io_status()
                avg_rt.at(0).at(static_cast<int>(ObIOMode::WRITE)));
       LOG_INFO("[IO STATUS]", K_(tenant_id), KCSTRING(io_status));
       need_print_io_config = true;
+    }
+
+    // MOCK SYS GROUPS
+    for (int64_t j = 0; j < sys_avg_size.count(); ++j) {
+      if (j >= sys_avg_size.count() || j >= sys_avg_iops.count() || j >= sys_avg_rt.count()) {
+        //ignore
+      } else {
+        ObIOModule module = static_cast<ObIOModule>(SYS_RESOURCE_GROUP_START_ID + j);
+        if (sys_avg_size.at(j).at(static_cast<int>(ObIOMode::READ)) > std::numeric_limits<double>::epsilon()) {
+          snprintf(io_status, sizeof(io_status), "sys_group_name: %s, mode:  read, size: %10.2f, iops: %8.2f, rt: %8.2f",
+                   get_io_sys_group_name(module),
+                   sys_avg_size.at(j).at(static_cast<int>(ObIOMode::READ)),
+                   sys_avg_iops.at(j).at(static_cast<int>(ObIOMode::READ)),
+                   sys_avg_rt.at(j).at(static_cast<int>(ObIOMode::READ)));
+          LOG_INFO("[IO STATUS SYS]", K_(tenant_id), KCSTRING(io_status));
+          need_print_io_config = true;
+        }
+        if (sys_avg_size.at(j).at(static_cast<int>(ObIOMode::WRITE)) > std::numeric_limits<double>::epsilon()) {
+          snprintf(io_status, sizeof(io_status), "sys_group_name: %s, mode: write, size: %10.2f, iops: %8.2f, rt: %8.2f",
+                   get_io_sys_group_name(module),
+                   sys_avg_size.at(j).at(static_cast<int>(ObIOMode::WRITE)),
+                   sys_avg_iops.at(j).at(static_cast<int>(ObIOMode::WRITE)),
+                   sys_avg_rt.at(j).at(static_cast<int>(ObIOMode::WRITE)));
+          LOG_INFO("[IO STATUS SYS]", K_(tenant_id), KCSTRING(io_status));
+          need_print_io_config = true;
+        }
+      }
     }
 
     if (need_print_io_config) {

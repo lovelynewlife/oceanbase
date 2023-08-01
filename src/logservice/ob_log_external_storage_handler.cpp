@@ -54,9 +54,12 @@ int ObLogExternalStorageHandler::init()
   } else if (NULL == (handle_adapter_ = MTL_NEW(ObLogExternalStorageIOTaskHandleAdapter, "ObLogEXTHandler"))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     CLOG_LOG(WARN, "allocate memory failed");
+  } else if (FALSE_IT(share::ObThreadPool::set_run_wrapper(MTL_CTX()))) {
+  } else if (OB_FAIL(ObSimpleThreadPool::init(1, CAPACITY_COEFFICIENT * 1, "ObLogEXTTP", MTL_ID()))) {
+    CLOG_LOG(WARN, "invalid argument", KPC(this));
   } else {
-    concurrency_ = 0;
-    capacity_ = 0;
+    concurrency_ = 1;
+    capacity_ = CAPACITY_COEFFICIENT;
     is_running_ = false;
     is_inited_ = true;
     CLOG_LOG(INFO, "ObLogExternalStorageHandler inits successfully", KPC(this));
@@ -79,13 +82,9 @@ int ObLogExternalStorageHandler::start(const int64_t concurrency)
   } else if (!is_valid_concurrency_(concurrency)) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "invalid argument", K(concurrency), KPC(this));
-  } else if (0 != concurrency
-             && OB_FAIL(ObSimpleThreadPool::init(
-        concurrency, CAPACITY_COEFFICIENT * concurrency, "ObLogEXTTP", MTL_ID()))) {
-    CLOG_LOG(WARN, "invalid argument", K(concurrency), KPC(this));
+  } else if (OB_FAIL(resize_(concurrency))) {
+    CLOG_LOG(WARN, "resize_ failed", K(concurrency), KPC(this));
   } else {
-    concurrency_ = concurrency;
-    capacity_ = CAPACITY_COEFFICIENT * concurrency;
     is_running_ = true;
   }
   return ret;
@@ -111,9 +110,12 @@ void ObLogExternalStorageHandler::destroy()
   stop();
   wait();
   ObSimpleThreadPool::destroy();
+  lib::ThreadPool::destroy();
   concurrency_ = -1;
   capacity_ = -1;
-  MTL_DELETE(ObLogExternalStorageIOTaskHandleIAdapter, "ObLogEXTHandler", handle_adapter_);
+  if (OB_NOT_NULL(handle_adapter_)) {
+    MTL_DELETE(ObLogExternalStorageIOTaskHandleIAdapter, "ObLogEXTHandler", handle_adapter_);
+  }
   handle_adapter_ = NULL;
 }
 
@@ -122,28 +124,33 @@ int ObLogExternalStorageHandler::resize(const int64_t new_concurrency,
 {
   int ret = OB_SUCCESS;
   ObTimeGuard time_guard("resize thread pool", DEFAULT_RESIZE_TIME_GUARD_THRESHOLD);
-  WLockGuardTimeout guard(resize_rw_lock_, timeout_us, ret);
   time_guard.click("after hold lock");
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     CLOG_LOG(WARN, "ObLogExternalStorageHandler not inited", KPC(this), K(new_concurrency), K(timeout_us));
-  } else if (!is_running_) {
-    ret = OB_NOT_RUNNING;
-    CLOG_LOG(WARN, "ObLogExternalStorageHandler not running", KPC(this), K(new_concurrency), K(timeout_us));
-  } else if (!is_valid_concurrency_(new_concurrency) || 0 > timeout_us) {
+  } else if (!is_valid_concurrency_(new_concurrency) || 0 >= timeout_us) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "invalid arguments", KPC(this), K(new_concurrency), K(timeout_us));
-    // hold lock failed
-  } else if (OB_FAIL(ret)) {
-    CLOG_LOG(WARN, "hold lock failed", KPC(this), K(new_concurrency), K(timeout_us));
-  } else if (new_concurrency == concurrency_) {
+  } else if (!check_need_resize_(new_concurrency)) {
     CLOG_LOG(TRACE, "no need resize", KPC(this), K(new_concurrency));
   } else {
-    destroy_and_init_new_thread_pool_(new_concurrency);
-    time_guard.click("after create new thread pool");
-    concurrency_ = new_concurrency;
-    capacity_ = CAPACITY_COEFFICIENT * new_concurrency;
-    CLOG_LOG(INFO, "ObLogExternalStorageHandler resize success", K(new_concurrency));
+    WLockGuardTimeout guard(resize_rw_lock_, timeout_us, ret);
+    // hold lock failed
+    if (OB_FAIL(ret)) {
+      CLOG_LOG(WARN, "hold lock failed", KPC(this), K(new_concurrency), K(timeout_us));
+    } else if (!is_running_) {
+      ret = OB_NOT_RUNNING;
+      CLOG_LOG(WARN, "ObLogExternalStorageHandler not running", KPC(this), K(new_concurrency), K(timeout_us));
+    } else {
+      do {
+        ret = resize_(new_concurrency);
+        if (OB_FAIL(ret)) {
+          usleep(DEFAULT_RETRY_INTERVAL);
+        }
+      } while (OB_FAIL(ret));
+      time_guard.click("after create new thread pool");
+      CLOG_LOG(INFO, "ObLogExternalStorageHandler resize success", KPC(this), K(new_concurrency));
+    }
   }
   return ret;
 }
@@ -159,7 +166,7 @@ int ObLogExternalStorageHandler::pread(const common::ObString &uri,
   int64_t async_task_count = 0;
   ObTimeGuard time_guard("slow pread", DEFAULT_PREAD_TIME_GUARD_THRESHOLD);
   ObLogExternalStorageIOTaskCtx *async_task_ctx = NULL;
-  int64_t file_size = palf::PALF_PHY_BLOCK_SIZE;
+  int64_t file_size = 0;
   int64_t real_read_buf_size = 0;
   RLockGuard guard(resize_rw_lock_);
   time_guard.click("after hold by lock");
@@ -169,12 +176,18 @@ int ObLogExternalStorageHandler::pread(const common::ObString &uri,
   } else if (!is_running_) {
     ret = OB_NOT_RUNNING;
     CLOG_LOG(WARN, "ObLogExternalStorageHandler not running", K(uri), K(storage_info), K(offset), KP(buf), K(read_buf_size));
-  } else if (uri.empty() || storage_info.empty() || 0 > offset || NULL == buf || 0 >= read_buf_size) {
+    // when uri is NFS, storage_info is empty.
+  } else if (uri.empty() || 0 > offset || NULL == buf || 0 >= read_buf_size) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "ObLogExternalStorageHandler invalid argument", K(uri), K(storage_info), K(offset), KP(buf), K(read_buf_size));
-  } else if (offset >= file_size) {
-    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(handle_adapter_->get_file_size(uri, storage_info, file_size))) {
+    CLOG_LOG(WARN, "get_file_size failed", K(uri), K(storage_info), K(offset), KP(buf), K(read_buf_size));
+  } else if (offset > file_size) {
+    ret = OB_FILE_LENGTH_INVALID;
     CLOG_LOG(WARN, "read position lager than file size, invalid argument", K(file_size), K(offset), K(uri));
+  } else if (offset == file_size) {
+    real_read_size = 0;
+    CLOG_LOG(TRACE, "read position equal to file size, no need read data", K(file_size), K(offset), K(uri));
   } else if (FALSE_IT(time_guard.click("after get file size"))) {
     // NB: limit read size.
   } else if (FALSE_IT(real_read_buf_size = std::min(file_size - offset, read_buf_size))) {
@@ -223,9 +236,14 @@ void ObLogExternalStorageHandler::handle(void *task)
   }
 }
 
+int64_t ObLogExternalStorageHandler::get_recommend_concurrency_in_single_file() const
+{
+  return palf::PALF_PHY_BLOCK_SIZE / SINGLE_TASK_MINIMUM_SIZE;
+}
+
 bool ObLogExternalStorageHandler::is_valid_concurrency_(const int64_t concurrency) const
 {
-  return 0 <= concurrency && CONCURRENCY_LIMIT >= concurrency;
+  return 0 <= concurrency;
 }
 
 int64_t ObLogExternalStorageHandler::get_async_task_count_(const int64_t total_size) const
@@ -291,6 +309,8 @@ int ObLogExternalStorageHandler::construct_async_tasks_and_push_them_into_thread
     // defense code, last_io_task must not be NULL.
     if (NULL != last_io_task) {
       (void)last_io_task->do_task();
+      MTL_DELETE(ObLogExternalStorageIOTask, "ObLogEXTHandler", last_io_task);
+      last_io_task = NULL;
     }
   }
   return ret;
@@ -375,34 +395,28 @@ void ObLogExternalStorageHandler::push_async_task_into_thread_pool_(
   } while (OB_FAIL(ret));
 }
 
-void ObLogExternalStorageHandler::destroy_and_init_new_thread_pool_(
-  const int64_t new_concurrency)
+int ObLogExternalStorageHandler::resize_(const int64_t new_concurrency)
 {
   int ret = OB_SUCCESS;
   ObTimeGuard time_guard("resize impl", 10 * 1000);
-  // destroy currenty thread pool
-  ObSimpleThreadPool::stop();
-  time_guard.click("stop old thread pool");
-  ObSimpleThreadPool::wait();
-  time_guard.click("wait old thread pool");
-  ObSimpleThreadPool::destroy();
-  time_guard.click("destroy old thread pool");
+  int64_t real_concurrency = MIN(new_concurrency, CONCURRENCY_LIMIT);
+  if (real_concurrency == concurrency_) {
+    CLOG_LOG(TRACE, "no need resize_", K(new_concurrency), K(real_concurrency), KPC(this));
+  } else if (OB_FAIL(ObSimpleThreadPool::set_thread_count(real_concurrency))) {
+    CLOG_LOG(WARN, "set_thread_count failed", K(new_concurrency), KPC(this), K(real_concurrency));
+  } else {
+    CLOG_LOG_RET(INFO, OB_SUCCESS, "resize_ success", K(time_guard), KPC(this), K(new_concurrency), K(real_concurrency));
+    concurrency_ = real_concurrency;
+    capacity_ = CAPACITY_COEFFICIENT * real_concurrency;
+  }
+  time_guard.click("set thread count");
+  return ret;
+}
 
-  do {
-    if (0 != new_concurrency
-        && OB_FAIL(ObSimpleThreadPool::init(
-        new_concurrency, CAPACITY_COEFFICIENT * new_concurrency, "ObLogEXTTP", MTL_ID()))) {
-      CLOG_LOG(WARN, "init ObSimpleThreadPool failed", K(new_concurrency), KPC(this));
-    } else {
-      concurrency_ = new_concurrency;
-      capacity_ = CAPACITY_COEFFICIENT * new_concurrency;
-    }
-    if (OB_FAIL(ret)) {
-      usleep(DEFAULT_RETRY_INTERVAL);
-    }
-  } while (OB_FAIL(ret));
-  time_guard.click("creat enew thread pool");
-  CLOG_LOG_RET(WARN, OB_SUCCESS, "destroy_and_init_new_thread_pool_ success", K(time_guard), KPC(this));
+bool ObLogExternalStorageHandler::check_need_resize_(const int64_t new_concurrency) const
+{
+  RLockGuard guard(resize_rw_lock_);
+  return new_concurrency != concurrency_;
 }
 
 } // end namespace logservice

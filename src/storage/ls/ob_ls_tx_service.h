@@ -113,6 +113,9 @@ public:
   // @return OB_SUCCESS, all the tx of this ls cleaned up
   // @return other, there is something wrong or there is some tx not cleaned up.
   int check_all_tx_clean_up() const;
+  // @return OB_SUCCESS, all the readonly_tx of this ls cleaned up
+  // @return other, there is something wrong or there is some readonly tx not cleaned up.
+  int check_all_readonly_tx_clean_up() const;
   int block_tx();
   int kill_all_tx(const bool graceful);
   // for ddl check
@@ -174,6 +177,9 @@ public:
   int check_in_leader_serving_state(bool& bool_ret);
   int set_max_replay_commit_version(share::SCN commit_version);
   transaction::ObTxRetainCtxMgr *get_retain_ctx_mgr();
+
+  // check tx ls blocked
+  int check_tx_blocked(bool &tx_blocked) const;
 private:
   void reset_();
 

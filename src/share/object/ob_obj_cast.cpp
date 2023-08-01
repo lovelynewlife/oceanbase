@@ -4339,7 +4339,7 @@ static int time_date(const ObObjType expect_type, ObObjCastParams &params,
     if (OB_FAIL(ObTimeConverter::time_to_datetime(in.get_time(), params.cur_time_, tz_info,
                                                   datetime_value, ObDateTimeType))) {
       LOG_WARN("time to datetime failed", K(ret), K(in), K(params.cur_time_));
-    } else if (ObTimeConverter::datetime_to_date(datetime_value, NULL, value)) {
+    } else if (OB_FAIL(ObTimeConverter::datetime_to_date(datetime_value, NULL, value))) {
       LOG_WARN("date to datetime failed", K(ret), K(datetime_value));
     } else {
       out.set_date(value);
@@ -5095,8 +5095,13 @@ static int string_double(const ObObjType expect_type, ObObjCastParams &params,
           } else if (OB_SUCCESS != (ret = check_convert_str_err(
                                           str_utf8.ptr(), endptr, str_utf8.length(), err, in.get_collation_type()))) {
             LOG_WARN("failed to check_convert_str_err", K(ret), K(str_utf8), K(value), K(err), K(in.get_collation_type()));
-            ret = OB_ERR_DOUBLE_TRUNCATED;
+            if (lib::is_mysql_mode() && CM_IS_COLUMN_CONVERT(cast_mode) && ret == OB_ERR_DATA_TRUNCATED) {
+              // do nothing, compatible mysql, retain OB_ERR_DATA_TRUNCATED error code in column_convert.
+            } else {
+              ret = OB_ERR_DOUBLE_TRUNCATED;
+            }
             if (CM_IS_WARN_ON_FAIL(cast_mode)) {
+              ret = OB_ERR_DOUBLE_TRUNCATED;
               LOG_USER_WARN(OB_ERR_DOUBLE_TRUNCATED, str_utf8.length(), str_utf8.ptr());
             }
           }
@@ -6065,7 +6070,7 @@ static int text_text(const ObObjType expect_type, ObObjCastParams &params,
       // for pl, should not get null for lob locator, return empty full tmp lob
       out = tmp_out; // copy meta
       out.set_lob_value(expect_type, row_str.ptr(), row_str.length());
-    } else if (tmp_out.get_string(res_str)) {
+    } else if (OB_FAIL(tmp_out.get_string(res_str))) {
       LOG_WARN("Failed to get string from tmp obj", K(ret), K(tmp_out));
     } else {
       bool has_lob_header = (!IS_CLUSTER_VERSION_BEFORE_4_1_0_0 && (expect_type != ObTinyTextType));

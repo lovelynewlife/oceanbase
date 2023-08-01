@@ -533,10 +533,10 @@ int ObIndexBuildTask::check_health()
       switch_status(new_status, false, ret);
       LOG_WARN("switch status to build_failed", K(ret), K(old_status), K(new_status));
     }
-  }
-  if (ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)
-      || ObDDLTaskStatus::SUCCESS == static_cast<ObDDLTaskStatus>(task_status_)) {
-    ret = OB_SUCCESS; // allow clean up
+    if (ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)
+        || ObDDLTaskStatus::SUCCESS == static_cast<ObDDLTaskStatus>(task_status_)) {
+      ret = OB_SUCCESS; // allow clean up
+    }
   }
   check_ddl_task_execute_too_long();
   return ret;
@@ -852,6 +852,12 @@ int ObIndexBuildTask::check_build_single_replica(bool &is_end)
   return ret;
 }
 
+bool ObIndexBuildTask::is_sstable_complete_task_submitted()
+{
+  TCRLockGuard guard(lock_);
+  return is_sstable_complete_task_submitted_;
+}
+
 int ObIndexBuildTask::wait_data_complement()
 {
   int ret = OB_SUCCESS;
@@ -868,7 +874,7 @@ int ObIndexBuildTask::wait_data_complement()
   bool is_request_end = false;
 
   // submit a job to complete sstable for the index table on snapshot_version
-  if (OB_SUCC(ret) && !state_finished && !is_sstable_complete_task_submitted_) {
+  if (OB_SUCC(ret) && !state_finished && !is_sstable_complete_task_submitted()) {
     bool need_exec_new_inner_sql = false;
     if (OB_FAIL(reap_old_replica_build_task(need_exec_new_inner_sql))) {
       if (OB_EAGAIN == ret) {
@@ -885,7 +891,7 @@ int ObIndexBuildTask::wait_data_complement()
 
   DEBUG_SYNC(CREATE_INDEX_REPLICA_BUILD);
 
-  if (OB_SUCC(ret) && !state_finished && is_sstable_complete_task_submitted_) {
+  if (OB_SUCC(ret) && !state_finished && is_sstable_complete_task_submitted()) {
     if (OB_FAIL(check_build_single_replica(is_request_end))) {
       LOG_WARN("fail to check build single replica", K(ret));
     } else if (is_request_end) {
@@ -1082,8 +1088,8 @@ int ObIndexBuildTask::update_column_checksum_calc_status(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tablet_id));
   } else if (ObDDLTaskStatus::VALIDATE_CHECKSUM != task_status_) {
-    ret = OB_STATE_NOT_MATCH;
-    LOG_WARN("task status not match", K(ret), K(task_status_));
+    ret = OB_TASK_EXPIRED;
+    LOG_WARN("task expired", K(ret), K(task_status_));
   } else {
     if (OB_FAIL(wait_column_checksum_ctx_.update_status(tablet_id, ret_code))) {
       LOG_WARN("update column checksum calculation status failed", K(ret), K(tablet_id), K(ret_code));
@@ -1208,6 +1214,19 @@ int ObIndexBuildTask::update_index_status_in_schema(const ObTableSchema &index_s
     arg.task_id_ = task_id_;
     int64_t ddl_rpc_timeout = 0;
     int64_t tmp_timeout = 0;
+    if (INDEX_STATUS_AVAILABLE == new_status) {
+      const bool is_create_index_syntax = create_index_arg_.ddl_stmt_str_.trim().prefix_match_ci("create");
+      if (create_index_arg_.ddl_stmt_str_.empty()) {
+        // alter table syntax.
+      } else if (OB_UNLIKELY(!is_create_index_syntax)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected err", K(ret), "ddl_stmt_str", create_index_arg_.ddl_stmt_str_, K(create_index_arg_));
+      } else {
+        // For create index syntax, create_index_arg_ will record the user sql, and generate the ddl_stmt_str when anabling index.
+        // For alter table add index syntax, create_index_arg_ will not record the user sql, and generate the ddl_stmt_str when generating index schema.
+        arg.ddl_stmt_str_ = create_index_arg_.ddl_stmt_str_;
+      }
+    }
 
     DEBUG_SYNC(BEFORE_UPDATE_GLOBAL_INDEX_STATUS);
     if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(index_schema.get_all_part_num(), ddl_rpc_timeout))) {
@@ -1218,7 +1237,7 @@ int ObIndexBuildTask::update_index_status_in_schema(const ObTableSchema &index_s
     } else if (OB_FAIL(root_service_->get_common_rpc_proxy().to(GCTX.self_addr()).timeout(ddl_rpc_timeout).update_index_status(arg))) {
       LOG_WARN("update index status failed", K(ret), K(arg));
     } else {
-      LOG_INFO("notify index status changed finish", K(new_status), K(index_table_id_), K(ddl_rpc_timeout));
+      LOG_INFO("notify index status changed finish", K(new_status), K(index_table_id_), K(ddl_rpc_timeout), "ddl_stmt_str", arg.ddl_stmt_str_);
     }
   }
   return ret;
@@ -1296,7 +1315,8 @@ int ObIndexBuildTask::clean_on_failed()
           index_name = "__fake";
         } else if (OB_FAIL(index_schema->get_index_name(index_name))) {
           LOG_WARN("get index name failed", K(ret));
-        } else if (0 == parent_task_id_) {
+        } else if (0 == parent_task_id_
+          && !create_index_arg_.ddl_stmt_str_.trim().prefix_match_ci("create")) {
           // generate ddl_stmt if it is not a child task.
           if (is_oracle_mode) {
             if (OB_FAIL(drop_index_sql.append_fmt("drop index \"%.*s\"", index_name.length(), index_name.ptr()))) {

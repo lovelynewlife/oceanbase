@@ -1050,10 +1050,14 @@ int ObRestoreService::create_all_ls_(
     common::ObMySQLTransaction trans;
     const int64_t exec_tenant_id = ObLSLifeIAgent::get_exec_tenant_id(tenant_id_);
 
-    ObTenantLSInfo tenant_stat(sql_proxy_, &tenant_schema, tenant_id_);
     if (OB_FAIL(trans.start(sql_proxy_, exec_tenant_id))) {
       LOG_WARN("failed to start trans", KR(ret), K(exec_tenant_id));
     } else {
+      //must be in trans
+      //Multiple LS groups will be created here.
+      //In order to ensure that each LS group can be evenly distributed in the unit group,
+      //it is necessary to read the distribution of LS groups within the transaction.
+      ObTenantLSInfo tenant_stat(sql_proxy_, &tenant_schema, tenant_id_, &trans);
       for (int64_t i = 0; OB_SUCC(ret) && i < ls_attr_array.count(); ++i) {
         const ObLSAttr &ls_info = ls_attr_array.at(i);
         ObLSFlag ls_flag = ls_info.get_ls_flag();
@@ -1441,7 +1445,7 @@ int ObRestoreService::restore_wait_tenant_finish(const share::ObPhysicalRestoreJ
       LOG_WARN("tenant schema is null", K(ret), K(tenant_id));
     } else if (tenant_schema->is_restore_tenant_status() || tenant_schema->is_normal()) {
       if (tenant_schema->is_restore_tenant_status()) {
-        const int64_t DEFAULT_TIMEOUT = 10 * 1000 * 1000L;
+        const int64_t DEFAULT_TIMEOUT = GCONF.internal_sql_execute_timeout;
         // try finish restore status
         obrpc::ObCreateTenantEndArg arg;
         arg.tenant_id_ = tenant_id;
@@ -1450,7 +1454,7 @@ int ObRestoreService::restore_wait_tenant_finish(const share::ObPhysicalRestoreJ
           LOG_WARN("restore scheduler stopped", K(ret));
         } else if (OB_FAIL(rpc_proxy_->timeout(DEFAULT_TIMEOUT)
                                .create_tenant_end(arg))) {
-          LOG_WARN("fail to create tenant end", K(ret), K(arg));
+          LOG_WARN("fail to create tenant end", K(ret), K(arg), K(DEFAULT_TIMEOUT));
         }
       }
       if (OB_SUCC(ret)) {

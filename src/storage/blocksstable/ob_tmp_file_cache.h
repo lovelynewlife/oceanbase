@@ -285,7 +285,7 @@ public:
     void reset_io();
     int broadcast();
     OB_INLINE ObTmpMacroBlock& get_block() { return block_; };
-    TO_STRING_KV(K_(block), K_(block_handle), K_(ref_cnt));
+    TO_STRING_KV(K_(block), K_(block_handle), K_(ref_cnt), K_(ret_code));
 
   private:
     void destroy();
@@ -296,7 +296,7 @@ public:
     ObThreadCond cond_;
     ObIAllocator &allocator_;
     volatile int64_t ref_cnt_;
-
+    int64_t ret_code_;
   private:
     DISALLOW_COPY_AND_ASSIGN(IOWaitInfo);
   };

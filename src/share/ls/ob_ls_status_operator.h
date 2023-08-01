@@ -56,20 +56,6 @@ namespace schema
 class ObMultiVersionSchemaService;
 }
 
-ObLSStatus str_to_ls_status(const ObString &status_str);
-const char* ls_status_to_str(const ObLSStatus &status);
-
-bool ls_is_empty_status(const ObLSStatus &status);
-bool ls_is_creating_status(const ObLSStatus &status);
-bool ls_is_created_status(const ObLSStatus &status);
-bool ls_is_normal_status(const ObLSStatus &status);
-bool ls_is_tenant_dropping_status(const ObLSStatus &status);
-bool ls_is_dropping_status(const ObLSStatus &status);
-bool ls_is_wait_offline_status(const ObLSStatus &status);
-bool is_valid_status_in_ls(const ObLSStatus &status);
-bool ls_is_create_abort_status(const ObLSStatus &status);
-bool ls_need_create_abort_status(const ObLSStatus &status);
-bool ls_is_pre_tenant_dropping_status(const ObLSStatus &status);
 class ObLSStatusOperator;
 
 const int64_t MAX_MEMBERLIST_FLAG_LENGTH = 10;
@@ -258,7 +244,6 @@ class ObLSStatusOperator : public ObLSLifeIAgent, public ObLSTemplateOperator
  public:
   ObLSStatusOperator() {};
   virtual ~ObLSStatusOperator(){}
-
 public:
   /*
    * description: override of ObLSLifeIAgent
@@ -343,11 +328,26 @@ public:
   * @param[in] ls_id
    * @param[in] old_ls_group_id
    * @param[in] new_ls_group_id
-   * @param[in] unit_group_id : the new ls group's target unit group
+   * @param[in] old_unit_group_id : the ls group's unit group
+   * @param[in] new_unit_group_id : the new ls group's target unit group
    * @param[in] client*/
   int alter_ls_group_id(const uint64_t tenant_id, const ObLSID &id,
                        const uint64_t old_ls_group_id,
                        const uint64_t new_ls_group_id,
+                       const uint64_t old_unit_group_id,
+                       const uint64_t new_unit_group_id,
+                       ObISQLClient &client);
+   /*
+   * description: update ls's unit group id
+   * @param[in] tenant_id
+   * @param[in] ls_id
+   * @param[in] ls_group_id
+   * @param[in] old_unit_group_id
+   * @param[in] new_unit_group_id : the new ls group's target unit group
+   * @param[in] client*/
+  int alter_unit_group_id(const uint64_t tenant_id, const ObLSID &id,
+                       const uint64_t ls_group_id,
+                       const uint64_t old_unit_group_id,
                        const uint64_t new_unit_group_id,
                        ObISQLClient &client);
 

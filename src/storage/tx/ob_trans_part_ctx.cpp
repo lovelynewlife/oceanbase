@@ -243,6 +243,11 @@ void ObPartTransCtx::destroy()
       FORCE_PRINT_TRACE(tlog_, "[missing callback scheduler] ");
     }
 
+    if (OB_NOT_NULL(retain_ctx_func_ptr_)) {
+      TRANS_LOG(INFO, "the memory of retain_ctx_func_ptr is active, need free", K(ret),
+                KP(retain_ctx_func_ptr_), KPC(retain_ctx_func_ptr_), KPC(this));
+    }
+    (void)try_gc_retain_ctx_func_();
 
     if (NULL != tlog_) {
       print_trace_log_if_necessary_();
@@ -307,6 +312,7 @@ void ObPartTransCtx::default_init_()
   big_segment_info_.reset();
   is_ctx_table_merged_ = false;
   mds_cache_.reset();
+  retain_ctx_func_ptr_ = nullptr;
   start_replay_ts_.reset();
   start_recover_ts_.reset();
   is_incomplete_replay_ctx_ = false;
@@ -1491,16 +1497,17 @@ int ObPartTransCtx::recover_tx_ctx_table_info(ObTxCtxTableInfo &ctx_info)
       is_ctx_table_merged_ = true;
     }
 
-    //insert into retain ctx mgr if it will not replay commit or abort log
+    // insert into retain ctx mgr if it will not replay commit or abort log
     if (OB_FAIL(ret)) {
       // do nothing
     } else if (exec_info_.multi_data_source_.count() > 0
                && (ObTxState::COMMIT == exec_info_.state_ || ObTxState::ABORT == exec_info_.state_
                    || ObTxState::CLEAR == exec_info_.state_)) {
-      if (OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG,
-                                              exec_info_.max_applying_log_ts_,
-                                              exec_info_.max_durable_lsn_,
-                                              false))) {
+      if (OB_FAIL(try_alloc_retain_ctx_func_())) {
+        TRANS_LOG(WARN, "alloc retain ctx func failed", K(ret), KPC(this));
+      } else if (OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG,
+                                                     exec_info_.max_applying_log_ts_,
+                                                     exec_info_.max_durable_lsn_, false))) {
         TRANS_LOG(WARN, "insert into retain ctx mgr failed", K(ret), KPC(this));
       }
       if (OB_SUCC(ret)) {
@@ -3230,6 +3237,9 @@ int ObPartTransCtx::submit_commit_log_()
     if (OB_SUCC(ret)) {
       if (OB_FAIL(set_start_scn_in_commit_log_(commit_log))) {
         TRANS_LOG(WARN, "set start scn in commit log failed", K(ret), K(commit_log));
+      } else if ((exec_info_.multi_data_source_.count() > 0 || mds_cache_.count() > 0)
+                 && OB_FAIL(try_alloc_retain_ctx_func_())) {
+        TRANS_LOG(WARN, "alloc retain ctx func for mds trans failed", K(ret), K(mds_cache_), KPC(this));
       }
     }
 
@@ -3380,14 +3390,15 @@ int ObPartTransCtx::submit_abort_log_()
   ObTxAbortLog abort_log(tmp_array);
 
   if (OB_SUCC(ret)) {
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(abort_log.init_tx_data_backup(ctx_tx_data_.get_start_log_ts()))) {
-        TRANS_LOG(WARN, "init tx data backup failed", K(ret));
-      } else if (exec_info_.redo_lsns_.count() > 0 || exec_info_.max_applying_log_ts_.is_valid()) {
-        if (!abort_log.get_backup_start_scn().is_valid()) {
-          ret = OB_ERR_UNEXPECTED;
-          TRANS_LOG(WARN, "unexpected start scn in commit log", K(ret), K(abort_log), KPC(this));
-        }
+    if ((exec_info_.multi_data_source_.count() > 0 || mds_cache_.count() > 0)
+        && OB_FAIL(try_alloc_retain_ctx_func_())) {
+      TRANS_LOG(WARN, "alloc retain ctx func for mds trans failed", K(ret), K(mds_cache_), KPC(this));
+    } else if (OB_FAIL(abort_log.init_tx_data_backup(ctx_tx_data_.get_start_log_ts()))) {
+      TRANS_LOG(WARN, "init tx data backup failed", K(ret));
+    } else if (exec_info_.redo_lsns_.count() > 0 || exec_info_.max_applying_log_ts_.is_valid()) {
+      if (!abort_log.get_backup_start_scn().is_valid()) {
+        ret = OB_ERR_UNEXPECTED;
+        TRANS_LOG(WARN, "unexpected start scn in commit log", K(ret), K(abort_log), KPC(this));
       }
     }
   }
@@ -3773,11 +3784,21 @@ int ObPartTransCtx::submit_log_impl_(const ObTxLogType log_type)
     }
   } else if (OB_ERR_TOO_BIG_ROWSIZE == ret) {
     int tmp_ret = OB_SUCCESS;
-    if (OB_TMP_FAIL(do_local_tx_end_(TxEndAction::DELAY_ABORT_TX))) {
-      TRANS_LOG(WARN, "do local tx end failed", K(tmp_ret), K(log_type), KPC(this));
+    if (ObPartTransAction::COMMIT == part_trans_action_
+        || get_upstream_state() >= ObTxState::REDO_COMPLETE) {
+      if (OB_TMP_FAIL(do_local_tx_end_(TxEndAction::ABORT_TX))) {
+        TRANS_LOG(WARN, "abort tx failed", KR(ret), KPC(this));
+      } else {
+        TRANS_LOG(WARN, "do abort tx end for committing txn", K(ret),
+                  K(log_type), KPC(this));
+      }
     } else {
-      TRANS_LOG(WARN, "row size is too big for only one redo", K(ret),
-                K(log_type), KPC(this));
+      if (OB_TMP_FAIL(do_local_tx_end_(TxEndAction::DELAY_ABORT_TX))) {
+        TRANS_LOG(WARN, "do local tx end failed", K(tmp_ret), K(log_type), KPC(this));
+      } else {
+        TRANS_LOG(WARN, "row size is too big for only one redo", K(ret),
+                  K(log_type), KPC(this));
+      }
     }
   }
 
@@ -4328,7 +4349,7 @@ int ObPartTransCtx::replay_one_part_of_big_segment(const palf::LSN &offset,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(timestamp), K(offset), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   }
 
@@ -4641,7 +4662,7 @@ int ObPartTransCtx::replay_active_info(const ObTxActiveInfoLog &log,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(log), K(timestamp), K(offset), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else if (OB_FAIL(set_scheduler_(log.get_scheduler()))) {
     TRANS_LOG(WARN, "set scheduler error", K(ret), K(log), K(*this));
@@ -4698,7 +4719,7 @@ int ObPartTransCtx::replay_commit_info(const ObTxCommitInfoLog &commit_info_log,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(commit_info_log), K(timestamp), K(offset), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else if (OB_FAIL(exec_info_.redo_lsns_.assign(commit_info_log.get_redo_lsns()))) {
     TRANS_LOG(WARN, "set redo log offsets error", K(commit_info_log), K(*this));
@@ -4811,7 +4832,7 @@ int ObPartTransCtx::replay_prepare(const ObTxPrepareLog &prepare_log,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(prepare_log), K(timestamp), K(offset), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else if (OB_FAIL(exec_info_.incremental_participants_.assign(
                  prepare_log.get_incremental_participants()))) {
@@ -4893,7 +4914,7 @@ int ObPartTransCtx::replay_commit(const ObTxCommitLog &commit_log,
     // TODO insert_into_tx_table before need_replay and give it the ability to retry
     TRANS_LOG(INFO, "need not replay log", K(commit_log), K(timestamp), K(offset), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else if (OB_FAIL(exec_info_.incremental_participants_.assign(
                  commit_log.get_incremental_participants()))) {
@@ -4908,10 +4929,14 @@ int ObPartTransCtx::replay_commit(const ObTxCommitLog &commit_log,
       }
     }
     if (OB_SUCC(ret)) {
-      if (exec_info_.multi_data_source_.count() > 0 && get_retain_cause() == RetainCause::UNKOWN
-          && OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG, timestamp, offset,
-                                                 true))) {
-        TRANS_LOG(WARN, "insert into retain_ctx_mgr failed", K(ret), KPC(this));
+      if (exec_info_.multi_data_source_.count() > 0 && get_retain_cause() == RetainCause::UNKOWN) {
+        if (OB_FAIL(try_alloc_retain_ctx_func_())) {
+          TRANS_LOG(WARN, "alloc retain ctx func failed", K(ret), K(commit_log), K(timestamp),
+                    K(offset), KPC(this));
+        } else if (OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG, timestamp,
+                                                       offset, true))) {
+          TRANS_LOG(WARN, "insert into retain_ctx_mgr failed", K(ret), KPC(this));
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -5010,7 +5035,7 @@ int ObPartTransCtx::replay_clear(const ObTxClearLog &clear_log,
     if (OB_FAIL(trans_clear_())) {
       TRANS_LOG(WARN, "transaction clear error", KR(ret), "context", *this);
     }
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else if (OB_FAIL(exec_info_.incremental_participants_.assign(
                  clear_log.get_incremental_participants()))) {
@@ -5087,7 +5112,7 @@ int ObPartTransCtx::replay_abort(const ObTxAbortLog &abort_log,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(abort_log), K(timestamp), K(offset), K(*this));
     // no need to replay,
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else {
     if (OB_SUCC(ret)) {
@@ -5099,10 +5124,14 @@ int ObPartTransCtx::replay_abort(const ObTxAbortLog &abort_log,
       }
     }
     if (OB_SUCC(ret)) {
-      if (exec_info_.multi_data_source_.count() > 0 && get_retain_cause() == RetainCause::UNKOWN
-          && OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG, timestamp, offset,
-                                                 true))) {
-        TRANS_LOG(WARN, "insert into retain_ctx_mgr failed", K(ret), KPC(this));
+      if (exec_info_.multi_data_source_.count() > 0 && get_retain_cause() == RetainCause::UNKOWN) {
+        if (OB_FAIL(try_alloc_retain_ctx_func_())) {
+          TRANS_LOG(WARN, "alloc retain ctx func failed", K(ret), K(abort_log), K(timestamp),
+                    K(offset), KPC(this));
+        } else if (OB_FAIL(insert_into_retain_ctx_mgr_(RetainCause::MDS_WAIT_GC_COMMIT_LOG, timestamp,
+                                                       offset, true))) {
+          TRANS_LOG(WARN, "insert into retain_ctx_mgr failed", K(ret), KPC(this));
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -5190,7 +5219,7 @@ int ObPartTransCtx::replay_multi_data_source(const ObTxMultiDataSourceLog &log,
   } else if (!need_replay || repeat_replay) {
     TRANS_LOG(INFO, "need not replay log", K(need_replay), K(repeat_replay), K(log), K(timestamp), K(lsn), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   // TODO: We need filter the replay of mds array after recovered from the tx_ctx_table
   //} else if (OB_FAIL(deep_copy_mds_array(log.get_data(), false))) {
@@ -5283,7 +5312,7 @@ int ObPartTransCtx::replay_record(const ObTxRecordLog &log,
   } else if (!need_replay) {
     TRANS_LOG(INFO, "need not replay log", K(log), K(timestamp), K(lsn), K(*this));
     // no need to replay
-  } else if (update_replaying_log_no_(timestamp, part_log_no)) {
+  } else if (OB_FAIL(update_replaying_log_no_(timestamp, part_log_no))) {
     TRANS_LOG(WARN, "update replaying log no failed", K(ret), K(timestamp), K(part_log_no));
   } else {
     reset_redo_lsns_();
@@ -5843,14 +5872,13 @@ int ObPartTransCtx::get_tx_ctx_table_info_(ObTxCtxTableInfo &info)
     info.tx_id_ = trans_id_;
     info.ls_id_ = ls_id_;
     info.cluster_id_ = cluster_id_;
-    exec_info_.mds_buffer_ctx_array_.reset();
     if (OB_FAIL(mt_ctx_.get_table_lock_store_info(info.table_lock_info_))) {
       TRANS_LOG(WARN, "get_table_lock_store_info failed", K(ret), K(info));
     } else {
       TRANS_LOG(INFO, "store ctx_info: ", K(ret), K(info), KPC(this));
     }
   }
-
+  exec_info_.mds_buffer_ctx_array_.reset();
 
   return ret;
 }
@@ -6357,12 +6385,12 @@ int ObPartTransCtx::register_multi_data_source(const ObTxDataSourceType data_sou
         TRANS_LOG(WARN, "init tx buffer node failed", KR(ret), K(data_source_type), K(*this));
       } else if (OB_FAIL(tmp_array.push_back(node))) {
         TRANS_LOG(WARN, "push back notify node  failed", KR(ret));
-#ifndef OB_TX_MDS_LOG_USE_BIT_SEGMENT_BUF
+//#ifndef OB_TX_MDS_LOG_USE_BIT_SEGMENT_BUF
       } else if (tmp_array.get_serialize_size() > ObTxMultiDataSourceLog::MAX_MDS_LOG_SIZE
                  && !node.allow_to_use_mds_big_segment()) {
         ret = OB_LOG_TOO_LARGE;
         TRANS_LOG(WARN, "too large mds buf node", K(ret), K(tmp_array.get_serialize_size()));
-#endif
+//#endif
       } else if (OB_FAIL(mds_cache_.insert_mds_node(node))) {
         TRANS_LOG(WARN, "register multi source data failed", KR(ret), K(data_source_type),
                   K(*this));
@@ -7299,13 +7327,47 @@ int ObPartTransCtx::tx_keepalive_response_(const int64_t status)
   return ret;
 }
 
+int ObPartTransCtx::try_alloc_retain_ctx_func_()
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(retain_ctx_func_ptr_)) {
+
+    if (OB_ISNULL(retain_ctx_func_ptr_ = static_cast<ObMDSRetainCtxFunctor *>(
+                      ObTxRetainCtxMgr::alloc_object(sizeof(ObMDSRetainCtxFunctor))))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      TRANS_LOG(WARN, "alloc memory failed", K(ret), KPC(retain_ctx_func_ptr_), KPC(this));
+
+    } else if (OB_FALSE_IT(new (retain_ctx_func_ptr_) ObMDSRetainCtxFunctor())) {
+    }
+
+  } else if (!is_follower_()) {
+    TRANS_LOG(INFO, "no need to alloc a new retain_ctx_func", K(ret), KP(retain_ctx_func_ptr_),
+              KPC(retain_ctx_func_ptr_), KPC(this));
+  }
+
+  return ret;
+}
+
+int ObPartTransCtx::try_gc_retain_ctx_func_()
+{
+  int ret = OB_SUCCESS;
+
+  if(OB_NOT_NULL(retain_ctx_func_ptr_))
+  {
+    ObTxRetainCtxMgr::free_object(retain_ctx_func_ptr_);
+    retain_ctx_func_ptr_ = nullptr;
+  }
+
+  return ret;
+}
+
 int ObPartTransCtx::insert_into_retain_ctx_mgr_(RetainCause cause,
                                                 const SCN &log_ts,
                                                 palf::LSN lsn,
                                                 bool for_replay)
 {
   int ret = OB_SUCCESS;
-  ObMDSRetainCtxFunctor *retain_func_ptr = nullptr;
   int64_t retain_lock_timeout = INT64_MAX;
   if (for_replay) {
     retain_lock_timeout = 10 * 1000;
@@ -7315,34 +7377,37 @@ int ObPartTransCtx::insert_into_retain_ctx_mgr_(RetainCause cause,
   if (OB_ISNULL(ls_tx_ctx_mgr_) || RetainCause::UNKOWN == cause) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", K(ret), K(cause), KP(ls_tx_ctx_mgr_), KPC(this));
+  } else if (OB_ISNULL(retain_ctx_func_ptr_)) {
+    ret = OB_ERR_UNEXPECTED;
+    TRANS_LOG(ERROR, "unexpectd retain ctx function ptr error", K(cause), K(log_ts), K(lsn),
+              K(for_replay), KPC(retain_ctx_func_ptr_), KPC(this));
   } else {
 
-    if (OB_ISNULL(retain_func_ptr = static_cast<ObMDSRetainCtxFunctor *>(
-                      retain_ctx_mgr.alloc_object((sizeof(ObMDSRetainCtxFunctor)))))) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      TRANS_LOG(WARN, "alloc memory failed", K(ret), KPC(this));
+    ObMDSRetainCtxFunctor *mds_retain_func_ptr =
+        static_cast<ObMDSRetainCtxFunctor *>(retain_ctx_func_ptr_);
 
-    } else if (OB_FALSE_IT(new (retain_func_ptr) ObMDSRetainCtxFunctor())) {
-    } else if (OB_FAIL(retain_func_ptr->init(this, cause, log_ts, lsn))) {
+    if (OB_FAIL(ret)) {
+      // do nothing
+    } else if (OB_FAIL(mds_retain_func_ptr->init(this, cause, log_ts, lsn))) {
       TRANS_LOG(WARN, "init retain ctx functor failed", K(ret), KPC(this));
-    } else if (OB_FAIL(retain_ctx_mgr.push_retain_ctx(retain_func_ptr, retain_lock_timeout))) {
+    } else if (OB_FAIL(retain_ctx_mgr.push_retain_ctx(retain_ctx_func_ptr_, retain_lock_timeout))) {
       TRANS_LOG(WARN, "push into retain_ctx_mgr failed", K(ret), KPC(this));
     }
-    // if (OB_FAIL(retain_ctx_mgr.reset()))
   }
 
   if (OB_FAIL(ret)) {
     clean_retain_cause_();
-    if (retain_func_ptr != nullptr) {
-      retain_ctx_mgr.free_object(retain_func_ptr);
-      retain_func_ptr = nullptr;
-    }
     if (!(OB_EAGAIN == ret && for_replay)) {
-      TRANS_LOG(ERROR, "insert into retain_ctx_mgr error, retain ctx will not deleted from ctx_mgr",
+      TRANS_LOG(ERROR,
+                "insert into retain_ctx_mgr error, retain ctx will not be retained in ctx_mgr",
                 K(ret), KPC(this));
       // ob_abort();
     }
+  } else {
+    // insert into retain_ctx_mgr successfully, no need to gc memory
+    retain_ctx_func_ptr_ = nullptr;
   }
+
   return ret;
 }
 

@@ -136,6 +136,10 @@ public:
                                const common::ObIArray<OrderItem> &ordering2,
                                const EqualSets &equal_sets);
 
+  static bool in_same_equalset(const ObRawExpr *from,
+                               const ObRawExpr *to,
+                               const EqualSets &equal_sets);
+
   static bool is_expr_equivalent(const ObRawExpr *from,
                                  const ObRawExpr *to,
                                  const EqualSets &equal_sets);
@@ -183,6 +187,11 @@ public:
                                  const common::ObIArray<ObRawExpr*> &exprs,
                                  const uint64_t expr_prefix_count,
                                  bool &is_subset);
+
+  static int intersect_exprs(const ObIArray<ObRawExpr *> &first,
+                             const ObIArray<ObRawExpr *> &right,
+                             const EqualSets &equal_sets,
+                             ObIArray<ObRawExpr *> &result);
 
   static int intersect_exprs(const ObIArray<ObRawExpr *> &first,
                              const ObIArray<ObRawExpr *> &right,
@@ -706,7 +715,8 @@ public:
                              const bool is_at_most_one_row,
                              bool &need_sort,
                              int64_t &prefix_pos,
-                             const int64_t part_cnt);
+                             const int64_t part_cnt,
+                             const bool check_part_only = false);
 
   static int check_need_sort(const ObIArray<OrderItem> &expected_order_items,
                              const ObIArray<OrderItem> &input_ordering,
@@ -739,7 +749,8 @@ public:
                              const bool is_at_most_one_row,
                              bool &need_sort,
                              int64_t &prefix_pos,
-                             const int64_t part_cnt);
+                             const int64_t part_cnt,
+                             const bool check_part_only = false);
 
   static int decide_sort_keys_for_merge_style_op(const ObDMLStmt *stmt,
                                                  const EqualSets &stmt_equal_sets,

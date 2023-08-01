@@ -35,6 +35,7 @@ void ObStmtMapInfo::reset()
   is_group_equal_ = false;
   having_map_.reset();
   is_having_equal_ = false;
+  is_order_equal_ = false;
   select_item_map_.reset();
   is_select_item_equal_ = false;
   is_distinct_equal_ = false;
@@ -70,6 +71,7 @@ int ObStmtMapInfo::assign(const ObStmtMapInfo& other)
     is_cond_equal_ = other.is_cond_equal_;
     is_group_equal_ = other.is_group_equal_;
     is_having_equal_ = other.is_having_equal_;
+    is_order_equal_ = other.is_order_equal_;
     is_select_item_equal_ = other.is_select_item_equal_;
     is_distinct_equal_ = other.is_distinct_equal_;
   }
@@ -397,7 +399,7 @@ int ObStmtComparer::check_stmt_containment(const ObDMLStmt *first,
     /*do nothing*/
   } else if (FALSE_IT(second_sel = const_cast<ObSelectStmt*>(static_cast<const ObSelectStmt*>(second)))) {
     /*do nothing*/
-  } else if (first_sel->has_recusive_cte() || second_sel->has_recusive_cte() ||
+  } else if (first_sel->has_recursive_cte() || second_sel->has_recursive_cte() ||
              first_sel->has_hierarchical_query() || second_sel->has_hierarchical_query() ||
              first_sel->is_contains_assignment() || second_sel->is_contains_assignment()) {
     /*do nothing*/
@@ -596,6 +598,30 @@ int ObStmtComparer::check_stmt_containment(const ObDMLStmt *first,
       }
     }
 
+    // check order by exprs
+    if (OB_SUCC(ret) && QueryRelation::QUERY_UNCOMPARABLE != relation) {
+      first_count = first->get_order_item_size();
+      second_count = second->get_order_item_size();
+      if (0 == first_count && 0 == second_count) {
+        map_info.is_order_equal_ = true;
+      } else if (first_count != second_count) {
+        // do nothing
+      } else if (OB_FAIL(compute_orderby_map(first_sel,
+                                             second_sel,
+                                             first_sel->get_order_items(),
+                                             second_sel->get_order_items(),
+                                             map_info,
+                                             match_count))) {
+        LOG_WARN("failed to compute order item map", K(ret));
+      } else if (match_count == first_count && match_count == second_count) {
+        map_info.is_order_equal_ = true;
+        LOG_TRACE("succeed to check order item map", K(relation), K(map_info));
+      } else {
+        // The Order Item relation does not afftect the query relation
+        LOG_TRACE("succeed to check order item map", K(relation), K(map_info));
+      }
+    }
+
     // check limit exprs
     if (OB_SUCC(ret) && QueryRelation::QUERY_UNCOMPARABLE != relation) {
       if (!first_sel->has_limit() && !second_sel->has_limit()) {
@@ -732,6 +758,42 @@ int ObStmtComparer::compute_conditions_map(const ObDMLStmt *first,
           match_count++;
           condition_map.at(i) = j;
         }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStmtComparer::compute_orderby_map(const ObDMLStmt *first,
+                                        const ObDMLStmt *second,
+                                        const ObIArray<OrderItem> &first_orders,
+                                        const ObIArray<OrderItem> &second_orders,
+                                        ObStmtMapInfo &map_info,
+                                        int64_t &match_count)
+{
+  int ret = OB_SUCCESS;
+  ObStmtCompareContext context(first, second, map_info, &first->get_query_ctx()->calculable_items_);
+  match_count = 0;
+  bool first_match_all = true;
+  if (OB_ISNULL(first) || OB_ISNULL(second) || OB_ISNULL(first->get_query_ctx())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(first), K(second), K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && first_match_all && i < first_orders.count() && i < second_orders.count(); ++i) {
+      bool is_match = false;
+      if (first_orders.at(i).order_type_ != second_orders.at(i).order_type_) {
+        first_match_all = false;
+      } else if (OB_FAIL(is_same_condition(first_orders.at(i).expr_,
+                                           second_orders.at(i).expr_,
+                                           context,
+                                           is_match))) {
+        LOG_WARN("failed to check is condition equal", K(ret));
+      } else if (!is_match) {
+        first_match_all = false;
+      } else if (OB_FAIL(append(map_info.equal_param_map_, context.equal_param_info_))) {
+        LOG_WARN("failed to append exprs", K(ret));
+      } else {
+        match_count++;
       }
     }
   }
@@ -1128,7 +1190,7 @@ int ObStmtComparer::compare_table_item(const ObDMLStmt *first,
     } else if (OB_FAIL(map_info.view_select_item_map_.at(first_table_index - 1).assign(ref_query_map_info.select_item_map_))) {
       LOG_WARN("failed to assign select item map", K(ret));
     } else if (QueryRelation::QUERY_UNCOMPARABLE != relation) {
-      if (map_info.is_select_item_equal_ && QueryRelation::QUERY_EQUAL == relation) {
+      if (ref_query_map_info.is_select_item_equal_ && QueryRelation::QUERY_EQUAL == relation) {
         map_info.table_map_.at(first_table_index - 1) = second_table_index - 1;
         if (OB_FAIL(append(map_info.equal_param_map_, ref_query_map_info.equal_param_map_))) {
           LOG_WARN("failed to append equal param", K(ret));
@@ -1189,6 +1251,7 @@ int ObStmtComparer::compare_set_stmt(const ObSelectStmt *first,
       }
     }
     if (OB_SUCC(ret) && QueryRelation::QUERY_EQUAL == set_query_relation) {
+      map_info.is_select_item_equal_ = true;
       for (int64_t i = 0; OB_SUCC(ret) && QueryRelation::QUERY_EQUAL == set_query_relation 
           && i < map_info.view_select_item_map_.count(); ++i) {
         const ObIArray<int64_t> &select_item_map = map_info.view_select_item_map_.at(i);
@@ -1198,12 +1261,14 @@ int ObStmtComparer::compare_set_stmt(const ObSelectStmt *first,
           }
         } else if (map_info.select_item_map_.count() != select_item_map.count()) {
           set_query_relation = QueryRelation::QUERY_UNCOMPARABLE;
+          map_info.is_select_item_equal_ = false;
         } else {
           for (int64_t j = 0; OB_SUCC(ret) && QueryRelation::QUERY_EQUAL == set_query_relation && 
                 j < map_info.select_item_map_.count(); ++j) {
             if (map_info.select_item_map_.at(j) != select_item_map.at(j) || 
                 OB_INVALID_ID == map_info.select_item_map_.at(j)) {
               set_query_relation = QueryRelation::QUERY_UNCOMPARABLE;
+              map_info.is_select_item_equal_ = false;
             }
           }
         }
@@ -1222,6 +1287,50 @@ int ObStmtComparer::compare_set_stmt(const ObSelectStmt *first,
         relation = QueryRelation::QUERY_RIGHT_SUBSET;
       } else if (ObSelectStmt::UNION == second->get_set_op()) {
         relation = QueryRelation::QUERY_LEFT_SUBSET;
+      }
+    }
+    // check order by exprs
+    if (OB_SUCC(ret) && QueryRelation::QUERY_UNCOMPARABLE != relation) {
+      int64_t first_count = first->get_order_item_size();
+      int64_t second_count = second->get_order_item_size();
+      int64_t match_count = 0;
+      if (0 == first_count && 0 == second_count) {
+        map_info.is_order_equal_ = true;
+      } else if (first_count != second_count) {
+        // do nothing
+      } else if (OB_FAIL(compute_orderby_map(first,
+                                             second,
+                                             first->get_order_items(),
+                                             second->get_order_items(),
+                                             map_info,
+                                             match_count))) {
+        LOG_WARN("failed to compute order item map", K(ret));
+      } else if (match_count == first_count && match_count == second_count) {
+        map_info.is_order_equal_ = true;
+        LOG_TRACE("succeed to check order item map", K(relation), K(map_info));
+      } else {
+        // The Order Item relation does not afftect the query relation
+        LOG_TRACE("succeed to check order item map", K(relation), K(map_info));
+      }
+    }
+
+    // check limit exprs
+    if (OB_SUCC(ret) && QueryRelation::QUERY_UNCOMPARABLE != relation) {
+      if (!first->has_limit() && !second->has_limit()) {
+        LOG_TRACE("succeed to check limit expr", K(relation), K(map_info));
+      } else if (first->has_limit() && !second->has_limit() &&
+                 (relation == QueryRelation::QUERY_LEFT_SUBSET ||
+                  relation == QueryRelation::QUERY_EQUAL)) {
+        relation = QueryRelation::QUERY_LEFT_SUBSET;
+        LOG_TRACE("succeed to check limit expr", K(relation), K(map_info));
+      } else if (!first->has_limit() && second->has_limit() &&
+                 (relation == QueryRelation::QUERY_RIGHT_SUBSET ||
+                  relation == QueryRelation::QUERY_EQUAL)) {
+        relation = QueryRelation::QUERY_RIGHT_SUBSET;
+        LOG_TRACE("succeed to check limit expr", K(relation), K(map_info));
+      } else {
+        relation = QueryRelation::QUERY_UNCOMPARABLE;
+        LOG_TRACE("succeed to check limit expr", K(relation), K(map_info));
       }
     }
   }

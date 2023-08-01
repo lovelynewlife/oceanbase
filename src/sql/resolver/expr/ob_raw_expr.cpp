@@ -83,6 +83,7 @@ int ObRawExprFactory::create_raw_expr<ObOpRawExpr>(ObItemType expr_type, ObOpRaw
     GENERATE_CASE(T_FUN_PL_ASSOCIATIVE_INDEX, ObPLAssocIndexRawExpr);
     GENERATE_CASE(T_OBJ_ACCESS_REF, ObObjAccessRawExpr);
     GENERATE_CASE(T_OP_MULTISET, ObMultiSetRawExpr);
+    GENERATE_CASE(T_OP_COLL_PRED, ObCollPredRawExpr);
     GENERATE_DEFAULT();
   }
   return ret;
@@ -791,6 +792,7 @@ int ObRawExpr::is_non_pure_sys_func_expr(bool &is_non_pure) const
           || T_FUN_SYS_CUR_DATE == type_
           || T_FUN_SYS_USERENV == type_
           || T_FUN_SYS_REGEXP_REPLACE == type_
+          || T_FUN_GET_TEMP_TABLE_SESSID == type_
           || T_FUN_SYS_USER_CAN_ACCESS_OBJ == type_) {
       is_non_pure = true;
     } else if (T_FUN_SYS_TO_DATE == type_ || T_FUN_SYS_TO_TIMESTAMP == type_ ||
@@ -1593,6 +1595,8 @@ int ObColumnRefRawExpr::assign(const ObRawExpr &other)
       column_id_ = tmp.column_id_;
       database_name_ = tmp.database_name_;
       table_name_ = tmp.table_name_;
+      synonym_name_ = tmp.synonym_name_;
+      synonym_db_name_ = tmp.synonym_db_name_;
       column_name_ = tmp.column_name_;
       column_flags_ = tmp.column_flags_;
       dependant_expr_ = tmp.dependant_expr_;

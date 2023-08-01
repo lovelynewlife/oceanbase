@@ -30,6 +30,7 @@
 #include "storage/tx_storage/ob_ls_map.h"
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx_storage/ob_ls_handle.h" //ObLSHandle
+#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "rootserver/ob_tenant_info_loader.h"
 #include "observer/ob_server_event_history_table_operator.h"
 
@@ -99,8 +100,10 @@ bool ObLSService::safe_to_destroy()
                   ATOMIC_LOAD(&safe_ls_destroy_task_cnt_) == 0 &&
                   ATOMIC_LOAD(&iter_cnt_) == 0);
   if (!is_safe && REACH_TIME_INTERVAL(10 * 1000 * 1000)) {
+    bool is_t3m_meta_released = false;
+    MTL(ObTenantMetaMemMgr*)->check_all_meta_mem_released(is_t3m_meta_released, "ObLSService"); //just for debug
     LOG_INFO("ls service is not safe to destroy", K(ls_map_.is_empty()),
-             K_(safe_ls_destroy_task_cnt), K_(iter_cnt));
+             K_(safe_ls_destroy_task_cnt), K_(iter_cnt), K(is_t3m_meta_released));
   }
   return is_safe;
 }
@@ -452,7 +455,7 @@ int ObLSService::create_ls(const obrpc::ObCreateLSArg &arg)
                                                      waiting_destroy))) {
       LOG_WARN("check ls waiting safe destroy failed", K(ret), K(arg));
     } else if (waiting_destroy) {
-      ret = OB_EAGAIN;
+      ret = OB_LS_WAITING_SAFE_DESTROY;
       LOG_WARN("ls waiting for destroy, need retry later", K(ret), K(arg));
     } else if (OB_FAIL(inner_create_ls_(arg.get_ls_id(),
                                         migration_status,
@@ -1064,7 +1067,7 @@ int ObLSService::create_ls_for_ha(
                                                      waiting_destroy))) {
       LOG_WARN("check ls waiting safe destroy failed", K(ret), K(arg));
     } else if (waiting_destroy) {
-      ret = OB_EAGAIN;
+      ret = OB_LS_WAITING_SAFE_DESTROY;
       LOG_WARN("ls waiting for destroy, need retry later", K(ret), K(arg));
     } else if (OB_FAIL(ObMigrationStatusHelper::trans_migration_op(arg.type_, migration_status))) {
       LOG_WARN("failed to trans migration op", K(ret), K(arg), K(task_id));
@@ -1317,6 +1320,36 @@ int ObLSService::get_restore_status_(
   }
   return ret;
 }
+
+int ObLSService::dump_ls_info()
+{
+  int ret = OB_SUCCESS;
+  common::ObSharedGuard<ObLSIterator> ls_iter;
+  ObLS *ls = nullptr;
+  ObLSMeta ls_meta;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (OB_FAIL(get_ls_iter(ls_iter, ObLSGetMod::TXSTORAGE_MOD))) {
+    LOG_WARN("failed to get ls iter", K(ret));
+  }
+  while (OB_SUCC(ret)) {
+    if (OB_FAIL(ls_iter->get_next(ls))) {
+      if (OB_ITER_END != ret) {
+        LOG_WARN("fail to get next ls", K(ret));
+      }
+    } else if (OB_ISNULL(ls)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls is null", K(ret));
+    } else if (OB_FAIL(ls->get_ls_meta(ls_meta))) {
+      LOG_WARN("fail to get ls meta", K(ret));
+    } else {
+      FLOG_INFO("dump ls info", K(ls_meta));
+    }
+  }
+  return ret;
+}
+
 
 
 } // storage

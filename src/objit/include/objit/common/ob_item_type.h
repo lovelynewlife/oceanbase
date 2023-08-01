@@ -212,8 +212,7 @@ typedef enum ObItemType
   T_OP_AGG_MUL = 184,
   T_OP_AGG_DIV = 185,
   T_OP_OUTPUT_PACK = 186,
-  T_FUN_TEMP_TABLE_SSID = 187,
-
+  T_FUN_GET_TEMP_TABLE_SESSID = 187,
   ///< @note add new operator before this line
 
   // system functions
@@ -1278,6 +1277,7 @@ typedef enum ObItemType
   T_MONITOR,
   T_PQ_DISTRIBUTE,
   T_PQ_DISTRIBUTE_WINDOW,
+  T_WIN_FUNC_IDX_LIST,
   T_PQ_SET,
   T_DISTRIBUTE_BROADCAST,
   T_DISTRIBUTE_HASH,
@@ -2247,10 +2247,12 @@ typedef enum ObItemType
   T_PARTITION_LIST_ELEMENT,
   T_PARTITION_RANGE_ELEMENT,
 
-  T_CONSTR_LOB_META_SIZE,
-  T_LOB_META_SIZE,
+  T_CONSTR_LOB_CHUNK_SIZE,
+  T_LOB_CHUNK_SIZE,
 
   T_ALTER_SYSTEM_KILL, // used to support kill session in oracle
+
+  T_LOB_STORAGE_CLAUSE,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

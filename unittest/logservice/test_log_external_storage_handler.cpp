@@ -61,8 +61,15 @@ public:
   {
     // 假设8M每秒的读取速度
     const int64_t sleep_us = read_buf_size / (8);
+    int ret = OB_SUCCESS;
     usleep(sleep_us);
-    real_read_size = read_buf_size;
+    if (offset == palf::PALF_PHY_BLOCK_SIZE) {
+      real_read_size = 0;
+    } else if (offset > palf::PALF_PHY_BLOCK_SIZE) {
+      ret = OB_FILE_LENGTH_INVALID;
+    } else {
+      real_read_size = read_buf_size;
+    }
     // while (true) {
     //   int64_t old_real_read_size = ATOMIC_LOAD(&real_read_size);
     //   int64_t new_real_read_size = old_real_read_size + read_buf_size;
@@ -140,31 +147,35 @@ TEST(TestLogExternalStorageHandler, test_log_external_storage_handler)
   handler.handle_adapter_ = &adapter;
   EXPECT_EQ(true, handler.is_inited_);
   EXPECT_EQ(OB_NOT_RUNNING, handler.pread(uri, storage_info, offset, read_buf, read_buf_size, real_read_size));
-  EXPECT_EQ(OB_NOT_RUNNING, handler.resize(16, 0));
+  EXPECT_EQ(OB_NOT_RUNNING, handler.resize(16, 100));
 
 
   // 测试invalid argument
   EXPECT_EQ(OB_INVALID_ARGUMENT, handler.start(-1));
-  EXPECT_EQ(OB_INVALID_ARGUMENT, handler.start(ObLogExternalStorageHandler::CONCURRENCY_LIMIT+1));
+  // 当concurrency超过最大并发度时，以最大并发度为准
+  EXPECT_NE(OB_INVALID_ARGUMENT, handler.start(ObLogExternalStorageHandler::CONCURRENCY_LIMIT+1));
+  EXPECT_EQ(ObLogExternalStorageHandler::CONCURRENCY_LIMIT, handler.concurrency_);
+  EXPECT_EQ(ObLogExternalStorageHandler::CONCURRENCY_LIMIT*ObLogExternalStorageHandler::CAPACITY_COEFFICIENT,
+            handler.capacity_);
+  EXPECT_EQ(true, handler.is_running_);
 
-  // start 成功
+  // 重复start
   const int64_t concurrency = 16;
   EXPECT_EQ(OB_SUCCESS, handler.start(concurrency));
-  EXPECT_EQ(true, handler.is_running_);
-  EXPECT_EQ(concurrency, handler.concurrency_);
-  EXPECT_EQ(concurrency*ObLogExternalStorageHandler::CAPACITY_COEFFICIENT,
-            handler.capacity_);
 
   // 验证读取——invalid argument
   {
     ObString empty_uri;
     EXPECT_EQ(OB_INVALID_ARGUMENT, handler.pread(empty_uri, storage_info, offset, read_buf, read_buf_size, real_read_size));
+    // NFS的storage info为empty
     ObString empty_storage_info;
-    EXPECT_EQ(OB_INVALID_ARGUMENT, handler.pread(uri, empty_storage_info, offset, read_buf, read_buf_size, real_read_size));
+    EXPECT_EQ(OB_SUCCESS, handler.pread(uri, empty_storage_info, offset, read_buf, read_buf_size, real_read_size));
     int64_t invalid_offset = -1;
     EXPECT_EQ(OB_INVALID_ARGUMENT, handler.pread(uri, storage_info, invalid_offset, read_buf, read_buf_size, real_read_size));
-    invalid_offset = 100*1024*1024;
-    EXPECT_EQ(OB_INVALID_ARGUMENT, handler.pread(uri, storage_info, invalid_offset, read_buf, read_buf_size, real_read_size));
+    // 读偏移等于文件长度，返回成功，real_read_size=0
+    int64_t valid_offset = 64*1024*1024;
+    EXPECT_NE(OB_INVALID_ARGUMENT, handler.pread(uri, storage_info, valid_offset, read_buf, read_buf_size, real_read_size));
+    EXPECT_EQ(0, real_read_size);
     char *invalid_read_buf = NULL;
     EXPECT_EQ(OB_INVALID_ARGUMENT, handler.pread(uri, storage_info, offset, invalid_read_buf, read_buf_size, real_read_size));
     int64_t invalid_read_buf_size = 0;
@@ -175,17 +186,21 @@ TEST(TestLogExternalStorageHandler, test_log_external_storage_handler)
   {
     int64_t invalid_concurrency = -1;
     EXPECT_EQ(OB_INVALID_ARGUMENT, handler.resize(invalid_concurrency, 0));
-    int64_t invalid_timeout_us = -1;
+    int64_t invalid_timeout_us = 0;
     EXPECT_EQ(OB_INVALID_ARGUMENT, handler.resize(concurrency, invalid_timeout_us));
+
   }
 
   // 验证私有函数
   {
-    // 验证is_valid_concurrency_
+    EXPECT_EQ(OB_SUCCESS, handler.resize_(16));
+    // 验证is_valid_concurrency_为false
     int64_t invalid_concurrency = -1;
     EXPECT_EQ(false, handler.is_valid_concurrency_(invalid_concurrency));
+
+    // 当并发度超过128时，会将concurrency_设置为128.
     invalid_concurrency = ObLogExternalStorageHandler::CONCURRENCY_LIMIT + 1;
-    EXPECT_EQ(false, handler.is_valid_concurrency_(invalid_concurrency));
+    EXPECT_EQ(true, handler.is_valid_concurrency_(invalid_concurrency));
 
     // 验证get_async_task_count_
     // 单个任务最小2M, 在concurrency足够的情况下，最多存在8个异步任务
@@ -209,6 +224,9 @@ TEST(TestLogExternalStorageHandler, test_log_external_storage_handler)
   // 验证公有函数
   {
     real_read_size = 0;
+    int64_t invalid_offset = 100*1024*1024;
+    EXPECT_EQ(OB_FILE_LENGTH_INVALID, handler.pread(uri, storage_info, invalid_offset, read_buf, read_buf_size, real_read_size));
+
     EXPECT_EQ(OB_SUCCESS, handler.pread(uri, storage_info, offset, read_buf, read_buf_size, real_read_size));
     EXPECT_EQ(read_buf_size, real_read_size);
     CLOG_LOG(INFO, "after first read", K(read_buf_size), K(real_read_size));
@@ -216,6 +234,12 @@ TEST(TestLogExternalStorageHandler, test_log_external_storage_handler)
     EXPECT_EQ(OB_SUCCESS, handler.resize(new_concurrency));
     EXPECT_EQ(new_concurrency, handler.concurrency_);
     EXPECT_EQ(new_concurrency*ObLogExternalStorageHandler::CAPACITY_COEFFICIENT,
+              handler.capacity_);
+
+    new_concurrency = 129;
+    EXPECT_EQ(OB_SUCCESS, handler.resize(new_concurrency));
+    EXPECT_EQ(ObLogExternalStorageHandler::CONCURRENCY_LIMIT, handler.concurrency_);
+    EXPECT_EQ(ObLogExternalStorageHandler::CONCURRENCY_LIMIT*ObLogExternalStorageHandler::CAPACITY_COEFFICIENT,
               handler.capacity_);
     new_concurrency = 0;
     EXPECT_EQ(OB_SUCCESS, handler.resize(new_concurrency));
@@ -341,7 +365,7 @@ TEST(TestLogExternalStorageHandler, test_oss_object)
     for (int i = 0; i < total_oss_object; i++) {
       bool exist = false;
       int64_t real_read_size = 0;
-      // farm环境写oss太慢了，暂时先单测不运行
+     // farm环境写oss太慢了，暂时先单测不运行
      // if (OB_FAIL(generate_oss_data(uris[i].c_str(), oss_path,  buf_self_pread, buf_len))) {
      //   CLOG_LOG(ERROR, "oss can not access", K(uris[i].c_str()), K(oss_path), K(exist));
      // } else {
@@ -488,7 +512,7 @@ int main(int argc, char **argv)
 {
   system("rm -rf test_log_external_storage_handler.log*");
   OB_LOGGER.set_file_name("test_log_external_storage_handler.log", true);
-  OB_LOGGER.set_log_level("TRACE");
+  OB_LOGGER.set_log_level("WDIAG");
   srandom(ObTimeUtility::current_time());
   PALF_LOG(INFO, "begin unittest::test_log_external_storage_handler");
   ::testing::InitGoogleTest(&argc, argv);

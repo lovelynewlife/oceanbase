@@ -85,7 +85,8 @@ ObDelUpdResolver::ObDelUpdResolver(ObResolverParams &params)
   : ObDMLResolver(params),
     insert_column_ids_(),
     is_column_specify_(false),
-    is_oracle_tmp_table_(false)
+    is_oracle_tmp_table_(false),
+    oracle_tmp_table_type_(0)
 {
   // TODO Auto-generated constructor stub
 }
@@ -260,6 +261,17 @@ int ObDelUpdResolver::resolve_column_and_values(const ParseNode &assign_list,
           if (1 != stmt->get_table_size()) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("SET ROW must be used for single table", K(stmt->get_table_size()), K(ret));
+          } else if (params_.secondary_namespace_ == NULL) {
+            TableItem *table_item = stmt->get_table_item(0);
+            CK (OB_NOT_NULL(table_item));
+            if (OB_SUCC(ret)) {
+              ObString row = ObString::make_string("row");
+              ObString table_name = table_item->get_table_name().length() > 0 ?
+                                        table_item->get_table_name() : ObString::make_string(" ");
+              ret = OB_ERR_BAD_FIELD_ERROR; //oracle will report an ORA-00936 error, ob does not have the error code.
+              LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, row.length(), row.ptr(), table_name.length(), table_name.ptr());
+              LOG_WARN("column does not existed", K(ret));
+            }
           } else {
             TableItem *table_item = stmt->get_table_item(0);
             const share::schema::ObTableSchema *table_schema = NULL;
@@ -270,7 +282,10 @@ int ObDelUpdResolver::resolve_column_and_values(const ParseNode &assign_list,
               OZ (target_list.push_back(column_items.at(i).get_expr()));
             }
             OZ (expand_record_to_columns(*assign_list.children_[0], value_list));
-            CK (target_list.count() == value_list.count());
+            if (OB_SUCC(ret) && target_list.count() != value_list.count()) {
+              ret = OB_ERR_TOO_MANY_VALUES;
+              LOG_WARN("too many values", K(ret), K(target_list.count()), K(value_list.count()));
+            }
           }
         }
       }
@@ -708,9 +723,22 @@ int ObDelUpdResolver::add_assignment(common::ObIArray<ObTableAssignment> &assign
     //For generated column, when cascaded column is updated, the generated column will be updated with new column
     ObRawExprCopier copier(*params_.expr_factory_);
     for (int64_t i = 0; OB_SUCC(ret) && i < table_assign->assignments_.count(); ++i) {
-      if (OB_FAIL(copier.add_replaced_expr(table_assign->assignments_.at(i).column_expr_,
-                                           table_assign->assignments_.at(i).expr_))) {
-        LOG_WARN("failed to add replaced expr", K(ret));
+      if (!table_assign->assignments_.at(i).column_expr_->is_xml_column()) {
+        if (OB_FAIL(copier.add_replaced_expr(table_assign->assignments_.at(i).column_expr_,
+                                            table_assign->assignments_.at(i).expr_))) {
+          LOG_WARN("failed to add replaced expr", K(ret));
+        }
+      } else {
+        // is generated column and ref column is xmltype, generated column ref hiddlen column actually
+        // udt column replace is done in pre transfrom but here generate column need replace
+        const ObRawExpr *from_expr = ObRawExprUtils::get_sql_udt_type_expr_recursively(assign.expr_);
+        const ObRawExpr *to_expr = table_assign->assignments_.at(i).expr_;
+        if (OB_ISNULL(from_expr)) { // do nonthing
+        } else {
+          if (OB_FAIL(copier.add_replaced_expr(from_expr, to_expr))) {
+            LOG_WARN("failed to add replaced expr", K(ret));
+          }
+        }
       }
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < get_stmt()->get_subquery_expr_size(); ++i) {
@@ -3971,41 +3999,56 @@ int ObDelUpdResolver::add_new_sel_item_for_oracle_temp_table(ObSelectStmt &selec
 {
   int ret = OB_SUCCESS;
   if (is_oracle_tmp_table_) {
-    ObConstRawExpr *session_id_expr = NULL;
+    ObSysFunRawExpr *session_id_expr = NULL;
+    ObConstRawExpr *temp_table_type = NULL;
     ObConstRawExpr *sess_create_time_expr = NULL;
-    ObArray<SelectItem> select_items;
+    ObSEArray<SelectItem, 4> select_items;
     SelectItem select_item;
-    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, session_id_expr))) {
+    select_item.is_implicit_added_ = true;
+
+    if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_GET_TEMP_TABLE_SESSID, session_id_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
     } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, sess_create_time_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
-    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr)) {
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, temp_table_type))) {
+      LOG_WARN("create raw expr failed", K(ret));
+    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr) || OB_ISNULL(temp_table_type)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("dummy expr is null", K(session_id_expr), K(sess_create_time_expr));
-    } else {
+      LOG_WARN("dummy expr is null", K(ret));
+    }
+    if (OB_SUCC(ret)) {
       ObObj val;
-      val.set_int(session_info_->get_sessid_for_table());
-      session_id_expr->set_value(val);
-      select_item.is_implicit_added_ = true;
+      val.set_int(oracle_tmp_table_type_);
+      temp_table_type->set_value(val);
+    }
+    if (OB_SUCC(ret)) {
+      session_id_expr->set_func_name(N_TEMP_TABLE_SSID);
       select_item.expr_ = session_id_expr;
-      if (OB_FAIL(select_items.push_back(select_item))) {
+      if (OB_FAIL(session_id_expr->add_param_expr(temp_table_type))) {
+        LOG_WARN("fail to add param expr", K(ret));
+      } else if (OB_FAIL(session_id_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(select_items.push_back(select_item))) {
         LOG_WARN("push subquery select items failed", K(ret));
-      } else if (session_info_->is_obproxy_mode() && 0 == session_info_->get_sess_create_time()) {
-        ret = OB_NOT_SUPPORTED;
-        SQL_RESV_LOG(WARN, "can't insert into oracle temporary table via obproxy, upgrade obproxy first", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "obproxy version is too old, insert into temporary table");
-      } else {
-        val.set_int(session_info_->get_sess_create_time());
-        sess_create_time_expr->set_value(val);
-        select_item.expr_ = sess_create_time_expr;
-        if (OB_FAIL(select_items.push_back(select_item))) {
-          LOG_WARN("push subquery select items failed", K(ret));
-        } else if (OB_FAIL(add_select_items(select_stmt, select_items))) {
-          LOG_WARN("failed to add select items", K(ret));
-        }
-        LOG_DEBUG("add __session_id & __sess_create_time to select item succeed");
       }
     }
+    if (OB_SUCC(ret)) {
+      ObObj val;
+      val.set_int(0);
+      sess_create_time_expr->set_value(val);
+      select_item.expr_ = sess_create_time_expr;
+      if (OB_FAIL(sess_create_time_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(select_items.push_back(select_item))) {
+        LOG_WARN("push subquery select items failed", K(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(add_select_items(select_stmt, select_items))) {
+        LOG_WARN("failed to add select items", K(ret));
+      }
+    }
+    LOG_DEBUG("add __session_id & __sess_create_time to select item succeed");
   }
   return ret;
 }
@@ -4079,36 +4122,41 @@ int ObDelUpdResolver::add_new_value_for_oracle_temp_table(ObIArray<ObRawExpr*> &
 {
   int ret = OB_SUCCESS;
   if (is_oracle_tmp_table_) {
-    ObConstRawExpr *session_id_expr = NULL;
+    ObSysFunRawExpr *session_id_expr = NULL;
     ObConstRawExpr *sess_create_time_expr = NULL;
+    ObConstRawExpr *temp_table_type = NULL;
     if (OB_ISNULL(session_info_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid session_info_ or insert_stmt", K(session_info_));
-    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, session_id_expr))) {
+      LOG_WARN("invalid session_info_ ", K(session_info_));
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_GET_TEMP_TABLE_SESSID, session_id_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
     } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, sess_create_time_expr))) {
       LOG_WARN("create raw expr failed", K(ret));
-    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr)) {
+    } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_INT, temp_table_type))) {
+      LOG_WARN("create raw expr failed", K(ret));
+    } else if (OB_ISNULL(session_id_expr) || OB_ISNULL(sess_create_time_expr) || OB_ISNULL(temp_table_type)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("dummy expr is null", K(session_id_expr), K(sess_create_time_expr));
     } else {
       ObObj val;
-      val.set_int(session_info_->get_sessid_for_table());
-      session_id_expr->set_value(val);
-      if (OB_FAIL(value_row.push_back(session_id_expr))) {
+      val.set_int(0);
+      sess_create_time_expr->set_value(val);
+      session_id_expr->set_func_name(N_TEMP_TABLE_SSID);
+      val.set_int(oracle_tmp_table_type_);
+      temp_table_type->set_value(val);
+      if (OB_FAIL(session_id_expr->add_param_expr(temp_table_type))) {
+        LOG_WARN("fail to add param expr", K(ret));
+      } else if (OB_FAIL(session_id_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(sess_create_time_expr->formalize(session_info_))) {
+        LOG_WARN("fail to formalize expr", K(ret));
+      } else if (OB_FAIL(value_row.push_back(session_id_expr))) {
         LOG_WARN("push back to output expr failed", K(ret));
-      } else if (session_info_->is_obproxy_mode() && 0 == session_info_->get_sess_create_time()) {
-        ret = OB_NOT_SUPPORTED;
-        SQL_RESV_LOG(WARN, "can't insert into oracle temporary table via obproxy, upgrade obproxy first", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "obproxy version is too old, insert into temporary table");
-      } else {
-        val.set_int(session_info_->get_sess_create_time());
-        sess_create_time_expr->set_value(val);
-        if (OB_FAIL(value_row.push_back(sess_create_time_expr))) {
-          LOG_WARN("push back to output expr failed", K(ret));
-        }
-        LOG_DEBUG("add session id & sess create time value succeed", K(session_id_expr), K(sess_create_time_expr), K(value_row), K(lbt()));
+      } else if (OB_FAIL(value_row.push_back(sess_create_time_expr))) {
+        LOG_WARN("push back to output expr failed", K(ret));
       }
+      LOG_DEBUG("add session id & sess create time value succeed",
+                K(session_id_expr), K(sess_create_time_expr), K(value_row));
     }
   }
   return ret;

@@ -372,6 +372,8 @@ public:
   static bool is_all_column_exprs(const common::ObIArray<ObRawExpr*> &exprs);
   static int extract_set_op_exprs(const ObRawExpr *raw_expr,
                                   common::ObIArray<ObRawExpr*> &set_op_exprs);
+  static int extract_set_op_exprs(const ObIArray<ObRawExpr*> &exprs,
+                                  common::ObIArray<ObRawExpr*> &set_op_exprs);
   /// extract column exprs from the raw expr
   static int extract_column_exprs(const ObRawExpr *raw_expr,
                                   common::ObIArray<ObRawExpr*> &column_exprs,
@@ -466,6 +468,7 @@ public:
 
   static ObRawExpr *skip_inner_added_expr(ObRawExpr *expr);
   static const ObColumnRefRawExpr *get_column_ref_expr_recursively(const ObRawExpr *expr);
+  static ObRawExpr *get_sql_udt_type_expr_recursively(ObRawExpr *expr);
 
   static int create_to_type_expr(ObRawExprFactory &expr_factory,
                                  ObRawExpr *src_expr,
@@ -901,7 +904,7 @@ public:
                                         ObRawExpr *&out);
   static int build_inner_wf_aggr_status_expr(ObRawExprFactory &factory,
                                              const ObSQLSessionInfo &session_info,
-                                             ObRawExpr *&out);
+                                             ObOpPseudoColumnRawExpr *&out);
   static int build_pseudo_rollup_id(ObRawExprFactory &factory,
                                     const ObSQLSessionInfo &session_info,
                                     ObRawExpr *&out);

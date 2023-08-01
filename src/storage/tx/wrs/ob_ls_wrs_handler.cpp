@@ -45,6 +45,7 @@ int ObLSWRSHandler::init(const share::ObLSID &ls_id)
 void ObLSWRSHandler::reset()
 {
   is_inited_ = false;
+  // set weak read ts to 0
   ls_weak_read_ts_.set_min();
   is_enabled_ = false;
   ls_id_.reset();
@@ -55,7 +56,8 @@ int ObLSWRSHandler::offline()
   int ret = OB_SUCCESS;
   ObSpinLockGuard guard(lock_);
   is_enabled_ = false;
-  ls_weak_read_ts_.set_min();
+  // set weak read ts to 1
+  ls_weak_read_ts_.set_base();
   STORAGE_LOG(INFO, "weak read handler disabled", K(*this));
   return ret;
 }
@@ -101,8 +103,8 @@ int ObLSWRSHandler::generate_ls_weak_read_snapshot_version(ObLS &ls,
     STORAGE_LOG(DEBUG, "fail to generate weak read timestamp", KR(ret), K(max_stale_time));
     need_skip = true;
     ret = OB_SUCCESS;
-  } else if (OB_TS_MGR.get_gts(MTL_ID(), NULL, gts_scn)) {
-    TRANS_LOG(WARN, "get gts scn error", K(max_stale_time), K(*this));
+  } else if (OB_FAIL(OB_TS_MGR.get_gts(MTL_ID(), NULL, gts_scn))) {
+    TRANS_LOG(WARN, "get gts scn error", K(ret), K(max_stale_time), K(*this));
   } else if (OB_FAIL(ls.get_migration_status(status))
                   || ObMigrationStatus::OB_MIGRATION_STATUS_NONE == status ) {
     // check the weak read timestamp of the migrated ls

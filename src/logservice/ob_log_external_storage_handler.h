@@ -92,6 +92,7 @@ public:
   //   OB_BACKUP_PERMISSION_DENIED, permission denied.
   //   OB_BACKUP_FILE_NOT_EXIST, uri not exist.
   //   OB_OSS_ERROR, oss error.
+  //   OB_FILE_LENGTH_INVALID, read offset is greater than file size.
   //   OB_NOT_INIT
   //   OB_NOT_RUNNING
   //
@@ -113,6 +114,8 @@ public:
 			      int64_t &real_read_size);
 
 	void handle(void *task) override final;
+
+	int64_t get_recommend_concurrency_in_single_file() const;
 
   TO_STRING_KV(K_(concurrency), K_(capacity), K_(is_running), K_(is_inited), KP(handle_adapter_), KP(this));
 private:
@@ -154,7 +157,9 @@ private:
 
   void push_async_task_into_thread_pool_(ObLogExternalStorageIOTask *io_task);
 
-  void destroy_and_init_new_thread_pool_(const int64_t concurrency);
+  int resize_(const int64_t concurrency);
+
+  bool check_need_resize_(const int64_t concurrency) const;
 
 private:
   typedef common::RWLock RWLock;
@@ -163,7 +168,7 @@ private:
   typedef RWLock::WLockGuardWithTimeout WLockGuardTimeout;
   int64_t concurrency_;
   int64_t capacity_;
-  RWLock resize_rw_lock_;
+  mutable RWLock resize_rw_lock_;
   ObSpinLock construct_async_task_lock_;
   ObLogExternalStorageIOTaskHandleIAdapter *handle_adapter_;
   bool is_running_;

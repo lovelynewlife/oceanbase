@@ -1128,6 +1128,7 @@ public:
     UDF_NS,
     LOCAL_TYPE,         // 本地的自定义类型
     PKG_TYPE,           // 包中的自定义类型
+    SELF_ATTRIBUTE,
   };
 
   ObPLExternalNS(const ObPLResolveCtx &resolve_ctx, const ObPLBlockNS *parent_ns)
@@ -1911,11 +1912,17 @@ public:
       is_contain_goto_stmt_(false),
       is_autonomous_block_(false) {}
   virtual ~ObPLStmtBlock() {
+    reset();
+  }
+
+  void reset()
+  {
     for (int64_t i = 0; i < stmts_.count(); ++i) {
       if (NULL != stmts_.at(i)) {
         stmts_.at(i)->~ObPLStmt();
       }
     }
+    stmts_.reset();
   }
 
   int accept(ObPLStmtVisitor &visitor) const;
@@ -2039,9 +2046,11 @@ public:
   virtual ~ObPLIfStmt() {
     if (NULL != then_) {
       then_->~ObPLStmtBlock();
+      then_ = NULL;
     }
     if (NULL != else_) {
       else_->~ObPLStmtBlock();
+      else_ = NULL;
     }
   }
 
@@ -2074,6 +2083,7 @@ public:
   virtual ~ObPLCaseStmt() {
     if (NULL != else_) {
       else_->~ObPLStmtBlock();
+      else_ = NULL;
     }
   }
 
@@ -2227,6 +2237,7 @@ public:
   virtual ~ObPLLoop() {
     if (NULL != body_) {
       body_->~ObPLStmtBlock();
+      body_ = NULL;
     }
   }
 
@@ -2795,6 +2806,7 @@ public:
         (const_cast<ObPLStmt *>(get_child_stmt(i)))->~ObPLStmt();
       }
     }
+    handlers_.reset();
   }
 
   int accept(ObPLStmtVisitor &visitor) const;

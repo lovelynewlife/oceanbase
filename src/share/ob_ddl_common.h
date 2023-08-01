@@ -222,6 +222,15 @@ static inline bool is_invalid_ddl_type(const ObDDLType type)
   return DDL_INVALID == type;
 }
 
+// ddl stmt or rs ddl trans has rollbacked and can retry
+static inline bool is_ddl_stmt_packet_retry_err(const int ret)
+{
+  return OB_EAGAIN == ret || OB_SNAPSHOT_DISCARDED == ret || OB_ERR_PARALLEL_DDL_CONFLICT == ret
+      || OB_TRANS_KILLED == ret || OB_TRANS_ROLLBACKED == ret // table lock doesn't support leader switch
+      || OB_PARTITION_IS_BLOCKED == ret // when LS is block_tx by a transfer task
+      ;
+}
+
 struct ObColumnNameInfo final
 {
 public:
@@ -359,7 +368,7 @@ public:
   static bool is_table_lock_retry_ret_code(int ret)
   {
     return OB_TRY_LOCK_ROW_CONFLICT == ret || OB_NOT_MASTER == ret || OB_TIMEOUT == ret
-           || OB_EAGAIN == ret || OB_LS_LOCATION_LEADER_NOT_EXIST == ret;
+           || OB_EAGAIN == ret || OB_LS_LOCATION_LEADER_NOT_EXIST == ret || OB_TRANS_CTX_NOT_EXIST == ret;
   }
   static bool need_remote_write(const int ret_code);
 
@@ -441,7 +450,7 @@ public:
   static int check_and_wait_old_complement_task(
       const uint64_t tenant_id,
       const uint64_t index_table_id,
-      const uint64_t ddl_task_id,
+      const int64_t ddl_task_id,
       const int64_t execution_id,
       const common::ObAddr &inner_sql_exec_addr,
       const common::ObCurTraceId::TraceId &trace_id,
@@ -468,7 +477,7 @@ private:
       const common::ObAddr &inner_sql_exec_addr,
       const common::ObCurTraceId::TraceId &trace_id,
       const uint64_t tenant_id,
-      const int64_t execution_id,
+      const int64_t task_id,
       const int64_t scn,
       bool &is_old_task_session_exist);
 

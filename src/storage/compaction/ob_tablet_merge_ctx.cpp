@@ -381,6 +381,7 @@ const char *ObCompactionTimeGuard::ObTabletCompactionEventStr[] = {
     "UPDATE_TABLET",
     "RELEASE_MEMTABLE",
     "SCHEDULE_OTHER_COMPACTION",
+    "GET_TABLET",
     "DAG_FINISH"
 };
 
@@ -505,7 +506,8 @@ ObTabletMergeCtx::ObTabletMergeCtx(
     time_guard_(),
     rebuild_seq_(-1),
     data_version_(0),
-    tnode_stat_()
+    tnode_stat_(),
+    need_parallel_minor_merge_(true)
 {
   merge_scn_.set_max();
 }
@@ -1025,7 +1027,6 @@ int ObTabletMergeCtx::init_merge_info()
   return ret;
 }
 
-
 int ObTabletMergeCtx::get_storage_schema_to_merge(const ObTablesHandleArray &merge_tables_handle)
 {
   int ret = OB_SUCCESS;
@@ -1058,8 +1059,10 @@ int ObTabletMergeCtx::get_storage_schema_to_merge(const ObTablesHandleArray &mer
     } // end of for
 
     if (OB_FAIL(ret)) {
-    } else if (max_column_cnt_in_memtable > column_cnt_in_schema
-      || max_schema_version_in_memtable > schema_on_tablet->get_schema_version()) {
+    } else if (max_column_cnt_in_memtable <= column_cnt_in_schema
+            && max_schema_version_in_memtable <= schema_on_tablet->get_schema_version()) {
+      // do nothing
+    } else {
       // need alloc new storage schema & set column cnt
       void *buf = nullptr;
       if (OB_ISNULL(buf = allocator_.alloc(sizeof(ObStorageSchema)))) {

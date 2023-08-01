@@ -80,13 +80,13 @@ int ObParallelMergeCtx::init(compaction::ObTabletMergeCtx &merge_ctx)
   } else {
     int64_t tablet_size = merge_ctx.get_schema()->get_tablet_size();
     bool enable_parallel_minor_merge = false;
-    {
-      // TODO(yangyi.yyy): backfill tx merge do not allow parallel minor merge
-      if (!is_backfill_tx_merge(merge_ctx.param_.merge_type_)) {
-        omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
-        if (tenant_config.is_valid()) {
-          enable_parallel_minor_merge = tenant_config->_enable_parallel_minor_merge;
-        }
+    if (!merge_ctx.need_parallel_minor_merge_) {
+      //TODO(jinyu) backfill need using same code with minor merge in 4.2 RC3.
+      enable_parallel_minor_merge = false;
+    } else {
+      omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+      if (tenant_config.is_valid()) {
+        enable_parallel_minor_merge = tenant_config->_enable_parallel_minor_merge;
       }
     }
     if (enable_parallel_minor_merge && tablet_size > 0 && is_mini_merge(merge_ctx.param_.merge_type_)) {
@@ -160,7 +160,7 @@ int ObParallelMergeCtx::init(const compaction::ObMediumCompactionInfo &medium_in
       concurrent_cnt_ = paral_info.get_size() + 1;
       parallel_type_ = PARALLEL_MAJOR;
       is_inited_ = true;
-      STORAGE_LOG(INFO, "success to init parallel merge ctx", KPC(this));
+      STORAGE_LOG(INFO, "success to init parallel merge ctx from medium_info", K(ret), KPC(this), K(paral_info));
     }
   }
   return ret;

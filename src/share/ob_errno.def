@@ -163,7 +163,7 @@ DEFINE_ERROR_DEP(OB_LOG_NOT_ALIGN, -4074, -1, "HY000", "Log not aligned");
 DEFINE_ERROR(OB_LOG_MISSING, -4075, -1, "HY000", "Log entry missed");
 DEFINE_ERROR(OB_NEED_WAIT, -4076, -1, "HY000", "Need wait");
 DEFINE_ERROR_DEP(OB_NOT_IMPLEMENT, -4077, -1, "0A000", "Not implemented feature");
-DEFINE_ERROR_DEP(OB_DIVISION_BY_ZERO, -4078, ER_DIVISION_BY_ZERO, "42000", "Divided by zero");
+DEFINE_ERROR_DEP(OB_DIVISION_BY_ZERO, -4078, ER_DIVISION_BY_ZERO, "22012", "Divided by zero");
 DEFINE_ERROR_DEP(OB_EXCEED_MEM_LIMIT, -4080, -1, "HY013", "exceed memory limit");
 DEFINE_ERROR(OB_RESULT_UNKNOWN, -4081, -1, "HY000", "Unknown result");
 DEFINE_ERROR(OB_NO_RESULT, -4084, -1, "02000", "No result");
@@ -656,6 +656,7 @@ DEFINE_ERROR(OB_SKIP_CHECKING_LS_STATUS, -4762, -1, "HY000", "This operation has
 DEFINE_ORACLE_ERROR(OB_ERR_USE_ROWID_FOR_UPDATE, -4763, -1, "HY000", "invalid user.table.column, table.column, or column specification", 1747, "invalid user.table.column, table.column, or column specification");
 DEFINE_ORACLE_ERROR_EXT(OB_ERR_UNKNOWN_SET_OPTION, -4764, -1, "HY000", "unknown SET option", "unknown SET option \'%s\'", 600, "unknown SET option", "unknown SET option \'%s\'");
 DEFINE_ERROR_EXT_DEP(OB_CREATE_STANDBY_TENANT_FAILED, -4765, -1, "HY000", "create standby tenant may fail", "create standby tenant may fail, %s");
+DEFINE_ERROR_EXT_DEP(OB_LS_WAITING_SAFE_DESTROY, -4766, -1, "HY000", "ls waiting safe destory", "ls waiting safe destory, %s");
 
 ////////////////////////////////////////////////////////////////
 // SQL & Schema specific error code, -5000 ~ -6000
@@ -1132,6 +1133,7 @@ DEFINE_ERROR_EXT(OB_ERR_FUNCTIONAL_INDEX_REF_AUTO_INCREMENT, -5496, ER_FUNCTIONA
 DEFINE_ERROR_EXT(OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX, -5497, ER_DEPENDENT_BY_FUNCTIONAL_INDEX, "HY000", "Column has a functional index dependency and cannot be dropped.", "Column '%.*s' has a functional index dependency and cannot be dropped.");
 DEFINE_ERROR(OB_ERR_FUNCTIONAL_INDEX_ON_LOB, -5498, ER_FUNCTIONAL_INDEX_ON_LOB, "HY000", "Cannot create a functional index on an expression that returns a BLOB or TEXT. Please consider using CAST.");
 DEFINE_ERROR(OB_ERR_FUNCTIONAL_INDEX_ON_FIELD, -5499, ER_FUNCTIONAL_INDEX_ON_FIELD, "HY000", "Functional index on a column is not supported. Consider using a regular index instead.");
+DEFINE_ERROR(OB_ERR_GENCOL_LEGIT_CHECK_FAILED, -5500, -1, "HY000", "Legitimacy check failed for generated columns.");
 
 DEFINE_ERROR_EXT(OB_ERR_SP_ALREADY_EXISTS, -5541, ER_SP_ALREADY_EXISTS, "42000", "procedure/function already exists", "%s %.*s already exists");
 DEFINE_ERROR_EXT(OB_ERR_SP_DOES_NOT_EXIST, -5542, ER_SP_DOES_NOT_EXIST, "42000", "procedure/function does not exist", "%s %.*s.%.*s does not exist");
@@ -1269,7 +1271,7 @@ DEFINE_ORACLE_ERROR(OB_ERR_ORDER_BY_ITEM_NOT_IN_SELECT_LIST, -5675, -1, "HY000",
 DEFINE_ORACLE_ERROR_DEP(OB_ERR_INTERVAL_INVALID, -5676, -1, "HY000", "the interval is invalid", 1867, "the interval is invalid");
 DEFINE_ORACLE_ERROR_EXT(OB_ERR_NUMERIC_OR_VALUE_ERROR, -5677, -1, "HY000", "PL/SQL: numeric or value error", "PL/SQL: numeric or value error: %.*s", 6502, "PL/SQL: numeric or value error", "PL/SQL: numeric or value error: %.*s");
 DEFINE_ORACLE_ERROR_EXT(OB_ERR_CONSTRAINT_NAME_DUPLICATE, -5678, ER_CHECK_CONSTRAINT_DUP_NAME, "HY000", "Duplicate check constraint name","Duplicate check constraint name \'%.*s\'.", 2264, "name already used by an existing constraint", "name \'%.*s\' already used by an existing constraint");
-DEFINE_ORACLE_ERROR(OB_ERR_ONLY_HAVE_INVISIBLE_COL_IN_TABLE, -5679, -1, "HY000", "table must have at least one column that is not invisible", 54039, "table must have at least one column that is not invisible");
+DEFINE_ORACLE_ERROR(OB_ERR_ONLY_HAVE_INVISIBLE_COL_IN_TABLE, -5679, ER_TABLE_MUST_HAVE_A_VISIBLE_COLUMN, "HY000", "table must have at least one column that is not invisible", 54039, "table must have at least one column that is not invisible");
 DEFINE_ORACLE_ERROR(OB_ERR_INVISIBLE_COL_ON_UNSUPPORTED_TABLE_TYPE, -5680, -1, "HY000", "Invisible column is not supported on this type of table.", 54042, "Invisible column is not supported on this type of table.");
 DEFINE_ORACLE_ERROR(OB_ERR_MODIFY_COL_VISIBILITY_COMBINED_WITH_OTHER_OPTION, -5681, -1, "HY000", "Column visibility modifications cannot be combined with any other modified column DDL option.", 54046, "Column visibility modifications cannot be combined with any other modified column DDL option.");
 DEFINE_ORACLE_ERROR(OB_ERR_MODIFY_COL_VISIBILITY_BY_SYS_USER, -5682, -1, "HY000", "The visibility of a column from a table owned by a SYS user cannot be changed.", 54053, "The visibility of a column from a table owned by a SYS user cannot be changed.");
@@ -1797,6 +1799,8 @@ DEFINE_ERROR(OB_TRANSFER_SRC_LS_NOT_EXIST, -7115, -1, "HY000", "transfer src ls 
 DEFINE_ERROR(OB_TRANSFER_SRC_TABLET_NOT_EXIST, -7116, -1, "HY000", "transfer src tablet does not exist");
 DEFINE_ERROR(OB_LS_NEED_REBUILD, -7117, -1, "HY000", "ls need rebuild");
 DEFINE_ERROR(OB_OBSOLETE_CLOG_NEED_SKIP, -7118, -1, "HY000", "obsolete clog need skip");
+DEFINE_ERROR(OB_TRANSFER_WAIT_TRANSACTION_END_TIMEOUT, -7119, -1, "HY000", "transfer wait transactions end timeout");
+DEFINE_ERROR(OB_TABLET_GC_LOCK_CONFLICT, -7120, -1, "HY000", "tablet GC lock conflict");
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //error code for gis  -7201 ---- -7300
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2018,7 +2022,7 @@ DEFINE_ERROR(OB_LS_RESTORE_FAILED, -9094, -1, "HY000", "Restore log stream faile
 DEFINE_ERROR(OB_NO_TABLET_NEED_BACKUP, -9095, -1, "HY000", "No tablet need backup");
 DEFINE_ERROR(OB_ERR_RESTORE_STANDBY_VERSION_LAG, -9096, -1, "HY000", "standby binary version is lower than primary data version, standby need upgrade");
 DEFINE_ERROR(OB_ERR_RESTORE_PRIMARY_TENANT_DROPPED, -9097, -1, "HY000", "primary tenant has been dropped");
-DEFINE_ERROR(OB_CLOUD_OBJECT_NOT_APPENDABLE, -9098, -1, "HY000", "normal object in object_storage(oss,cos,etc.) can't be appended content");
+DEFINE_ERROR_DEP(OB_CLOUD_OBJECT_NOT_APPENDABLE, -9098, -1, "HY000", "normal object in object_storage(oss,cos,etc.) can't be appended content");
 // end of backup and restore error codes 9001 ~ 9099
 
 ////////////////////////////////////////////////////////////////

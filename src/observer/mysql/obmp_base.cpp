@@ -47,7 +47,7 @@
 #include "share/ob_lob_access_utils.h"
 #include "sql/monitor/flt/ob_flt_utils.h"
 #include "sql/session/ob_sess_info_verify.h"
-
+#include "sql/engine/expr/ob_expr_xml_func_helper.h"
 namespace oceanbase
 {
 using namespace share;
@@ -281,6 +281,9 @@ int ObMPBase::create_session(ObSMConnection *conn, ObSQLSessionInfo *&sess_info)
       } else {
         sess_info->set_ssl_cipher("");
       }
+
+      sess_info->gen_gtt_session_scope_unique_id();
+      sess_info->gen_gtt_trans_scope_unique_id();
     }
   }
   return ret;

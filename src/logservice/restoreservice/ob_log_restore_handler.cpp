@@ -516,7 +516,9 @@ void ObLogRestoreHandler::mark_error(share::ObTaskId &trace_id,
     if ((OB_TIMEOUT == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)
       || (OB_TENANT_NOT_EXIST == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)
       || (OB_TENANT_NOT_IN_SERVER == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)
-      || (OB_IN_STOP_STATE == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)) {
+      || (OB_IN_STOP_STATE == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)
+      || (OB_SERVER_IS_INIT == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)
+      || (OB_ERR_OUT_OF_LOWER_BOUND == ret_code && ObLogRestoreErrorContext::ErrorType::FETCH_LOG == error_type)) {
       CLOG_LOG(WARN, "fetch log failed in restore", KPC(parent_), KPC(this));
     } else if(OB_SUCCESS != ret_code) {
       CLOG_LOG(ERROR, "fatal error occur in restore", KPC(parent_), KPC(this));
@@ -1032,7 +1034,7 @@ int RestoreStatusInfo::restore_sync_status_to_string(char *str_buf, const int64_
     || sync_status_ >= RestoreSyncStatus::MAX_RESTORE_SYNC_STATUS) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "invalid restore status", K(sync_status_));
-  } else if (databuff_printf(str_buf, str_len, "%s", restore_status_str[int(sync_status_)])) {
+  } else if (OB_FAIL(databuff_printf(str_buf, str_len, "%s", restore_status_str[int(sync_status_)]))) {
     CLOG_LOG(WARN, "databuff printf restore status str failed", K(sync_status_));
   }
   return ret;

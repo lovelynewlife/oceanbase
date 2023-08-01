@@ -2336,6 +2336,31 @@ bool ObDropTableArg::is_valid() const
   return ret;
 }
 
+int ObDropTableArg::assign(const ObDropTableArg &other)
+{
+  int ret = OB_SUCCESS;
+  if (this == &other) {
+    //do nothing
+  } else if (OB_FAIL(ObDDLArg::assign(other))) {
+    LOG_WARN("assign failed", K(ret));
+  } else {
+    tenant_id_ = other.tenant_id_;
+    session_id_ = other.session_id_;
+    sess_create_time_ = other.sess_create_time_;
+    table_type_ = other.table_type_;
+    if_exist_ = other.if_exist_;
+    to_recyclebin_ = other.to_recyclebin_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < other.tables_.count(); i++) {
+      ObTableItem table_item;
+      table_item.mode_ = other.tables_.at(i).mode_;
+      OZ (ob_write_string(allocator_, other.tables_.at(i).table_name_, table_item.table_name_));
+      OZ (ob_write_string(allocator_, other.tables_.at(i).database_name_, table_item.database_name_));
+      OZ (tables_.push_back(table_item));
+    }
+  }
+  return ret;
+}
+
 DEF_TO_STRING(ObDropTableArg)
 {
   int64_t pos = 0;
@@ -4269,7 +4294,8 @@ OB_SERIALIZE_MEMBER((ObPhysicalRestoreTenantArg, ObCmdArg),
                     with_restore_scn_,
                     encrypt_key_,
                     kms_uri_,
-                    kms_encrypt_key_);
+                    kms_encrypt_key_,
+                    restore_timestamp_);
 
 ObPhysicalRestoreTenantArg::ObPhysicalRestoreTenantArg()
   : ObCmdArg(),
@@ -4285,7 +4311,8 @@ ObPhysicalRestoreTenantArg::ObPhysicalRestoreTenantArg()
     with_restore_scn_(false),
     encrypt_key_(),
     kms_uri_(),
-    kms_encrypt_key_()
+    kms_encrypt_key_(),
+    restore_timestamp_()
 {
 }
 
@@ -4308,6 +4335,7 @@ int ObPhysicalRestoreTenantArg::assign(const ObPhysicalRestoreTenantArg &other)
     encrypt_key_ = other.encrypt_key_;
     kms_uri_ = other.kms_uri_;
     kms_encrypt_key_ = other.kms_encrypt_key_;
+    restore_timestamp_ = other.restore_timestamp_;
   }
   return ret;
 }

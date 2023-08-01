@@ -509,6 +509,23 @@ bool ObOptimizerUtil::is_same_ordering(const common::ObIArray<OrderItem> &orderi
   return is_same;
 }
 
+bool ObOptimizerUtil::in_same_equalset(const ObRawExpr *from,
+                                       const ObRawExpr *to,
+                                       const EqualSets &equal_sets)
+{
+  bool found = false;
+  int64_t N = equal_sets.count();
+  for (int64_t i = 0; !found && i < N; ++i) {
+    if (OB_ISNULL(equal_sets.at(i))) {
+      LOG_WARN_RET(OB_ERR_UNEXPECTED, "get null equal set");
+    } else if (find_equal_expr(*equal_sets.at(i), from) &&
+               find_equal_expr(*equal_sets.at(i), to)) {
+      found = true;
+    }
+  }
+  return found;
+}
+
 bool ObOptimizerUtil::is_expr_equivalent(const ObRawExpr *from,
                                          const ObRawExpr *to,
                                          const EqualSets &equal_sets)
@@ -896,6 +913,26 @@ bool ObOptimizerUtil::same_exprs(const common::ObIArray<ObRawExpr*> &src_exprs,
   } else {
     return subset_exprs(src_exprs, target_exprs) &&
            subset_exprs(target_exprs, src_exprs);
+  }
+  return ret;
+}
+
+int ObOptimizerUtil::intersect_exprs(const ObIArray<ObRawExpr *> &first,
+                                     const ObIArray<ObRawExpr *> &right,
+                                     const EqualSets &equal_sets,
+                                     ObIArray<ObRawExpr *> &result)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObRawExpr *, 4> tmp;
+  for (int64_t i = 0; OB_SUCC(ret) && i < first.count(); ++i) {
+    if (!find_equal_expr(right, first.at(i), equal_sets)) {
+      // do nothing
+    } else if (OB_FAIL(tmp.push_back(first.at(i)))) {
+      LOG_WARN("failed to push back first expr", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && OB_FAIL(result.assign(tmp))) {
+    LOG_WARN("failed to assign expr array", K(ret));
   }
   return ret;
 }
@@ -3603,7 +3640,8 @@ int ObOptimizerUtil::check_need_sort(const ObIArray<OrderItem> &expected_order_i
                                      const bool is_at_most_one_row,
                                      bool &need_sort,
                                      int64_t &prefix_pos,
-                                     const int64_t part_cnt)
+                                     const int64_t part_cnt,
+                                     const bool check_part_only/* default false */)
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr*, 6> expected_order_exprs;
@@ -3622,7 +3660,8 @@ int ObOptimizerUtil::check_need_sort(const ObIArray<OrderItem> &expected_order_i
                                      is_at_most_one_row,
                                      need_sort,
                                      prefix_pos,
-                                     part_cnt))) {
+                                     part_cnt,
+                                     check_part_only))) {
     LOG_WARN("failed to check need sort", K(ret));
   } else { /*do nothing*/ }
   return ret;
@@ -3638,11 +3677,13 @@ int ObOptimizerUtil::check_need_sort(const ObIArray<ObRawExpr*> &expected_order_
                                      const bool is_at_most_one_row,
                                      bool &need_sort,
                                      int64_t &prefix_pos,
-                                     const int64_t part_cnt)
+                                     const int64_t part_cnt,
+                                     const bool check_part_only/* default false */)
 {
   int ret = OB_SUCCESS;
   need_sort = true;
-  if (OB_FAIL(ObOptimizerUtil::check_need_sort(expected_order_exprs,
+  if (!check_part_only &&
+      OB_FAIL(ObOptimizerUtil::check_need_sort(expected_order_exprs,
                                                expected_order_directions,
                                                input_ordering,
                                                fd_item_set,
@@ -5667,7 +5708,11 @@ bool ObOptimizerUtil::is_lossless_type_conv(const ObExprResType &child_type, con
   if (child_type.get_type() == dst_type.get_type() &&
     (child_type.get_accuracy().get_precision() == dst_acc.get_precision() || -1 == dst_acc.get_precision()) &&
     (child_type.get_accuracy().get_scale() == dst_acc.get_scale() || -1 == dst_acc.get_scale())) {
-    if (ob_is_string_type(child_type.get_type())) {
+    if (is_oracle_mode()
+       && ObNumberTC == dst_tc
+       && child_type.get_accuracy().get_scale() != child_type.get_accuracy().get_scale()) {
+      //TODO: need to be supplemented for the conversion from number to number
+    } else if (ob_is_string_type(child_type.get_type())) {
       if (dst_type.get_obj_meta().get_collation_type() == child_type.get_obj_meta().get_collation_type() &&
          (child_type.get_accuracy().get_length() <= dst_acc.get_length() || -1 == dst_acc.get_length())) {
         is_lossless = true;
@@ -5736,7 +5781,8 @@ bool ObOptimizerUtil::is_lossless_type_conv(const ObExprResType &child_type, con
       }
     }
   } else {
-    if (ObNumberTC == child_tc || ObIntTC == child_tc || ObUIntTC == child_tc) {
+    if (ObIntTC == child_tc || ObUIntTC == child_tc) {
+      //TODO: need to be supplemented for the conversion from number to number
       if (child_tc == dst_tc || ObNumberTC == dst_tc) {
         ObAccuracy lossless_acc = child_type.get_accuracy();
         if ((dst_acc.get_scale() >= 0 &&
@@ -5846,7 +5892,8 @@ int ObOptimizerUtil::is_lossless_column_cast(const ObRawExpr *expr, bool &is_los
         }
       }
     } else {
-      if (ObNumberTC == child_tc || ObIntTC == child_tc || ObUIntTC == child_tc) {
+      if (ObIntTC == child_tc || ObUIntTC == child_tc) {
+        //TODO: need to be supplemented for the conversion from number to number
         if (child_tc == dst_tc || ObNumberTC == dst_tc) {
           ObAccuracy lossless_acc = child_type.get_accuracy();
           if ((dst_acc.get_scale() >= 0 &&

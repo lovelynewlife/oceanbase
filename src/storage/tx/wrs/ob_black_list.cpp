@@ -243,16 +243,16 @@ int ObBLService::do_black_list_check_(sqlclient::ObMySQLResult *result)
     SCN gts_scn;
     if (OB_FAIL(get_info_from_result_(*result, bl_key, ls_info))) {
       TRANS_LOG(WARN, "get_info_from_result_ fail ", KR(ret), K(result));
-    } else if (ls_info.is_leader()) {
+    } else if (ls_info.is_leader() && check_need_skip_leader_(bl_key.get_tenant_id())) {
       // cannot add leader into blacklist
-    } else if (ls_info.weak_read_scn_ == 0 && ls_info.migrate_status_ == OB_MIGRATE_STATUS_NONE) {
+    } else if (ls_info.weak_read_scn_ == 0) {
       // log stream is initializing, should't be put into blacklist
     } else if (OB_FAIL(OB_TS_MGR.get_gts(bl_key.get_tenant_id(), NULL, gts_scn))) {
       TRANS_LOG(WARN, "get gts scn error", K(ret), K(bl_key));
     } else {
       max_stale_time = get_tenant_max_stale_time_(bl_key.get_tenant_id());
       int64_t max_stale_time_ns = max_stale_time * 1000;
-      if (gts_scn.get_val_for_gts() > ls_info.weak_read_scn_ + max_stale_time_ns) {
+      if (gts_scn.get_val_for_gts() > ls_info.weak_read_scn_ + max_stale_time_ns || ls_info.tx_blocked_) {
         // scn is out-of-time，add this log stream into blacklist
         if (OB_FAIL(ls_bl_mgr_.update(bl_key, ls_info))) {
           TRANS_LOG(WARN, "ls_bl_mgr_ add fail ", K(bl_key), K(ls_info));
@@ -272,6 +272,21 @@ int ObBLService::do_black_list_check_(sqlclient::ObMySQLResult *result)
   }
 
   return ret;
+}
+
+bool ObBLService::check_need_skip_leader_(const uint64_t tenant_id)
+{
+  bool need_skip = true;
+  int ret = OB_SUCCESS;
+  MTL_SWITCH(tenant_id) {
+    if (!MTL_IS_PRIMARY_TENANT()) {
+      need_skip = false;
+    }
+  }
+  if (!need_skip) {
+    TRANS_LOG(INFO, "needn't skip leader", KR(ret), K(need_skip), K(tenant_id));
+  }
+  return need_skip;
 }
 
 int ObBLService::do_clean_up_()
@@ -295,6 +310,7 @@ int ObBLService::get_info_from_result_(sqlclient::ObMySQLResult &result, ObBLKey
   int64_t ls_role = -1;
   int64_t weak_read_scn = 0;
   int64_t migrate_status_int = -1;
+  int64_t tx_blocked = -1;
   common::number::ObNumber weak_read_number;
 
   (void)GET_COL_IGNORE_NULL(result.get_varchar, "svr_ip", ip);
@@ -304,6 +320,7 @@ int ObBLService::get_info_from_result_(sqlclient::ObMySQLResult &result, ObBLKey
   (void)GET_COL_IGNORE_NULL(result.get_int, "role", ls_role);
   (void)GET_COL_IGNORE_NULL(result.get_number, "weak_read_scn", weak_read_number);
   (void)GET_COL_IGNORE_NULL(result.get_int, "migrate_status", migrate_status_int);
+  (void)GET_COL_IGNORE_NULL(result.get_int, "tx_blocked", tx_blocked);
 
   ObLSID ls_id(id);
   common::ObAddr server;
@@ -316,8 +333,18 @@ int ObBLService::get_info_from_result_(sqlclient::ObMySQLResult &result, ObBLKey
     TRANS_LOG(WARN, "failed to cast int", K(ret), K(weak_read_number));
   } else if (OB_FAIL(bl_key.init(server, tenant_id, ls_id))) {
     TRANS_LOG(WARN, "bl_key init fail", K(server), K(tenant_id), K(ls_id));
-  } else if (OB_FAIL(ls_info.init(ls_role, weak_read_scn, migrate_status))) {
-    TRANS_LOG(WARN, "ls_info init fail", K(ls_role), K(weak_read_scn), K(migrate_status));
+  } else if (OB_FAIL(ls_info.init(ls_role, weak_read_scn, migrate_status, (1 == tx_blocked) ? true : false))) {
+    TRANS_LOG(WARN, "ls_info init fail", K(ls_role), K(weak_read_scn), K(migrate_status), K(tx_blocked));
+  }
+  if (OB_SUCC(ret)) {
+    if (1 == tx_blocked) {
+      TRANS_LOG(INFO, "current ls is blocked, need to put blacklist", K(bl_key), K(ls_info));
+    } else if (0 != tx_blocked) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(ERROR, "unexpected tx blocked", K(ret), K(tx_blocked), K(bl_key), K(ls_info));
+    } else {
+      // do nothing
+    }
   }
 
   return ret;

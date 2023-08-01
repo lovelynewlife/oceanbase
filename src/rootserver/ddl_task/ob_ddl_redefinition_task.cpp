@@ -1293,10 +1293,10 @@ int ObDDLRedefinitionTask::check_health()
       switch_status(new_status, false, ret);
       LOG_WARN("switch status to build_failed", K(ret), K(old_status), K(new_status));
     }
-  }
-  if (ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)
-      || ObDDLTaskStatus::SUCCESS == static_cast<ObDDLTaskStatus>(task_status_)) {
-    ret = OB_SUCCESS; // allow clean up
+    if (ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)
+        || ObDDLTaskStatus::SUCCESS == static_cast<ObDDLTaskStatus>(task_status_)) {
+      ret = OB_SUCCESS; // allow clean up
+    }
   }
   check_ddl_task_execute_too_long();
   return ret;
@@ -2240,4 +2240,10 @@ int ObDDLRedefinitionTask::reap_old_replica_build_task(bool &need_exec_new_inner
     }
   }
   return ret;
+}
+
+int64_t ObDDLRedefinitionTask::get_build_replica_request_time()
+{
+  TCRLockGuard guard(lock_);
+  return build_replica_request_time_;
 }

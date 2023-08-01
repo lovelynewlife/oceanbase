@@ -40,6 +40,8 @@ ObTabletTableStore::ObTabletTableStore()
     ddl_sstables_(),
     meta_major_tables_(),
     memtables_(),
+    ddl_mem_sstables_(),
+    memtables_lock_(),
     is_ready_for_read_(false),
     is_inited_(false)
 {
@@ -867,6 +869,7 @@ int ObTabletTableStore::get_table(const ObITable::TableKey &table_key, ObITable 
     }
 
     if (table_key.is_memtable()) {
+      common::SpinRLockGuard guard(memtables_lock_);
       if (OB_FAIL(memtables_.find(table_key, table))) {
         LOG_WARN("fail to get memtable", K(ret), K(table_key), K_(memtables));
       }
@@ -895,7 +898,7 @@ int ObTabletTableStore::get_read_tables(
     const bool allow_no_ready_read) const
 {
   int ret = OB_SUCCESS;
-
+  common::SpinRLockGuard guard(memtables_lock_);
   if (OB_UNLIKELY(snapshot_version < 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(snapshot_version));
@@ -973,6 +976,7 @@ int ObTabletTableStore::get_memtables(
     common::ObIArray<storage::ObITable *> &memtables,
     const bool need_active) const
 {
+  common::SpinRLockGuard guard(memtables_lock_);
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < memtables_.count(); ++i) {
     if (OB_ISNULL(memtables_[i])) {
@@ -990,6 +994,7 @@ int ObTabletTableStore::get_memtables(
 int ObTabletTableStore::update_memtables(const common::ObIArray<storage::ObITable *> &memtables)
 {
   int ret = OB_SUCCESS;
+  common::SpinWLockGuard guard(memtables_lock_);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
@@ -1001,6 +1006,7 @@ int ObTabletTableStore::update_memtables(const common::ObIArray<storage::ObITabl
 
 int ObTabletTableStore::clear_memtables()
 {
+  common::SpinWLockGuard guard(memtables_lock_);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;
@@ -1014,6 +1020,7 @@ int ObTabletTableStore::clear_memtables()
 int ObTabletTableStore::get_first_frozen_memtable(ObITable *&table) const
 {
   int ret = OB_SUCCESS;
+  common::SpinRLockGuard guard(memtables_lock_);
   for (int64_t i = 0; OB_SUCC(ret) && i < memtables_.count(); ++i) {
     if (OB_ISNULL(memtables_[i])) {
       ret = OB_ERR_UNEXPECTED;
@@ -2198,14 +2205,17 @@ int ObTabletTableStore::combine_ha_minor_sstables_(
     common::ObIArray<ObITable *> &new_minor_sstables)
 {
   int ret = OB_SUCCESS;
-  //TODO(muwei.ym) remove logical sstable in master
+  //TODO(muwei.ym) remove logical sstable in 4.2 RC3
   //1.ha now will not reuse minor sstable so it need add minor sstable which is from src and end_scn <= clog_checkpoint_scn
   //2.old store minor sstables contains remote logical sstable and after clog_checkpoint_scn sstables.
   SCN max_copy_end_scn;
   max_copy_end_scn.set_min();
+  ObArray<ObITable *> tmp_minor_sstables;
+  const SCN clog_checkpoint_scn = tablet.get_clog_checkpoint_scn();
+
   for (int64_t i = 0; OB_SUCC(ret) && i < need_add_minor_sstables.count(); ++i) {
     ObITable *table = need_add_minor_sstables.at(i);
-    if (OB_FAIL(new_minor_sstables.push_back(table))) {
+    if (OB_FAIL(tmp_minor_sstables.push_back(table))) {
       LOG_WARN("failed to push table into array", K(ret), KPC(table));
     } else {
       max_copy_end_scn = table->get_end_scn();
@@ -2222,10 +2232,25 @@ int ObTabletTableStore::combine_ha_minor_sstables_(
       }
     } else if (table->get_end_scn() <= max_copy_end_scn) {
       //do nothing
-    } else if (OB_FAIL(new_minor_sstables.push_back(table))) {
+    } else if (OB_FAIL(tmp_minor_sstables.push_back(table))) {
       LOG_WARN("failed to push table into array", K(ret), KPC(table));
     }
   }
+
+  if (OB_SUCC(ret)) {
+    //TODO(muwei.ym) remove compare with clog checkpoint scn in 4.2 RC3
+    if (tmp_minor_sstables.empty()) {
+      //do nothing
+    } else if (OB_FAIL(ObTableStoreUtil::sort_minor_tables(tmp_minor_sstables))) {
+      LOG_WARN("failed to sort minor tables", K(ret), K(tmp_minor_sstables));
+    } else if (clog_checkpoint_scn > tmp_minor_sstables.at(tmp_minor_sstables.count() - 1)->get_end_scn()) {
+      FLOG_INFO("tablet clog checkpoint scn is bigger than all minor sstables end scn, no need to keep it",
+          K(clog_checkpoint_scn), K(tmp_minor_sstables), K(major_tables_));
+    } else if (OB_FAIL(new_minor_sstables.assign(tmp_minor_sstables))) {
+      LOG_WARN("failed to assign minor sstables", K(ret), K(tmp_minor_sstables));
+    }
+  }
+
   return ret;
 }
 

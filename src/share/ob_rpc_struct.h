@@ -2119,6 +2119,8 @@ public:
   ObDropTableArg(const ObDropTableArg &other) = delete;
   virtual ~ObDropTableArg() { tables_.reset(); }
   virtual bool is_allow_when_upgrade() const { return true; }
+
+  int assign(const ObDropTableArg& other);
   DECLARE_TO_STRING;
 
   uint64_t tenant_id_;
@@ -2132,6 +2134,7 @@ public:
   bool is_add_to_scheduler_;
   bool force_drop_;
   lib::Worker::CompatMode compat_mode_;
+  common::ObArenaAllocator allocator_;
 };
 
 struct ObOptimizeTableArg : public ObDDLArg
@@ -4887,7 +4890,8 @@ public:
                K_(with_restore_scn),
                K_(encrypt_key),
                K_(kms_uri),
-               K_(kms_encrypt_key));
+               K_(kms_encrypt_key),
+               K_(restore_timestamp));
 
   common::ObString tenant_name_;
   common::ObString uri_;
@@ -4902,6 +4906,7 @@ public:
   common::ObString encrypt_key_;
   common::ObString kms_uri_;
   common::ObString kms_encrypt_key_;
+  common::ObString restore_timestamp_;
 };
 
 struct ObServerZoneArg

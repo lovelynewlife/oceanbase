@@ -252,6 +252,7 @@ int ObRootBlockInfo::read_block_data(
     handle.reset();
     read_info.io_desc_.set_mode(ObIOMode::READ);
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
+    read_info.io_desc_.set_group_id(ObIOModule::ROOT_BLOCK_IO);
     if (OB_FAIL(addr.get_block_addr(read_info.macro_block_id_, read_info.offset_, read_info.size_))) {
       LOG_WARN("fail to get block address", K(ret), K(addr));
     } else if (OB_FAIL(ObBlockManager::read_block(read_info, handle))) {
@@ -685,7 +686,7 @@ int ObSSTableMacroInfo::inc_linked_block_ref_cnt(common::ObArenaAllocator &alloc
     for (; OB_SUCC(ret) && idx < linked_block_count_; idx++) {
       const MacroBlockId &macro_id = linked_block_ids_[idx];
       if (OB_FAIL(OB_SERVER_BLOCK_MGR.inc_ref(macro_id))) {
-        LOG_WARN("fail to increase macro block ref cnt", K(ret), K(macro_id));
+        LOG_ERROR("fail to increase macro block ref cnt", K(ret), K(macro_id));
       }
     }
 

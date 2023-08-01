@@ -1514,7 +1514,8 @@ int ObPLExternalNS::resolve_external_symbol(const common::ObString &name,
             LOG_WARN("get package id failed", K(ret));
           } else if (OB_INVALID_ID == package_id
                     && (OB_INVALID_INDEX == parent_id
-                        || is_oracle_sys_database_id(parent_id))) {
+                        || is_oracle_sys_database_id(parent_id)
+                        || is_oceanbase_sys_database_id(parent_id))) {
             if (OB_FAIL(schema_guard.get_package_id(OB_SYS_TENANT_ID,
                                                     OB_SYS_DATABASE_ID,
                                                     name,
@@ -1635,7 +1636,7 @@ int ObPLExternalNS::resolve_external_symbol(const common::ObString &name,
         OZ (ObResolverUtils::resolve_synonym_object_recursively(
           schema_checker, synonym_checker,
           tenant_id, db_id, name, object_db_id, object_name, exist));
-        if (exist && (OB_INVALID_INDEX == parent_id || parent_id == object_db_id)) {
+        if (exist) {
           OZ (resolve_synonym(object_db_id, object_name, type, parent_id, var_idx));
         }
       }
@@ -2453,6 +2454,37 @@ int ObPLBlockNS::resolve_symbol(const ObString &var_name,
       if (OB_NOT_NULL(pre_ns_)) {
         if (OB_FAIL(SMART_CALL(pre_ns_->resolve_symbol(var_name, type, data_type, parent_id, var_idx)))) {
           LOG_WARN("get var index by name failed", K(var_name), K(ret));
+        }
+      }
+    }
+    // try attribute of self argument
+    if (OB_SUCC(ret)
+        && OB_NOT_NULL(symbol_table_->get_self_param())
+        && OB_INVALID_INDEX == var_idx
+        && OB_INVALID_INDEX == parent_id) {
+      const ObPLDataType &pl_type = symbol_table_->get_self_param()->get_type();
+      const ObUserDefinedType *user_type = NULL;
+      const ObRecordType *record_type = NULL;
+      if (!pl_type.is_udt_type() || pl_type.is_opaque_type()) {
+        // type is invalid when create udt & opaque type has not attribute, so do nothing ...
+      } else if (OB_FAIL(get_user_type(pl_type.get_user_type_id(), user_type))) {
+        LOG_WARN("failed to get user type", K(ret), KPC(user_type));
+      } else if (OB_ISNULL(user_type) || !user_type->is_object_type()) {
+        // do nothing ...
+      } else if (OB_ISNULL(record_type = static_cast<const ObRecordType*>(user_type))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected record type", K(ret), KPC(record_type), KPC(user_type));
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < record_type->get_record_member_count(); ++i) {
+          if (OB_ISNULL(record_type->get_record_member_name(i))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected record member name", K(ret), K(i), KPC(record_type));
+          } else if (ObCharset::case_compat_mode_equal(var_name, *record_type->get_record_member_name(i))) {
+            type = ObPLExternalNS::SELF_ATTRIBUTE;
+            var_idx = i;
+            parent_id = user_type->get_user_type_id();
+            break;
+          }
         }
       }
     }

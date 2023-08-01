@@ -1016,6 +1016,7 @@ int ObIndexBlockTreeCursor::get_next_level_block(
       read_info.offset_ = absolute_offset;
       read_info.size_ = idx_row_header.get_block_size();
       read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
+      read_info.io_desc_.set_group_id(ObIOModule::INDEX_BLOCK_TREE_CURSOR_IO);
       idx_row_header.fill_deserialize_meta(block_des_meta);
       if (OB_FAIL(ObBlockManager::read_block(read_info, macro_handle))) {
         LOG_WARN("Fail to read micro block from sync io", K(ret));
@@ -1080,6 +1081,7 @@ int ObIndexBlockTreeCursor::read_next_level_row(const int64_t row_idx)
       LOG_WARN("Fail to init index row parser with transformed index data",
           K(ret), K(row_idx), KPC(idx_data_header));
     }
+  } else if (FALSE_IT(row_.reuse())) {
   } else if (OB_FAIL(reader_->get_row(row_idx, row_))) {
     LOG_WARN("Fail to read row", K(ret), K(row_idx));
   } else if (OB_FAIL(idx_row_parser_.init(rowkey_column_cnt_, row_))) {
@@ -1168,6 +1170,7 @@ int ObIndexBlockTreeCursor::get_micro_block_endkeys(
   } else {
     for (int64_t i = begin_idx; OB_SUCC(ret) && i <= end_idx; ++i) {
       ObDatumRowkey rowkey, endkey;
+      row_.reuse();
       if (OB_FAIL(reader_->get_row(i, row_))) {
         LOG_WARN("Fail to get row from micro block", K(ret), K(i));
       } else if (OB_FAIL(rowkey.assign(row_.storage_datums_, rowkey_column_cnt_))) {

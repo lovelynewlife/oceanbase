@@ -3776,6 +3776,7 @@ bool ObBasicSessionInfo::is_sync_sys_var(share::ObSysVarClassType sys_var_id) co
     case SYS_VAR_SERVER_UUID:
     case SYS_VAR_OB_PROXY_PARTITION_HIT:
     case SYS_VAR_VERSION_COMMENT:
+    case SYS_VAR_OB_LAST_SCHEMA_VERSION:
       not_need_serialize = true;
       break;
     default:
@@ -3824,7 +3825,9 @@ int ObBasicSessionInfo::get_sync_sys_vars(ObIArray<ObSysVarClassType>
         sys_vars_[sys_var_idx]->get_value())||ObSysVariables::get_base_value(sys_var_idx) !=
         sys_vars_[sys_var_idx]->get_value() ||
         ObSysVariables::get_base_value(sys_var_idx).get_scale()
-        != sys_vars_[sys_var_idx]->get_value().get_scale()) {
+        != sys_vars_[sys_var_idx]->get_value().get_scale() ||
+        ObSysVariables::get_base_value(sys_var_idx).get_type()
+        != sys_vars_[sys_var_idx]->get_value().get_type()) {
         // need serialize delta vars
         if (is_sync_sys_var(ids.at(i))){
           // do nothing

@@ -644,7 +644,7 @@ int ObTabletBackfillTXTask::get_backfill_tx_minor_sstables_(
     LOG_WARN("tablet backfill tx task do not init", K(ret));
   } else if (OB_ISNULL(tablet)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("get backfll tx memtables get invalid argument", K(ret), KP(tablet));
+    LOG_WARN("get backfll tx minor sstable get invalid argument", K(ret), KP(tablet));
   } else if (OB_FAIL(tablet->get_mini_minor_sstables(minor_table_iter))) {
     LOG_WARN("failed to get mini  minor sstables", K(ret));
   } else {
@@ -860,6 +860,7 @@ int ObTabletTableBackfillTXTask::prepare_merge_ctx_()
     tablet_merge_ctx_.merge_scn_ = table_handle_.get_table()->is_memtable() ? table_handle_.get_table()->get_key().scn_range_.end_scn_ : backfill_tx_ctx_->log_sync_scn_;
     tablet_merge_ctx_.create_snapshot_version_ = 0;
     tablet_merge_ctx_.schedule_major_ = false;
+    tablet_merge_ctx_.need_parallel_minor_merge_ = false;
 
     if (OB_FAIL(tablet_merge_ctx_.tables_handle_.add_table(table_handle_))) {
       LOG_WARN("failed to add table into tables handle", K(ret), K(table_handle_));
@@ -872,6 +873,9 @@ int ObTabletTableBackfillTXTask::prepare_merge_ctx_()
       LOG_WARN("fail to cal minor merge param", K(ret), K(tablet_merge_ctx_));
     } else if (OB_FAIL(tablet_merge_ctx_.init_merge_info())) {
       LOG_WARN("fail to init merge info", K(ret), K(tablet_merge_ctx_));
+    } else if (1 != tablet_merge_ctx_.parallel_merge_ctx_.get_concurrent_cnt()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("parallel merge concurrent cnt should be 1", K(ret), K(tablet_merge_ctx_));
     }
   }
   return ret;

@@ -93,6 +93,19 @@ struct ObLSVTInfo
   int64_t rebuild_seq_;
   share::SCN tablet_change_checkpoint_scn_;
   share::SCN transfer_scn_;
+  bool tx_blocked_;
+  TO_STRING_KV(K_(ls_id),
+               K_(replica_type),
+               K_(ls_state),
+               K_(migrate_status),
+               K_(tablet_count),
+               K_(weak_read_scn),
+               K_(checkpoint_scn),
+               K_(checkpoint_lsn),
+               K_(rebuild_seq),
+               K_(tablet_change_checkpoint_scn),
+               K_(transfer_scn),
+               K_(tx_blocked));
 };
 
 // 诊断虚表统计信息
@@ -239,6 +252,8 @@ public:
   // @param[in] new_status, the new create state which will be set.
   void set_create_state(const ObInnerLSStatus new_status);
   ObInnerLSStatus get_create_state() const;
+
+  bool is_create_committed() const;
   bool is_need_gc() const;
   bool is_in_gc();
   bool is_enable_for_restore() const;
@@ -313,7 +328,7 @@ public:
   // get tablet but don't check user_data while replaying clog, because user_data may not exist.
   int replay_get_tablet_no_check(
       const common::ObTabletID &tablet_id,
-      const SCN &scn,
+      const share::SCN &scn,
       ObTabletHandle &tablet_handle) const;
 
   int flush_if_need(const bool need_flush);
@@ -642,7 +657,7 @@ public:
   DELEGATE_WITH_RET(member_list_service_, replace_member, int);
   DELEGATE_WITH_RET(member_list_service_, replace_member_with_learner, int);
   DELEGATE_WITH_RET(member_list_service_, get_config_version_and_transfer_scn, int);
-  DELEGATE_WITH_RET(log_handler_, add_learner, int); //TODO(yanfeng): fix it
+  DELEGATE_WITH_RET(log_handler_, add_learner, int);
   DELEGATE_WITH_RET(log_handler_, replace_learners, int);
   DELEGATE_WITH_RET(block_tx_service_, ha_block_tx, int);
   DELEGATE_WITH_RET(block_tx_service_, ha_kill_tx, int);
@@ -682,6 +697,11 @@ public:
   // @return other, there is something wrong or there is some tx not cleaned up.
   // int check_all_tx_clean_up() const;
   CONST_DELEGATE_WITH_RET(ls_tx_svr_, check_all_tx_clean_up, int);
+  // check whether all readonly tx of this ls is cleaned up.
+  // @return OB_SUCCESS, all the readonly tx of this ls cleaned up
+  // @return other, there is something wrong or there is some readonly tx not cleaned up.
+  // int check_all_readonly_tx_clean_up() const;
+  CONST_DELEGATE_WITH_RET(ls_tx_svr_, check_all_readonly_tx_clean_up, int);
   // block new tx in for ls.
   // @return OB_SUCCESS, ls is blocked
   // @return other, there is something wrong.
@@ -785,12 +805,16 @@ public:
       const ObUpdateTableStoreParam &param,
       ObTabletHandle &handle);
   int update_tablet_table_store(
-      const int64_t rebuild_seq,
+      const int64_t ls_rebuild_seq,
       const ObTabletHandle &old_tablet_handle,
       const ObIArray<storage::ObITable *> &tables);
   int build_ha_tablet_new_table_store(
       const ObTabletID &tablet_id,
       const ObBatchUpdateTableStoreParam &param);
+  int build_new_tablet_from_mds_table(
+      const int64_t ls_rebuild_seq,
+      const common::ObTabletID &tablet_id,
+      const share::SCN &flush_scn);
   int try_update_uppder_trans_version();
   int diagnose(DiagnoseInfo &info) const;
 

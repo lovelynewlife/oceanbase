@@ -463,6 +463,11 @@ ObInnerLSStatus ObLS::get_create_state() const
   return ls_meta_.get_ls_create_status();
 }
 
+bool ObLS::is_create_committed() const
+{
+  return ObInnerLSStatus::COMMITTED == ls_meta_.get_ls_create_status();
+}
+
 bool ObLS::is_need_gc() const
 {
   int ret = OB_SUCCESS;
@@ -1218,6 +1223,7 @@ int ObLS::get_ls_info(ObLSVTInfo &ls_info)
   bool is_log_sync = false;
   bool is_need_rebuild = false;
   ObMigrationStatus migrate_status;
+  bool tx_blocked = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ls is not inited", K(ret));
@@ -1228,19 +1234,33 @@ int ObLS::get_ls_info(ObLSVTInfo &ls_info)
     LOG_WARN("get ls need rebuild info failed", K(ret), KPC(this));
   } else if (OB_FAIL(ls_meta_.get_migration_status(migrate_status))) {
     LOG_WARN("get ls migrate status failed", K(ret), KPC(this));
+  } else if (OB_FAIL(ls_tx_svr_.check_tx_blocked(tx_blocked))) {
+    LOG_WARN("check tx ls state error", K(ret),KPC(this));
   } else {
-    ls_info.ls_id_ = ls_meta_.ls_id_;
-    ls_info.replica_type_ = ls_meta_.get_replica_type();
-    ls_info.ls_state_ = role;
-    ls_info.migrate_status_ = migrate_status;
-    ls_info.tablet_count_ = ls_tablet_svr_.get_tablet_count();
-    ls_info.weak_read_scn_ = ls_wrs_handler_.get_ls_weak_read_ts();
-    ls_info.need_rebuild_ = is_need_rebuild;
-    ls_info.checkpoint_scn_ = ls_meta_.get_clog_checkpoint_scn();
-    ls_info.checkpoint_lsn_ = ls_meta_.get_clog_base_lsn().val_;
-    ls_info.rebuild_seq_ = ls_meta_.get_rebuild_seq();
-    ls_info.tablet_change_checkpoint_scn_ = ls_meta_.get_tablet_change_checkpoint_scn();
-    ls_info.transfer_scn_ = ls_meta_.get_transfer_scn();
+    // The readable point of the primary tenant is weak read ts,
+    // and the readable point of the standby tenant is readable scn
+    if (MTL_IS_PRIMARY_TENANT()) {
+      ls_info.weak_read_scn_ = ls_wrs_handler_.get_ls_weak_read_ts();
+    } else if (OB_FAIL(get_ls_replica_readable_scn(ls_info.weak_read_scn_))) {
+      TRANS_LOG(WARN, "get ls replica readable scn fail", K(ret), KPC(this));
+    }
+    if (OB_SUCC(ret)) {
+      ls_info.ls_id_ = ls_meta_.ls_id_;
+      ls_info.replica_type_ = ls_meta_.get_replica_type();
+      ls_info.ls_state_ = role;
+      ls_info.migrate_status_ = migrate_status;
+      ls_info.tablet_count_ = ls_tablet_svr_.get_tablet_count();
+      ls_info.need_rebuild_ = is_need_rebuild;
+      ls_info.checkpoint_scn_ = ls_meta_.get_clog_checkpoint_scn();
+      ls_info.checkpoint_lsn_ = ls_meta_.get_clog_base_lsn().val_;
+      ls_info.rebuild_seq_ = ls_meta_.get_rebuild_seq();
+      ls_info.tablet_change_checkpoint_scn_ = ls_meta_.get_tablet_change_checkpoint_scn();
+      ls_info.transfer_scn_ = ls_meta_.get_transfer_scn();
+      ls_info.tx_blocked_ = tx_blocked;
+      if (tx_blocked) {
+        TRANS_LOG(INFO, "current ls is blocked", K(ls_info));
+      }
+    }
   }
   return ret;
 }
@@ -1324,27 +1344,26 @@ int ObLS::update_tablet_table_store(
   const int64_t read_lock = LSLOCKLOGMETA;
   const int64_t write_lock = 0;
   ObLSLockGuard lock_myself(this, lock_, read_lock, write_lock);
+  const share::ObLSID &ls_id = ls_meta_.ls_id_;
+  const int64_t rebuild_seq = ls_meta_.get_rebuild_seq();
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ls is not inited", K(ret));
   } else if (OB_UNLIKELY(!tablet_id.is_valid() || !param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("update tablet table store get invalid argument", K(ret), K(tablet_id), K(param));
-  } else {
-    const int64_t rebuild_seq = ls_meta_.get_rebuild_seq();
-    if (param.rebuild_seq_ != rebuild_seq) {
-      ret = OB_EAGAIN;
-      LOG_WARN("update tablet table store rebuild seq not same, need retry",
-          K(ret), K(tablet_id), K(rebuild_seq), K(param));
-    } else if (OB_FAIL(ls_tablet_svr_.update_tablet_table_store(tablet_id, param, handle))) {
-      LOG_WARN("failed to update tablet table store", K(ret), K(tablet_id), K(param));
-    }
+    LOG_WARN("update tablet table store get invalid argument", K(ret), K(ls_id), K(tablet_id), K(param));
+  } else if (param.rebuild_seq_ != rebuild_seq) {
+    ret = OB_EAGAIN;
+    LOG_WARN("update tablet table store rebuild seq not same, need retry",
+        K(ret), K(ls_id), K(tablet_id), K(rebuild_seq), K(param));
+  } else if (OB_FAIL(ls_tablet_svr_.update_tablet_table_store(tablet_id, param, handle))) {
+    LOG_WARN("failed to update tablet table store", K(ret), K(ls_id), K(tablet_id), K(param));
   }
   return ret;
 }
 
 int ObLS::update_tablet_table_store(
-    const int64_t rebuild_seq,
+    const int64_t ls_rebuild_seq,
     const ObTabletHandle &old_tablet_handle,
     const ObIArray<storage::ObITable *> &tables)
 {
@@ -1359,12 +1378,14 @@ int ObLS::update_tablet_table_store(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(old_tablet_handle), K(tables));
   } else {
-    const int64_t seq = ls_meta_.get_rebuild_seq();
-    if (rebuild_seq != seq) {
+    const share::ObLSID &ls_id = ls_meta_.ls_id_;
+    const common::ObTabletID &tablet_id = old_tablet_handle.get_obj()->get_tablet_meta().tablet_id_;
+    const int64_t rebuild_seq = ls_meta_.get_rebuild_seq();
+    if (OB_UNLIKELY(ls_rebuild_seq != rebuild_seq)) {
       ret = OB_EAGAIN;
-      LOG_WARN("rebuild seq has changed, retry", K(ret), K(seq), K(rebuild_seq));
+      LOG_WARN("rebuild seq has changed, retry", K(ret), K(ls_id), K(tablet_id), K(rebuild_seq), K(ls_rebuild_seq));
     } else if (OB_FAIL(ls_tablet_svr_.update_tablet_table_store(old_tablet_handle, tables))) {
-      LOG_WARN("fail to replace small sstables in the tablet", K(ret), K(old_tablet_handle), K(tables));
+      LOG_WARN("fail to replace small sstables in the tablet", K(ret), K(ls_id), K(tablet_id), K(old_tablet_handle), K(tables));
     }
   }
   return ret;
@@ -1378,21 +1399,47 @@ int ObLS::build_ha_tablet_new_table_store(
   int64_t read_lock = LSLOCKLOGMETA;
   int64_t write_lock = 0;
   ObLSLockGuard lock_myself(this, lock_, read_lock, write_lock);
+  const share::ObLSID &ls_id = ls_meta_.ls_id_;
   const int64_t rebuild_seq = ls_meta_.get_rebuild_seq();
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ls is not inited", K(ret));
   } else if (!tablet_id.is_valid() || !param.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("build ha tablet new table store get invalid argument", K(ret), K(tablet_id), K(param));
-  } else {
-    if (param.rebuild_seq_ != rebuild_seq) {
-      ret = OB_EAGAIN;
-      LOG_WARN("build ha tablet new table store rebuild seq not same, need retry",
-          K(ret), K(tablet_id), K(rebuild_seq), K(param));
-    } else if (OB_FAIL(ls_tablet_svr_.build_ha_tablet_new_table_store(tablet_id, param))) {
-      LOG_WARN("failed to update tablet table store", K(ret), K(tablet_id), K(param));
-    }
+    LOG_WARN("build ha tablet new table store get invalid argument", K(ret), K(ls_id), K(tablet_id), K(param));
+  } else if (param.rebuild_seq_ != rebuild_seq) {
+    ret = OB_EAGAIN;
+    LOG_WARN("build ha tablet new table store rebuild seq not same, need retry",
+        K(ret), K(ls_id), K(tablet_id), K(rebuild_seq), K(param));
+  } else if (OB_FAIL(ls_tablet_svr_.build_ha_tablet_new_table_store(tablet_id, param))) {
+    LOG_WARN("failed to update tablet table store", K(ret), K(ls_id), K(tablet_id), K(param));
+  }
+  return ret;
+}
+
+int ObLS::build_new_tablet_from_mds_table(
+    const int64_t ls_rebuild_seq,
+    const common::ObTabletID &tablet_id,
+    const share::SCN &flush_scn)
+{
+  int ret = OB_SUCCESS;
+  const int64_t read_lock = LSLOCKLOGMETA;
+  const int64_t write_lock = 0;
+  ObLSLockGuard lock_myself(this, lock_, read_lock, write_lock);
+  const share::ObLSID &ls_id = ls_meta_.ls_id_;
+  const int64_t rebuild_seq = ls_meta_.get_rebuild_seq();
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ls is not inited", K(ret));
+  } else if (OB_UNLIKELY(!tablet_id.is_valid() || !flush_scn.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", K(ret), K(ls_id), K(tablet_id), K(flush_scn));
+  } else if (OB_UNLIKELY(ls_rebuild_seq != rebuild_seq)) {
+    ret = OB_EAGAIN;
+    LOG_WARN("rebuild seq is not the same with current ls, need retry",
+        K(ret), K(ls_id), K(tablet_id), K(ls_rebuild_seq), K(rebuild_seq), K(flush_scn));
+  } else if (OB_FAIL(ls_tablet_svr_.build_new_tablet_from_mds_table(tablet_id, flush_scn))) {
+    LOG_WARN("failed to build new tablet from mds table", K(ret), K(ls_id), K(tablet_id), K(flush_scn));
   }
   return ret;
 }
@@ -1769,7 +1816,7 @@ int ObLS::get_ls_meta_package_and_tablet_metas(
   } else if (OB_FAIL(tablet_gc_handler_.disable_gc())) {
     LOG_WARN("failed to disable gc", K(ret), "ls_id", ls_meta_.ls_id_);
   } else {
-    // TODO(wangxiaohui.wxh) consider the ls is offline meanwhile.
+    // TODO(wangxiaohui.wxh) 4.3, consider the ls is offline meanwhile.
     // disable gc while get all tablet meta
     ObLSMetaPackage meta_package;
     if (OB_FAIL(get_ls_meta_package(check_archive, meta_package))) {

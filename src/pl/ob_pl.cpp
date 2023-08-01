@@ -2569,8 +2569,10 @@ int ObPLExecState::init_complex_obj(ObIAllocator &allocator,
     if (!obj.is_pl_extend()) {
       ret = OB_NOT_SUPPORTED;
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "generic paramter has a non composite input value");
+    } else if (OB_ISNULL(composite = reinterpret_cast<ObPLComposite*>(obj.get_ext()))) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "generic parameter has null value pointer");
     }
-    CK (OB_NOT_NULL(composite = reinterpret_cast<ObPLComposite*>(obj.get_ext())));
     if (OB_FAIL(ret)) {
     } else if (OB_NOT_NULL(session->get_pl_context())
           && OB_NOT_NULL(session->get_pl_context()->get_current_ctx())) {
@@ -2650,16 +2652,34 @@ int ObPLExecState::check_routine_param_legal(ParamStore *params)
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("incorrect argument type, expected complex, but get basic type", K(ret));
         }
-      } else if (NULL == reinterpret_cast<const ObPLComposite *>(params->at(i).get_ext())) {
+      } else if (0 == params->at(i).get_ext()
+                || ((PL_REF_CURSOR_TYPE == params->at(i).get_meta().get_extend_type()
+                     || PL_CURSOR_TYPE == params->at(i).get_meta().get_extend_type())
+                      && dest_type.is_cursor_type())) {
         // do nothing
       } else {
         const pl::ObPLComposite *src_composite = NULL;
         uint64_t udt_id = params->at(i).get_udt_id();
         CK (OB_NOT_NULL(src_composite = reinterpret_cast<const ObPLComposite *>(params->at(i).get_ext())));
+        OV (params->at(i).is_pl_extend(), OB_ERR_UNEXPECTED, K(params->at(i)), K(i));
         if (OB_FAIL(ret)) {
         } else if (!dest_type.is_composite_type()) {
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("incorrect argument type", K(ret));
+        } else if (OB_INVALID_ID == udt_id) {
+          if (PL_RECORD_TYPE == params->at(i).get_meta().get_extend_type()
+              || PL_NESTED_TABLE_TYPE == params->at(i).get_meta().get_extend_type()
+              || PL_ASSOCIATIVE_ARRAY_TYPE == params->at(i).get_meta().get_extend_type()
+              || PL_VARRAY_TYPE == params->at(i).get_meta().get_extend_type()) {
+            const ObPLComposite *composite = reinterpret_cast<const ObPLComposite *>(params->at(i).get_ext());
+            CK (OB_NOT_NULL(composite));
+            OV (udt_id = composite->get_id(), OB_ERR_UNEXPECTED, KPC(composite), K(params->at(i)), K(i));
+          } else if (PL_OPAQUE_TYPE == params->at(i).get_meta().get_extend_type()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("opaque type without udtid is unexpected", K(ret), K(params->at(i)), K(i));
+          }
+        }
+        if (OB_FAIL(ret)) {
         } else if (OB_INVALID_ID == udt_id) { // 匿名数组
           bool need_cast = false;
           const pl::ObPLCollection *src_coll = NULL;
@@ -2763,7 +2783,7 @@ int ObPLExecState::init_params(const ParamStore *params, bool is_anonymous)
     OZ (ctx_.exec_ctx_->init_pl_ctx());
     CK (OB_NOT_NULL(ctx_.exec_ctx_->get_pl_ctx()));
   }
-  if (OB_SUCC(ret) && ctx_.exec_ctx_->get_sql_ctx()->is_execute_call_stmt_) {
+  if (OB_SUCC(ret) && top_call_ && ctx_.exec_ctx_->get_sql_ctx()->is_execute_call_stmt_) {
     OZ (check_routine_param_legal(const_cast<ParamStore *>(params)));
   }
   OZ (get_params().reserve(func_.get_variables().count()));
