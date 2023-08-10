@@ -1402,6 +1402,7 @@ int ObJoinOrder::refine_table_heuristics_result(const uint64_t table_id,
                                                                    temp_ordering_info))) {
         LOG_WARN("failed to get ordering info", K(table_id), K(index_id), K(ret));
       } else if (OB_ISNULL(temp_ordering_info)) {
+        ret = OB_ERR_UNEXPECTED;
         LOG_WARN("ordering info is null", K(ret));
       } else { /* do nothing*/ }
       // examine all matched unique index
@@ -1592,22 +1593,13 @@ int ObJoinOrder::create_one_access_path(const uint64_t table_id,
   } else if (OB_ISNULL(index_info_entry)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("index info entry should not be null", K(ret));
-  } else if (helper.is_inner_path_ &&
+  } else if (!helper.force_inner_nl_ && helper.is_inner_path_ &&
              (index_info_entry->get_ordering_info().get_index_keys().count() <= 0)) {
-    LOG_TRACE("OPT:skip adding inner access path due to wrong index key count",
-                K(table_id), K(ref_id));
+    LOG_TRACE("skip adding inner access path due to wrong index key count",
+                K(table_id), K(ref_id), KPC(index_info_entry));
   } else if (OB_ISNULL(ap = reinterpret_cast<AccessPath*>(allocator_->alloc(sizeof(AccessPath))))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("failed to allocate an AccessPath", K(ret));
-  } else if (get_plan()->get_optimizer_context().is_batched_multi_stmt()) {
-    if (OB_ISNULL(table_item = get_plan()->get_stmt()->get_table_item_by_id(table_id))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("table_item is null", K(ret), K(table_id));
-    }
-  }
-
-  if (OB_FAIL(ret)) {
-    //do nothing
   } else {
     LOG_TRACE("OPT:start to create access path",
                 K(table_id), K(ref_id), K(index_id), K(helper.is_inner_path_), K(use_das));
@@ -2064,6 +2056,7 @@ int ObJoinOrder::cal_dimension_info(const uint64_t table_id, //alias table id
       if (OB_FAIL(guard->get_table_schema(index_table_id, index_schema))) {
         LOG_WARN("failed to get table schema", K(ret));
       } else if (OB_ISNULL(index_schema)) {
+        ret = OB_ERR_UNEXPECTED;
         LOG_WARN("index schema should not be null", K(ret));
       } else if (OB_FAIL(extract_filter_column_ids(restrict_infos,
                                                    data_table_id == index_table_id,
@@ -2618,12 +2611,15 @@ int ObJoinOrder::compute_cost_and_prune_access_path(PathHelper &helper,
         }
       } else if (!is_virtual_table(ap->get_ref_table_id()) ||
                 is_oracle_mapping_real_virtual_table(ap->get_ref_table_id()) ||
-                ap->is_get_) {
+                ap->is_get_ ||
+                helper.force_inner_nl_) {
         if (OB_FAIL(helper.inner_paths_.push_back(ap))) {
           LOG_WARN("failed to push back inner path", K(ret));
         } else {
           LOG_TRACE("OPT:succeed to add inner access path", K(*ap));
         }
+      } else {
+        LOG_TRACE("path not add ", K(helper.force_inner_nl_));
       }
     } // add path end
   }
@@ -3510,7 +3506,7 @@ int ObJoinOrder::sort_predicate_by_index_column(const ObIArray<ColumnItem> &rang
           } else if (!is_in_expr &&
                     OB_FAIL(candi_exprs->eq_exprs_.push_back(expr))) {
             LOG_WARN("failed to push back expr", K(ret));
-          } else if (sort_exprs.push_back(candi_exprs)) {
+          } else if (OB_FAIL(sort_exprs.push_back(candi_exprs))) {
             LOG_WARN("failed to push back expr", K(ret));
           }
         }
@@ -7459,22 +7455,15 @@ int ObJoinOrder::generate_normal_subquery_paths()
   } else if (OB_ISNULL(helper.child_stmt_ = table_item->ref_query_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt is null", K(ret));
-  } else if (OB_FAIL(ObOptimizerUtil::pushdown_filter_into_subquery(*parent_stmt,
-                                                                    *helper.child_stmt_,
-                                                                    get_plan()->get_optimizer_context(),
-                                                                    get_restrict_infos(),
-                                                                    candi_pushdown_quals,
-                                                                    helper.filters_,
-                                                                    can_pushdown))) {
-    LOG_WARN("failed to pushdown filter into subquery", K(ret));
-  } else if (OB_FAIL(ObOptimizerUtil::rename_pushdown_filter(*parent_stmt,
-                                                            *helper.child_stmt_,
-                                                            table_id_,
-                                                            session_info,
-                                                            *expr_factory,
-                                                            candi_pushdown_quals,
-                                                            helper.pushdown_filters_))) {
-    LOG_WARN("failed to rename pushdown filter", K(ret));
+  } else if (OB_FAIL(ObOptimizerUtil::pushdown_and_rename_filter_into_subquery(*parent_stmt,
+                                                                               *helper.child_stmt_,
+                                                                               table_id_,
+                                                                               get_plan()->get_optimizer_context(),
+                                                                               get_restrict_infos(),
+                                                                               helper.pushdown_filters_,
+                                                                               helper.filters_,
+                                                                               /*check_match_index*/false))) {
+        LOG_WARN("failed to push down filter into subquery", K(ret));
   } else if (OB_FAIL(generate_subquery_paths(helper))) {
     LOG_WARN("failed to generate subquery path", K(ret));
   }
@@ -11204,9 +11193,9 @@ int ObJoinOrder::fill_filters(const ObIArray<ObRawExpr*> &all_filters,
           LOG_WARN("unexpected null expr", K(ret));
         } else if (expr->has_flag(CNT_DYNAMIC_PARAM)) {
           ret = est_cost_info.pushdown_prefix_filters_.push_back(expr);
-        } else if (ObOptimizerUtil::extract_column_ids(expr,
+        } else if (OB_FAIL(ObOptimizerUtil::extract_column_ids(expr,
                                                        est_cost_info.table_id_,
-                                                       column_bs)) {
+                                                       column_bs))) {
           LOG_WARN("failed to extract column ids", K(ret));
         } else {
           ret = new_prefix_filters.push_back(expr);
@@ -11250,8 +11239,8 @@ int ObJoinOrder::fill_filters(const ObIArray<ObRawExpr*> &all_filters,
           LOG_WARN("unexpected null expr", K(ret));
         } else if (ObOptimizerUtil::find_equal_expr(est_cost_info.prefix_filters_, filter)) {
           /*do nothing*/
-        } else if (ObOptimizerUtil::extract_column_ids(filter, est_cost_info.table_id_,
-                                                       expr_column_bs)) {
+        } else if (OB_FAIL(ObOptimizerUtil::extract_column_ids(filter, est_cost_info.table_id_,
+                                                       expr_column_bs))) {
           LOG_WARN("failed to extract column ids", K(ret));
         } else if (!expr_column_bs.is_subset(index_column_bs)) {
           ret = est_cost_info.table_filters_.push_back(filter);
@@ -11286,9 +11275,9 @@ int ObJoinOrder::fill_filters(const ObIArray<ObRawExpr*> &all_filters,
           if (OB_ISNULL(filter)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected null expr", K(ret));
-          } else if (ObOptimizerUtil::extract_column_ids(filter,
+          } else if (OB_FAIL(ObOptimizerUtil::extract_column_ids(filter,
                                                         est_cost_info.table_id_,
-                                                        expr_column_bs)) {
+                                                        expr_column_bs))) {
             LOG_WARN("failed to extract column ids", K(ret));
           } else if (expr_column_bs.is_subset(prefix_column_bs)) {
             ret = est_cost_info.prefix_filters_.push_back(filter);
@@ -12901,6 +12890,7 @@ int ObJoinOrder::generate_inner_base_table_paths(const ObIArray<ObRawExpr *> &jo
   ObSEArray<ObRawExpr*, 4> pushdown_quals;
   PathHelper helper;
   helper.is_inner_path_ = true;
+  helper.force_inner_nl_ = inner_path_info.force_inner_nl_;
   helper.table_opt_info_ = &inner_path_info.table_opt_info_;
   ObSEArray<ObExecParamRawExpr *, 4> nl_params;
   bool is_valid = false;
@@ -13921,7 +13911,7 @@ int ObJoinOrder::try_get_generated_col_index_expr(ObRawExpr *qual,
       if (OB_ISNULL(child)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("child is null", K(ret));
-      } else if (ObOptimizerUtil::get_expr_without_lossless_cast(child, child)) {
+      } else if (OB_FAIL(ObOptimizerUtil::get_expr_without_lossless_cast(child, child))) {
         LOG_WARN("fail to get real child without lossless cast", K(ret));
       } else if (OB_ISNULL(child)) {
         ret = OB_ERR_UNEXPECTED;

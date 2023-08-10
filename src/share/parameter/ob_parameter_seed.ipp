@@ -264,7 +264,7 @@ DEF_TIME_WITH_CHECKER(max_stale_time_for_weak_consistency, OB_TENANT_PARAMETER, 
                       "the max data stale time that cluster weak read version behind current timestamp,"
                       "no smaller than weak_read_version_refresh_interval, range: [5s, +∞)",
                       ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_BOOL(enable_monotonic_weak_read, OB_TENANT_PARAMETER, "true",
+DEF_BOOL(enable_monotonic_weak_read, OB_TENANT_PARAMETER, "false",
          "specifies observer supportting atomicity and monotonic order read",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_DBL(server_cpu_quota_min, OB_CLUSTER_PARAMETER, "1", "[1,16]",
@@ -1380,7 +1380,7 @@ DEF_BOOL(_enable_tenant_sql_net_thread, OB_CLUSTER_PARAMETER, "True",
 #else
 DEF_STR_LIST(sanity_whitelist, OB_CLUSTER_PARAMETER, "", "vip who wouldn't leading to coredump",
              ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_BOOL(_enable_tenant_leak_memory_protection, OB_CLUSTER_PARAMETER, "True", "protect unfreed objects while deletes tenant",
+DEF_BOOL(_enable_tenant_leak_memory_protection, OB_CLUSTER_PARAMETER, "False", "protect unfreed objects while deletes tenant",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 #endif
 DEF_TIME(_advance_checkpoint_timeout, OB_CLUSTER_PARAMETER, "30m", "[10s,180m]",

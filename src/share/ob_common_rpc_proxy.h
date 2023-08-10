@@ -188,11 +188,10 @@ public:
   RPC_S(PRD split_resource_pool, obrpc::OB_SPLIT_RESOURCE_POOL, (ObSplitResourcePoolArg));
   RPC_S(PRD merge_resource_pool, obrpc::OB_MERGE_RESOURCE_POOL, (ObMergeResourcePoolArg));
   RPC_S(PRD alter_resource_tenant, obrpc::OB_ALTER_RESOURCE_TENANT, (ObAlterResourceTenantArg));
-
-  RPC_S(PRD root_minor_freeze, obrpc::OB_ROOT_MINOR_FREEZE, (ObRootMinorFreezeArg));
   RPC_S(PRD update_index_status, obrpc::OB_UPDATE_INDEX_TABLE_STATUS, (ObUpdateIndexStatusArg));
 
   // define system admin rpc (alter system ...)
+  RPC_S(PR5 root_minor_freeze, obrpc::OB_ROOT_MINOR_FREEZE, (ObRootMinorFreezeArg));
   RPC_S(PR5 admin_switch_replica_role, obrpc::OB_ADMIN_SWITCH_REPLICA_ROLE, (ObAdminSwitchReplicaRoleArg));
   RPC_S(PR5 admin_switch_rs_role, obrpc::OB_ADMIN_SWITCH_RS_ROLE, (ObAdminSwitchRSRoleArg));
   RPC_S(PR5 admin_drop_replica, obrpc::OB_ADMIN_DROP_REPLICA, (ObAdminDropReplicaArg));
@@ -263,7 +262,7 @@ public:
   RPC_S(PR5 get_recycle_schema_versions, OB_GET_RECYCLE_SCHEMA_VERSIONS, (obrpc::ObGetRecycleSchemaVersionsArg), obrpc::ObGetRecycleSchemaVersionsResult);
 
   // backup and restore
-  RPC_S(PRD physical_restore_tenant, OB_PHYSICAL_RESTORE_TENANT, (obrpc::ObPhysicalRestoreTenantArg));
+  RPC_S(PRD physical_restore_tenant, OB_PHYSICAL_RESTORE_TENANT, (obrpc::ObPhysicalRestoreTenantArg), obrpc::Int64);
   RPC_S(PRD rebuild_index_in_restore, OB_REBUILD_INDEX_IN_RESTORE, (obrpc::ObRebuildIndexInRestoreArg));
   RPC_S(PR5 archive_log, obrpc::OB_ARCHIVE_LOG, (ObArchiveLogArg));
   RPC_S(PRD backup_database, obrpc::OB_BACKUP_DATABASE, (ObBackupDatabaseArg)); // use ddl thread

@@ -888,7 +888,7 @@ int ObDynamicSampling::get_all_tablet_id_and_object_id(const ObDSTableParam &par
     } else if (OB_FAIL(ctx_->get_exec_ctx()->get_das_ctx().get_das_tablet_mapper(param.table_id_,
                                                                                 tablet_mapper))) {
       LOG_WARN("fail to get das tablet mapper", K(ret));
-    } else if (tablet_mapper.get_non_partition_tablet_id(tmp_tablet_ids, tmp_part_ids)) {
+    } else if (OB_FAIL(tablet_mapper.get_non_partition_tablet_id(tmp_tablet_ids, tmp_part_ids))) {
       LOG_WARN("failed to get non partition tablet id", K(ret));
     } else if (OB_UNLIKELY(tmp_part_ids.count() != 1 || tmp_tablet_ids.count() != 1)) {
       ret = OB_ERR_UNEXPECTED;
@@ -1347,7 +1347,7 @@ int ObDynamicSamplingUtils::check_ds_can_use_filter(const ObRawExpr *filter,
   } else if (filter->has_flag(CNT_DYNAMIC_PARAM) ||
              filter->has_flag(CNT_SUB_QUERY) ||
              filter->has_flag(CNT_RAND_FUNC) ||
-             filter->has_flag(CNT_USER_VARIABLE) ||
+             filter->has_flag(CNT_DYNAMIC_USER_VARIABLE) ||
              filter->has_flag(CNT_PL_UDF) ||
              filter->has_flag(CNT_SO_UDF) ||
              filter->get_expr_type() == T_FUN_SET_TO_STR ||

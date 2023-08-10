@@ -92,6 +92,7 @@ struct ObOptParamHint
     DEF(USE_DEFAULT_OPT_STAT,)            \
     DEF(USE_FORCE_BLOCK_SAMPLE,)          \
     DEF(ENABLE_IN_RANGE_OPTIMIZATION,)    \
+    DEF(XSOLAPI_GENERATE_WITH_CLAUSE,)   \
 
   DECLARE_ENUM(OptParamType, opt_param, OPT_PARAM_TYPE_DEF, static);
 
@@ -435,6 +436,8 @@ public:
   bool is_view_merge_hint() const { return HINT_VIEW_MERGE == hint_class_; }
   bool is_pred_deduce_hint() const { return T_PRED_DEDUCE == hint_type_; }
   bool is_unnest_hint() const { return T_UNNEST == hint_type_; }
+  bool is_aggr_first_unnest_hint() const { return T_AGGR_FIRST_UNNEST == hint_type_; }
+  bool is_join_first_unnest_hint() const { return T_JOIN_FIRST_UNNEST == hint_type_; }
   bool is_coalesce_sq_hint() const { return HINT_COALESCE_SQ == hint_class_; }
   bool is_materialize_hint() const { return HINT_MATERIALIZE == hint_class_; }
   bool is_semi_to_inner_hint() const { return HINT_SEMI_TO_INNER == hint_class_; }
@@ -684,6 +687,8 @@ struct QbNameList {
   bool has_qb_name(const ObString &qb_name) const;
   bool is_equal(const ObIArray<ObSelectStmt*> &stmts) const;
   bool is_equal(const ObIArray<ObString> &qb_name_list) const;
+  bool is_subset(const ObIArray<ObSelectStmt*> &stmts) const;
+  bool is_subset(const ObIArray<ObString> &qb_name_list) const;
   bool empty() const { return qb_names_.empty(); }
   TO_STRING_KV(K_(qb_names));
   common::ObSEArray<ObString, 4, common::ModulePageAllocator, true> qb_names_;

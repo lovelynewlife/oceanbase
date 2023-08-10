@@ -14,6 +14,7 @@ namespace storage
 {
 using namespace common;
 using namespace blocksstable;
+using namespace table;
 
 ObDirectLoadMultipleExternalRow::ObDirectLoadMultipleExternalRow()
   : allocator_("TLD_ME_Row"), buf_size_(0), buf_(nullptr)
@@ -23,6 +24,7 @@ ObDirectLoadMultipleExternalRow::ObDirectLoadMultipleExternalRow()
 
 void ObDirectLoadMultipleExternalRow::reset()
 {
+  seq_no_.reset();
   buf_size_ = 0;
   buf_ = nullptr;
   allocator_.reset();
@@ -30,6 +32,7 @@ void ObDirectLoadMultipleExternalRow::reset()
 
 void ObDirectLoadMultipleExternalRow::reuse()
 {
+  seq_no_.reset();
   buf_size_ = 0;
   buf_ = nullptr;
   allocator_.reuse();
@@ -45,7 +48,7 @@ int64_t ObDirectLoadMultipleExternalRow::get_deep_copy_size() const
 int ObDirectLoadMultipleExternalRow::deep_copy(const ObDirectLoadMultipleExternalRow &src,
                                                char *buf, const int64_t len, int64_t &pos)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_deep_copy_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_deep_copy_time_us);
   int ret = OB_SUCCESS;
   const int64_t deep_copy_size = src.get_deep_copy_size();
   if (OB_UNLIKELY(!src.is_valid() || len - pos < deep_copy_size)) {
@@ -54,6 +57,7 @@ int ObDirectLoadMultipleExternalRow::deep_copy(const ObDirectLoadMultipleExterna
   } else {
     reuse();
     buf_size_ = src.buf_size_;
+    seq_no_ = src.seq_no_;
     buf_ = buf + pos;
     MEMCPY(buf + pos, src.buf_, buf_size_);
     pos += buf_size_;
@@ -61,9 +65,9 @@ int ObDirectLoadMultipleExternalRow::deep_copy(const ObDirectLoadMultipleExterna
   return ret;
 }
 
-int ObDirectLoadMultipleExternalRow::from_datums(ObStorageDatum *datums, int64_t column_count)
+int ObDirectLoadMultipleExternalRow::from_datums(ObStorageDatum *datums, int64_t column_count, const ObTableLoadSequenceNo &seq_no)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(transfer_external_row_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, transfer_external_row_time_us);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(nullptr == datums || column_count <= 0)) {
     ret = OB_INVALID_ARGUMENT;
@@ -84,6 +88,7 @@ int ObDirectLoadMultipleExternalRow::from_datums(ObStorageDatum *datums, int64_t
         LOG_WARN("fail to serialize datum array", KR(ret));
       } else {
         buf_ = buf;
+        seq_no_ = seq_no;
         buf_size_ = buf_size;
       }
     }
@@ -93,7 +98,7 @@ int ObDirectLoadMultipleExternalRow::from_datums(ObStorageDatum *datums, int64_t
 
 int ObDirectLoadMultipleExternalRow::to_datums(ObStorageDatum *datums, int64_t column_count) const
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(transfer_datum_row_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, transfer_datum_row_time_us);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;
@@ -119,9 +124,9 @@ int ObDirectLoadMultipleExternalRow::to_datums(ObStorageDatum *datums, int64_t c
 
 OB_DEF_SERIALIZE_SIMPLE(ObDirectLoadMultipleExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_serialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_serialize_time_us);
   int ret = OB_SUCCESS;
-  LST_DO_CODE(OB_UNIS_ENCODE, tablet_id_.id(), buf_size_);
+  LST_DO_CODE(OB_UNIS_ENCODE, tablet_id_.id(), seq_no_, buf_size_);
   if (OB_SUCC(ret) && OB_NOT_NULL(buf_)) {
     MEMCPY(buf + pos, buf_, buf_size_);
     pos += buf_size_;
@@ -131,11 +136,11 @@ OB_DEF_SERIALIZE_SIMPLE(ObDirectLoadMultipleExternalRow)
 
 OB_DEF_DESERIALIZE_SIMPLE(ObDirectLoadMultipleExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_deserialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_deserialize_time_us);
   int ret = OB_SUCCESS;
   reset();
   uint64_t id = 0;
-  LST_DO_CODE(OB_UNIS_DECODE, id, buf_size_);
+  LST_DO_CODE(OB_UNIS_DECODE, id, seq_no_, buf_size_);
   if (OB_SUCC(ret)) {
     tablet_id_ = id;
     buf_ = buf + pos;
@@ -146,9 +151,9 @@ OB_DEF_DESERIALIZE_SIMPLE(ObDirectLoadMultipleExternalRow)
 
 OB_DEF_SERIALIZE_SIZE_SIMPLE(ObDirectLoadMultipleExternalRow)
 {
-  OB_TABLE_LOAD_STATISTICS_TIME_COST(external_row_serialize_time_us);
+  OB_TABLE_LOAD_STATISTICS_TIME_COST(DEBUG, external_row_serialize_time_us);
   int64_t len = 0;
-  LST_DO_CODE(OB_UNIS_ADD_LEN, tablet_id_.id(), buf_size_);
+  LST_DO_CODE(OB_UNIS_ADD_LEN, tablet_id_.id(), seq_no_, buf_size_);
   len += buf_size_;
   return len;
 }

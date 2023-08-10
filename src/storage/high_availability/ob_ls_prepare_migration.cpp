@@ -725,12 +725,14 @@ int ObStartPrepareMigrationTask::process()
     LOG_WARN("failed to deal with local ls", K(ret), K(*ctx_));
   } else if (OB_FAIL(wait_transfer_tablets_ready_())) {
     LOG_WARN("failed to wait transfer tablets ready", K(ret), KPC(ctx_));
-  } else if (OB_FAIL(remove_local_incomplete_tablets_())) {
-    LOG_WARN("failed to remove local incomplete tablets", K(ret), KPC(ctx_));
   }
   //TODO(muwei.ym) delete it in 4.2 RC3
   /*
-  else if (OB_FAIL(wait_log_replay_sync_())) {
+   else if (OB_FAIL(remove_local_incomplete_tablets_())) {
+    LOG_WARN("failed to remove local incomplete tablets", K(ret), KPC(ctx_));
+  } else if (OB_FAIL(remove_local_incomplete_tablets_())) {
+    LOG_WARN("failed to remove local incomplete tablets", K(ret), KPC(ctx_));
+  } else if (OB_FAIL(wait_log_replay_sync_())) {
     LOG_WARN("failed to wait log replay sync", K(ret), KPC(ctx_));
   } else if (OB_FAIL(wait_ls_checkpoint_scn_push_())) {
     LOG_WARN("failed to wait ls checkpoint ts push", K(ret), KPC(ctx_));
@@ -1225,6 +1227,9 @@ int ObStartPrepareMigrationTask::wait_transfer_tablets_ready_()
         //do nothing
       } else if (OB_FAIL(ObTXTransferUtils::get_tablet_status(false/*get_commit*/, tablet, user_data))) {
         LOG_WARN("failed to get tablet status", K(ret), KPC(tablet));
+        if (OB_EMPTY_RESULT == ret) {
+          ret = OB_SUCCESS;
+        }
       } else if (ObTabletStatus::TRANSFER_OUT != user_data.tablet_status_
           && ObTabletStatus::TRANSFER_OUT_DELETED != user_data.tablet_status_) {
         //do nothing

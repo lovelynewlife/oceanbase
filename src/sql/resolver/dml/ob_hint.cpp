@@ -739,6 +739,11 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
     }
+    case XSOLAPI_GENERATE_WITH_CLAUSE: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
     default:
       LOG_TRACE("invalid opt param val", K(param_type), K(val));
       break;
@@ -873,6 +878,8 @@ ObItemType ObHint::get_hint_type(ObItemType type)
     case T_NO_PRED_DEDUCE:    return T_PRED_DEDUCE;
     case T_NO_PUSH_PRED_CTE:      return T_PUSH_PRED_CTE;
     case T_NO_PULLUP_EXPR :       return T_PULLUP_EXPR;
+    case T_NO_AGGR_FIRST_UNNEST:           return T_AGGR_FIRST_UNNEST;
+    case T_NO_JOIN_FIRST_UNNEST:           return T_JOIN_FIRST_UNNEST;
 
     // optimize hint
     case T_NO_USE_DAS_HINT:     return T_USE_DAS_HINT;
@@ -927,7 +934,9 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_ELIMINATE_JOIN :     return is_enable_hint ? "ELIMINATE_JOIN" : "NO_ELIMINATE_JOIN";
     case T_WIN_MAGIC :          return is_enable_hint ? "WIN_MAGIC" : "NO_WIN_MAGIC";
     case T_PUSH_LIMIT :         return is_enable_hint ? "PUSH_LIMIT" : "NO_PUSH_LIMIT";
-    case T_PULLUP_EXPR :         return is_enable_hint ? "PULLUP_EXPR" : "NO_PULLUP_EXPR";
+    case T_PULLUP_EXPR :        return is_enable_hint ? "PULLUP_EXPR" : "NO_PULLUP_EXPR";
+    case T_AGGR_FIRST_UNNEST:           return is_enable_hint ? "AGGR_FIRST_UNNEST" : "NO_AGGR_FIRST_UNNEST";
+    case T_JOIN_FIRST_UNNEST:           return is_enable_hint ? "JOIN_FIRST_UNNEST" : "NO_JOIN_FIRST_UNNEST";
     // optimize hint
     case T_INDEX_HINT:          return "INDEX";
     case T_FULL_HINT:           return "FULL";
@@ -1299,6 +1308,59 @@ bool QbNameList::is_equal(const ObIArray<ObString> &qb_name_list) const
     bool all_found = true;
     for (int i = 0; all_found && i < qb_name_list.count(); ++i) {
       if (!has_qb_name(qb_name_list.at(i))) {
+        all_found = false;
+      }
+    }
+    if (all_found) {
+      bret = true;
+    }
+  }
+  return bret;
+}
+
+bool QbNameList::is_subset(const ObIArray<ObSelectStmt*> &stmts) const
+{
+  bool bret = false;
+  if (qb_names_.count() <= stmts.count()) {
+    bool all_found = true;
+    for (int i = 0; all_found && i < qb_names_.count(); ++i) {
+      bool find = false;
+      ObString stmt_qb_name;
+      for (int j = 0; !find && j < stmts.count(); j ++) {
+        int ret = OB_SUCCESS;
+        if (OB_ISNULL(stmts.at(j))) {
+          LOG_WARN("unexpected null stmt");
+        } else if (OB_FAIL(stmts.at(j)->get_qb_name(stmt_qb_name))) {
+          LOG_WARN("failed to get qb name");
+        } else if (0 == stmt_qb_name.case_compare(qb_names_.at(i))) {
+          find = true;
+        }
+      }
+      if (!find) {
+        all_found = false;
+      }
+    }
+    if (all_found) {
+      bret = true;
+    }
+  }
+  return bret;
+}
+
+bool QbNameList::is_subset(const ObIArray<ObString> &qb_name_list) const
+{
+  bool bret = false;
+  if (qb_names_.count() <= qb_name_list.count()) {
+    bool all_found = true;
+    for (int i = 0; all_found && i < qb_names_.count(); ++i) {
+      bool find = false;
+      ObString stmt_qb_name;
+      for (int j = 0; !find && j < qb_name_list.count(); j ++) {
+        if (0 == qb_name_list.at(j).case_compare(qb_names_.at(i))) {
+          find = true;
+        }
+      }
+      if (!find) {
         all_found = false;
       }
     }

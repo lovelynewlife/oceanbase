@@ -173,6 +173,11 @@ int ObTransService::reuse_tx(ObTxDesc &tx)
   } else if (OB_FAIL(finalize_tx_(tx))) {
     TRANS_LOG(WARN, "finalize tx fail", K(ret), K(tx.tx_id_));
   } else {
+    // after finalize tx, the txDesc can not be fetch from TxDescMgr
+    // but the reference maybe hold by user, wait to be queisenct
+    // before we reuse it
+
+    // if reuse come from commit_cb, assume current thread hold one reference
     final_ref_cnt = tx.commit_cb_lock_.self_locked() ? 2 : 1;
     while (tx.get_ref() > final_ref_cnt) {
       PAUSE();
@@ -530,7 +535,7 @@ int ObTransService::submit_commit_tx(ObTxDesc &tx,
   DEFER({
       tx.lock_.unlock();
       if (OB_SUCC(ret) && committed) {
-        tx.execute_commit_cb();
+        direct_execute_commit_cb_(tx);
       }
     });
 #ifndef NDEBUG
@@ -550,6 +555,15 @@ int ObTransService::submit_commit_tx(ObTxDesc &tx,
                       OB_ID(ref), tx.get_ref(),
                       OB_ID(thread_id), GETTID());
   return ret;
+}
+
+// when callback exec directly, mock the general pattern
+// acquire ref -> exec callback -> release ref
+void ObTransService::direct_execute_commit_cb_(ObTxDesc &tx)
+{
+  tx.inc_ref(1);
+  tx.execute_commit_cb();
+  tx_desc_mgr_.revert(tx);
 }
 
 int ObTransService::get_read_snapshot(ObTxDesc &tx,
@@ -716,6 +730,7 @@ int ObTransService::get_ls_read_snapshot_version(const share::ObLSID &local_ls_i
 }
 
 int ObTransService::get_weak_read_snapshot_version(const int64_t max_read_stale_us_for_user,
+                                                   const bool local_single_ls,
                                                    SCN &snapshot)
 {
   int ret = OB_SUCCESS;
@@ -724,10 +739,16 @@ int ObTransService::get_weak_read_snapshot_version(const int64_t max_read_stale_
 
     // server weak read version
   if (!ObWeakReadUtil::enable_monotonic_weak_read(tenant_id_)) {
-    if (OB_FAIL(GCTX.weak_read_service_->get_server_version(tenant_id_, wrs_scn))) {
-      TRANS_LOG(WARN, "get server read snapshot fail", K(ret), KPC(this));
+    if (local_single_ls) {
+      if (OB_FAIL(GCTX.weak_read_service_->get_server_version(tenant_id_, wrs_scn))) {
+        TRANS_LOG(WARN, "get server read snapshot fail", K(ret), KPC(this));
+      }
+      monotinic_read = false;
+    } else {
+      if (OB_FAIL(GCTX.weak_read_service_->get_cluster_version(tenant_id_, wrs_scn))) {
+        TRANS_LOG(WARN, "get weak read snapshot fail", K(ret), KPC(this));
+      }
     }
-    monotinic_read = false;
     // wrs cluster version
   } else if (OB_FAIL(GCTX.weak_read_service_->get_cluster_version(tenant_id_, wrs_scn))) {
     TRANS_LOG(WARN, "get weak read snapshot fail", K(ret), KPC(this));
@@ -1364,7 +1385,7 @@ int ObTransService::rollback_savepoint_(ObTxDesc &tx,
                                           savepoint,
                                           born_epoch,
                                           &tx,
-                                          expire_ts))) {
+                                          -1/*non-blocking*/))) {
       if (common_retryable_error_(ret)) {
         slowpath = true;
         TRANS_LOG(INFO, "fallback to msg driven rollback", K(ret), K(savepoint), K(p), K(tx));

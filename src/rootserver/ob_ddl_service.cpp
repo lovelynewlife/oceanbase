@@ -4737,6 +4737,9 @@ int ObDDLService::update_autoinc_schema(obrpc::ObAlterTableArg &alter_table_arg)
       LOG_WARN("failed to get tenant schema version", KR(ret), K(tenant_id));
     } else if (OB_FAIL(trans.start(sql_proxy_, tenant_id, refreshed_schema_version))) {
       LOG_WARN("failed to start trans, ", KR(ret), K(tenant_id), K(refreshed_schema_version));
+    } else if (OB_UNLIKELY(curr_table_schema->get_table_state_flag() != ObTableStateFlag::TABLE_STATE_OFFLINE_DDL)) {
+      ret = OB_NO_NEED_UPDATE;
+      LOG_WARN("already updated", K(ret), K(tenant_id), K(table_id), K(curr_table_schema->get_schema_version()));
     } else if (OB_FAIL(new_table_schema.assign(*curr_table_schema))) {
       LOG_WARN("fail to assign table schema", K(ret));
     } else {
@@ -4762,26 +4765,23 @@ int ObDDLService::update_autoinc_schema(obrpc::ObAlterTableArg &alter_table_arg)
             new_column_schema->set_nullable(alter_column_schema->is_nullable());
             new_table_schema.set_auto_increment(alter_table_schema.get_auto_increment());
             new_table_schema.set_autoinc_column_id(alter_column_schema->get_column_id());
+            if (OB_FAIL(ddl_operator.update_single_column(trans,
+                                                          *curr_table_schema,
+                                                          new_table_schema,
+                                                          *new_column_schema))) {
+              LOG_WARN("update single column failed", K(ret), K(*new_column_schema));
+            }
           }
           alter_column_num++;
         }
       }
 
-      if (OB_SUCC(ret) && OB_ISNULL(new_column_schema)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("alter column schema is null");
-      }
-
       if (OB_SUCC(ret)) {
-        if (OB_FAIL(ddl_operator.update_single_column(trans,
-                                                      *curr_table_schema,
-                                                      new_table_schema,
-                                                      *new_column_schema))) {
-          LOG_WARN("update single column failed", K(ret), K(*new_column_schema));
-        } else if (OB_FAIL(ddl_operator.update_table_attribute(new_table_schema,
-                                                               trans,
-                                                               operation_type,
-                                                               &alter_table_arg.ddl_stmt_str_))) {
+        const bool is_commit = alter_column_num == 1;
+        if (OB_FAIL(ddl_operator.update_table_attribute(new_table_schema,
+                                                        trans,
+                                                        operation_type,
+                                                        is_commit ? &alter_table_arg.ddl_stmt_str_ : nullptr))) {
           LOG_WARN("update table attribute failed", K(ret), K(new_table_schema));
         }
       }
@@ -4799,6 +4799,9 @@ int ObDDLService::update_autoinc_schema(obrpc::ObAlterTableArg &alter_table_arg)
         LOG_WARN("publish_schema failed", K(ret));
       }
     }
+  }
+  if (OB_NO_NEED_UPDATE == ret) {
+    ret = OB_SUCCESS;
   }
   return ret;
 }
@@ -4844,6 +4847,7 @@ int ObDDLService::lock_tablets(ObMySQLTransaction &trans,
                                                          timeout,
                                                          conn))) {
         LOG_WARN("lock dest table failed", KR(ret), K(table_id), K(tenant_id));
+        ret = ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
       }
     }
   }
@@ -4875,6 +4879,7 @@ int ObDDLService::lock_table(ObMySQLTransaction &trans,
                                                       timeout,
                                                       conn))) {
       LOG_WARN("lock dest table failed", KR(ret), K(table_schema));
+      ret = ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
     }
   }
   return ret;
@@ -4906,7 +4911,6 @@ int ObDDLService::lock_tables_of_database(const ObDatabaseSchema &database_schem
                  K(table_schema->get_table_id()), K(ret));
       } else if (OB_FAIL(lock_table(trans, *table_schema))) {
         LOG_WARN("fail to lock_table", KR(ret), KPC(table_schema));
-        ret = ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
       }
     }
   }
@@ -4945,7 +4949,6 @@ int ObDDLService::lock_tables_in_recyclebin(const ObDatabaseSchema &database_sch
                        to_cstring(recycle_obj.get_object_name()));
       } else if (OB_FAIL(lock_table(trans, *table_schema))) {
         LOG_WARN("fail to lock_table", KR(ret), KPC(table_schema));
-        ret = ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
       }
     }
   }
@@ -9977,9 +9980,6 @@ int ObDDLService::alter_table_partitions(const obrpc::ObAlterTableArg &alter_tab
                KR(ret), K(orig_table_schema), K(inc_table_schema));
     } else if (OB_FAIL(lock_partitions(trans, inc_table_schema))) {
       LOG_WARN("failed to get tablet ids", KR(ret), K(orig_table_schema), K(inc_table_schema));
-      // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-      const bool is_ddl_scheduled_task = alter_table_arg.task_id_ > 0 ? true : false;
-      ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
     } else if (OB_FAIL(ddl_operator.drop_table_partitions(orig_table_schema,
                                                           inc_table_schema,
                                                           new_table_schema,
@@ -9995,9 +9995,6 @@ int ObDDLService::alter_table_partitions(const obrpc::ObAlterTableArg &alter_tab
                KR(ret), K(orig_table_schema), K(inc_table_schema));
     } else if (OB_FAIL(lock_partitions(trans, inc_table_schema))) {
       LOG_WARN("failed to get tablet ids", KR(ret), K(orig_table_schema), K(inc_table_schema));
-      // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-      const bool is_ddl_scheduled_task = alter_table_arg.task_id_ > 0 ? true : false;
-      ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
     } else if (OB_FAIL(ddl_operator.drop_table_subpartitions(orig_table_schema,
                                                    inc_table_schema,
                                                    new_table_schema,
@@ -10010,9 +10007,6 @@ int ObDDLService::alter_table_partitions(const obrpc::ObAlterTableArg &alter_tab
       LOG_WARN("fail to generate inc table schema", KR(ret), K(orig_table_schema));
     } else if (OB_FAIL(lock_partitions(trans, del_table_schema))) {
       LOG_WARN("failed to get tablet ids", KR(ret), K(orig_table_schema), K(del_table_schema));
-      // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-      const bool is_ddl_scheduled_task = alter_table_arg.task_id_ > 0 ? true : false;
-      ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
     } else if (OB_FAIL(generate_object_id_for_partition_schema(inc_table_schema))) {
       LOG_WARN("fail to generate object_id for partition schema", KR(ret), K(inc_table_schema));
     } else if (OB_FAIL(generate_tablet_id(inc_table_schema))) {
@@ -10029,9 +10023,6 @@ int ObDDLService::alter_table_partitions(const obrpc::ObAlterTableArg &alter_tab
       LOG_WARN("fail to generate inc table schema", KR(ret), K(orig_table_schema));
     } else if (OB_FAIL(lock_partitions(trans, del_table_schema))) {
       LOG_WARN("failed to get tablet ids", KR(ret), K(orig_table_schema), K(del_table_schema));
-      // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-      const bool is_ddl_scheduled_task = alter_table_arg.task_id_ > 0 ? true : false;
-      ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
     } else if (OB_FAIL(generate_object_id_for_partition_schema(inc_table_schema, true))) {
       LOG_WARN("fail to generate object_id for partition schema", KR(ret), K(inc_table_schema));
     } else if (OB_FAIL(generate_tablet_id(inc_table_schema))) {
@@ -17397,9 +17388,6 @@ int ObDDLService::truncate_table(const ObTruncateTableArg &arg,
         if (OB_FAIL(ret)) {
         } else if (OB_FAIL(lock_table(trans, *orig_table_schema))) {
           LOG_WARN("fail to lock_table", KR(ret), KPC(orig_table_schema));
-          // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-          const bool is_ddl_scheduled_task = arg.task_id_ > 0 ? true : false;
-          ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
         }
 
         if (OB_SUCC(ret) && orig_table_schema->is_oracle_tmp_table()) {
@@ -19060,7 +19048,6 @@ int ObDDLService::purge_table(
       LOG_WARN("start transaction failed", KR(ret), K(tenant_id), K(refreshed_schema_version));
     } else if (OB_FAIL(lock_table(OB_ISNULL(pr_trans) ? trans : *pr_trans, *table_schema))) {
       LOG_WARN("fail to lock_table", KR(ret), KPC(table_schema));
-      ret = ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
     } else if (OB_FAIL(ddl_operator.purge_table_with_aux_table(*table_schema,
         schema_guard,
         OB_ISNULL(pr_trans) ? trans : *pr_trans,
@@ -19880,9 +19867,6 @@ int ObDDLService::drop_table(const ObDropTableArg &drop_table_arg, const obrpc::
           LOG_WARN("set table_id to hash set failed", K(table_schema->get_table_id()), K(ret));
         } else if (OB_FAIL(lock_table(trans, *table_schema))) {
           LOG_WARN("fail to lock_table", KR(ret), KPC(table_schema));
-          // for ddl retry task, upper layer only focus on `OB_TRY_LOCK_ROW_CONFLICT`, and then retry it.
-          const bool is_ddl_scheduled_task = drop_table_arg.task_id_ > 0 ? true : false;
-          ret = is_ddl_scheduled_task && ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_TRY_LOCK_ROW_CONFLICT : ret;
         }
       }
     }

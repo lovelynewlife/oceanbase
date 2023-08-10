@@ -1480,6 +1480,7 @@ inline int ObOperator::init_dummy_mem_context(uint64_t tenant_id)
     if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(dummy_mem_context_, param))) {
       SQL_ENG_LOG(WARN, "create entity failed", K(ret));
     } else if (OB_ISNULL(dummy_mem_context_)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
       SQL_ENG_LOG(WARN, "mem entity is null", K(ret));
     }
   }
@@ -1614,7 +1615,7 @@ int ObBatchRescanParams::deep_copy_param(const common::ObObjParam &org_param,
 }
 
 int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &param_idxs,
-    const ObSEArray<common::ObObjParam, 8> &res_objs)
+    const ObTMArray<common::ObObjParam> &res_objs)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(params_.push_back(res_objs))) {
@@ -1631,7 +1632,7 @@ int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &para
 }
 
 int ObBatchRescanParams::append_batch_rescan_param(const ObIArray<int64_t> &param_idxs,
-    const ObSEArray<ObObjParam, 8> &res_objs,
+    const ObTMArray<ObObjParam> &res_objs,
     const common::ObIArray<int64_t> &param_expr_idxs)
 {
   int ret = OB_SUCCESS;

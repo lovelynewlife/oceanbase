@@ -486,11 +486,12 @@ int ObTransformDBlink::check_link_expr_valid(ObRawExpr *expr, bool &is_valid)
     LOG_WARN("unexpected null expr", K(ret));
   } else if (expr->has_flag(CNT_PL_UDF) ||
              expr->has_flag(CNT_SO_UDF) ||
-             expr->has_flag(CNT_USER_VARIABLE)) {
+             expr->has_flag(CNT_DYNAMIC_USER_VARIABLE)) {
     // special flag is invalid
   } else if (T_FUN_APPROX_COUNT_DISTINCT_SYNOPSIS == expr->get_expr_type() ||
              T_FUN_APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE == expr->get_expr_type() ||
-             T_FUN_SYS_ESTIMATE_NDV == expr->get_expr_type()) {
+             T_FUN_SYS_ESTIMATE_NDV == expr->get_expr_type() ||
+             T_OP_GET_USER_VAR == expr->get_expr_type()) {
     // special function is invalid
   } else if (expr->get_result_type().is_ext()) {
     // special type is invalid
@@ -536,10 +537,10 @@ int ObTransformDBlink::collect_link_table(ObDMLStmt *stmt,
     if (OB_ISNULL(semi_info = stmt->get_semi_infos().at(i))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpect null stmt", K(ret));
-    } else if (inner_collect_link_table(stmt,
+    } else if (OB_FAIL(inner_collect_link_table(stmt,
                                         semi_info,
                                         helpers,
-                                        all_table_from_one_dblink)) {
+                                        all_table_from_one_dblink))) {
       LOG_WARN("failed to collect link table", K(ret));
     }
   }

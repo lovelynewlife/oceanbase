@@ -444,6 +444,7 @@ int ObMultiVersionGarbageCollector::study_min_unallocated_WRS(
 
   if (OB_FAIL(MTL(transaction::ObTransService*)->get_weak_read_snapshot_version(
                 -1, // system variable : max read stale time for user
+                false,
                 min_unallocated_WRS))) {
     MVCC_LOG(WARN, "fail to get weak read snapshot", K(ret));
     if (OB_REPLICA_NOT_READABLE == ret) {
@@ -784,6 +785,7 @@ int ObMultiVersionGarbageCollector::report(const share::SCN min_unallocated_GTS,
                                     min_active_txn_version.get_val_for_inner_table_field()))) {
     MVCC_LOG(WARN, "format sql fail", KR(ret), K(sql));
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_NOT_INIT;
     MVCC_LOG(WARN, "sql_proxy_ not init yet, report abort", KR(ret), K(sql));
   } else if (OB_FAIL(GCTX.sql_proxy_->write(meta_tenant_id, sql.ptr(), affected_rows))) {
     MVCC_LOG(WARN, "execute sql fail", KR(ret), K(sql));
@@ -822,6 +824,7 @@ int ObMultiVersionGarbageCollector::update_status(const ObMultiVersionGCStatus s
                                     self_addr.get_port()))) {
     MVCC_LOG(WARN, "format sql fail", KR(ret), K(sql));
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_NOT_INIT;
     MVCC_LOG(WARN, "sql_proxy_ not init yet, report abort", KR(ret), K(sql));
   } else if (OB_FAIL(GCTX.sql_proxy_->write(meta_tenant_id, sql.ptr(), affected_rows))) {
     MVCC_LOG(WARN, "execute sql fail", KR(ret), K(sql));
@@ -1127,6 +1130,7 @@ int ObMultiVersionGarbageCollector::reclaim_(const ObArray<ObAddr> &reclaimable_
                                       addr.get_port()))) {
       MVCC_LOG(WARN, "format sql fail", KR(ret), K(sql));
     } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+      ret = OB_NOT_INIT;
       MVCC_LOG(WARN, "sql_proxy_ not init yet, report abort", KR(ret), K(sql));
     } else if (OB_FAIL(GCTX.sql_proxy_->write(meta_tenant_id, sql.ptr(), affected_rows))) {
       MVCC_LOG(WARN, "execute sql fail", KR(ret), K(sql));

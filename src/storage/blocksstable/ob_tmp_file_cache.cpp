@@ -655,7 +655,7 @@ void ObTmpFileMemTask::runTimerTask()
 
 ObTmpTenantMemBlockManager::IOWaitInfo::IOWaitInfo(
     ObMacroBlockHandle &block_handle, ObTmpMacroBlock &block, ObIAllocator &allocator)
-  : block_handle_(block_handle), block_(block), allocator_(allocator), ref_cnt_(0), ret_code_(OB_SUCCESS)
+  : block_handle_(&block_handle), block_(block), allocator_(allocator), ref_cnt_(0), ret_code_(OB_SUCCESS)
 {
 }
 
@@ -713,8 +713,9 @@ int ObTmpTenantMemBlockManager::IOWaitInfo::exec_wait(int64_t io_timeout_ms)
   ObThreadCondGuard guard(cond_);
   if (OB_FAIL(guard.get_ret())) {
     STORAGE_LOG(ERROR, "lock io request condition failed", K(ret), K(block_.get_block_id()));
-  } else if (OB_FAIL(block_handle_.wait(io_timeout_ms))) {
+  } else if (OB_NOT_NULL(block_handle_) && OB_FAIL(block_handle_->wait(io_timeout_ms))) {
     STORAGE_LOG(WARN, "wait handle wait io failed", K(ret), K(block_.get_block_id()));
+    block_handle_->reset_macro_id();
   }
   reset_io();
   return ret;
@@ -740,7 +741,7 @@ ObTmpTenantMemBlockManager::IOWaitInfo::~IOWaitInfo()
 void ObTmpTenantMemBlockManager::IOWaitInfo::destroy()
 {
   ret_code_ = OB_SUCCESS;
-  block_handle_.get_io_handle().reset();
+  reset_io();
   if (0 != ATOMIC_LOAD(&ref_cnt_)) {
     int ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(ERROR, "unexpected error, ref cnt isn't zero", K(ret), KPC(this));
@@ -749,7 +750,10 @@ void ObTmpTenantMemBlockManager::IOWaitInfo::destroy()
 
 void ObTmpTenantMemBlockManager::IOWaitInfo::reset_io()
 {
-  block_handle_.get_io_handle().reset();
+  if (OB_NOT_NULL(block_handle_)) {
+    block_handle_->get_io_handle().reset();
+    block_handle_ = nullptr;
+  }
 }
 
 ObTmpTenantMemBlockManager::ObIOWaitInfoHandle::ObIOWaitInfoHandle()
@@ -1077,7 +1081,7 @@ int ObTmpTenantMemBlockManager::check_memory_limit()
 {
   int ret = OB_SUCCESS;
   const int64_t timeout_ts = THIS_WORKER.get_timeout_ts();
-  while (OB_SUCC(ret) && get_tenant_mem_block_num() < t_mblk_map_.size()) {
+  while (OB_SUCC(ret) && get_tenant_mem_block_num() < t_mblk_map_.size() && !wait_info_queue_.is_empty()) {
     ObThreadCondGuard guard(cond_);
     if (OB_FAIL(guard.get_ret())) {
       STORAGE_LOG(ERROR, "fail to guard request condition", K(ret));
@@ -1127,6 +1131,7 @@ int ObTmpTenantMemBlockManager::cleanup()
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "ObTmpBlockCache has not been inited", K(ret));
   } else if (OB_FAIL(check_memory_limit())) {
+    STORAGE_LOG(WARN, "fail to check memory limit", K(ret), K(t_mblk_map_.size()), K(get_tenant_mem_block_num()));
   } else {
     const int64_t wash_threshold = get_tenant_mem_block_num() * 0.8;
     Heap heap(compare_, &allocator);
@@ -1450,13 +1455,20 @@ int ObTmpTenantMemBlockManager::exec_wait()
       if (OB_ISNULL(wait_info = static_cast<IOWaitInfo*>(node))) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(ERROR, "unexpected error, wait info is nullptr", K(ret), KP(node));
+      } else if (OB_ISNULL(wait_info->block_handle_)) {
+        ret = OB_ERR_UNEXPECTED;
+        STORAGE_LOG(ERROR, "unexpected error, macro handle in wait info is nullptr", K(ret), KPC(wait_info));
       } else {
         ObTmpMacroBlock &blk = wait_info->get_block();
-        const MacroBlockId &macro_id = wait_info->block_handle_.get_macro_id();
+        const MacroBlockId &macro_id = wait_info->block_handle_->get_macro_id();
         const int64_t block_id = blk.get_block_id();
         const int64_t free_page_nums = blk.get_free_page_nums();
         if (OB_FAIL(wait_info->exec_wait(io_timeout_ms))) {
           STORAGE_LOG(WARN, "fail to exec io handle wait", K(ret), K_(tenant_id), KPC(wait_info));
+          int tmp_ret = OB_SUCCESS;
+          if (OB_TMP_FAIL(blk.check_and_set_status(ObTmpMacroBlock::WASHING, ObTmpMacroBlock::MEMORY))) {
+            STORAGE_LOG(ERROR, "fail to rollback block status", K(ret), K(tmp_ret), K(block_id), K(blk));
+          }
         } else {
           STORAGE_LOG(INFO, "start to wash a block", K(block_id), KPC(&blk));
           ObThreadCondGuard cond_guard(cond_);
@@ -1477,7 +1489,7 @@ int ObTmpTenantMemBlockManager::exec_wait()
               OB_TMP_FILE_STORE.dec_block_cache_num(tenant_id_, 1);
               ObTaskController::get().allow_next_syslog();
               STORAGE_LOG(INFO, "succeed to wash a block", K(block_id), K(macro_id),
-                  "free_page_nums:", free_page_nums, K(t_mblk_map_.size()));
+                  K(free_page_nums), K(t_mblk_map_.size()));
             }
           }
         }
@@ -1502,7 +1514,7 @@ int ObTmpTenantMemBlockManager::exec_wait()
     if (OB_TMP_FAIL(cond_.broadcast())) {
       STORAGE_LOG(ERROR, "signal wash condition failed", K(ret), K(tmp_ret));
     }
-    if (loop_nums > 0) {
+    if (loop_nums > 0 || REACH_TIME_INTERVAL(1000 * 1000L)/*1s*/) {
       const int64_t washing_count = ATOMIC_LOAD(&washing_count_);
       int64_t block_cache_num = -1;
       int64_t page_cache_num = -1;

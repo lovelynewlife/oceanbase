@@ -201,7 +201,7 @@ void PxWorkerFunctor::operator ()()
             if (OB_FAIL(runtime_arg.init_deserialize_param(mem_context, *env_arg_.get_gctx()))) {
               LOG_WARN("fail to init args", K(ret));
             } else if (OB_FAIL(runtime_arg.deep_copy_assign(task_arg_, mem_context->get_arena_allocator()))) {
-              (void) ObInterruptUtil::interrupt_qc(task_arg_.task_, ret);
+              (void) ObInterruptUtil::interrupt_qc(task_arg_.task_, ret, task_arg_.exec_ctx_);
               LOG_WARN("fail deep copy assign arg", K(task_arg_), K(ret));
             } else {
               // 绑定sqc_handler，方便算子任何地方都可以拿sqc_handle
@@ -233,6 +233,7 @@ void PxWorkerFunctor::operator ()()
       ObThreadLogLevelUtils::clear();
     }
   } else if (OB_ISNULL(sqc_handler)) {
+    ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("Unexpected null sqc handler", K(sqc_handler));
   } else {
     LOG_WARN("already interrupted");

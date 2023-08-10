@@ -863,7 +863,7 @@ int ObResolverUtils::get_type_and_type_id(
 {
   int ret = OB_SUCCESS;
   CK (OB_NOT_NULL(expr));
-  OX (type_id = expr->get_result_type().get_udt_id());
+  OX (type_id = expr->get_result_type().get_expr_udt_id());
   if (OB_FAIL(ret)) {
   } else if (IS_BOOL_OP(expr->get_expr_type())) {
     type = ObTinyIntType;
@@ -897,7 +897,7 @@ int ObResolverUtils::check_match(const pl::ObPLResolveCtx &resolve_ctx,
   }
 
   int64_t offset = 0;
-  if(OB_SUCC(ret) && 0 < expr_params.count() && OB_NOT_NULL(expr_params.at(0))) {
+  if(OB_SUCC(ret) && expr_params.count() > 0 && OB_NOT_NULL(expr_params.at(0))) {
     ObRawExpr *first_arg = expr_params.at(0);
     if (first_arg->has_flag(IS_UDT_UDF_SELF_PARAM)) {
       // do nothing, may be we can check if routine is static or not
@@ -912,8 +912,7 @@ int ObResolverUtils::check_match(const pl::ObPLResolveCtx &resolve_ctx,
         OX (offset = 1);
       }
     } else if (routine_info->is_udt_routine()
-               && !routine_info->is_udt_static_routine()
-               && expr_params.count() != routine_info->get_param_count()) {
+               && !routine_info->is_udt_static_routine()) {
       uint64_t src_type_id = OB_INVALID_ID;
       ObObjType src_type;
       if (T_SP_CPARAM == first_arg->get_expr_type()) {
@@ -928,7 +927,18 @@ int ObResolverUtils::check_match(const pl::ObPLResolveCtx &resolve_ctx,
           && (src_type_id != routine_info->get_package_id())) {
         // set first param matched
         OX (match_info.match_info_.at(0) = (ObRoutineMatchInfo::MatchInfo(false, src_type, src_type)));
-        OX (offset = 1);
+        if ((expr_params.count() + 1) > routine_info->get_param_count()) {
+          ret = OB_ERR_SP_WRONG_ARG_NUM;
+          LOG_WARN("argument count not match",
+             K(ret),
+             K(expr_params.count()),
+             K(src_type_id),
+             KPC(first_arg),
+             K(routine_info->get_param_count()),
+             K(routine_info->get_routine_name()));
+        } else {
+          OX (offset = 1);
+        }
       }
     }
   }
@@ -1276,7 +1286,7 @@ int ObResolverUtils::get_routine(const pl::ObPLResolveCtx &resolve_ctx,
   ObSchemaChecker schema_checker;
   routine = NULL;
   uint64_t udt_id = OB_INVALID_ID;
-  OZ (schema_checker.init(resolve_ctx.schema_guard_));
+  OZ (schema_checker.init(resolve_ctx.schema_guard_, resolve_ctx.session_info_.get_sessid()));
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(get_candidate_routines(schema_checker,
                                      tenant_id,
@@ -1408,7 +1418,7 @@ int ObResolverUtils::resolve_synonym_object_recursively(ObSchemaChecker &schema_
                 K(ret), K(tenant_id), K(database_id), K(synonym_name));
       }
     } else if (OB_FAIL(schema_checker.check_exist_same_name_object_with_synonym(tenant_id,
-                                                                                database_id,
+                                                                                object_database_id,
                                                                                 object_name,
                                                                                 exist_non_syn_object)) || !exist_non_syn_object) {
       OZ (SMART_CALL(resolve_synonym_object_recursively(
@@ -4113,7 +4123,7 @@ int ObResolverUtils::resolve_partition_expr(ObResolverParams &params,
               || is_list_part(part_func_type) || PARTITION_FUNC_TYPE_KEY == part_func_type) {
         if (OB_FAIL(check_expr_valid_for_partition(
             *part_expr, *params.session_info_, part_func_type, tbl_schema))) {
-          LOG_WARN("check_valid_column_for_hash or range func failed", K(ret));
+          LOG_WARN("check_valid_column_for_hash or range func failed", K(ret), KPC(part_expr));
         }
       }
     }
@@ -6291,6 +6301,7 @@ int ObResolverUtils::check_pk_idx_duplicate(const ObTableSchema &table_schema,
     if (OB_FAIL(rowkey.get_column_id(rowkey_idx, column_id))) {
       LOG_WARN("fail to get column id", K(ret));
     } else if (OB_ISNULL(column = table_schema.get_column_schema(column_id))) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to get column schema", K(ret), K(column_id), K(rowkey));
     } else if (column->is_hidden()) {
       // skip hidden pk col

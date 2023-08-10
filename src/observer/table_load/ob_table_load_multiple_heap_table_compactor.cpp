@@ -89,7 +89,7 @@ public:
   }
   int process() override
   {
-    OB_TABLE_LOAD_STATISTICS_TIME_COST(table_compactor_time_us);
+    OB_TABLE_LOAD_STATISTICS_TIME_COST(INFO, table_compactor_time_us);
     int ret = OB_SUCCESS;
     // alloc dir id
     if (OB_FAIL(mem_ctx_->file_mgr_->alloc_dir(index_dir_id_))) {
@@ -321,6 +321,7 @@ int ObTableLoadMultipleHeapTableCompactor::inner_init()
   mem_ctx_.column_count_ = param_->column_count_;
   mem_ctx_.dml_row_handler_ = store_ctx_->error_row_handler_;
   mem_ctx_.file_mgr_ = store_ctx_->tmp_file_mgr_;
+  mem_ctx_.dup_action_ = param_->dup_action_;
 
   if (OB_SUCC(ret)) {
     if (OB_FAIL(mem_ctx_.init())) {

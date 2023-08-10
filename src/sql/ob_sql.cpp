@@ -2755,6 +2755,7 @@ int ObSql::generate_stmt(ParseResult &parse_result,
       context.all_pre_calc_constraints_ = &(resolver_ctx.query_ctx_->all_pre_calc_constraints_);
       context.all_expr_constraints_ = &(resolver_ctx.query_ctx_->all_expr_constraints_);
       context.all_priv_constraints_ = &(resolver_ctx.query_ctx_->all_priv_constraints_);
+      context.need_match_all_params_ = resolver_ctx.query_ctx_->need_match_all_params_;
       context.cur_stmt_ = stmt;
       context.res_map_rule_id_ = resolver_ctx.query_ctx_->res_map_rule_id_;
       context.res_map_rule_param_idx_ = resolver_ctx.query_ctx_->res_map_rule_param_idx_;
@@ -5146,8 +5147,7 @@ int ObSql::check_need_reroute(ObPlanCacheCtx &pc_ctx, ObSQLSessionInfo &session,
     if (should_reroute && !session.is_inner() && session.is_in_transaction()) {
       auto stmt_type = plan->get_stmt_type();
       bool fixed_route = true;
-      if (pc_ctx.sql_ctx_.multi_stmt_item_.is_part_of_multi_stmt()
-          && !pc_ctx.sql_ctx_.multi_stmt_item_.is_single_stmt()) {
+      if (pc_ctx.sql_ctx_.multi_stmt_item_.is_part_of_multi_stmt()) {
         // current is multi-stmt
       } else if (!STMT_SUPPORT_BY_TXN_FREE_ROUTE(stmt_type, false)) {
         // stmt is not DML
