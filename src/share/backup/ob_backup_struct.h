@@ -55,14 +55,7 @@ const int64_t OB_BACKUP_DEFAULT_PG_NUM = 10000;
 const int64_t OB_MAX_BACKUP_DEST_LENGTH = 2048;
 const int64_t OB_MAX_RESTORE_DEST_LENGTH = OB_MAX_BACKUP_DEST_LENGTH * 10;
 const int64_t OB_MAX_BACKUP_PATH_LENGTH = 1024;
-const int64_t OB_MAX_BACKUP_STORAGE_INFO_LENGTH = 1536;
-const int64_t OB_MAX_BACKUP_ENDPOINT_LENGTH = 256;
-const int64_t OB_MAX_BACKUP_ACCESSID_LENGTH = 256;
-const int64_t OB_MAX_BACKUP_ACCESSKEY_LENGTH = 256;
-const int64_t OB_MAX_BACKUP_ENCRYPTKEY_LENGTH = OB_MAX_BACKUP_ACCESSKEY_LENGTH + 32;
-const int64_t OB_MAX_BACKUP_SERIALIZEKEY_LENGTH = OB_MAX_BACKUP_ENCRYPTKEY_LENGTH * 2;
 const int64_t OB_MAX_BACKUP_AUTHORIZATION_LENGTH = 1024;
-const int64_t OB_MAX_BACKUP_EXTENSION_LENGTH = 512;
 const int64_t OB_MAX_BACKUP_CHECK_FILE_LENGTH = OB_MAX_BACKUP_PATH_LENGTH;
 const int64_t OB_MAX_BACKUP_CHECK_FILE_NAME_LENGTH = 256;
 const int64_t OB_MAX_KEPT_LOG_ARCHIVE_BACKUP_ROUND = 10 * 10000; // 10w
@@ -352,14 +345,12 @@ const char *const OB_BACKUP_DECRYPTION_PASSWD_ARRAY_SESSION_STR = "__ob_backup_d
 const char *const OB_RESTORE_SOURCE_NAME_SESSION_STR = "__ob_restore_source_name__";
 const char *const OB_RESTORE_PREVIEW_TENANT_ID_SESSION_STR = "__ob_restore_preview_tenant_id__";
 const char *const OB_RESTORE_PREVIEW_BACKUP_DEST_SESSION_STR = "__ob_restore_preview_backup_dest__";
+const char *const OB_RESTORE_PREVIEW_SCN_SESSION_STR = "__ob_restore_preview_timestamp__";
 const char *const OB_RESTORE_PREVIEW_TIMESTAMP_SESSION_STR = "__ob_restore_preview_timestamp__";
 const char *const OB_RESTORE_PREVIEW_BACKUP_CLUSTER_NAME_SESSION_STR = "__ob_restore_preview_backup_cluster_name__";
 const char *const OB_RESTORE_PREVIEW_BACKUP_CLUSTER_ID_SESSION_STR = "__ob_restore_preview_backup_cluster_id__";
 const char *const MULTI_BACKUP_SET_PATH_PREFIX = "BACKUPSET";
 const char *const MULTI_BACKUP_PIECE_PATH_PREFIX = "BACKUPPIECE";
-
-const char *const ACCESS_ID = "access_id=";
-const char *const ACCESS_KEY = "access_key=";
 
 const char *const ENCRYPT_KEY = "encrypt_key=";
 const char *const OB_STR_INITIATOR_JOB_ID = "initiator_job_id";
@@ -417,6 +408,10 @@ const char *const OB_BACKUP_SUFFIX=".obbak";
 const char *const OB_ARCHIVE_SUFFIX=".obarc";
 const char *const OB_STR_MIN_RESTORE_SCN_DISPLAY = "min_restore_scn_display";
 const char *const OB_STR_CHECKPOINT_FILE_NAME = "checkpoint_info";
+const char *const OB_STR_SRC_TENANT_NAME = "src_tenant_name";
+const char *const OB_STR_AUX_TENANT_NAME = "aux_tenant_name";
+const char *const OB_STR_TARGET_TENANT_NAME = "target_tenant_name";
+const char *const OB_STR_TARGET_TENANT_ID = "target_tenant_id";
 
 enum ObBackupFileType
 {
@@ -563,22 +558,41 @@ struct ObBackupSetDesc {
   bool operator==(const ObBackupSetDesc &other) const;
   void reset();
 
-  TO_STRING_KV(K_(backup_set_id), K_(backup_type));
+  TO_STRING_KV(K_(backup_set_id), K_(backup_type), K_(min_restore_scn), K_(total_bytes));
   int64_t backup_set_id_;
   ObBackupType backup_type_;  // FULL OR INC
+  share::SCN min_restore_scn_;
+  int64_t total_bytes_;
 };
 
 struct ObRestoreBackupSetBriefInfo final
 {
 public:
-  ObRestoreBackupSetBriefInfo(): backup_set_path_(), backup_set_desc_() {}
+  ObRestoreBackupSetBriefInfo(): backup_set_path_(), backup_set_desc_(){}
   ~ObRestoreBackupSetBriefInfo() {}
   void reset() { backup_set_path_.reset(); }
   bool is_valid() const { return !backup_set_path_.is_empty(); }
   int assign(const ObRestoreBackupSetBriefInfo &that);
+  int get_restore_backup_set_brief_info_str(common::ObIAllocator &allocator, common::ObString &str) const;
   TO_STRING_KV(K_(backup_set_path), K_(backup_set_desc));
   share::ObBackupSetPath backup_set_path_;
   share::ObBackupSetDesc backup_set_desc_;
+};
+
+struct ObRestoreLogPieceBriefInfo final
+{
+public:
+  ObRestoreLogPieceBriefInfo(): piece_path_(), piece_id_(0), start_scn_(), checkpoint_scn_() {}
+  ~ObRestoreLogPieceBriefInfo() {}
+  void reset() { piece_path_.reset(); }
+  bool is_valid() const { return !piece_path_.is_empty(); }
+  int get_restore_log_piece_brief_info_str(common::ObIAllocator &allocator, common::ObString &str) const;
+  int assign(const ObRestoreLogPieceBriefInfo &that);
+  TO_STRING_KV(K_(piece_path), K_(piece_id), K_(start_scn), K_(checkpoint_scn));
+  share::ObBackupPiecePath piece_path_;
+  int64_t piece_id_;
+  share::SCN start_scn_;
+  share::SCN checkpoint_scn_;
 };
 
 class ObBackupStorageInfo;
@@ -855,43 +869,29 @@ struct ObNonFrozenBackupPieceInfo final
   DECLARE_TO_STRING;
 };
 
-class ObBackupStorageInfo final
+class ObBackupStorageInfo final : public common::ObObjectStorageInfo
 {
 public:
-  ObBackupStorageInfo();
-  ~ObBackupStorageInfo();
-  int set(
-      const common::ObStorageType device_type,
-      const char *storage_info);
+  using common::ObObjectStorageInfo::set;
+
+public:
+  ObBackupStorageInfo() {}
+  virtual ~ObBackupStorageInfo();
+
   int set(
       const common::ObStorageType device_type,
       const char *endpoint,
       const char *authorization,
       const char *extension);
-  int set(
-      const char *uri,
-      const char *storage_info);
-  int get_storage_info_str(char *storage_info, int64_t info_len, const bool need_encrypt) const;
-  int get_authorization_info(char *authorization, int64_t length);
-  bool is_valid() const;
-  void reset();
-  bool operator ==(const ObBackupStorageInfo &storage_info) const;
-  bool operator !=(const ObBackupStorageInfo &storage_info) const;
-  const char *get_type_str() const;
-  int64_t hash() const;
-  int assign(const ObBackupStorageInfo &storage_info);
-  TO_STRING_KV(K_(endpoint), K_(access_id), K_(extension), "type", get_type_str());
+  int get_authorization_info(char *authorization, const int64_t length) const;
+
 private:
-  int set_storage_info_field_(const char *info, char *field, const int64_t length);
-  int set_access_key_(const char *buf, const bool need_decrypt);
-  int parse_authorization_(const char *authorization);
-  int check_delete_mode_(const char *delete_mode);
-public:
-  common::ObStorageType device_type_;
-  char endpoint_[OB_MAX_BACKUP_ENDPOINT_LENGTH];
-  char access_id_[OB_MAX_BACKUP_ACCESSID_LENGTH];
-  char access_key_[OB_MAX_BACKUP_ACCESSKEY_LENGTH];
-  char extension_[OB_MAX_BACKUP_EXTENSION_LENGTH];
+#ifdef OB_BUILD_TDE_SECURITY
+  virtual int get_access_key_(char *key_buf, const int64_t key_buf_len) const override;
+  virtual int parse_storage_info_(const char *storage_info, bool &has_appid) override;
+  int encrypt_access_key_(char *encrypt_key, const int64_t length) const;
+  int decrypt_access_key_(const char *buf);
+#endif
 };
 
 class ObBackupDest final
@@ -1236,6 +1236,7 @@ public:
   bool is_backup_minor() const { return BACKUP_DATA_MINOR == status_; }
   bool is_backup_log() const { return BACKUP_LOG == status_; }
   bool is_backup_sys() const { return BACKUP_DATA_SYS == status_; }
+  bool is_backup_finish() const { return COMPLETED == status_ || FAILED == status_ || CANCELED == status_; }
   const char* get_str() const;
   int set_status(const char *str);
   int get_backup_data_type(share::ObBackupDataType &backup_data_type) const;
@@ -1346,6 +1347,9 @@ public:
   ObTaskId trace_id_;
   ObAddr addr_;
   int result_;
+
+private:
+  const char *get_error_str_() const;
 };
 
 struct ObBackupJobAttr final
@@ -1532,6 +1536,7 @@ public:
       K_(status), K_(result), K_(encryption_mode), K_(passwd), K_(file_status), K_(backup_path), K_(start_replay_scn),
       K_(min_restore_scn), K_(tenant_compatible), K_(backup_compatible), K_(data_turn_id), K_(meta_turn_id),
       K_(cluster_version), K_(consistent_scn));
+  int64_t to_string(char *min_restore_scn_display, char *buf, int64_t buf_len) const;
 
   int64_t backup_set_id_;
   int64_t incarnation_;
@@ -1683,30 +1688,26 @@ struct ObLogArchiveDestAtrr final
   ~ObLogArchiveDestAtrr() {}
 
   int set_piece_switch_interval(const char *buf);
-  int set_lag_target(const char *buf);
   int set_log_archive_dest(const common::ObString &str);
   int set_binding(const char *buf);
 
   bool is_valid() const;
   bool is_dest_valid() const;
   bool is_piece_switch_interval_valid() const;
-  bool is_lag_target_valid() const;
 
   int get_binding(char *buf, int64_t len) const;
   int get_piece_switch_interval(char *buf, int64_t len) const;
-  int get_lag_target(char *buf, int64_t len) const;
 
   int gen_config_items(common::ObIArray<BackupConfigItemPair> &items) const;
   int gen_path_config_items(common::ObIArray<BackupConfigItemPair> &items) const;
 
   int assign(const ObLogArchiveDestAtrr& that);
 
-  TO_STRING_KV(K_(dest), K_(binding), K_(dest_id), K_(piece_switch_interval), K_(lag_target), K_(state));
+  TO_STRING_KV(K_(dest), K_(binding), K_(dest_id), K_(piece_switch_interval), K_(state));
   share::ObBackupDest dest_;
   Binding binding_;
   int64_t dest_id_;
   int64_t piece_switch_interval_;
-  int64_t lag_target_;
   ObLogArchiveDestState state_;
 };
 

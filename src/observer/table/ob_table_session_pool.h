@@ -67,14 +67,17 @@ public:
   int get_session_pool(uint64_t tenant_id, ObTableApiSessPoolGuard &guard);
   int get_sess_info(ObTableApiCredential &credential, ObTableApiSessGuard &guard);
   int update_sess(ObTableApiCredential &credential);
+  int create_pool_if_not_exists(int64_t tenant_id);
 private:
   int extend_sess_pool(uint64_t tenant_id, ObTableApiSessPoolGuard &guard);
+  int get_or_create_sess_pool(ObTableApiCredential &credential, ObTableApiSessPoolGuard &guard);
 private:
   static const int64_t ELIMINATE_SESSION_DELAY = 60 * 1000 * 1000; // 60s
   bool is_inited_;
   SessPoolMap sess_pool_map_;
   ObTableApiSessEliminationTask elimination_task_;
   common::ObTimer timer_;
+  ObSpinLock lock_; // for get_or_create_sess_pool
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableApiSessPoolMgr);
 };
@@ -123,7 +126,7 @@ public:
   bool is_deleted() { return ATOMIC_LOAD(&is_deleted_); }
   bool is_empty() const { return key_node_map_.empty(); }
   int get_sess_info(ObTableApiCredential &credential, ObTableApiSessGuard &guard);
-  int update_sess(ObTableApiCredential &credential);
+  int update_sess(ObTableApiCredential &credential, bool replace_old_node = true);
   // 将过期的node移动到retired_nodes_
   int move_sess_to_retired_list();
   int evict_retired_sess();
@@ -251,6 +254,7 @@ private:
   SessList sess_lists_;
   int64_t last_active_ts_;
   ObTableApiCredential credential_;
+  ObSpinLock lock_;; // for lock allocator_
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableApiSessNode);
 };

@@ -120,7 +120,7 @@ int ObViewTableResolver::check_view_circular_reference(const TableItem &view_ite
   return ret;
 }
 
-int ObViewTableResolver::resolve_generate_table(const ParseNode &table_node, const ObString &alias_name, TableItem *&table_item)
+int ObViewTableResolver::resolve_generate_table(const ParseNode &table_node, const ParseNode *alias_node, TableItem *&table_item)
 {
   int ret = OB_SUCCESS;
   ObViewTableResolver view_table_resolver(params_, view_db_name_, view_name_);
@@ -134,7 +134,7 @@ int ObViewTableResolver::resolve_generate_table(const ParseNode &table_node, con
     LOG_WARN("set cte ctx to child resolver failed", K(ret));
   } else if (OB_FAIL(add_cte_table_to_children(view_table_resolver))) {
     LOG_WARN("add CTE table to children failed", K(ret));
-  } else if (OB_FAIL(do_resolve_generate_table(table_node, alias_name, view_table_resolver, table_item))) {
+  } else if (OB_FAIL(do_resolve_generate_table(table_node, alias_node, view_table_resolver, table_item))) {
     LOG_WARN("do resolve generate table failed", K(ret));
   }
   return ret;
@@ -215,7 +215,7 @@ int ObViewTableResolver::set_select_item(SelectItem &select_item, bool is_auto_g
         }
       }
     }
-    if (OB_SUCC(ret) && OB_FAIL(ObSQLUtils::check_column_name(cs_type, select_item.alias_name_))) {
+    if (OB_SUCC(ret) && OB_FAIL(ObSQLUtils::check_column_name(cs_type, select_item.alias_name_, true))) {
       LOG_WARN("fail to make field name", K(ret));
     }
     if (OB_SUCC(ret) && OB_FAIL(select_stmt->add_select_item(select_item))) {

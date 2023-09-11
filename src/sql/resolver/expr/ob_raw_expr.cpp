@@ -891,6 +891,7 @@ int ObConstRawExpr::assign(const ObRawExpr &other)
       obj_meta_ = const_expr.get_expr_obj_meta();
       is_date_unit_ = const_expr.is_date_unit_;
       is_literal_bool_ = const_expr.is_literal_bool();
+      array_param_group_id_ = const_expr.get_array_param_group_id();
     }
   }
   return ret;
@@ -945,6 +946,7 @@ void ObConstRawExpr::reset()
   value_.reset();
   literal_prefix_.reset();
   is_literal_bool_ = false;
+  array_param_group_id_ = -1;
 }
 
 void ObConstRawExpr::set_is_date_unit()
@@ -2703,6 +2705,27 @@ int ObObjAccessRawExpr::add_access_indexs(const ObIArray<pl::ObObjAccessIdx> &ac
     case pl::ObObjAccessIdx::IS_PROPERTY: {
       if (OB_FAIL(expr_access.push_back(access_idx))) {
         LOG_WARN("store access index failed", K(ret));
+#ifdef OB_BUILD_ORACLE_PL
+      } else if (access_idx.is_property()) {
+        if (0 == access_idx.var_name_.case_compare("count")) {
+          set_property(pl::ObAssocArrayType::COUNT_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("first")) {
+          set_property(pl::ObAssocArrayType::FIRST_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("last")) {
+          set_property(pl::ObAssocArrayType::LAST_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("limit")) {
+          set_property(pl::ObAssocArrayType::LIMIT_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("prior")) {
+          set_property(pl::ObAssocArrayType::PRIOR_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("next")) {
+          set_property(pl::ObAssocArrayType::NEXT_PROPERTY);
+        } else if (0 == access_idx.var_name_.case_compare("exists")) {
+          set_property(pl::ObAssocArrayType::EXISTS_PROPERTY);
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("Invalid property type", K(i), K(access_idx), K(ret));
+        }
+#endif
       } else { /*do nothing*/ }
     }
     break;
@@ -3600,7 +3623,9 @@ int ObSysFunRawExpr::assign(const ObRawExpr &other)
       const ObSysFunRawExpr &tmp =
           static_cast<const ObSysFunRawExpr &>(other);
       func_name_ = tmp.func_name_;
+      dblink_name_ = tmp.dblink_name_;
       operator_id_ = tmp.operator_id_;
+      dblink_id_ = tmp.dblink_id_;
     }
   }
   return ret;
@@ -3617,6 +3642,8 @@ int ObSysFunRawExpr::inner_deep_copy(ObIRawExprCopier &copier)
       LOG_WARN("inner allocator or expr factory is NULL", K(inner_alloc_), K(ret));
     } else if (OB_FAIL(ob_write_string(*inner_alloc_, func_name_, func_name_))) {
       LOG_WARN("fail to write string", K(func_name_), K(ret));
+    } else if (OB_FAIL(ob_write_string(*inner_alloc_, dblink_name_, dblink_name_))) {
+      LOG_WARN("fail to write string", K(dblink_name_), K(ret));
     }
   }
   return ret;
@@ -3632,6 +3659,7 @@ void ObSysFunRawExpr::reset()
   ObNonTerminalRawExpr::reset();
   func_name_.reset();
   clear_child();
+  dblink_id_ = OB_INVALID_ID;
 }
 
 bool ObSysFunRawExpr::inner_same_as(
@@ -3649,7 +3677,8 @@ bool ObSysFunRawExpr::inner_same_as(
     //for EXPR_UDF and EXPR_SYS_FUNC
     const ObSysFunRawExpr *s_expr = static_cast<const ObSysFunRawExpr *>(&expr);
     if (ObCharset::case_insensitive_equal(func_name_, s_expr->get_func_name())
-        && this->get_param_count() == s_expr->get_param_count()) {
+        && this->get_param_count() == s_expr->get_param_count() &&
+        get_dblink_id() == s_expr->get_dblink_id()) {
       bool_ret = true;
       for (int64_t i = 0; bool_ret && i < s_expr->get_param_count(); i++) {
         if (OB_ISNULL(get_param_expr(i)) || OB_ISNULL(s_expr->get_param_expr(i))) {
@@ -4135,10 +4164,17 @@ int ObSequenceRawExpr::get_name_internal(char *buf, const int64_t buf_len, int64
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(BUF_PRINTF("%.*s.%.*s",
-                         name_.length(), name_.ptr(),
-                         action_.length(), action_.ptr()))) {
+                          name_.length(), name_.ptr(),
+                          action_.length(), action_.ptr()))) {
     LOG_WARN("fail to BUF_PRINTF", K(ret));
-  } else if (EXPLAIN_EXTENDED == type) {
+  } else if (is_dblink_sys_func()) {
+    if (OB_FAIL(BUF_PRINTF("@%.*s",
+                          get_dblink_name().length(),
+                          get_dblink_name().ptr()))) {
+      LOG_WARN("fail to BUF_PRINTF", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && EXPLAIN_EXTENDED == type) {
     if (OB_FAIL(BUF_PRINTF("("))) {
       LOG_WARN("fail to BUF_PRINTF", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("%p", this))) {
@@ -5087,6 +5123,9 @@ int ObWindow::assign(const ObWindow &other)
       LOG_WARN("failed to assign order items", K(ret));
     } else if (OB_FAIL(ObFrame::assign(other))) {
       LOG_WARN("failed to assign frame", K(ret));
+    } else {
+      win_name_ = other.win_name_;
+      has_frame_orig_ = other.has_frame_orig_;
     }
   }
   return ret;

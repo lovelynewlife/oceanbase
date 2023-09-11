@@ -165,7 +165,8 @@ public:
                               const ObString &routine_name,
                               const share::schema::ObRoutineType routine_type,
                               common::ObIArray<const share::schema::ObIRoutineInfo *> &routines,
-                              uint64_t udt_id = OB_INVALID_ID);
+                              uint64_t udt_id = OB_INVALID_ID,
+                              const pl::ObPLResolveCtx *resolve_ctx = NULL);
   static int check_routine_exists(const ObSQLSessionInfo *session_info,
                                   ObSchemaChecker *schema_checker,
                                   pl::ObPLBlockNS *secondary_namespace,
@@ -227,7 +228,8 @@ public:
                    const common::ObIArray<sql::ObRawExpr *> &expr_params,
                    const common::ObIArray<const share::schema::ObIRoutineInfo *> &routine_infos,
                    const share::schema::ObRoutineInfo *&routine_info);
-  static int get_routine(ObResolverParams &params,
+  static int get_routine(pl::ObPLPackageGuard &package_guard,
+                         ObResolverParams &params,
                          uint64_t tenant_id,
                          const ObString &current_database,
                          const ObString &db_name,
@@ -235,7 +237,9 @@ public:
                          const ObString &routine_name,
                          const share::schema::ObRoutineType routine_type,
                          const common::ObIArray<ObRawExpr *> &expr_params,
-                         const share::schema::ObRoutineInfo *&routine);
+                         const share::schema::ObRoutineInfo *&routine,
+                         const ObString &dblink_name = ObString(""),
+                         ObIAllocator *allocator = NULL);
   static int get_routine(const pl::ObPLResolveCtx &resolve_ctx,
                          uint64_t tenant_id,
                          const ObString &current_database,
@@ -259,7 +263,8 @@ public:
                                     const ParseNode &sp_access_name_node,
                                     ObString &db_name,
                                     ObString &package_name,
-                                    ObString &routine_name);
+                                    ObString &routine_name,
+                                    ObString &dblink_name);
   static int resolve_sp_name(ObSQLSessionInfo &session_info,
                              const ParseNode &sp_name_node,
                              ObString &db_name,
@@ -749,6 +754,21 @@ public:
                                             ObSQLSessionInfo &session_info,
                                             ObDataTypeCastParams &dtc_params);
   static bool is_expr_can_be_used_in_table_function(const ObRawExpr &expr);
+  static int resolver_param(ObPlanCacheCtx &pc_ctx,
+                            ObSQLSessionInfo &session,
+                            const ParamStore &phy_ctx_params,
+                            const stmt::StmtType stmt_type,
+                            const ObCharsetType param_charset_type,
+                            const ObBitSet<> &neg_param_index,
+                            const ObBitSet<> &not_param_index,
+                            const ObBitSet<> &must_be_positive_idx,
+                            const ObPCParam *pc_param,
+                            const int64_t param_idx,
+                            ObObjParam &obj_param,
+                            bool &is_param);
+  static int check_keystore_status(const uint64_t tenant_id, ObSchemaChecker &schema_checker);
+  static int check_encryption_name(common::ObString &encryption_name, bool &need_encrypt);
+  static int check_not_supported_tenant_name(const common::ObString &tenant_name);
 private:
   static int try_convert_to_unsiged(const ObExprResType restype,
                                     ObRawExpr& src_expr,
@@ -776,6 +796,10 @@ private:
   static int check_partition_range_value_result_type(const share::schema::ObPartitionFuncType part_type,
                                                      const ObColumnRefRawExpr &part_column_expr,
                                                      ObRawExpr &part_value_expr);
+  static int rm_space_for_neg_num(ParseNode *param_node, ObIAllocator &allocator);
+  static int handle_varchar_charset(ObCharsetType charset_type,
+                                    ObIAllocator &allocator,
+                                    ParseNode *&node);
   static const common::ObString stmt_type_string[];
 
   // disallow construct

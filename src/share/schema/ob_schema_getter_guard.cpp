@@ -3113,7 +3113,6 @@ int ObSchemaGetterGuard::check_db_access(
   int ret = OB_SUCCESS;
   uint64_t tenant_id = session_priv.tenant_id_;
   const ObSchemaMgr *mgr = NULL;
-  ObPrivSet need_priv = OB_PRIV_SHOW_DB;
   if (!session_priv.is_valid() || 0 == db.length()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid arguments", K(session_priv), KR(ret));
@@ -3121,7 +3120,7 @@ int ObSchemaGetterGuard::check_db_access(
     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
   } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
     LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
-  } else if (!OB_TEST_PRIVS(session_priv.user_priv_set_, need_priv)) {
+  } else {
     const ObPrivMgr &priv_mgr = mgr->priv_mgr_;
     ObOriginalDBKey db_priv_key(session_priv.tenant_id_,
                                 session_priv.user_id_,
@@ -3221,11 +3220,16 @@ int ObSchemaGetterGuard::check_db_show(const ObSessionPrivInfo &session_priv,
   uint64_t tenant_id = session_priv.tenant_id_;
   allow_show = true;
   ObPrivSet db_priv_set = 0;
+  ObPrivSet need_priv = OB_PRIV_SHOW_DB;
   if (sql::ObSchemaChecker::is_ora_priv_check()) {
   } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
-  } else if (OB_SUCCESS != (can_show = check_db_access(session_priv, db,
-                                                       db_priv_set, false))) {
+  } else if (!session_priv.is_valid() || 0 == db.length()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid arguments", K(session_priv), KR(ret));
+  } else if (OB_TEST_PRIVS(session_priv.user_priv_set_, need_priv)) {
+    /* user priv level has show_db */
+  } else if (OB_SUCCESS != (can_show = check_db_access(session_priv, db, db_priv_set, false))) {
     allow_show = false;
   }
   return ret;
@@ -4482,7 +4486,7 @@ int ObSchemaGetterGuard::get_schema_version(
         GET_SCHEMA_VERSION(directory, ObDirectorySchema);
         break;
       }
-    case MOCK_FK_PARENT_TABLE_SHCEMA : {
+    case MOCK_FK_PARENT_TABLE_SCHEMA : {
         const ObSimpleMockFKParentTableSchema *schema = NULL;
         const ObSchemaMgr *mgr = NULL;
         if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
@@ -8122,7 +8126,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schemas_in_database(
       if (OB_ISNULL(simple_schemas.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("NULL ptr", K(ret));
-      } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA,
+      } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA,
                                     simple_schemas.at(i)->get_tenant_id(),
                                     simple_schemas.at(i)->get_mock_fk_parent_table_id(),
                                     full_schema,
@@ -8199,7 +8203,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schema_with_name(
   } else if (NULL == simple_mock_fk_parent_table) {
     mock_fk_parent_table_schema = NULL;
     LOG_DEBUG("mock_fk_parent_table schema not exist", K(tenant_id), K(database_id), K(name));
-  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
+  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
                                    mock_fk_parent_table_schema, simple_mock_fk_parent_table->get_schema_version()))) {
     LOG_WARN("get mock_fk_parent_table schema failed", K(ret), KPC(simple_mock_fk_parent_table));
   }
@@ -8218,7 +8222,7 @@ int ObSchemaGetterGuard::get_mock_fk_parent_table_schema_with_id(
   } else if (NULL == simple_mock_fk_parent_table) {
     mock_fk_parent_table_schema = NULL;
     LOG_DEBUG("mock_fk_parent_table not exist", K(mock_fk_parent_table_id));
-  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SHCEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
+  } else if (OB_FAIL(get_schema(MOCK_FK_PARENT_TABLE_SCHEMA, simple_mock_fk_parent_table->get_tenant_id(), simple_mock_fk_parent_table->get_mock_fk_parent_table_id(),
                                    mock_fk_parent_table_schema, simple_mock_fk_parent_table->get_schema_version()))) {
     LOG_WARN("get mock_fk_parent_table schema failed", K(ret), KPC(simple_mock_fk_parent_table));
   }
@@ -9028,6 +9032,22 @@ int ObSchemaGetterGuard::check_global_index_exist(const uint64_t tenant_id, cons
     }
   }
 
+  return ret;
+}
+
+int ObSchemaGetterGuard::deep_copy_index_name_map(
+    common::ObIAllocator &allocator,
+    ObIndexNameMap &index_name_cache)
+{
+  int ret = OB_SUCCESS;
+  const ObSchemaMgr *mgr = NULL;
+  if (OB_FAIL(check_lazy_guard(tenant_id_, mgr))) {
+    LOG_WARN("fail to check lazy guard", KR(ret), K_(tenant_id));
+  // const_cast to iterate index_name_map_, mgr won't be changed actually
+  } else if (OB_FAIL(const_cast<ObSchemaMgr*>(mgr)
+             ->deep_copy_index_name_map(allocator, index_name_cache))) {
+    LOG_WARN("fail to deep copy index name map", KR(ret), K_(tenant_id));
+  }
   return ret;
 }
 

@@ -143,7 +143,7 @@ public:
                 alloc_buf_(NULL), buf_end_(NULL), cur_buf_(NULL), data_end_(NULL),
                 consume_sz_(0)
   {}
-  ~ReadBuffer() 
+  ~ReadBuffer()
   {
     if (NULL != alloc_buf_) {
       direct_free(alloc_buf_);
@@ -190,7 +190,7 @@ private:
     if (limit <= 0) {
       ret = OB_INVALID_ARGUMENT;
     } else if (remain() >= limit) {
-      
+
     } else if (cur_buf_ + limit > buf_end_ && OB_FAIL(switch_buffer(limit))) {
       LOG_ERROR("alloc read buffer fail", K_(fd), K(ret));
     } else if (OB_FAIL(do_read_fd(limit))) {
@@ -263,7 +263,9 @@ private:
   }
   void* alloc_io_buffer(int64_t sz) { return direct_alloc(sz); }
   void free_io_buffer(void* p) { direct_free(p); }
-  static void* direct_alloc(int64_t sz) { return ob_malloc(sz, ObModIds::OB_COMMON_NETWORK); }
+  static void* direct_alloc(int64_t sz) {
+    return ob_malloc(sz, SET_USE_UNEXPECTED_500(ObModIds::OB_COMMON_NETWORK));
+  }
   static void direct_free(void* p) { ob_free(p); }
 private:
   int fd_;
@@ -342,7 +344,7 @@ public:
   ObSqlSock(ObSqlNioImpl *nio, int fd): dlink_(), all_list_link_(), write_task_link_(), nio_impl_(nio),
             fd_(fd), err_(0), read_buffer_(fd), need_epoll_trigger_write_(false), may_handling_(true),
             handler_close_flag_(false), need_shutdown_(false), last_decode_time_(0), last_write_time_(0),
-            sql_session_info_(NULL) {
+            sql_session_info_(NULL), tls_verion_option_(SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3) {
     memset(sess_, 0, sizeof(sess_));
   }
   ~ObSqlSock() {}
@@ -363,7 +365,7 @@ public:
       fd_ = -1;
     }
   }
-  void set_last_decode_succ_time(int64_t time) { last_decode_time_ = time;  }  
+  void set_last_decode_succ_time(int64_t time) { last_decode_time_ = time;  }
   int64_t get_consume_sz() { return read_buffer_.get_consume_sz(); }
 
   int peek_data(int64_t limit, const char*& buf, int64_t& sz) {
@@ -441,6 +443,7 @@ public:
   void shutdown() { ::shutdown(fd_, SHUT_RD); }
   int set_ssl_enabled();
   SSL* get_ssl_st();
+  void set_tls_version_option(uint64_t tls_option) { tls_verion_option_ = tls_option; }
   int write_handshake_packet(const char* buf, int64_t sz);
 public:
   ObDLink dlink_;
@@ -461,6 +464,7 @@ private:
   int64_t last_decode_time_;
   int64_t last_write_time_;
   void* sql_session_info_;
+  uint64_t tls_verion_option_;
 private:
   const rpc::TraceId* get_trace_id() const {
     ObSqlSockSession* sess = (ObSqlSockSession *)sess_;
@@ -474,6 +478,7 @@ private:
     ObSqlSockSession* sess = (ObSqlSockSession *)sess_;
     return sess->sql_session_id_;
   }
+
 public:
   char sess_[3000] __attribute__((aligned(16)));
 };
@@ -483,10 +488,23 @@ static ObSqlSock *sess2sock(void *sess)
   return CONTAINER_OF(sess, ObSqlSock, sess_);
 }
 
+int get_fd_from_sess(void *sess)
+{
+  int fd = -1;
+  ObSqlSock *sock = nullptr;
+  if (OB_NOT_NULL(sess)) {
+    sock = sess2sock(sess);
+  }
+  if (OB_NOT_NULL(sock)) {
+    fd = sock->get_fd();
+  }
+  return fd;
+}
+
 int ObSqlSock::set_ssl_enabled()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ob_fd_enable_ssl_for_server(fd_, OB_SSL_CTX_ID_SQL_NIO))) {
+  if (OB_FAIL(ob_fd_enable_ssl_for_server(fd_, OB_SSL_CTX_ID_SQL_NIO, tls_verion_option_))) {
     LOG_WARN("sqlnio enable ssl for server failed", K(ret), K(fd_));
   }
   return ret;
@@ -1008,7 +1026,9 @@ private:
       }
     }
   }
-  static void* direct_alloc(int64_t sz) { return common::ob_malloc(sz, common::ObModIds::OB_COMMON_NETWORK); }
+  static void* direct_alloc(int64_t sz) {
+    return common::ob_malloc(sz, SET_USE_UNEXPECTED_500(common::ObModIds::OB_COMMON_NETWORK));
+  }
   static void direct_free(void* p) { common::ob_free(p); }
 
   int get_epfd(){return epfd_;}
@@ -1130,7 +1150,7 @@ void ObSqlNio::reset_sql_session_info(void* sess)
 
 void ObSqlNio::set_sql_session_info(void* sess, void* sql_session)
 {
-  ObSqlSock* sock = sess2sock(sess);  
+  ObSqlSock* sock = sess2sock(sess);
   sock->set_sql_session_info(sql_session);
 }
 
@@ -1227,5 +1247,11 @@ int ObSqlNio::write_handshake_packet(void* sess, const char* buf, int64_t sz)
 {
   return sess2sock(sess)->write_handshake_packet(buf, sz);
 }
+
+void ObSqlNio::set_tls_version_option(void* sess, uint64_t tls_option)
+{
+  sess2sock(sess)->set_tls_version_option(tls_option);
+}
+
 }; // end namespace obmysql
 }; // end namespace oceanbase

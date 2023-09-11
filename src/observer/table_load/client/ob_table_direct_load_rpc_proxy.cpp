@@ -31,12 +31,13 @@ int ObTableDirectLoadRpcProxy::dispatch(ObTableDirectLoadExecContext &ctx,
     break;
 
   int ret = OB_SUCCESS;
-  switch (request.operation_type_) {
+  switch (request.header_.operation_type_) {
     OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::BEGIN);
     OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::COMMIT);
     OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::ABORT);
     OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::GET_STATUS);
     OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::INSERT);
+    OB_TABLE_DIRECT_LOAD_RPC_DISPATCH(ObTableDirectLoadOperationType::HEART_BEAT);
     default:
       ret = OB_ERR_UNEXPECTED;
       SERVER_LOG(WARN, "unexpected command type", K(ret), K(request));

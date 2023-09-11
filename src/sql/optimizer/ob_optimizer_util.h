@@ -1079,7 +1079,8 @@ public:
                                  ObSelectStmt &left_stmt,
                                  ObSelectStmt &right_stmt,
                                  ObSelectStmt *select_stmt,
-                                 const bool to_left_type = false);
+                                 const bool is_mysql_recursive_union = false,
+                                 ObIArray<ObString> *rcte_col_name = NULL);
 
   static int gen_set_target_list(ObIAllocator *allocator,
                                  ObSQLSessionInfo *session_info,
@@ -1087,7 +1088,8 @@ public:
                                  ObIArray<ObSelectStmt*> &left_stmts,
                                  ObIArray<ObSelectStmt*> &right_stmts,
                                  ObSelectStmt *select_stmt,
-                                 const bool to_left_type = false);
+                                 const bool is_mysql_recursive_union = false,
+                                 ObIArray<ObString> *rcte_col_name = NULL);
 
   static int gen_set_target_list(ObIAllocator *allocator,
                                  ObSQLSessionInfo *session_info,
@@ -1106,13 +1108,21 @@ public:
                                             ObIArray<ObSelectStmt*> &left_stmts,
                                             ObIArray<ObSelectStmt*> &right_stmts,
                                             ObIArray<ObExprResType> *res_types,
-                                            const bool to_left_type = false);
+                                            const bool is_mysql_recursive_union = false,
+                                            ObIArray<ObString> *rcte_col_name = NULL);
 
   static int add_cast_to_set_list(ObSQLSessionInfo *session_info,
                                   ObRawExprFactory *expr_factory,
                                   ObIArray<ObSelectStmt*> &stmts,
                                   const ObExprResType &res_type,
                                   const int64_t idx);
+
+  static int add_column_conv_to_set_list(ObSQLSessionInfo *session_info,
+                                         ObRawExprFactory *expr_factory,
+                                         ObIArray<ObSelectStmt*> &stmts,
+                                         const ObExprResType &res_type,
+                                         const int64_t idx,
+                                         ObIArray<ObString> *rcte_col_name);
 
   static int check_subquery_has_ref_assign_user_var(ObRawExpr *expr, bool &is_has);
 
@@ -1149,6 +1159,9 @@ public:
                                    ObIArray<ObRawExpr*> &candi_filters,
                                    ObIArray<ObRawExpr*> &remain_filters,
                                    bool check_match_index = true);
+
+  static int remove_special_exprs(ObIArray<ObRawExpr*> &pushdown_filters,
+                                  ObIArray<ObRawExpr*> &remain_filters);
 
   static int check_pushdown_filter_overlap_index(const ObDMLStmt &stmt,
                                                  ObOptimizerContext &opt_ctx,
@@ -1375,8 +1388,6 @@ public:
   static int check_exec_param_filter_exprs(const ObIArray<ObRawExpr *> &input_filters,
                                            bool &has_exec_param_filters);
 
-  static int adjust_join_path_dup_table_replica_pos(const Path *path,
-                                                    const int64_t cur_dup_table_pos);
 
   static int check_contain_batch_stmt_parameter(ObRawExpr* expr, bool &contain);
 
@@ -1485,6 +1496,8 @@ public:
                                            bool &can_pushdown_all,
                                            bool check_match_index = true);
 
+  static bool find_superset(const ObRelIds &rel_ids,
+                           const ObIArray<ObRelIds> &single_table_ids);
 private:
   //disallow construct
   ObOptimizerUtil();

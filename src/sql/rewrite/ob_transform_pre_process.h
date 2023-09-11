@@ -284,6 +284,13 @@ struct DistinctObjMeta
 	int add_filter_for_temporary_table(ObDMLStmt &stmt,
 	                                   const TableItem &table_item,
                                      bool is_trans_scope_temp_table);
+#ifdef OB_BUILD_LABEL_SECURITY
+	int transform_for_label_se_table(ObDMLStmt *stmt, bool &trans_happened);
+  int add_filter_for_label_se_table(ObDMLStmt &stmt,
+                                    const TableItem &table_item,
+                                    const common::ObString &policy_name,
+                                    const share::schema::ObColumnSchemaV2 &column_schema);
+#endif
 	int collect_all_tableitem(ObDMLStmt *stmt,
                             TableItem *table_item,
                             common::ObArray<TableItem*> &table_item_list);
@@ -493,6 +500,8 @@ struct DistinctObjMeta
   int transform_for_ins_batch_stmt(ObDMLStmt *batch_stmt, bool &trans_happened);
   int transform_for_batch_stmt(ObDMLStmt *batch_stmt, bool &trans_happened);
 
+  int check_insert_can_batch(ObInsertStmt *insert_stmt, bool &can_batch);
+
   int formalize_batch_stmt(ObDMLStmt *batch_stmt,
                           ObSelectStmt* inner_view_stmt,
                           const ObIArray<ObRawExpr *> &other_exprs,
@@ -576,6 +585,8 @@ struct DistinctObjMeta
                              ObIArray<ObRawExpr*> &exec_params_remove_const_exprs,
                              ObIArray<ObRawExpr*> &column_ref_exprs,
                              ObIArray<ObRawExpr*> &column_ref_remove_const_exprs,
+                             ObIArray<ObRawExpr*> &query_ref_exprs,
+                             ObIArray<ObRawExpr*> &query_ref_remove_const_exprs,
                              bool &trans_happened);
   int replace_remove_const_exprs(ObSelectStmt *stmt,
                                 ObIArray<ObRawExpr*> &const_exprs,
@@ -583,7 +594,9 @@ struct DistinctObjMeta
                                 ObIArray<ObRawExpr*> &exec_params,
                                 ObIArray<ObRawExpr*> &exec_params_remove_const_exprs,
                                 ObIArray<ObRawExpr*> &column_ref_exprs,
-                                ObIArray<ObRawExpr*> &column_ref_remove_const_exprs);
+                                ObIArray<ObRawExpr*> &column_ref_remove_const_exprs,
+                                ObIArray<ObRawExpr*> &query_ref_exprs,
+                                ObIArray<ObRawExpr*> &query_ref_remove_const_exprs);
 
   int transform_cast_multiset_for_stmt(ObDMLStmt *&stmt, bool &is_happened);
   int transform_cast_multiset_for_expr(ObDMLStmt &stmt, ObRawExpr *&expr, bool &trans_happened);

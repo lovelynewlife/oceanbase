@@ -70,6 +70,12 @@ namespace blocksstable
 {
 class ObSSTable;
 }
+
+namespace compaction
+{
+class ObExtraMediumInfo;
+}
+
 namespace transaction
 {
 class ObTransID;
@@ -139,7 +145,7 @@ public:
 
 public:
   // first time create tablet
-  int init(
+  int init_for_first_time_creation(
       common::ObArenaAllocator &allocator,
       const share::ObLSID &ls_id,
       const common::ObTabletID &tablet_id,
@@ -152,25 +158,25 @@ public:
       blocksstable::ObSSTable *sstable,
       ObFreezer *freezer);
   // dump/merge build new multi version tablet
-  int init(
+  int init_for_merge(
       common::ObArenaAllocator &allocator,
       const ObUpdateTableStoreParam &param,
       const ObTablet &old_tablet);
   // dump/merge mds table to tablet_meta
-  int init(
+  int init_for_mds_table_dump(
       common::ObArenaAllocator &allocator,
       const ObTablet &old_tablet,
       const share::SCN &flush_scn,
       const ObTabletMdsData &mds_table_data,
       const ObTabletMdsData &base_data);
   // transfer build new tablet
-  int init(
+  int init_with_migrate_param(
       common::ObArenaAllocator &allocator,
       const ObMigrationTabletParam &param,
       const bool is_update,
       ObFreezer *freezer);
   //batch update table store with range cut
-  int init(
+  int init_for_sstable_replace(
       common::ObArenaAllocator &allocator,
       const ObBatchUpdateTableStoreParam &param,
       const ObTablet &old_tablet);
@@ -179,7 +185,7 @@ public:
       common::ObArenaAllocator &allocator,
       const ObTablet &old_tablet);
   // batch replace sstables without data modification
-  int init(
+  int init_for_defragment(
       common::ObArenaAllocator &allocator,
       const ObIArray<storage::ObITable *> &tables,
       const ObTablet &old_tablet);
@@ -199,7 +205,6 @@ public:
   // fetch_$member: member may exist in memory or disk, if in memory, get it directly, if in disk,
   //                read from disk then put into kv cache, and return kv cache handle for caller
   int fetch_table_store(ObTabletMemberWrapper<ObTabletTableStore> &wrapper) const;
-  int fetch_autoinc_seq(ObTabletMemberWrapper<share::ObTabletAutoincSeq> &wrapper) const;
   int load_storage_schema(
       common::ObArenaAllocator &allocator,
       const ObStorageSchema *&storage_schema) const;
@@ -223,6 +228,13 @@ public:
   // serialize & deserialize
   int serialize(char *buf, const int64_t len, int64_t &pos) const;
   // for normal tablet deserialize
+  int load_deserialize(
+      common::ObArenaAllocator &allocator,
+      const char *buf,
+      const int64_t len,
+      int64_t &pos);
+  int deserialize_post_work(
+      common::ObArenaAllocator &allocator);
   int deserialize(
       common::ObArenaAllocator &allocator,
       const char *buf,
@@ -424,16 +436,13 @@ public:
       int64_t &data_size,
       int64_t &required_size,
       const bool need_checksums = true);
-  int set_tx_data(
-      const ObTabletTxMultiSourceDataUnit &tx_data,
-      const share::SCN &memtable_log_scn,
-      const bool for_replay,
-      const memtable::MemtableRefOp ref_op = memtable::MemtableRefOp::NONE,
-      const bool is_callback = false);
-
   int check_and_set_initial_state();
   int set_memtable_clog_checkpoint_scn(const ObMigrationTabletParam *tablet_meta);
-  int read_mds_table(common::ObIAllocator &allocator, ObTabletMdsData &mds_data, const bool for_flush);
+  int read_mds_table(
+      common::ObIAllocator &allocator,
+      ObTabletMdsData &mds_data,
+      const bool for_flush,
+      const int64_t mds_construct_sequence = 0);
   int notify_mds_table_flush_ret(
       const share::SCN &flush_scn,
       const int flush_ret);
@@ -495,6 +504,7 @@ public:
       common::ObArenaAllocator &allocator,
       ObTabletFullMemoryMdsData &mds_data);
   int64_t to_string(char *buf, const int64_t buf_len) const;
+  int get_max_column_cnt_on_schema_recorder(int64_t &max_column_cnt);
 protected:// for MDS use
   virtual bool check_is_inited_() const override final { return is_inited_; }
   virtual const ObTabletMdsData &get_mds_data_() const override final { return mds_data_; }
@@ -516,15 +526,17 @@ private:
   static int inc_linked_block_ref_cnt(const ObMetaDiskAddr &head_addr, bool &inc_success);
   static void dec_linked_block_ref_cnt(const ObMetaDiskAddr &head_addr);
   int64_t get_try_cache_size() const;
-
 private:
+  static bool ignore_ret(const int ret);
   int inner_check_valid(const bool ignore_ha_status = false) const;
   int get_min_medium_snapshot(int64_t &min_medium_snapshot) const;
 
   int64_t get_self_size() const;
   int get_memtable_mgr(ObIMemtableMgr *&memtable_mgr) const;
+  int get_tablet_memtable_mgr(ObTabletMemtableMgr *&memtable_mgr) const;
   int check_schema_version(const int64_t schema_version);
   int check_snapshot_readable(const int64_t snapshot_version);
+  int check_transfer_seq_equal(const ObTablet &old_tablet, const int64_t transfer_seq);
 
   logservice::ObLogHandler *get_log_handler() const { return log_handler_; } // TODO(bowen.gbw): get log handler from tablet pointer handle
 
@@ -638,10 +650,12 @@ private:
   static int load_medium_info_list(
       common::ObArenaAllocator &allocator,
       const ObTabletComplexAddr<oceanbase::storage::ObTabletDumpedMediumInfo> &complex_addr,
-      const ObTaletExtraMediumInfo &extra_info,
+      const compaction::ObExtraMediumInfo &extra_info,
       compaction::ObMediumCompactionInfoList &medium_info_list);
+  int validate_medium_info_list(
+      const int64_t finish_medium_scn,
+      const ObTabletMdsData &mds_data) const;
   int set_initial_state(const bool initial_state);
-  int check_initial_state(bool &initial_state);
 
   int load_deserialize_v1(
       common::ObArenaAllocator &allocator,
@@ -688,6 +702,12 @@ private:
       ObTableIterParam &param,
       ObTableAccessContext &context);
 
+#ifdef OB_BUILD_TDE_SECURITY
+  void get_encrypt_meta(
+      const uint64_t table_id,
+      const common::ObIArray<transaction::ObEncryptMetaCache> *encrypt_meta_arr,
+      const transaction::ObSerializeEncryptMeta *&encrypt_meta);
+#endif
 
   // memtable operation
   int pull_memtables(ObArenaAllocator &allocator, ObITable **&ddl_kvs_addr, int64_t &ddl_kv_count);
@@ -706,6 +726,8 @@ private:
   int pull_ddl_memtables(ObArenaAllocator &allocator, ObITable **&ddl_kvs_addr, int64_t &ddl_kv_count);
   void reset_ddl_memtables();
   int wait_release_memtables_();
+  int mark_mds_table_switched_to_empty_shell_();
+  int fetch_autoinc_seq(ObTabletMemberWrapper<share::ObTabletAutoincSeq> &wrapper) const;
 private:
   // ObTabletDDLKvMgr::MAX_DDL_KV_CNT_IN_STORAGE
   // Array size is too large, need to shrink it if possible
@@ -844,6 +866,20 @@ inline int64_t ObTablet::get_lock_wait_timeout(
           (abs_lock_timeout > stmt_timeout ? stmt_timeout : abs_lock_timeout));
 }
 
+#ifdef OB_BUILD_TDE_SECURITY
+inline void ObTablet::get_encrypt_meta(
+     const uint64_t table_id,
+     const common::ObIArray<transaction::ObEncryptMetaCache> *encrypt_meta_arr,
+     const transaction::ObSerializeEncryptMeta *&encrypt_meta)
+{
+  for (int64_t i = 0; i < encrypt_meta_arr->count(); ++i) {
+    if (encrypt_meta_arr->at(i).real_table_id() == table_id) {
+      encrypt_meta = &(encrypt_meta_arr->at(i).meta_);
+      break;
+    }
+  }
+}
+#endif
 
 } // namespace storage
 } // namespace oceanbase

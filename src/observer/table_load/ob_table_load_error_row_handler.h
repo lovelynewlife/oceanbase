@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yuya.yu <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -18,15 +26,22 @@ class ObTableLoadResultInfo;
 namespace observer
 {
 class ObTableLoadStoreCtx;
+class ObTableLoadCoordinatorCtx;
+class ObTableLoadParam;
 
 class ObTableLoadErrorRowHandler : public ObDirectLoadDMLRowHandler
 {
 public:
   ObTableLoadErrorRowHandler();
   virtual ~ObTableLoadErrorRowHandler();
-  int init(ObTableLoadStoreCtx *store_ctx);
+  int init(const ObTableLoadParam &param, table::ObTableLoadResultInfo &result_info,
+           sql::ObLoadDataStat *job_stat);
   int handle_insert_row(const blocksstable::ObDatumRow &row) override;
   int handle_update_row(const blocksstable::ObDatumRow &row) override;
+  int handle_update_row(common::ObArray<const ObDirectLoadExternalRow *> &rows,
+                        const ObDirectLoadExternalRow *&row) override;
+  int handle_update_row(common::ObArray<const ObDirectLoadMultipleDatumRow *> &rows,
+                        const ObDirectLoadMultipleDatumRow *&row) override;
   int handle_update_row(const blocksstable::ObDatumRow &old_row,
                         const blocksstable::ObDatumRow &new_row,
                         const blocksstable::ObDatumRow *&result_row) override;

@@ -240,6 +240,50 @@ do {                                                                            
     setup_token_pos_info(node, word_start - 1, word_end - word_start + 1);  \
   } while (0)
 
+//oralce下生成非保留关键字结点请使用该宏,区别于mysql的是做了大写的转换
+#define get_oracle_non_reserved_node(node, malloc_pool, expr_start, expr_end) \
+  do {                                                                 \
+    malloc_terminal_node(node, malloc_pool, T_IDENT);                   \
+    if (OB_UNLIKELY(NULL == node || NULL == result || NULL == result->input_sql_)) {\
+      yyerror(NULL, result, "invalid argument, node:%p, result:%p or input_sql is NULL", node, result);\
+      YYABORT_UNEXPECTED;                                                  \
+    } else if (OB_UNLIKELY(expr_start < 0 || expr_end < 0 || expr_start > expr_end)) {               \
+      yyerror(NULL, result, "invalid argument, expr_start:%d, expr_end:%d", (int32_t)expr_start, (int32_t)expr_end);\
+      YYABORT_UNEXPECTED;                                                  \
+    } else {                                                               \
+      int start = expr_start;                                              \
+      char * upper_value = NULL;                                           \
+      char * raw_str = NULL;                                              \
+      node->str_value_ = NULL;                                             \
+      node->str_len_ = 0;                                                  \
+      node->raw_text_ = NULL;                                             \
+      node->text_len_ = 0;                                                 \
+      while (start <= expr_end && ISSPACE(result->input_sql_[start - 1])) {\
+        start++;                                                           \
+      }                                                                    \
+      if ('"' == result->input_sql_[start - 1]) {                          \
+        start++;                                                           \
+        expr_end--;                                                        \
+      }                                                                    \
+      if (start >= expr_start                                              \
+          && (OB_UNLIKELY((NULL == (upper_value = copy_expr_string(result, start, expr_end)))))) { \
+        yyerror(NULL, result, "No more space for copying expression string"); \
+        YYABORT_NO_MEMORY;                                                 \
+      } else {                                                             \
+        if (start >= expr_start                                              \
+            && (OB_UNLIKELY((NULL == (raw_str = copy_expr_string(result, start, expr_end)))))) { \
+          yyerror(NULL, result, "No more space for copying expression string"); \
+          YYABORT_NO_MEMORY;                                                 \
+        } else {                                                            \
+          node->raw_text_ = raw_str;                                    \
+          node->text_len_ = expr_end - start + 1;                            \
+          node->str_value_ = str_toupper(upper_value, expr_end - start + 1); \
+          node->str_len_ = expr_end - start + 1;                             \
+          setup_token_pos_info(node, expr_start - 1, expr_end - expr_start + 1);  \
+        }                                                                   \
+      }                                                                    \
+    }                                                                      \
+  } while(0)
 
 #define make_name_node(node, malloc_pool, name)                         \
   do {                                                                  \
@@ -619,6 +663,7 @@ do {                                                                            
 #define IS_NEED_PARAMETERIZE ((ParseResult *)yyextra)->need_parameterize_
 #define IS_FOR_TRIGGER       ((ParseResult *)yyextra)->is_for_trigger_
 #define IF_FOR_PREPROCESS    ((ParseResult *)yyextra)->is_for_preprocess_
+#define IS_FOR_REMAP         ((ParseResult *)yyextra)->is_for_remap_
 
 #define COPY_STRING(src, src_len, dst)                                                          \
 do {                                                                                            \
@@ -863,6 +908,32 @@ for (int32_t _i = 0; _i < _yyleng; ++_i) {                                      
     }                                                                                                     \
   } while (0);
 
+#define PARSE_INT_STR_ORACLE(param_node, malloc_pool, errno)             \
+  do {                                                                   \
+    if ('-' == param_node->str_value_[0]) {                              \
+      char *copied_str = parse_strndup(param_node->str_value_, param_node->str_len_, malloc_pool);   \
+      if (OB_ISNULL(copied_str)) {                                       \
+        ((ParseResult *)yyextra)->extra_errno_ = OB_PARSER_ERR_NO_MEMORY;\
+        yyerror(NULL, yyextra, "No more space for mallocing");           \
+        return ERROR;                                                    \
+      } else {                                                           \
+        int pos = 1;                                                     \
+        for (; pos < param_node->str_len_ && ISSPACE(copied_str[pos]); pos++) ;                           \
+        copied_str[--pos] = '-';                                                                          \
+        param_node->value_ = ob_strntoll(copied_str + pos, param_node->str_len_ - pos, 10, NULL, &errno); \
+        if (ERANGE == errno) {                                                                            \
+          param_node->type_ = T_NUMBER;                                                                   \
+          token_ret = DECIMAL_VAL;                                                                        \
+        }                                                                                                 \
+      }                                                                                                   \
+    } else {                                                                                              \
+      param_node->value_ = ob_strntoll(param_node->str_value_, param_node->str_len_, 10, NULL, &errno);   \
+      if (ERANGE == errno) {                                                                              \
+        param_node->type_ = T_NUMBER;                                                                     \
+        token_ret = DECIMAL_VAL;                                                                          \
+      }                                                                                                   \
+    }                                                                                                     \
+  } while (0);
 
 #define RM_MULTI_STMT_END_P(p)                                \
   do                                                          \
@@ -1064,5 +1135,56 @@ do {\
       }                                                                         \
     }                                                                           \
   } while(0);                                                                   \
+
+#define malloc_select_values_stmt(node, result, values_node, order_by_node, limit_node)\
+  do {\
+    /*gen select list*/\
+    ParseNode *star_node = NULL;\
+    malloc_terminal_node(star_node, result->malloc_pool_, T_STAR);\
+    dup_string_to_node(star_node, result->malloc_pool_, "*");\
+    ParseNode *project_node = NULL;\
+    malloc_non_terminal_node(project_node, result->malloc_pool_, T_PROJECT_STRING, 1, star_node);\
+    ParseNode *project_list_node = NULL;\
+    merge_nodes(project_list_node, result, T_PROJECT_LIST, project_node);\
+    /*gen from list*/\
+    ParseNode *alias_node = NULL;\
+    malloc_non_terminal_node(alias_node, result->malloc_pool_, T_ALIAS, 2, values_node, NULL);\
+    ParseNode *from_list = NULL;\
+    merge_nodes(from_list, result, T_FROM_LIST, alias_node);\
+    /*malloc select node*/\
+    malloc_select_node(node, result->malloc_pool_);\
+    node->children_[PARSE_SELECT_SELECT] = project_list_node;\
+    node->children_[PARSE_SELECT_FROM] = from_list;\
+    node->children_[PARSE_SELECT_ORDER] = order_by_node;\
+    node->children_[PARSE_SELECT_LIMIT] = limit_node;\
+  } while(0);\
+
+#define refine_insert_values_table(node)\
+  do {\
+     if (node != NULL && node->type_ == T_SELECT && node->children_[PARSE_SELECT_FROM] != NULL &&\
+         node->children_[PARSE_SELECT_FROM]->type_ == T_FROM_LIST &&\
+         node->children_[PARSE_SELECT_FROM]->num_child_ == 1 &&\
+         node->children_[PARSE_SELECT_FROM]->children_ != NULL &&\
+         node->children_[PARSE_SELECT_FROM]->children_[0] != NULL &&\
+         node->children_[PARSE_SELECT_FROM]->children_[0]->type_ == T_ALIAS) {\
+      ParseNode *alias_node = node->children_[PARSE_SELECT_FROM]->children_[0];\
+      if (alias_node->children_ != NULL &&\
+          alias_node->num_child_ == 2 && \
+          alias_node->children_[0] != NULL &&\
+          alias_node->children_[0]->type_ == T_VALUES_TABLE_EXPRESSION) {\
+        ParseNode *values_table_node = alias_node->children_[0];\
+        if (values_table_node->children_ != NULL &&\
+            values_table_node->num_child_ == 1 && \
+            values_table_node->children_[0] != NULL &&\
+            values_table_node->children_[0]->type_ == T_VALUES_ROW_LIST) {\
+          values_table_node->children_[0]->type_ = T_VALUE_LIST;\
+          if (node->children_[PARSE_SELECT_ORDER] == NULL &&\
+              node->children_[PARSE_SELECT_LIMIT] == NULL) {\
+            node = values_table_node->children_[0]; \
+          }\
+        }\
+      }\
+     }\
+  } while(0);\
 
 #endif /* OCEANBASE_SRC_SQL_PARSER_SQL_PARSER_BASE_H_ */

@@ -337,7 +337,7 @@ void ObResourceGroup::update_queue_size()
   req_queue_.set_limit(common::ObServerConfig::get_instance().tenant_task_queue_size);
 }
 
-int ObResourceGroup::acquire_more_worker(int64_t num, int64_t &succ_num)
+int ObResourceGroup::acquire_more_worker(int64_t num, int64_t &succ_num, bool force)
 {
   int ret = OB_SUCCESS;
   ObTenantSwitchGuard guard(tenant_);
@@ -347,7 +347,7 @@ int ObResourceGroup::acquire_more_worker(int64_t num, int64_t &succ_num)
 
   while (OB_SUCC(ret) && need_num > succ_num) {
     ObThWorker *w = nullptr;
-    if (OB_FAIL(create_worker(w, tenant_, group_id_, INT32_MAX, this))) {
+    if (OB_FAIL(create_worker(w, tenant_, group_id_, INT32_MAX, force, this))) {
       LOG_WARN("create worker failed", K(ret));
     } else if (!workers_.add_last(&w->worker_node_)) {
       OB_ASSERT(false);
@@ -401,7 +401,7 @@ void ObResourceGroup::check_worker_count()
       const auto diff = min_worker_cnt() - workers_.get_size();
       token_change_ts_ = now;
       ATOMIC_STORE(&shrink_, false);
-      acquire_more_worker(diff, succ_num);
+      acquire_more_worker(diff, succ_num, /* force */ true);
       LOG_INFO("worker thread created", K(tenant_->id()), K(group_id_), K(token));
     } else if (OB_UNLIKELY(token > workers_.get_size())
                && OB_LIKELY(ObMallocAllocator::get_instance()->get_tenant_remain(tenant_->id()) > ObMallocAllocator::get_instance()->get_tenant_limit(tenant_->id()) * 0.05)) {
@@ -966,6 +966,18 @@ void ObTenant::destroy()
   }
   group_map_.destroy_group();
   ObTenantSwitchGuard guard(this);
+  destroy_mtl_module();
+  // 1.some mtl module(eg: ObDataAccessService) remove tmp file when destroy,
+  //   so free_tenant_file_store must be after destroy_mtl_module.
+  // 2.there is tg in ObTmpTenantMemBlockManager, so free_tenant_file_store must be before
+  //   ObTenantBase::destroy() in which tg leak is checked.
+  if (OB_TMP_FAIL(OB_TMP_FILE_STORE.free_tenant_file_store(id_))) {
+    if (OB_ENTRY_NOT_EXIST == tmp_ret) {
+      tmp_ret = OB_SUCCESS;
+    } else {
+      LOG_WARN_RET(tmp_ret, "fail to free tmp tenant file store", K(ret), K_(id));
+    }
+  }
   ObTenantBase::destroy();
 
   if (nullptr != multi_level_queue_) {
@@ -1179,7 +1191,7 @@ int ObTenant::recv_request(ObRequest &req)
   int ret = OB_SUCCESS;
   int req_level = 0;
   if (ATOMIC_LOAD(&stopped_)) {
-    ret = OB_IN_STOP_STATE;
+    ret = OB_TENANT_NOT_IN_SERVER;
     LOG_WARN("receive request but tenant has already stopped", K(ret), K(id_));
   } else if (0 != req.get_group_id()) {
     if (OB_FAIL(recv_group_request(req, req.get_group_id()))) {
@@ -1402,7 +1414,7 @@ void ObTenant::check_worker_count()
       const auto diff = min_worker_cnt() - workers_.get_size();
       token_change_ts_ = now;
       ATOMIC_STORE(&shrink_, false);
-      acquire_more_worker(diff, succ_num);
+      acquire_more_worker(diff, succ_num, /* force */ true);
       LOG_INFO("worker thread created", K(id_), K(token));
     } else if (OB_UNLIKELY(token > workers_.get_size())
                && OB_LIKELY(ObMallocAllocator::get_instance()->get_tenant_remain(id_) > ObMallocAllocator::get_instance()->get_tenant_limit(id_) * 0.05)) {
@@ -1465,7 +1477,7 @@ int ObTenant::acquire_level_worker(int64_t num, int64_t &succ_num, int32_t level
   } else {
     while (OB_SUCC(ret) && need_num > succ_num) {
       ObThWorker *w = nullptr;
-      if (OB_FAIL(create_worker(w, this, 0, level))) {
+      if (OB_FAIL(create_worker(w, this, 0, level, true))) {
         LOG_WARN("create worker failed", K(ret));
       } else if (!nesting_workers_.add_last(&w->worker_node_)) {
         OB_ASSERT(false);
@@ -1489,7 +1501,7 @@ int ObTenant::acquire_level_worker(int64_t num, int64_t &succ_num, int32_t level
 }
 
 // This interface is unnecessary after adding htap
-int ObTenant::acquire_more_worker(int64_t num, int64_t &succ_num)
+int ObTenant::acquire_more_worker(int64_t num, int64_t &succ_num, bool force)
 {
   int ret = OB_SUCCESS;
   succ_num = 0;
@@ -1497,7 +1509,7 @@ int ObTenant::acquire_more_worker(int64_t num, int64_t &succ_num)
   ObTenantSwitchGuard guard(this);
   while (OB_SUCC(ret) && num > succ_num) {
     ObThWorker *w = nullptr;
-    if (OB_FAIL(create_worker(w, this, 0, 0))) {
+    if (OB_FAIL(create_worker(w, this, 0, 0, force))) {
       LOG_WARN("create worker failed", K(ret));
     } else if (!workers_.add_last(&w->worker_node_)) {
       OB_ASSERT(false);
@@ -1626,9 +1638,7 @@ void ObTenant::check_resource_manager_plan()
   ObResourceColMappingRuleManager &col_rule_mgr = G_RES_MGR.get_col_mapping_rule_mgr();
   char data[OB_MAX_RESOURCE_PLAN_NAME_LENGTH];
   ObDataBuffer allocator(data, OB_MAX_RESOURCE_PLAN_NAME_LENGTH);
-  if (!cgroup_ctrl_.is_valid()) {
-    // The cgroup is not initialized successfully, no need to refresh the resource manager plan
-  } else if (OB_SYS_TENANT_ID != id_ && OB_MAX_RESERVED_TENANT_ID >= id_) {
+  if (OB_SYS_TENANT_ID != id_ && OB_MAX_RESERVED_TENANT_ID >= id_) {
     // Except for system rental outside, internal tenants do not use resource plan for internal isolation
   } else if (OB_FAIL(ObSchemaUtils::get_tenant_varchar_variable(
               id_,

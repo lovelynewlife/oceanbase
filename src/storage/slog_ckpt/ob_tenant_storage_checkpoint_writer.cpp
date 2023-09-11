@@ -232,7 +232,12 @@ int ObTenantStorageCheckpointWriter::copy_one_tablet_item(
     }
   } else if (FALSE_IT(old_tablet = old_tablet_handle.get_obj())) {
   } else if (OB_FAIL(ObTabletPersister::persist_and_transform_tablet(*old_tablet, new_tablet_handle))) {
-    LOG_WARN("fail to persist and transform tablet", K(ret), K(tablet_key), KPC(old_tablet));
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      LOG_INFO("skip writing checkpoint for this tablet", K(tablet_key));
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to persist and transform tablet", K(ret), K(tablet_key), KPC(old_tablet));
+    }
   } else if (FALSE_IT(new_tablet = new_tablet_handle.get_obj())) {
   } else if (FALSE_IT(slog.disk_addr_ = new_tablet->get_tablet_addr())) {
   } else if (OB_FAIL(slog.serialize(slog_buf, sizeof(ObUpdateTabletLog), slog_buf_pos))) {
@@ -347,9 +352,11 @@ int ObTenantStorageCheckpointWriter::batch_compare_and_swap_tablet(const bool is
       }
     } else {
       addr_info.need_rollback_ = false;
+      ObArenaAllocator allocator("CompatLoad");
+      ObTabletHandle old_tablet_handle;
       do {
-        ObArenaAllocator allocator("CompatLoad");
-        ObTabletHandle old_tablet_handle;
+        old_tablet_handle.reset();
+        allocator.reuse();
         if (OB_FAIL(t3m->get_tablet_with_allocator(
             WashTabletPriority::WTP_LOW, addr_info.tablet_key_, allocator, old_tablet_handle))) {
           LOG_WARN("fail to get tablet with allocator", K(ret), K(addr_info));
@@ -360,10 +367,13 @@ int ObTenantStorageCheckpointWriter::batch_compare_and_swap_tablet(const bool is
             is_replay_old,
             new_tablet_handle))) {
           LOG_WARN("fail to compare and swap tablet with seq check", K(ret), K(addr_info));
-        } else {
-          old_tablet_handle.get_obj()->dec_macro_ref_cnt();
         }
       } while (ignore_ret(ret));
+      if (OB_FAIL(ret)) {
+        // do nothing
+      } else {
+        old_tablet_handle.get_obj()->dec_macro_ref_cnt();
+      }
     }
   }
 
@@ -388,15 +398,9 @@ int ObTenantStorageCheckpointWriter::rollback()
       const TabletItemAddrInfo &addr_info = tablet_item_addr_info_arr_.at(i);
       if (addr_info.need_rollback_) {
         rollback_cnt++;
-        do {
-          if (OB_FAIL(do_rollback(allocator, addr_info.new_addr_))) {
-            if (OB_ALLOCATE_MEMORY_FAILED != ret) {
-              LOG_ERROR("fail to rollback ref cnt", K(ret), K(addr_info));
-            } else if (REACH_TIME_INTERVAL(1000 * 1000L)) { // 1s
-              LOG_ERROR("fail to rollback ref cnt due to memory limit", K(ret), K(addr_info));
-            }
-          }
-        } while (OB_ALLOCATE_MEMORY_FAILED == ret);
+        if (OB_FAIL(do_rollback(allocator, addr_info.new_addr_))) {
+          LOG_ERROR("fail to rollback ref cnt", K(ret), K(addr_info));
+        }
       }
     }
   }
@@ -416,14 +420,19 @@ int ObTenantStorageCheckpointWriter::do_rollback(
   char *buf = nullptr;
   int64_t pos = 0;
   read_info.addr_ = load_addr;
-  read_info.io_desc_.set_wait_event(ObWaitEventIds::SLOG_CKPT_LOCK_WAIT);
+  read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
 
-  if (OB_FAIL(ObSharedBlockReaderWriter::async_read(read_info, block_handle))) {
-    LOG_WARN("fail to read tablet buf from macro block", K(ret), K(read_info));
-  } else if (OB_FAIL(block_handle.wait())) {
-    LOG_WARN("fail to wait async read", K(ret));
-  } else if (OB_FAIL(block_handle.get_data(allocator, buf, buf_len))) {
-    LOG_WARN("fail to get tablet buf and buf_len", K(ret), K(block_handle));
+  do {
+    if (OB_FAIL(ObSharedBlockReaderWriter::async_read(read_info, block_handle))) {
+      LOG_WARN("fail to read tablet buf from macro block", K(ret), K(read_info));
+    } else if (OB_FAIL(block_handle.wait())) {
+      LOG_WARN("fail to wait async read", K(ret));
+    } else if (OB_FAIL(block_handle.get_data(allocator, buf, buf_len))) {
+      LOG_WARN("fail to get tablet buf and buf_len", K(ret), K(block_handle));
+    }
+  } while (ignore_ret(ret));
+  if (OB_FAIL(ret)) {
+    // do nothing
   } else if (OB_ISNULL(buf) || OB_UNLIKELY(buf_len <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("data of block handle is invalid", K(ret), K(block_handle));
@@ -446,7 +455,7 @@ int ObTenantStorageCheckpointWriter::get_tablet_with_addr(
   char *buf = nullptr;
   int64_t pos = 0;
   read_info.addr_ = addr_info.new_addr_;
-  read_info.io_desc_.set_wait_event(ObWaitEventIds::SLOG_CKPT_LOCK_WAIT);
+  read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
 
   do {
     ObArenaAllocator allocator("SlogCkptWriter");

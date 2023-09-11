@@ -236,6 +236,11 @@ void ObIOFlag::set_detect(const bool is_detect)
   is_detect_ = is_detect;
 }
 
+void ObIOFlag::set_time_detect(const bool is_time_detect)
+{
+  is_time_detect_ = is_time_detect;
+}
+
 bool ObIOFlag::is_unlimited() const
 {
   return is_unlimited_;
@@ -244,6 +249,11 @@ bool ObIOFlag::is_unlimited() const
 bool ObIOFlag::is_detect() const
 {
   return is_detect_;
+}
+
+bool ObIOFlag::is_time_detect() const
+{
+  return is_time_detect_;
 }
 
 /******************             IOCallback              **********************/
@@ -624,9 +634,11 @@ int ObIORequest::prepare()
 {
   int ret = OB_SUCCESS;
   ObTimeGuard tg("prepare", 100000); //100ms
-  if (OB_ISNULL(control_block_)
-      && (OB_ISNULL(io_info_.fd_.device_handle_) || OB_ISNULL(control_block_ = io_info_.fd_.device_handle_->alloc_iocb()))) {
+  if (OB_ISNULL(io_info_.fd_.device_handle_)) {
     ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("device handle is null", K(ret), K(*this));
+  } else if (OB_ISNULL(control_block_) && OB_ISNULL(control_block_ = io_info_.fd_.device_handle_->alloc_iocb())) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("alloc io control block failed", K(ret), K(*this));
   } else if (FALSE_IT(tg.click("alloc_iocb"))) {
   } else if (OB_ISNULL(io_buf_) && OB_FAIL(alloc_io_buf())) {

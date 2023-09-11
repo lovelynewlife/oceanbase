@@ -113,7 +113,7 @@ public:
   ~ObRefreshLocationCachePolicy() = default;
   virtual void test(ObRetryParam &v) const override
   {
-    v.result_.refresh_location_cache(is_async, v.err_);
+    v.result_.force_refresh_location_cache(is_async, v.err_);
   }
 };
 
@@ -174,6 +174,21 @@ public:
   }
 };
 
+class ObBatchExecOptRetryPolicy : public ObRetryPolicy
+{
+public:
+  ObBatchExecOptRetryPolicy() = default;
+  ~ObBatchExecOptRetryPolicy() = default;
+  virtual void test(ObRetryParam &v) const override
+  {
+    if (v.ctx_.is_do_insert_batch_opt()) {
+      v.retry_type_ = RETRY_TYPE_LOCAL;
+    } else {
+      v.retry_type_ = RETRY_TYPE_NONE;
+    }
+  }
+};
+
 class ObSwitchConsumerGroupRetryPolicy : public ObRetryPolicy
 {
 public:
@@ -223,7 +238,7 @@ public:
                K(v.session_.get_retry_info().get_last_query_retry_err()));
       if (v.session_.get_retry_info().is_rpc_timeout() || is_transaction_rpc_timeout_err(v.err_)) {
         // rpc超时了，可能是location cache不对，异步刷新location cache
-        v.result_.refresh_location_cache(true, v.err_); // 非阻塞
+        v.result_.force_refresh_location_cache(true, v.err_); // 非阻塞
         LOG_WARN("sql rpc timeout, or trans rpc timeout, maybe location is changed, "
                  "refresh location cache non blockly", K(v),
                  K(v.session_.get_retry_info().is_rpc_timeout()));
@@ -432,9 +447,12 @@ public:
     if (v.force_local_retry_ || (v.local_retry_times_ <= 1 && !v.result_.is_pl_stmt(v.result_.get_stmt_type()))) {
       v.retry_type_ = RETRY_TYPE_LOCAL;
     } else {
+      const ObMultiStmtItem &multi_stmr_item = v.ctx_.multi_stmt_item_;
       try_packet_retry(v);
-      if (RETRY_TYPE_LOCAL == v.retry_type_ && !v.ctx_.multi_stmt_item_.is_part_of_multi_stmt()) {
-        // rewrite err
+      if (RETRY_TYPE_LOCAL == v.retry_type_ &&
+          !(multi_stmr_item.is_part_of_multi_stmt() || multi_stmr_item.is_batched_multi_stmt())) {
+        // 1. multi_query without batch_optimization must do local_retry
+        // 2. If is multi_query with batch_optimization, must do local_retry
         v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
         v.retry_type_ = RETRY_TYPE_NONE;
         v.no_more_test_ = true;
@@ -761,6 +779,13 @@ void ObQueryRetryCtrl::force_local_retry_proc(ObRetryParam &v)
   retry_obj.test(force_local_retry);
 }
 
+void ObQueryRetryCtrl::batch_execute_opt_retry_proc(ObRetryParam &v)
+{
+  ObRetryObject retry_obj(v);
+  ObBatchExecOptRetryPolicy batch_opt_retry;
+  retry_obj.test(batch_opt_retry);
+}
+
 void ObQueryRetryCtrl::switch_consumer_group_retry_proc(ObRetryParam &v)
 {
   ObRetryObject retry_obj(v);
@@ -770,10 +795,25 @@ void ObQueryRetryCtrl::switch_consumer_group_retry_proc(ObRetryParam &v)
 
 void ObQueryRetryCtrl::timeout_proc(ObRetryParam &v)
 {
+#ifdef OB_BUILD_SPM
+  if (OB_UNLIKELY(v.err_ == OB_TIMEOUT &&
+                  ObSpmCacheCtx::STAT_FIRST_EXECUTE_PLAN == v.ctx_.spm_ctx_.spm_stat_ &&
+                  v.ctx_.spm_ctx_.need_spm_timeout_)) {
+    const_cast<ObSqlCtx &>(v.ctx_).spm_ctx_.spm_stat_ = ObSpmCacheCtx::STAT_FALLBACK_EXECUTE_PLAN;
+    const_cast<ObSqlCtx &>(v.ctx_).spm_ctx_.need_spm_timeout_ = false;
+    ObRetryObject retry_obj(v);
+    ObForceLocalRetryPolicy force_local_retry;
+    retry_obj.test(force_local_retry);
+  } else if (is_try_lock_row_err(v.session_.get_retry_info().get_last_query_retry_err())) {
+    v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
+    v.retry_type_ = RETRY_TYPE_NONE;
+  }
+#else
   if (is_try_lock_row_err(v.session_.get_retry_info().get_last_query_retry_err())) {
     v.client_ret_ = OB_ERR_EXCLUSIVE_LOCK_CONFLICT;
     v.retry_type_ = RETRY_TYPE_NONE;
   }
+#endif
 }
 
 /////// For inner SQL only ///////////////
@@ -1011,6 +1051,7 @@ int ObQueryRetryCtrl::init()
   // create a new interval part when inserting a row which has no matched part,
   // wait and retry, will see new part
   ERR_RETRY_FUNC("SQL",      OB_NO_PARTITION_FOR_INTERVAL_PART,  short_wait_retry_proc,             short_wait_retry_proc,                         nullptr);
+  ERR_RETRY_FUNC("SQL",      OB_BATCHED_MULTI_STMT_ROLLBACK,     batch_execute_opt_retry_proc,      batch_execute_opt_retry_proc,                  nullptr);
   ERR_RETRY_FUNC("SQL",      OB_SQL_RETRY_SPM,                   force_local_retry_proc,            force_local_retry_proc,                        nullptr);
   ERR_RETRY_FUNC("SQL",      OB_NEED_SWITCH_CONSUMER_GROUP,      switch_consumer_group_retry_proc,  empty_proc,                                    nullptr);
 

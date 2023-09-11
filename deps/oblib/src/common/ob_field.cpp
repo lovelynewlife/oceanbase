@@ -27,6 +27,7 @@ int ObParamedSelectItemCtx::deep_copy(const ObParamedSelectItemCtx &other, ObIAl
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(allocator)) {
+    ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid null allocator", K(ret));
   } else if (OB_FAIL(ob_write_string(*allocator, other.paramed_cname_, paramed_cname_))) {
     LOG_WARN("failed to write stirng", K(ret));
@@ -357,7 +358,12 @@ int ObField::get_field_mb_length(const ObObjType type,
         if (OB_FAIL(common::ObCharset::get_mbmaxlen_by_coll(charsetnr, mbmaxlen))) {
           LOG_WARN("fail to get mbmaxlen", K(charsetnr), K(ret));
         } else {
-          length = static_cast<uint32_t>(accuracy.get_length() * mbmaxlen);
+          if (lib::is_mysql_mode() && tc == ObTextTC) {
+            // compat mysql-jdbc 8.x for judge text type by length
+            length = static_cast<uint32_t>(ObAccuracy::MAX_ACCURACY[type].get_length() - 1);
+          } else {
+            length = static_cast<uint32_t>(accuracy.get_length() * mbmaxlen);
+          }
         }
       }
       break;

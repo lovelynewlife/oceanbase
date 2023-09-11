@@ -62,6 +62,12 @@ struct ObPLExecRecursionCtx;
 struct ObPLSqlCodeInfo;
 class ObPLContext;
 class ObDbmsCursorInfo;
+#ifdef OB_BUILD_ORACLE_PL
+namespace debugger
+{
+class ObPLDebugger;
+}
+#endif
 } // namespace pl
 
 namespace obmysql
@@ -403,6 +409,28 @@ typedef common::hash::ObHashMap<uint64_t, pl::ObPLPackageState *,
                                 common::hash::NoPthreadDefendMode> ObPackageStateMap;
 typedef common::hash::ObHashMap<uint64_t, share::ObSequenceValue,
                                 common::hash::NoPthreadDefendMode> ObSequenceCurrvalMap;
+struct ObDBlinkSequenceIdKey{
+  ObDBlinkSequenceIdKey()
+  :dblink_id_(OB_INVALID_ID)
+  {}
+  ObDBlinkSequenceIdKey(const common::ObString &name, uint64_t dblink_id)
+  :sequence_name_(name),dblink_id_(dblink_id)
+  {}
+  ~ObDBlinkSequenceIdKey(){}
+  int hash(uint64_t &res) const
+  {
+    res = 0;
+    res = common::murmurhash(sequence_name_.ptr(), sequence_name_.length(), 0);
+    res = common::murmurhash(&dblink_id_, sizeof(uint64_t), res);
+    return OB_SUCCESS;
+  }
+  bool operator==(const ObDBlinkSequenceIdKey &rv) const
+  { return dblink_id_ == rv.dblink_id_ && sequence_name_ == rv.sequence_name_; }
+  common::ObString sequence_name_;
+  uint64_t dblink_id_;
+};
+typedef common::hash::ObHashMap<ObDBlinkSequenceIdKey, uint64_t,
+                                common::hash::NoPthreadDefendMode> ObDBlinkSequenceIdMap;
 typedef common::hash::ObHashMap<common::ObString,
                                 ObContextUnit *,
                                 common::hash::NoPthreadDefendMode,
@@ -525,12 +553,18 @@ public:
       session_type_ = INVALID_TYPE;
       inner_flag_ = false;
       is_ignore_stmt_ = false;
+    #ifdef OB_BUILD_SPM
+      select_plan_type_ = ObSpmCacheCtx::INVALID_TYPE;
+    #endif
     }
   public:
     ObAuditRecordData audit_record_;
     SessionType session_type_;
     bool inner_flag_;
     bool is_ignore_stmt_;
+  #ifdef OB_BUILD_SPM
+    ObSpmCacheCtx::SpmSelectPlanType select_plan_type_;
+  #endif
   };
 
   class CursorCache {
@@ -715,6 +749,7 @@ public:
     }
   }
   void set_restore_auto_commit() { restore_auto_commit_ = true; }
+  bool need_restore_auto_commit() const { return restore_auto_commit_; }
   void reset_show_warnings_buf() { show_warnings_buf_.reset(); }
   ObPrivSet get_user_priv_set() const { return user_priv_set_; }
   ObPrivSet get_db_priv_set() const { return db_priv_set_; }
@@ -787,6 +822,8 @@ public:
   void gen_gtt_trans_scope_unique_id();
   common::ObIArray<uint64_t> &get_gtt_session_scope_ids() { return gtt_session_scope_ids_; }
   common::ObIArray<uint64_t> &get_gtt_trans_scope_ids() { return gtt_trans_scope_ids_; }
+  int add_dblink_sequence_schema(ObSequenceSchema *schema);
+  int get_dblink_sequence_schema(int64_t sequence_id, const ObSequenceSchema* &schema)const;
 
   void set_for_trigger_package(bool value) { is_for_trigger_package_ = value; }
   bool is_for_trigger_package() const { return is_for_trigger_package_; }
@@ -831,6 +868,9 @@ public:
     pl_context_ = pl_stack_ctx;
   }
 
+#ifdef OB_BUILD_ORACLE_PL
+  inline pl::debugger::ObPLDebugger *get_pl_debugger() const { return pl_debugger_; }
+#endif
   bool is_pl_debug_on();
 
   inline void set_pl_attached_id(uint32_t id) { pl_attach_session_id_ = id; }
@@ -863,6 +903,12 @@ public:
   int set_package_variable(ObExecContext &ctx,
     const common::ObString &key, const common::ObObj &value, bool from_proxy = false);
 
+#ifdef OB_BUILD_ORACLE_PL
+  int initialize_pl_debugger();
+  int free_pl_debugger();
+  int get_pl_debugger(uint32_t id, pl::debugger::ObPLDebugger *& pl_debugger);
+  int release_pl_debugger(pl::debugger::ObPLDebugger *pl_debugger);
+#endif
   inline bool get_pl_can_retry() { return pl_can_retry_; }
   inline void set_pl_can_retry(bool can_retry) { pl_can_retry_ = can_retry; }
 
@@ -910,6 +956,14 @@ public:
     inner_flag_ = false;
     session_type_ = USER_SESSION;
   }
+#ifdef OB_BUILD_SPM
+  inline void set_spm_select_plan_type(ObSpmCacheCtx::SpmSelectPlanType type)
+  {
+    select_plan_type_ = type;
+  }
+  inline ObSpmCacheCtx::SpmSelectPlanType get_spm_select_plan_type() const { return select_plan_type_; }
+  inline void reset_spm_select_plan_type() { select_plan_type_ = ObSpmCacheCtx::INVALID_TYPE; }
+#endif
   void set_session_type_with_flag();
   void set_session_type(SessionType session_type) { session_type_ = session_type; }
   inline SessionType get_session_type() const { return session_type_; }
@@ -955,7 +1009,7 @@ public:
   int restore_sql_session(StmtSavedValue &saved_value);
   int restore_session(StmtSavedValue &saved_value);
   ObExecContext *get_cur_exec_ctx() { return cur_exec_ctx_; }
-
+  const ObExecContext *get_cur_exec_ctx() const { return cur_exec_ctx_; }
   int begin_nested_session(StmtSavedValue &saved_value, bool skip_cur_stmt_tables = false);
   int end_nested_session(StmtSavedValue &saved_value);
 
@@ -992,10 +1046,22 @@ public:
                          uint64_t seq_id,
                          const share::ObSequenceValue &value);
 
-  int drop_sequence_value_if_exists(uint64_t tenant_id, uint64_t seq_id);
+  int drop_sequence_value_if_exists(uint64_t seq_id);
+  int get_dblink_sequence_id(const common::ObString &sequence_name,
+                             uint64_t dblink_id,
+                             uint64_t &seq_id) const;
+  int get_next_sequence_id(uint64_t &seq_id);
+  int set_dblink_sequence_id(const common::ObString &sequence_name,
+                            uint64_t dblink_id,
+                            uint64_t seq_id);
+
+  int drop_dblink_sequence_id_if_exists(const common::ObString &sequence_name,
+                                        uint64_t dblink_id,
+                                        uint64_t seq_id);
   void reuse_all_sequence_value()
   {
     sequence_currval_map_.reuse();
+    dblink_sequence_id_map_.reuse();
   }
   int get_context_values(const common::ObString &context_name,
                         const common::ObString &attribute,
@@ -1013,6 +1079,7 @@ public:
     for (auto it = contexts_map_.begin(); it != contexts_map_.end(); ++it) {
       if (OB_NOT_NULL(it->second)) {
         it->second->destroy();
+        mem_context_->get_malloc_allocator().free(it->second);
       }
     }
     contexts_map_.reuse();
@@ -1055,6 +1122,9 @@ public:
   ObSequenceCurrvalEncoder &get_sequence_currval_encoder() { return sequence_currval_encoder_; }
   ObContextsMap &get_contexts_map() { return contexts_map_; }
   ObSequenceCurrvalMap &get_sequence_currval_map() { return sequence_currval_map_; }
+  ObDBlinkSequenceIdMap  &get_dblink_sequence_id_map() { return dblink_sequence_id_map_; }
+  void set_current_dblink_sequence_id(int64_t id) { current_dblink_sequence_id_ = id; }
+  int64_t get_current_dblink_sequence_id() const { return current_dblink_sequence_id_; }
   int get_mem_ctx_alloc(common::ObIAllocator *&alloc);
   int update_sess_sync_info(const SessionSyncInfoType sess_sync_info_type,
                                 const char *buf, const int64_t length, int64_t &pos);
@@ -1283,6 +1353,7 @@ private:
   SessionType session_type_;
   ObPackageStateMap package_state_map_;
   ObSequenceCurrvalMap sequence_currval_map_;
+  ObDBlinkSequenceIdMap dblink_sequence_id_map_;
   ObContextsMap contexts_map_;
   int64_t curr_session_context_size_;
 
@@ -1293,6 +1364,12 @@ private:
   // if false == pl_can_retry_, we can only retry query in PL blocks locally
   bool pl_can_retry_; //标记当前执行的PL是否可以整体重试
 
+#ifdef OB_BUILD_ORACLE_PL
+  pl::debugger::ObPLDebugger *pl_debugger_; // 如果开启了debug, 该字段不为null
+#endif
+#ifdef OB_BUILD_SPM
+  ObSpmCacheCtx::SpmSelectPlanType select_plan_type_;
+#endif
   uint32_t pl_attach_session_id_; // 如果当前session执行过dbms_debug.attach_session, 记录目标session的ID
 
   observer::ObQueryDriver *pl_query_sender_; // send query result in mysql pl
@@ -1391,6 +1468,16 @@ public:
   transaction::ObTxnFreeRouteCtx &get_txn_free_route_ctx() { return txn_free_route_ctx_; }
   uint64_t get_txn_free_route_flag() const { return txn_free_route_ctx_.get_audit_record(); }
   void check_txn_free_route_alive();
+  inline int64_t get_vid() const { return vid_; }
+  inline void set_vid(int64_t vid) { vid_ = vid; }
+  inline const common::ObString get_vip() const { return ObString::make_string(vip_buf_);; }
+  inline void set_vip(char *vip_buf) { MEMCPY(vip_buf_, vip_buf, sizeof(vip_buf_)); }
+  inline int32_t get_vport() const { return vport_; }
+  inline void set_vport(int32_t vport) { vport_ = vport; }
+  inline int64_t get_in_bytes() const { return ATOMIC_LOAD(&in_bytes_); }
+  inline void inc_in_bytes(int64_t in_bytes) { IGNORE_RETURN ATOMIC_FAA(&in_bytes_, in_bytes); }
+  inline int64_t get_out_bytes() const { return ATOMIC_LOAD(&out_bytes_); }
+  inline void inc_out_bytes(int64_t out_bytes) { IGNORE_RETURN ATOMIC_FAA(&out_bytes_, out_bytes); }
 private:
   transaction::ObTxnFreeRouteCtx txn_free_route_ctx_;
   //save the current sql exec context in session
@@ -1412,6 +1499,13 @@ private:
   //storing table ids of accessed gtts in the session
   common::ObSEArray<uint64_t, 1> gtt_session_scope_ids_;
   common::ObSEArray<uint64_t, 1> gtt_trans_scope_ids_;
+  int64_t vid_;
+  char vip_buf_[MAX_IP_ADDR_LENGTH];
+  int32_t vport_;
+  int64_t in_bytes_;
+  int64_t out_bytes_;
+  int64_t current_dblink_sequence_id_;
+  common::ObSEArray<ObSequenceSchema*, 2> dblink_sequence_schemas_;
 };
 
 inline bool ObSQLSessionInfo::is_terminate(int &ret) const

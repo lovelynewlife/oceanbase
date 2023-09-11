@@ -461,6 +461,17 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigRuntimeFilterChecker);
 };
 
+class ObTTLDutyDurationChecker : public ObConfigChecker {
+public:
+  ObTTLDutyDurationChecker()
+  {}
+  virtual ~ObTTLDutyDurationChecker(){};
+  bool check(const ObConfigItem& t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObTTLDutyDurationChecker);
+};
+
 // config item container
 class ObConfigStringKey
 {
@@ -614,6 +625,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObRpcServerAuthMethodChecker);
 };
 
+class ObConfigSQLTlsVersionChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigSQLTlsVersionChecker() {}
+  virtual ~ObConfigSQLTlsVersionChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigSQLTlsVersionChecker);
+};
 typedef __ObConfigContainer<ObConfigStringKey,
                             ObConfigItem, OB_MAX_CONFIG_NUMBER> ObConfigContainer;
 } // namespace common

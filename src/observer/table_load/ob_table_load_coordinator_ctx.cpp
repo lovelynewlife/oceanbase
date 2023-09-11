@@ -1,11 +1,20 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/table_load/ob_table_load_coordinator_ctx.h"
 #include "observer/table_load/ob_table_load_coordinator_trans.h"
+#include "observer/table_load/ob_table_load_error_row_handler.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 #include "observer/table_load/ob_table_load_task_scheduler.h"
 #include "share/ob_autoincrement_service.h"
@@ -28,6 +37,7 @@ ObTableLoadCoordinatorCtx::ObTableLoadCoordinatorCtx(ObTableLoadTableCtx *ctx)
     allocator_("TLD_CoordCtx"),
     task_scheduler_(nullptr),
     exec_ctx_(nullptr),
+    error_row_handler_(nullptr),
     sequence_schema_(&allocator_),
     last_trans_gid_(1024),
     next_session_id_(0),
@@ -135,6 +145,14 @@ int ObTableLoadCoordinatorCtx::init(const ObIArray<int64_t> &idx_array,
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to new ObTableLoadTaskThreadPoolScheduler", KR(ret));
     }
+    // init error_row_handler_
+    else if (OB_ISNULL(error_row_handler_ =
+                         OB_NEWx(ObTableLoadErrorRowHandler, (&allocator_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to new ObTableLoadErrorRowHandler", KR(ret));
+    } else if (OB_FAIL(error_row_handler_->init(ctx_->param_, result_info_, ctx_->job_stat_))) {
+      LOG_WARN("fail to init error row handler", KR(ret));
+    }
     // init session_ctx_array_
     else if (OB_FAIL(init_session_ctx_array())) {
       LOG_WARN("fail to init session ctx array", KR(ret));
@@ -174,6 +192,11 @@ void ObTableLoadCoordinatorCtx::destroy()
     task_scheduler_->~ObITableLoadTaskScheduler();
     allocator_.free(task_scheduler_);
     task_scheduler_ = nullptr;
+  }
+  if (nullptr != error_row_handler_) {
+    error_row_handler_->~ObTableLoadErrorRowHandler();
+    allocator_.free(error_row_handler_);
+    error_row_handler_ = nullptr;
   }
   for (TransMap::const_iterator iter = trans_map_.begin(); iter != trans_map_.end(); ++iter) {
     ObTableLoadCoordinatorTrans *trans = iter->second;

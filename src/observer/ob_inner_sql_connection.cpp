@@ -45,6 +45,9 @@
 #include "share/rc/ob_tenant_base.h"
 #include "storage/tablelock/ob_table_lock_service.h"
 #include "storage/tablelock/ob_table_lock_rpc_struct.h"
+#ifdef OB_BUILD_AUDIT_SECURITY
+#include "sql/monitor/ob_security_audit_utils.h"
+#endif
 #include "sql/plan_cache/ob_ps_cache.h"
 #include "observer/mysql/obmp_stmt_execute.h"
 
@@ -269,7 +272,8 @@ void ObInnerSQLConnection::unref()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret), K(lbt()));
   } else if (OB_ISNULL(pool_)) {
-    LOG_ERROR("not init conn pool");
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("not init conn pool", K(ret));
   } else {
     if (0 == --ref_cnt_) {
       if (OB_FAIL(pool_->revert(this))) {
@@ -859,6 +863,14 @@ int ObInnerSQLConnection::query(sqlclient::ObIExecutor &executor,
         }
 
         if (res.is_inited()) {
+#ifdef OB_BUILD_AUDIT_SECURITY
+          (void)ObSecurityAuditUtils::handle_security_audit(res.result_set(),
+                                                            res.sql_ctx().schema_guard_,
+                                                            res.sql_ctx().cur_stmt_,
+                                                            ObString::make_string("inner sql"),
+                                                            ret);
+
+#endif
           if (OB_SUCC(ret) && get_session().get_in_transaction()) {
             if (ObStmt::is_dml_write_stmt(res.result_set().get_stmt_type()) ||
                 ObStmt::is_savepoint_stmt(res.result_set().get_stmt_type())) {
@@ -1389,6 +1401,19 @@ int ObInnerSQLConnection::execute_write(const uint64_t tenant_id, const ObString
   if (OB_FAIL(retry_while_no_tenant_resource(GCONF.cluster_id, tenant_id, function))) {
     LOG_WARN("execute_write failed", K(ret), K(tenant_id), K(sql), K(is_user_sql));
   }
+  return ret;
+}
+
+int ObInnerSQLConnection::execute_proc(const uint64_t tenant_id,
+                                      ObIAllocator &allocator,
+                                      ParamStore &params,
+                                      ObString &sql,
+                                      const share::schema::ObRoutineInfo &routine_info,
+                                      const common::ObIArray<const pl::ObUserDefinedType *> &udts,
+                                      const ObTimeZoneInfo *tz_info)
+{
+  UNUSEDx(tenant_id, allocator, params, sql, routine_info, udts, tz_info);
+  int ret = OB_SUCCESS;
   return ret;
 }
 

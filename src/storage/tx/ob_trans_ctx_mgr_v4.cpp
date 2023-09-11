@@ -192,6 +192,9 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
     aggre_rec_scn_.reset();
     prev_aggre_rec_scn_.reset();
     online_ts_ = 0;
+    for (int64_t i = 0; i < READONLY_REQUEST_TRACE_ID_NUM; i++) {
+      readonly_request_trace_id_set_[i].reset();
+    }
     TRANS_LOG(INFO, "ObLSTxCtxMgr inited success", KP(this), K(ls_id));
   }
   return ret;
@@ -280,13 +283,18 @@ void ObLSTxCtxMgr::print_all_tx_ctx_(const int64_t max_print, const bool verbose
 //T_TX_BLOCKED_PENDING   N          F_TX_BLOCKED    L_TX_BLOCKED     T_TX_BLOCKED_PENDING  N                      N                      T_TX_BLOCKED_PENDING   N                 T_ALL_BLOCKED_PENDING  STOPPED  N          N
 //R_TX_BLOCKED_PENDING   N          F_TX_BLOCKED    L_TX_BLOCKED     R_TX_BLOCKED_PENDING  N                      N                      R_TX_BLOCKED_PENDING   N                 R_ALL_BLOCKED_PENDING  STOPPED  N          N
 //
-//F_ALL_BLOCKED          N          F_ALL_BLOCKED   N                N                     T_ALL_BLOCKED_PENDING  R_ALL_BLOCKED_PENDING  N                      N                 F_ALL_BLOCKED          STOPPED  N          N
-//T_ALL_BLOCKED_PENDING  N          F_ALL_BLOCKED   L_ALL_BLOCKED    T_ALL_BLOCKED_PENDING N                      N                      N                      N                 T_ALL_BLOCKED_PENDING  STOPPED  N          N
-//R_ALL_BLOCKED_PENDING  N          F_ALL_BLOCKED   L_ALL_BLOCKED    R_ALL_BLOCKED_PENDING N                      N                      N                      N                 R_ALL_BLOCKED_PENDING  STOPPED  N          N
-//L_ALL_BLOCKED          N          F_ALL_BLOCKED   N                N                     N                      N                      N                      N                 L_ALL_BLOCKED          STOPPED  N          N
+//F_ALL_BLOCKED          N          F_ALL_BLOCKED   N                N                     T_ALL_BLOCKED_PENDING  R_ALL_BLOCKED_PENDING  F_ALL_BLOCKED          N                 F_ALL_BLOCKED          STOPPED  N          N
+//T_ALL_BLOCKED_PENDING  N          F_ALL_BLOCKED   L_ALL_BLOCKED    T_ALL_BLOCKED_PENDING N                      N                      T_ALL_BLOCKED_PENDING  N                 T_ALL_BLOCKED_PENDING  STOPPED  N          N
+//R_ALL_BLOCKED_PENDING  N          F_ALL_BLOCKED   L_ALL_BLOCKED    R_ALL_BLOCKED_PENDING N                      N                      R_ALL_BLOCKED_PENDING  N                 R_ALL_BLOCKED_PENDING  STOPPED  N          N
+//L_ALL_BLOCKED          N          F_ALL_BLOCKED   N                N                     N                      N                      L_ALL_BLOCKED          N                 L_ALL_BLOCKED          STOPPED  N          N
 //
 //STOPPED                N          STOPPED         N                N                     N                      N                      N                      N                 N                      STOPPED  N          N
 //END                    N          N               N                N                     N                      N                      N                      N                 N                      N        N          N
+
+// return value:
+//   OB_SUCCESS for success
+//   OB_STATE_NOT_MATCH for switch state fail
+//   others for error
 int ObLSTxCtxMgr::StateHelper::switch_state(const int64_t op)
 {
   int ret = OB_SUCCESS;
@@ -323,10 +331,10 @@ int ObLSTxCtxMgr::StateHelper::switch_state(const int64_t op)
     {N,         F_TX_BLOCKED,     L_TX_BLOCKED,     T_TX_BLOCKED_PENDING,     N,                        N,                        T_TX_BLOCKED_PENDING, N,                T_ALL_BLOCKED_PENDING, STOPPED, N,         N},
     {N,         F_TX_BLOCKED,     L_TX_BLOCKED,     R_TX_BLOCKED_PENDING,     N,                        N,                        R_TX_BLOCKED_PENDING, N,                R_ALL_BLOCKED_PENDING, STOPPED, N,         N},
 //
-    {N,         F_ALL_BLOCKED,    N,                N,                        T_ALL_BLOCKED_PENDING,    R_ALL_BLOCKED_PENDING,    N,                    N,                F_ALL_BLOCKED,         STOPPED, F_WORKING, N},
-    {N,         F_ALL_BLOCKED,    L_ALL_BLOCKED,    T_ALL_BLOCKED_PENDING,    N,                        N,                        N,                    N,                T_ALL_BLOCKED_PENDING, STOPPED, N,         N},
-    {N,         F_ALL_BLOCKED,    L_ALL_BLOCKED,    R_ALL_BLOCKED_PENDING,    N,                        N,                        N,                    N,                R_ALL_BLOCKED_PENDING, STOPPED, N,         N},
-    {N,         F_ALL_BLOCKED,    N,                N,                        N,                        N,                        N,                    N,                L_ALL_BLOCKED,         STOPPED, N,         N},
+    {N,         F_ALL_BLOCKED,    N,                N,                        T_ALL_BLOCKED_PENDING,    R_ALL_BLOCKED_PENDING,    F_ALL_BLOCKED,        N,                F_ALL_BLOCKED,         STOPPED, F_WORKING, N},
+    {N,         F_ALL_BLOCKED,    L_ALL_BLOCKED,    T_ALL_BLOCKED_PENDING,    N,                        N,                        T_ALL_BLOCKED_PENDING,N,                T_ALL_BLOCKED_PENDING, STOPPED, N,         N},
+    {N,         F_ALL_BLOCKED,    L_ALL_BLOCKED,    R_ALL_BLOCKED_PENDING,    N,                        N,                        R_ALL_BLOCKED_PENDING,N,                R_ALL_BLOCKED_PENDING, STOPPED, N,         N},
+    {N,         F_ALL_BLOCKED,    N,                N,                        N,                        N,                        L_ALL_BLOCKED,        N,                L_ALL_BLOCKED,         STOPPED, N,         N},
 //
     {N,         STOPPED,          N,                N,                        N,                        N,                        N,                    N,                N,                     STOPPED, N,         N},
     {N,         N,                N,                N,                        N,                        N,                        N,                    N,                N,                     N,       N,         N}
@@ -1546,6 +1554,9 @@ int ObLSTxCtxMgr::start_readonly_request()
     // readonly read must be blocked, because trx may be killed forcely
     TRANS_LOG(WARN, "logstream is blocked", K(ret));
   } else {
+    const ObCurTraceId::TraceId trace_id = *(ObCurTraceId::get_trace_id());
+    const uint64_t idx = ((uint64_t)trace_id.hash()) % READONLY_REQUEST_TRACE_ID_NUM;
+    readonly_request_trace_id_set_[idx].set(trace_id);
     inc_total_active_readonly_request_count();
   }
   return ret;
@@ -1553,8 +1564,29 @@ int ObLSTxCtxMgr::start_readonly_request()
 
 int ObLSTxCtxMgr::end_readonly_request()
 {
+  if (is_all_blocked_()) {
+    TRANS_LOG(INFO, "end readonly request when ls is blocked");
+  }
+  const ObCurTraceId::TraceId trace_id = *(ObCurTraceId::get_trace_id());
+  const uint64_t idx = ((uint64_t)trace_id.hash()) % READONLY_REQUEST_TRACE_ID_NUM;
+  if (readonly_request_trace_id_set_[idx] == trace_id) {
+    readonly_request_trace_id_set_[idx].reset();
+  }
   dec_total_active_readonly_request_count();
   return OB_SUCCESS;
+}
+
+void ObLSTxCtxMgr::dump_readonly_request(const int64_t max_req_number)
+{
+  int64_t dump_cnt = 0;
+  for (int64_t i = 0; dump_cnt < max_req_number && i < READONLY_REQUEST_TRACE_ID_NUM; i++) {
+    ObCurTraceId::TraceId trace_id;
+    trace_id.set(readonly_request_trace_id_set_[i]);
+    if (trace_id.is_valid()) {
+      TRANS_LOG(INFO, "readonly request is running", K(trace_id));
+      dump_cnt++;
+    }
+  }
 }
 
 int ObTxCtxMgr::remove_all_ls_()

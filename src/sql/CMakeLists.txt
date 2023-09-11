@@ -212,6 +212,7 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_context_executor.cpp
   engine/cmd/ob_table_direct_insert_ctx.cpp
   engine/cmd/ob_table_direct_insert_service.cpp
+
 )
 
 ob_set_subtarget(ob_sql engine_dml
@@ -232,6 +233,7 @@ ob_set_subtarget(ob_sql engine_dml
   engine/dml/ob_link_dml_op.cpp
   engine/dml/ob_link_op.cpp
   engine/dml/ob_trigger_handler.cpp
+  engine/dml/ob_fk_checker.cpp
 )
 
 ob_set_subtarget(ob_sql engine_expr
@@ -915,6 +917,7 @@ ob_set_subtarget(ob_sql plan_cache
   plan_cache/ob_lib_cache_object_manager.cpp
   plan_cache/ob_lib_cache_node_factory.cpp
   plan_cache/ob_plan_match_helper.cpp
+  plan_cache/ob_values_table_compression.cpp
 )
 
 ob_set_subtarget(ob_sql resolver
@@ -1191,7 +1194,6 @@ ob_set_subtarget(ob_sql session
   session/ob_sess_info_verify.cpp
 )
 
-
 ob_set_subtarget(ob_sql udr
   udr/ob_udr_struct.cpp
   udr/ob_udr_sql_service.cpp
@@ -1221,7 +1223,6 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
 endif()
 
 target_link_libraries(ob_sql PUBLIC ob_base)
-target_compile_definitions(ob_sql PUBLIC SQL_COMPILATION)
 
 add_library(ob_sql_static
   STATIC

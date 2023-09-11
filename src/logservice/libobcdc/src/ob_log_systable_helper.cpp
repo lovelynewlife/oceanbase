@@ -105,22 +105,19 @@ int QueryTimeZoneInfoVersionStrategy::build_sql_statement(char *sql_buf,
   int ret = OB_SUCCESS;
   pos = 0;
   const char *query_sql = NULL;
-  const bool need_query_tenant_timezone_version = true;
+  const bool tenant_sync_mode = TCTX.is_tenant_sync_mode();
 
   query_sql = "SELECT VALUE FROM __ALL_VIRTUAL_SYS_STAT WHERE NAME = 'CURRENT_TIMEZONE_VERSION' AND TENANT_ID = ";
+
   if (OB_ISNULL(sql_buf) || OB_UNLIKELY(mul_statement_buf_len <=0)) {
     LOG_ERROR("invalid argument", K(sql_buf), K(mul_statement_buf_len));
     ret = OB_INVALID_ARGUMENT;
+  } else if (TCTX.is_tenant_sync_mode()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("not support fetch timezone_version in tenant_sync_mode", KR(ret));
   } else if (OB_FAIL(databuff_printf(sql_buf, mul_statement_buf_len, pos,
-          "%s", query_sql))) {
-    LOG_ERROR("build sql fail", KR(ret), K(pos), K(query_sql), "buf_size", mul_statement_buf_len, K(sql_buf));
-  } else {
-    if (need_query_tenant_timezone_version) {
-      if (OB_FAIL(databuff_printf(sql_buf, mul_statement_buf_len, pos, "%lu;", tenant_id_))) {
-        LOG_ERROR("build tenant_id sql fail", KR(ret), K(pos), K(query_sql),
-            "buf_size", mul_statement_buf_len, K(sql_buf), K(tenant_id_));
-      }
-    }
+      "%s %lu", query_sql, tenant_id_))) {
+    LOG_ERROR("build sql fail", KR(ret), K(pos), K(query_sql), "buf_size", mul_statement_buf_len, K(sql_buf), K_(tenant_id));
   }
 
   return ret;
@@ -1347,16 +1344,16 @@ int ObLogSysTableHelper::do_query_(MySQLQueryBase &query)
     LOG_ERROR("invalid mysql_conns_ or next_svr_idx_array_", KR(ret), K(mysql_conns_),
         K(next_svr_idx_array_));
   } else if (OB_ISNULL(svr_provider_)) {
-    LOG_ERROR("invalid svr provider or config", K(svr_provider_));
     ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("invalid svr provider or config", KR(ret), K(svr_provider_));
   }
   // Check if the maximum number of threads to access the systable helper is exceeded
   // FIXME: we cache a mysql connector for each access thread.
   // If the number of access threads exceeds the maximum number of threads prepared, an error should be reported.
   else if (OB_UNLIKELY(tid >= max_thread_num_)) {
-    LOG_ERROR("thread index is larger than systable helper's max thread number", K(tid),
-        K(max_thread_num_));
     ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("thread index is larger than systable helper's max thread number", KR(ret), K(tid),
+        K(max_thread_num_));
   } else {
     bool done = false;
     ObLogMySQLConnector &conn = mysql_conns_[tid];
@@ -1372,8 +1369,8 @@ int ObLogSysTableHelper::do_query_(MySQLQueryBase &query)
     }
 
     if (svr_provider_->get_server_count() <= 0) {
-      LOG_WARN("no server available to query", K(svr_provider_->get_server_count()));
       ret = OB_NEED_RETRY;
+      LOG_WARN("no server available to query", KR(ret), K(svr_provider_->get_server_count()));
     } else {
       for (int64_t retry_svr_cnt = 0;
           OB_SUCCESS == ret && ! done && retry_svr_cnt <= svr_provider_->get_server_count();
@@ -1536,16 +1533,16 @@ int ObLogSysTableHelper::reset_connection()
   int ret = OB_SUCCESS;
   int64_t tid = thread_index_();
   if (OB_UNLIKELY(! inited_)) {
-    LOG_ERROR("not init");
     ret = OB_NOT_INIT;
+    LOG_ERROR("not init", KR(ret));
   } else if (OB_ISNULL(mysql_conns_) || OB_ISNULL(next_svr_idx_array_)) {
-    LOG_ERROR("invalid mysql_conns_ or next_svr_idx_array_", K(mysql_conns_),
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("invalid mysql_conns_ or next_svr_idx_array_", KR(ret), K(mysql_conns_),
         K(next_svr_idx_array_));
-    ret = OB_ERR_UNEXPECTED;
   } else if (OB_UNLIKELY(tid >= max_thread_num_)) {
-    LOG_ERROR("thread index is larger than systable helper's max thread number", K(tid),
-        K(max_thread_num_));
     ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("thread index is larger than systable helper's max thread number", KR(ret), K(tid),
+        K(max_thread_num_));
   } else {
     ObLogMySQLConnector &conn = mysql_conns_[tid];
     const int64_t next_svr_idx = next_svr_idx_array_[tid];

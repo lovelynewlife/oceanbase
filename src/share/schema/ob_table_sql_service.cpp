@@ -489,6 +489,52 @@ int ObTableSqlService::drop_inc_all_sub_partition(common::ObISQLClient &sql_clie
   return ret;
 }
 
+int ObTableSqlService::rename_inc_part_info(
+    ObISQLClient &sql_client,
+    const ObTableSchema &table_schema,
+    const ObTableSchema &inc_table_schema,
+    const int64_t new_schema_version)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(check_ddl_allowed(table_schema))) {
+    LOG_WARN("check ddl allowed failed", KR(ret), K(table_schema));
+  } else if (!table_schema.is_user_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("unsupport behavior on not user table", KR(ret), K(table_schema));
+  } else {
+    const ObPartitionSchema *table_schema_ptr = &table_schema;
+    const ObPartitionSchema *inc_table_schema_ptr = &inc_table_schema;
+    ObRenameIncPartHelper rename_part_helper(table_schema_ptr, inc_table_schema_ptr, new_schema_version, sql_client);
+    if (OB_FAIL(rename_part_helper.rename_partition_info())) {
+      LOG_WARN("fail to rename partition", KR(ret), KPC(table_schema_ptr), KPC(inc_table_schema_ptr));
+    }
+  }
+  return ret;
+}
+
+int ObTableSqlService::rename_inc_subpart_info(
+    ObISQLClient &sql_client,
+    const ObTableSchema &table_schema,
+    const ObTableSchema &inc_table_schema,
+    const int64_t new_schema_version)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(check_ddl_allowed(table_schema))) {
+    LOG_WARN("check ddl allowed failed", KR(ret), K(table_schema));
+  } else if (!table_schema.is_user_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("unsupport behavior on not user table", KR(ret), K(table_schema));
+  } else {
+    const ObPartitionSchema *table_schema_ptr = &table_schema;
+    const ObPartitionSchema *inc_table_schema_ptr = &inc_table_schema;
+    ObRenameIncSubpartHelper rename_subpart_helper(table_schema_ptr, inc_table_schema_ptr, new_schema_version, sql_client);
+    if (OB_FAIL(rename_subpart_helper.rename_subpartition_info())) {
+      LOG_WARN("fail to rename partition", KR(ret), KPC(table_schema_ptr), KPC(inc_table_schema_ptr));
+    }
+  }
+  return ret;
+}
+
 int ObTableSqlService::drop_inc_part_info(
     ObISQLClient &sql_client,
     const ObTableSchema &table_schema,
@@ -708,15 +754,11 @@ int ObTableSqlService::drop_table(const ObTableSchema &table_schema,
     }
   }
 
-  // delete from __all_table_stat, __all_column_stat and __all_histogram_stat
+  // delete from __all_table_stat, __all_monitor_modified, __all_column_usage, __all_optstat_user_prefs
   if (OB_SUCC(ret)) {
     if (OB_FAIL(delete_from_all_table_stat(sql_client, tenant_id, table_id))) {
       LOG_WARN("delete from all table stat failed", K(ret));
-    } else if (OB_FAIL(delete_from_all_column_stat(sql_client, tenant_id, table_id))) {
-      LOG_WARN("failed to delete all column stat", K(table_id),
-               "column count", table_schema.get_column_count(), K(ret));
-    } else if (OB_FAIL(delete_from_all_histogram_stat(sql_client, tenant_id, table_id))) {
-      LOG_WARN("failed to delete all histogram_stat", K(table_id), K(ret));
+    //column stat and histogram stat will be delete asynchronously by optimizer auto task, not delete here, avoid cost too much time.
     } else if (OB_FAIL(delete_from_all_column_usage(sql_client, tenant_id, table_id))) {
       LOG_WARN("failed to delete from all column usage", K(ret));
     } else if (OB_FAIL(delete_from_all_monitor_modified(sql_client, tenant_id, table_id))) {
@@ -2034,17 +2076,13 @@ int ObTableSqlService::update_table_options(ObISQLClient &sql_client,
       }
     }
   }
-  // delete from __all_table_stat, __all_column_stat and __all_histogram_stat
+  // delete from __all_table_stat, __all_monitor_modified, __all_column_usage, __all_optstat_user_prefs
   if (OB_SUCC(ret)) {
     if (operation_type != OB_DDL_DROP_TABLE_TO_RECYCLEBIN) {
       // do nothing
     } else if (OB_FAIL(delete_from_all_table_stat(sql_client, tenant_id, table_id))) {
       LOG_WARN("delete from all table stat failed", K(ret));
-    } else if (OB_FAIL(delete_from_all_column_stat(sql_client, tenant_id, table_id))) {
-      LOG_WARN("failed to delete all column stat", K(table_id),
-               "column count", table_schema.get_column_count(), K(ret));
-    } else if (OB_FAIL(delete_from_all_histogram_stat(sql_client, tenant_id, table_id))) {
-      LOG_WARN("failed to delete all histogram_stat", K(table_id), K(ret));
+    //column stat and histogram stat will be delete asynchronously by optimizer auto task, not delete here, avoid cost too much time.
     } else if (OB_FAIL(delete_from_all_column_usage(sql_client, tenant_id, table_id))) {
       LOG_WARN("failed to delete from all column usage", K(ret));
     } else if (OB_FAIL(delete_from_all_monitor_modified(sql_client, tenant_id, table_id))) {
@@ -2628,6 +2666,14 @@ int ObTableSqlService::gen_table_dml(
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("external table is not support before 4.2", K(ret), K(table));
   } else {
+  if (data_version < DATA_VERSION_4_2_1_0
+      && (!table.get_ttl_definition().empty() || !table.get_kv_attributes().empty())) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("ttl definition and kv attributes is not supported in version less than 4.2.1",
+        "ttl_definition", table.get_ttl_definition().empty(),
+        "kv_attributes", table.get_kv_attributes().empty());
+  } else {}
+  if (OB_SUCC(ret)) {
     const ObPartitionOption &part_option = table.get_part_option();
     const ObPartitionOption &sub_part_option = table.get_sub_part_option();
     const char *expire_info = table.get_expire_info().length() <= 0 ?
@@ -2643,6 +2689,10 @@ int ObTableSqlService::gen_table_dml(
     const int64_t sub_part_num = PARTITION_LEVEL_TWO == table.get_part_level()
                                  && table.has_sub_part_template_def() ?
                                  sub_part_option.get_part_num() : 0;
+    const char *ttl_definition = table.get_ttl_definition().empty() ?
+        "" : table.get_ttl_definition().ptr();
+    const char *kv_attributes = table.get_kv_attributes().empty() ?
+        "" : table.get_kv_attributes().ptr();
     if (OB_FAIL(check_table_options(table))) {
       LOG_WARN("fail to check table option", K(ret), K(table));
     } else if (data_version < DATA_VERSION_4_1_0_0 && 0 != table.get_table_flags()) {
@@ -2744,9 +2794,14 @@ int ObTableSqlService::gen_table_dml(
             && OB_FAIL(dml.add_column("external_file_format", ObHexEscapeSqlStr(table.get_external_file_format()))))
         || (data_version >= DATA_VERSION_4_2_0_0
             && OB_FAIL(dml.add_column("external_file_pattern", ObHexEscapeSqlStr(table.get_external_file_pattern()))))
+        || (data_version >= DATA_VERSION_4_2_1_0
+            && OB_FAIL(dml.add_column("ttl_definition", ObHexEscapeSqlStr(ttl_definition))))
+        || (data_version >= DATA_VERSION_4_2_1_0
+            && OB_FAIL(dml.add_column("kv_attributes", ObHexEscapeSqlStr(kv_attributes))))
         ) {
       LOG_WARN("add column failed", K(ret));
     }
+  }
   }
   return ret;
 }
@@ -2763,7 +2818,14 @@ int ObTableSqlService::gen_table_options_dml(
     LOG_WARN("check ddl allowd failed", K(ret), K(table));
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(table.get_tenant_id(), data_version))) {
     LOG_WARN("failed to get data version", K(ret));
-  } else {
+  } else if (data_version < DATA_VERSION_4_2_1_0
+      && (!table.get_ttl_definition().empty() || !table.get_kv_attributes().empty())) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("ttl definition and kv attributes is not supported in version less than 4.2.1",
+        "ttl_definition", table.get_ttl_definition().empty(),
+        "kv_attributes", table.get_kv_attributes().empty());
+  } else {}
+  if (OB_SUCC(ret)) {
     const ObPartitionOption &part_option = table.get_part_option();
     const ObPartitionOption &sub_part_option = table.get_sub_part_option();
     const char *table_name = table.get_table_name_str().length() <= 0 ?
@@ -2779,6 +2841,10 @@ int ObTableSqlService::gen_table_options_dml(
     const char *encryption = table.get_encryption_str().empty() ?
         "" : table.get_encryption_str().ptr();
     const int64_t INVALID_REPLICA_NUM = -1;
+    const char *ttl_definition = table.get_ttl_definition().length() <= 0 ?
+        "" : table.get_ttl_definition().ptr();
+    const char *kv_attributes = table.get_kv_attributes().length() <= 0 ?
+        "" : table.get_kv_attributes().ptr();
 
     if (OB_FAIL(check_table_options(table))) {
       LOG_WARN("fail to check table option", K(ret), K(table));
@@ -2849,6 +2915,10 @@ int ObTableSqlService::gen_table_options_dml(
         || (OB_FAIL(dml.add_column("tablet_id", table.get_tablet_id().id())))
         || ((data_version >= DATA_VERSION_4_1_0_0 || update_object_status_ignore_version)
             && OB_FAIL(dml.add_column("object_status", static_cast<int64_t> (table.get_object_status()))))
+        || (data_version >= DATA_VERSION_4_2_1_0
+            && OB_FAIL(dml.add_column("ttl_definition", ObHexEscapeSqlStr(ttl_definition))))
+        || (data_version >= DATA_VERSION_4_2_1_0
+            && OB_FAIL(dml.add_column("kv_attributes", ObHexEscapeSqlStr(kv_attributes))))
         ) {
       LOG_WARN("add column failed", K(ret));
     }

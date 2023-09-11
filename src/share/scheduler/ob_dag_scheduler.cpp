@@ -876,23 +876,23 @@ int ObIDagNet::add_dag_into_dag_net(ObIDag &dag)
 {
   int ret = OB_SUCCESS;
   void *buf = nullptr;
-  WEAK_BARRIER();
-
   ObDagRecord *dag_record = nullptr;
   int hash_ret = OB_SUCCESS;
   ObMutexGuard guard(lock_);
+  WEAK_BARRIER();
+  const bool is_stop = is_stopped_;
 
   if (OB_NOT_NULL(dag.get_dag_net())) {
     ret = OB_INVALID_ARGUMENT;
     COMMON_LOG(WARN, "dag already belongs to a dag_net", K(ret), K(dag));
-  } else if (is_stopped_) {
+  } else if (is_stop) {
     ret = OB_INNER_STAT_ERROR;
-    LOG_WARN("dag_net is in stop state, not allowed to add dag", K(ret), K(is_stopped_));
+    LOG_WARN("dag_net is in stop state, not allowed to add dag", K(ret), K(is_stop));
   } else if (is_cancel_) {
     ret = OB_CANCELED;
     LOG_WARN("dag net is cancel, do not allow to add new dag", K(ret), K(is_cancel_));
   } else {
-    if (!dag_record_map_.created() && OB_FAIL(dag_record_map_.create(DEFAULT_DAG_BUCKET, "DagRecordMap"))) {
+    if (!dag_record_map_.created() && OB_FAIL(dag_record_map_.create(DEFAULT_DAG_BUCKET, "DagRecordMap", "DagRecordNode", MTL_ID()))) {
       COMMON_LOG(WARN, "failed to create dag record map", K(ret), K(dag));
     } else if (OB_HASH_NOT_EXIST != (hash_ret = dag_record_map_.get_refactored(&dag, dag_record))) {
       ret = OB_SUCCESS == hash_ret ? OB_ERR_UNEXPECTED : hash_ret;
@@ -1000,7 +1000,6 @@ void ObIDagNet::remove_dag_record_(ObDagRecord &dag_record)
 int ObIDagNet::erase_dag_from_dag_net(ObIDag &dag)
 {
   int ret = OB_SUCCESS;
-  bool found = false;
   ObDagRecord *dag_record = nullptr;
   ObMutexGuard guard(lock_);
   WEAK_BARRIER();
@@ -1012,14 +1011,13 @@ int ObIDagNet::erase_dag_from_dag_net(ObIDag &dag)
   } else if (OB_ISNULL(dag_record)) {
     ret = OB_ERR_UNEXPECTED;
     COMMON_LOG(WARN, "dag record should not be NULL", K(ret), KP(this), KP(&dag));
-  } else if (dag_record->dag_ptr_ != &dag) {
+  } else if (OB_UNLIKELY(dag_record->dag_ptr_ != &dag)) {
     ret = OB_ERR_UNEXPECTED;
     COMMON_LOG(WARN, "dag record has unexpected dag value", K(ret), KP(this), KP(&dag), KPC(dag_record));
   } else if (OB_UNLIKELY(ObIDag::is_finish_status(dag_record->dag_status_))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("dag status is invalid when erase", K(ret), KPC(dag_record));
   } else {
-    found = true;
     COMMON_LOG(DEBUG, "success to update status", K(ret), KPC(dag_record));
     remove_dag_record_(*dag_record);
     dag.clear_dag_net();
@@ -1389,9 +1387,9 @@ void ObTenantDagWorker::resume()
 int ObTenantDagWorker::set_dag_resource(const uint64_t group_id)
 {
   int ret = OB_SUCCESS;
-  if (nullptr == GCTX.cgroup_ctrl_ || OB_UNLIKELY(!GCTX.cgroup_ctrl_->is_valid())) {
-    //invalid cgroup, cannot bind thread and control resource
-  } else  {
+  if (OB_ISNULL(GCTX.cgroup_ctrl_)) {
+    //cgroup not init, cannot bind thread and control resource
+  } else {
     uint64_t consumer_group_id = 0;
     if (group_id != 0) {
       //user level
@@ -1401,9 +1399,11 @@ int ObTenantDagWorker::set_dag_resource(const uint64_t group_id)
       LOG_WARN("fail to get group id by function", K(ret), K(MTL_ID()), K(function_type_), K(consumer_group_id));
     }
     if (OB_SUCC(ret) && consumer_group_id != group_id_) {
-      if (OB_FAIL(GCTX.cgroup_ctrl_->add_self_to_group(MTL_ID(), consumer_group_id))) {
+      // for CPU isolation, depend on cgroup
+      if (GCTX.cgroup_ctrl_->is_valid() && OB_FAIL(GCTX.cgroup_ctrl_->add_self_to_group(MTL_ID(), consumer_group_id))) {
         LOG_WARN("bind back thread to group failed", K(ret), K(GETTID()), K(MTL_ID()), K(group_id));
       } else {
+        // for IOPS isolation, only depend on consumer_group_id
         ATOMIC_SET(&group_id_, consumer_group_id);
         THIS_WORKER.set_group_id(static_cast<int32_t>(consumer_group_id));
       }
@@ -1439,6 +1439,10 @@ void ObTenantDagWorker::run1()
           ret = OB_ERR_UNEXPECTED;
           COMMON_LOG(WARN, "invalid compat mode", K(ret), K(*dag));
         } else {
+#ifdef ERRSIM
+          const ObErrsimModuleType type(dag->get_module_type());
+          THIS_WORKER.set_module_type(type);
+#endif
           THIS_WORKER.set_compatibility_mode(compat_mode);
           if (OB_FAIL(set_dag_resource(dag->get_consumer_group_id()))) {
             LOG_WARN("isolate dag CPU and IOPS failed", K(ret));
@@ -2295,14 +2299,15 @@ int ObTenantDagScheduler::get_max_major_finish_time(const int64_t version, int64
     ObThreadCondGuard guard(scheduler_sync_);
     ObIDag *head = dag_list_[READY_DAG_LIST].get_head(ObDagPrio::DAG_PRIO_COMPACTION_LOW);
     ObIDag *cur = head->get_next();
+    compaction::ObTabletMergeCtx *ctx = nullptr;
     while (head != cur) {
       if (ObDagType::DAG_TYPE_MAJOR_MERGE == cur->get_type()) {
         dag = static_cast<compaction::ObTabletMergeDag *>(cur);
         if (ObIDag::DAG_STATUS_NODE_RUNNING == dag->get_dag_status()) {
-          if (dag->get_ctx().param_.merge_version_ == version) {
-            if (OB_NOT_NULL(dag->get_ctx().merge_progress_)
-                && dag->get_ctx().merge_progress_->get_estimated_finish_time() > estimated_finish_time) {
-              estimated_finish_time = dag->get_ctx().merge_progress_->get_estimated_finish_time();
+          if (nullptr != (ctx = dag->get_ctx()) && ctx->param_.merge_version_ == version) {
+            if (OB_NOT_NULL(ctx->merge_progress_)
+                && ctx->merge_progress_->get_estimated_finish_time() > estimated_finish_time) {
+              estimated_finish_time = ctx->merge_progress_->get_estimated_finish_time();
             }
           }
         } else {

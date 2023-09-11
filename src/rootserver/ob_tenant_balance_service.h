@@ -19,6 +19,7 @@
 #include "lib/lock/ob_thread_cond.h"//ObThreadCond
 #include "rootserver/ob_tenant_thread_helper.h"//ObTenantTheadHelper
 #include "share/ls/ob_ls_status_operator.h"//ObLSStatusInfoArray
+#include "share/ob_balance_define.h"
 
 namespace oceanbase
 {
@@ -73,12 +74,18 @@ public:
     UNUSED(lsn);
     return OB_SUCCESS;
   }
+  static int gather_stat_primary_zone_num_and_units(
+      const uint64_t &tenant_id,
+      int64_t &primary_zone_num,
+      ObIArray<share::ObSimpleUnitGroup> &unit_group_array);
+  static int gather_ls_status_stat(const uint64_t &tenant_id, share::ObLSStatusInfoArray &ls_array);
+  static int is_ls_balance_finished(const uint64_t &tenant_id, bool &is_finished);
 
 private:
+  static int is_primary_tenant_ls_balance_finished_(const uint64_t &tenant_id, bool &is_finished);
+  static int is_standby_tenant_ls_balance_finished_(const uint64_t &tenant_id, bool &is_finished);
   //load current unit group and primary zone
   int gather_stat_();
-  //load __all_ls_status
-  int gather_ls_status_stat_();
   //process current job
   int try_process_current_job(int64_t &job_cnt);
   //accordint to primary_zone and unit group
@@ -98,10 +105,12 @@ private:
                             ObArray<share::ObBalanceTask> &tasks);
   int construct_dependency_of_each_task_(ObArray<share::ObBalanceTask> &tasks);
   int lock_and_check_balance_job_(common::ObMySQLTransaction &trans, const uint64_t tenant_id);
-  int balance_primary_zone_();
   int try_update_job_comment_(const share::ObBalanceJob &job, const common::ObSqlString &comment);
   int try_do_partition_balance_(int64_t &last_partition_balance_time);
-  int try_statistic_balance_group_status_(int64_t &last_statistic_bg_stat_time);
+  int try_statistic_balance_group_status_(
+      int64_t &last_statistic_bg_stat_time,
+      int64_t &last_statistic_schema_version,
+      share::ObTransferTaskID &last_statistic_max_transfer_task_id);
   int get_active_unit_num_(int64_t &active_unit_num) const;
 private:
   bool inited_;

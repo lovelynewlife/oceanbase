@@ -68,10 +68,12 @@ PalfHandleImpl::PalfHandleImpl()
     last_record_append_lsn_(PALF_INITIAL_LSN_VAL),
     has_set_deleted_(false),
     palf_env_impl_(NULL),
-    append_cost_stat_("[PALF STAT WRITE LOG]", PALF_STAT_PRINT_INTERVAL_US),
-    flush_cb_cost_stat_("[PALF STAT FLUSH CB]", PALF_STAT_PRINT_INTERVAL_US),
-    last_accum_statistic_time_(OB_INVALID_TIMESTAMP),
+    append_cost_stat_("[PALF STAT WRITE LOG COST TIME]", PALF_STAT_PRINT_INTERVAL_US),
+    flush_cb_cost_stat_("[PALF STAT FLUSH CB COST TIME]", PALF_STAT_PRINT_INTERVAL_US),
+    last_accum_write_statistic_time_(OB_INVALID_TIMESTAMP),
     accum_write_log_size_(0),
+    last_accum_fetch_statistic_time_(OB_INVALID_TIMESTAMP),
+    accum_fetch_log_size_(0),
     replica_meta_lock_(),
     rebuilding_lock_(),
     config_change_lock_(),
@@ -152,7 +154,8 @@ int PalfHandleImpl::init(const int64_t palf_id,
     PALF_REPORT_INFO_KV(K_(palf_id));
     append_cost_stat_.set_extra_info(EXTRA_INFOS);
     flush_cb_cost_stat_.set_extra_info(EXTRA_INFOS);
-    last_accum_statistic_time_ = ObTimeUtility::current_time();
+    last_accum_write_statistic_time_ = ObTimeUtility::current_time();
+    last_accum_fetch_statistic_time_ = ObTimeUtility::current_time();
     PALF_EVENT("PalfHandleImpl init success", palf_id_, K(ret), K(self), K(access_mode), K(palf_base_info),
         K(replica_type), K(log_dir), K(log_meta), K(palf_epoch));
   }
@@ -242,6 +245,10 @@ void PalfHandleImpl::destroy()
       palf_env_impl_->remove_directory(log_dir_);
     }
     palf_env_impl_ = NULL;
+    last_accum_write_statistic_time_ = OB_INVALID_TIMESTAMP;
+    accum_write_log_size_ = 0;
+    last_accum_fetch_statistic_time_ = OB_INVALID_TIMESTAMP;
+    accum_fetch_log_size_ = 0;
   }
 }
 
@@ -288,6 +295,39 @@ int PalfHandleImpl::set_initial_member_list(
   return ret;
 }
 
+#ifdef OB_BUILD_ARBITRATION
+int PalfHandleImpl::set_initial_member_list(
+    const common::ObMemberList &member_list,
+    const common::ObMember &arb_member,
+    const int64_t paxos_replica_num,
+    const common::GlobalLearnerList &learner_list)
+{
+  int ret = OB_SUCCESS;
+  LogConfigVersion config_version;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "PalfHandleImpl has not inited!!!", K(ret));
+  } else {
+    {
+      WLockGuard guard(lock_);
+      const int64_t proposal_id = state_mgr_.get_proposal_id();
+      if (OB_FAIL(config_mgr_.set_initial_member_list(member_list, arb_member, paxos_replica_num, \
+          learner_list, proposal_id, config_version))) {
+        PALF_LOG(WARN, "LogConfigMgr set_initial_member_list failed", K(ret), KPC(this));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(config_mgr_.wait_config_log_persistence(config_version))) {
+      PALF_LOG(WARN, "want_config_log_persistence failed", K(ret), KPC(this));
+    } else {
+      PALF_EVENT("set_initial_member_list success", palf_id_, K(ret), K(member_list), K(arb_member),
+          K(learner_list), K(paxos_replica_num));
+      report_set_initial_member_list_with_arb_(paxos_replica_num, member_list, arb_member);
+    }
+  }
+  return ret;
+}
+#endif
 
 int PalfHandleImpl::get_begin_lsn(LSN &lsn) const
 {
@@ -923,6 +963,149 @@ int PalfHandleImpl::replace_member_with_learner(const common::ObMember &added_me
   return ret;
 }
 
+#ifdef OB_BUILD_ARBITRATION
+int PalfHandleImpl::add_arb_member(
+    const common::ObMember &member,
+    const int64_t timeout_us)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "PalfHandleImpl not init", KR(ret), KPC(this));
+  } else if (!member.is_valid() || timeout_us <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    PALF_LOG(WARN, "invalid argument", KR(ret), KPC(this), K(member), K(timeout_us));
+  } else {
+    LogConfigChangeArgs args(member, 0, ADD_ARB_MEMBER);
+    if (OB_FAIL(one_stage_config_change_(args, timeout_us))) {
+      PALF_LOG(WARN, "add_arb_member failed", KR(ret), KPC(this), K(member));
+    } else {
+      PALF_EVENT("add_arb_member success", palf_id_, KR(ret), KPC(this), K(member));
+      report_add_arb_member_(member);
+    }
+  }
+  return ret;
+}
+
+int PalfHandleImpl::remove_arb_member(
+    const common::ObMember &member,
+    const int64_t timeout_us)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "PalfHandleImpl not init", KR(ret), KPC(this));
+  } else if (!member.is_valid() || timeout_us <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    PALF_LOG(WARN, "invalid argument", KR(ret), KPC(this), K(member), K(timeout_us));
+  } else {
+    LogConfigChangeArgs args(member, 0, REMOVE_ARB_MEMBER);
+    if (OB_FAIL(one_stage_config_change_(args, timeout_us))) {
+      PALF_LOG(WARN, "remove_arb_member failed", KR(ret), KPC(this), K(member));
+    } else {
+      PALF_EVENT("remove_arb_member success", palf_id_, KR(ret), KPC(this), K(member));
+      report_remove_arb_member_(member);
+    }
+  }
+  return ret;
+}
+
+int PalfHandleImpl::degrade_acceptor_to_learner(const LogMemberAckInfoList &degrade_servers, const int64_t timeout_us)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (0 == degrade_servers.count() || timeout_us <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    PALF_LOG(WARN, "invalid argument", KR(ret), KPC(this), K(degrade_servers), K(timeout_us));
+  } else if (OB_FAIL(pre_check_before_degrade_upgrade_(degrade_servers, DEGRADE_ACCEPTOR_TO_LEARNER))) {
+    PALF_LOG(WARN, "pre_check_before_degrade_upgrade_ failed", KR(ret), KPC(this), K(degrade_servers));
+  } else {
+    const int64_t begin_time_us = common::ObTimeUtility::current_time();
+    for (int64_t i = 0; i < degrade_servers.count() && OB_SUCC(ret); i++) {
+      const ObMember &member = degrade_servers.at(i).member_;
+      LogConfigChangeArgs args(member, 0, DEGRADE_ACCEPTOR_TO_LEARNER);
+      const int64_t curr_time_us = common::ObTimeUtility::current_time();
+      if (OB_FAIL(one_stage_config_change_(args, timeout_us + begin_time_us - curr_time_us))) {
+        PALF_LOG(WARN, "degrade_acceptor_to_learner failed", KR(ret), KPC(this), K(member), K(timeout_us));
+      } else {
+        PALF_EVENT("degrade_acceptor_to_learner success", palf_id_, K(ret), K_(self), K(member), K(timeout_us));
+      }
+    }
+    PALF_EVENT("degrade_acceptor_to_learner finish", palf_id_, K(ret), KPC(this), K(degrade_servers), K(timeout_us));
+  }
+  return ret;
+}
+
+int PalfHandleImpl::upgrade_learner_to_acceptor(const LogMemberAckInfoList &upgrade_servers, const int64_t timeout_us)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (0 == upgrade_servers.count() || timeout_us <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    PALF_LOG(WARN, "invalid argument", KR(ret), KPC(this), K(upgrade_servers), K(timeout_us));
+  // } else if (OB_FAIL(pre_check_before_degrade_upgrade_(upgrade_servers, UPGRADE_LEARNER_TO_ACCEPTOR))) {
+  //   PALF_LOG(WARN, "pre_check_before_degrade_upgrade_ failed", KR(ret), KPC(this), K(upgrade_servers));
+  } else {
+    const int64_t begin_time_us = common::ObTimeUtility::current_time();
+    for (int64_t i = 0; i < upgrade_servers.count() && OB_SUCC(ret); i++) {
+      const ObMember &member = upgrade_servers.at(i).member_;
+      LogConfigChangeArgs args(member, 0, UPGRADE_LEARNER_TO_ACCEPTOR);
+      const int64_t curr_time_us = common::ObTimeUtility::current_time();
+      if (OB_FAIL(one_stage_config_change_(args, timeout_us + begin_time_us - curr_time_us))) {
+        PALF_LOG(WARN, "upgrade_learner_to_acceptor failed", KR(ret), KPC(this), K(member), K(timeout_us));
+      } else {
+        PALF_LOG(INFO, "upgrade_learner_to_acceptor success", K(ret), KPC(this), K(member), K(timeout_us));
+      }
+    }
+    PALF_EVENT("upgrade_learner_to_acceptor finish", palf_id_, K(ret), KPC(this), K(upgrade_servers), K(timeout_us));
+  }
+  return ret;
+}
+
+int PalfHandleImpl::get_remote_arb_member_info(ArbMemberInfo &arb_member_info)
+{
+  int ret = OB_SUCCESS;
+  ObMember arb_member;
+  (void) config_mgr_.get_arbitration_member(arb_member);
+  LogGetArbMemberInfoResp resp;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (false == state_mgr_.is_leader_active()) {
+    // If self is not in <LEADER, ACTIVE> state, return -4038.
+    ret = OB_NOT_MASTER;
+  } else if (!arb_member.is_valid()) {
+    // arb_member is invalid, return -4109.
+    ret = OB_STATE_NOT_MATCH;
+  } else if (OB_FAIL(log_engine_.sync_get_arb_member_info(arb_member.get_server(), \
+          PALF_SYNC_RPC_TIMEOUT_US, resp))) {
+    PALF_LOG(WARN, "submit_get_arb_member_info_req failed", KR(ret), K_(palf_id), K_(self),
+        K(arb_member), K(resp));
+  } else {
+    arb_member_info = resp.arb_member_info_;
+  }
+  return ret;
+}
+
+int PalfHandleImpl::get_arb_member_info(palf::ArbMemberInfo &arb_member_info) const
+{
+  int ret = OB_SUCCESS;
+  return ret;
+}
+
+int PalfHandleImpl::get_arbitration_member(common::ObMember &arb_member) const
+{
+  int ret = OB_SUCCESS;
+  RLockGuard guard(lock_);
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else if (OB_FAIL(config_mgr_.get_arbitration_member(arb_member))) {
+    PALF_LOG(WARN, "get_arbitration_member failed", K_(palf_id), K_(self), K(arb_member));
+  }
+  return ret;
+}
+#endif
 
 int PalfHandleImpl::change_access_mode(const int64_t proposal_id,
                                        const int64_t mode_version,
@@ -1445,14 +1628,26 @@ int PalfHandleImpl::disable_vote(const bool need_check_log_missing)
     //step 1: check vote status.
     bool vote_disabled = false;
     do {
+      common::ObMemberList memberlist;
+      int64_t replica_num = 0;
+      AccessMode access_mode;
       RLockGuard guard(lock_);
-      if (!state_mgr_.is_allow_vote()) {
+      if (OB_FAIL(config_mgr_.get_curr_member_list(memberlist, replica_num))) {
+        PALF_LOG(WARN, "get_curr_member_list failed", KPC(this));
+      } else if (OB_FAIL(mode_mgr_.get_access_mode(access_mode))) {
+        PALF_LOG(WARN, "get_access_mode failed", K(ret), KPC(this));
+      } else if (state_mgr_.is_leader_active() &&
+          (1 == replica_num || AccessMode::APPEND == access_mode)) {
+        ret = OB_ERR_UNEXPECTED;
+        PALF_LOG(ERROR, "can not disable_vote in leader", KPC(this),
+            K(memberlist), K(replica_num), K(access_mode));
+      } else if (!state_mgr_.is_allow_vote()) {
         PALF_LOG(INFO, "vote has already been disabled", KPC(this));
         vote_disabled = true;
       }
     } while(0);
 
-    if (!vote_disabled) {
+    if (OB_SUCC(ret) && !vote_disabled) {
       if (OB_FAIL(election_.add_inner_priority_seed_bit(new_election_inner_priority_seed)) && OB_ENTRY_EXIST != ret) {
         // Because this interface is idempotent, so we need ignore err code OB_ENTRY_EXIST.
         PALF_LOG(WARN, "election add_inner_priority_seed_bit for rebuild failed", KPC(this));
@@ -1888,10 +2083,11 @@ int PalfHandleImpl::inner_append_log(const LSN &lsn,
     const int64_t time_cost = now - begin_ts;
     append_cost_stat_.stat(time_cost);
     if (time_cost >= 5 * 1000) {
-      PALF_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "write log cost too much time", K(ret), KPC(this), K(lsn), K(scn), K(accum_size), K(time_cost));
+      PALF_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "write log cost too much time", K(ret), KPC(this),
+                   K(lsn), K(scn), "size", write_buf.get_total_size(), K(accum_size), K(time_cost));
     }
-    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_statistic_time_)) {
-      PALF_LOG(INFO, "[PALF STAT INNER APPEND LOG]", KPC(this), K(accum_size));
+    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_write_statistic_time_)) {
+      PALF_LOG(INFO, "[PALF STAT INNER APPEND LOG SIZE]", KPC(this), K(accum_size));
       ATOMIC_STORE(&accum_write_log_size_, 0);
     }
   }
@@ -1921,10 +2117,10 @@ int PalfHandleImpl::inner_append_log(const LSNArray &lsn_array,
     append_cost_stat_.stat(time_cost);
     if (time_cost > 10 * 1000) {
       PALF_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "write log cost too much time", K(ret), KPC(this), K(lsn_array),
-               K(scn_array), K(curr_size), K(time_cost));
+               K(scn_array), K(curr_size), K(accum_size), K(time_cost));
     }
-    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_statistic_time_)) {
-      PALF_LOG(INFO, "[PALF STAT INNER APPEND LOG]", KPC(this), K(accum_size));
+    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_write_statistic_time_)) {
+      PALF_LOG(INFO, "[PALF STAT INNER APPEND LOG SIZE]", KPC(this), K(accum_size));
       ATOMIC_STORE(&accum_write_log_size_, 0);
     }
   }
@@ -2025,6 +2221,21 @@ int PalfHandleImpl::get_access_mode(int64_t &mode_version, AccessMode &access_mo
     PALF_LOG(WARN, "PalfHandleImpl is not inited", K(ret), KPC(this));
   } else if (OB_FAIL(mode_mgr_.get_access_mode(mode_version, access_mode))) {
     PALF_LOG(WARN, "get_access_mode failed", K(ret), KPC(this));
+  }
+  return ret;
+}
+
+int PalfHandleImpl::get_access_mode_ref_scn(int64_t &mode_version,
+                                            AccessMode &access_mode,
+                                            SCN &ref_scn) const
+{
+  int ret = OB_SUCCESS;
+  RLockGuard guard(lock_);
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    PALF_LOG(WARN, "PalfHandleImpl is not inited", K(ret), KPC(this));
+  } else if (OB_FAIL(mode_mgr_.get_access_mode_ref_scn(mode_version, access_mode, ref_scn))) {
+    PALF_LOG(WARN, "get_access_mode_ref_scn failed", K(ret), KPC(this));
   }
   return ret;
 }
@@ -3213,6 +3424,11 @@ int PalfHandleImpl::fetch_log_from_storage(const common::ObAddr &server,
     if (OB_FAIL(mode_mgr_.submit_fetch_mode_meta_resp(server, msg_proposal_id, accepted_mode_pid))) {
       PALF_LOG(WARN, "submit_fetch_mode_meta_resp failed", K(ret), K_(palf_id), K_(self),
           K(msg_proposal_id), K(accepted_mode_pid));
+    }
+    const int64_t accum_size = ATOMIC_AAF(&accum_fetch_log_size_, fetch_log_size);
+    if (palf_reach_time_interval(PALF_STAT_PRINT_INTERVAL_US, last_accum_fetch_statistic_time_)) {
+      PALF_LOG(INFO, "[PALF STAT FETCH LOG SIZE]", KPC(this), K(accum_size));
+      ATOMIC_STORE(&accum_fetch_log_size_, 0);
     }
   }
   return ret;

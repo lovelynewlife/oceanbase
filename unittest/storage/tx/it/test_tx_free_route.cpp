@@ -423,8 +423,7 @@ int MockObServer::handle(ObReq &req, ObResp &resp)
             OB_FAIL(tx_node_.txn_free_route__update_##tn##_state(session_.get_sessid(), tx_desc, free_route_ctx, buf, len, pos))) { \
           TRANS_LOG(ERROR, "update txn state fail", K(ret), "type", #T); \
         } else if (pos != len) {                                        \
-          ret = OB_ERR_UNEXPECTED;                                      \
-          TRANS_LOG(ERROR, "oops: pos != len, consume buffer incomplete", K(ret), K(pos), K(len), "state_type", #T); \
+          TRANS_LOG(WARN, "[maybe] pos != len, consume buffer incomplete", K(ret), K(pos), K(len), "state_type", #T); \
         }                                                               \
         break;
 #define TX_STATE_UPDATE_(T, tn) TX_STATE_UPDATE__(T, tn)
@@ -517,7 +516,7 @@ int MockObServer::do_handle_(ObReq &req, ObResp &resp)
     break;
   case ObReq::T::DUMMY_WRITE: {
     PREPARE_TX_PARAM(tx_param);
-    int64_t sp;
+    ObTxSEQ sp;
     ret = tx_node_.create_implicit_savepoint(*tx_desc, tx_param, sp, true);
   }
     break;

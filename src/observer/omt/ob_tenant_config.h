@@ -52,7 +52,6 @@ public:
     virtual ~TenantConfigUpdateTask() {}
     TenantConfigUpdateTask(const TenantConfigUpdateTask &) = delete;
     TenantConfigUpdateTask &operator=(const TenantConfigUpdateTask &) = delete;
-    void cancelCallBack() override {}
     void set_tenant_config(ObTenantConfig *config) { tenant_config_ = config; }
     void runTimerTask(void) override;
     ObTenantConfigMgr *config_mgr_;
@@ -92,10 +91,13 @@ public:
                    bool save2file = true);
   int add_extra_config(const char *config_str,
                        int64_t version = 0 ,
-                       bool check_name = false,
-                       bool check_unit = true);
+                       bool check_config = true);
 
   OB_UNIS_VERSION(1);
+private:
+#ifdef ERRSIM
+  int build_errsim_module_();
+#endif
 private:
   uint64_t tenant_id_;
   int64_t current_version_; // 当前 tenant config 正在被 task 更新中的版本

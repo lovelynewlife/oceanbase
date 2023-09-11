@@ -50,7 +50,8 @@ public:
                              bool &is_drop_column,
                              ObReducedVisibleColSet &reduced_visible_col_set);
   int resolve_index_options_oracle(const ParseNode &node);
-  int resolve_index_options(const ParseNode &action_node_list, const ParseNode &node);
+  int resolve_index_options(const ParseNode &action_node_list, const ParseNode &node,
+                            bool &is_add_index);
   int resolve_partition_options(const ParseNode &node);
   int resolve_constraint_options(const ParseNode &node, const bool is_multi_actions);
   int resolve_modify_foreign_key_state(const ParseNode *node);
@@ -80,7 +81,7 @@ public:
   int resolve_modify_all_trigger(const ParseNode &node);
   int resolve_set_interval(ObAlterTableStmt *stmt, const ParseNode &node);
 
-  int add_udt_hidden_column(ObAlterTableStmt *alter_table_stmt, const AlterColumnSchema &column_schema);
+  int add_udt_hidden_column(ObAlterTableStmt *alter_table_stmt, AlterColumnSchema &column_schema);
 
 private:
   int check_dup_foreign_keys_exist(
@@ -115,7 +116,8 @@ private:
                                             ParseNode *node, ObColumnResolveStat &stat,
                                             bool &is_modify_column_visibility,
                                             ObIArray<ObColumnSchemaV2 *> &resolved_cols,
-                                            const bool is_oracle_temp_table = false);
+                                            const bool is_oracle_temp_table = false,
+                                            const bool allow_has_default = true);
   int resolve_alter_column_not_null(share::schema::AlterColumnSchema &column,
                                      const ObColumnSchemaV2 &ori_column);
   int get_table_schema_all_column_schema(ObIArray<ObColumnSchemaV2 *> &resolved_cols,
@@ -133,6 +135,10 @@ private:
                              const share::schema::ObTableSchema &orig_table_schema);
   int resolve_drop_subpartition(const ParseNode &node,
                                 const share::schema::ObTableSchema &orig_table_schema);
+  int resolve_rename_partition(const ParseNode &node,
+                             const share::schema::ObTableSchema &orig_table_schema);
+  int resolve_rename_subpartition(const ParseNode &node,
+                             const share::schema::ObTableSchema &orig_table_schema);
   int check_subpart_name(const share::schema::ObPartition &partition,
                          const share::schema::ObSubPartition &subpartition);
   int resolve_add_constraint(const ParseNode &node);
@@ -169,8 +175,13 @@ private:
                                    const share::schema::ObColumnSchemaV2 &src_col_schema,
                                    const share::schema::ObColumnSchemaV2 &dst_col_schema);
   int generate_index_arg_cascade();
+  bool is_ttl_column(const common::ObString &orig_column_name, const ObIArray<common::ObString> &ttl_columns);
 
   int check_alter_column_schemas_valid(ObAlterTableStmt &stmt);
+
+  int check_mysql_rename_column(const share::schema::AlterColumnSchema &alter_column_schema,
+                                const share::schema::ObTableSchema &orign_table_schema,
+                                ObAlterTableStmt &alter_table_stmt);
   const share::schema::ObTableSchema *table_schema_;
   const share::schema::ObTableSchema *index_schema_;
 

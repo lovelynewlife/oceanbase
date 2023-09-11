@@ -253,6 +253,9 @@ int ObMPStmtPrexecute::before_process()
                     session->set_session_in_retry(retry_ctrl_.need_retry());
                   }
                 }
+                if (RETRY_TYPE_LOCAL == retry_ctrl_.get_retry_type()) {
+                  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
+                }
               } while (RETRY_TYPE_LOCAL == retry_ctrl_.get_retry_type());
               if (OB_SUCC(ret) && retry_ctrl_.get_retry_times() > 0) {
                 LOG_TRACE("sql retry succeed", K(ret),
@@ -918,7 +921,7 @@ int ObMPStmtPrexecute::after_do_process_for_arraybinding(ObSQLSessionInfo &sessi
     }
   } else {
     if (ctx_.multi_stmt_item_.is_ab_batch_opt()
-        && ctx_.multi_stmt_item_.get_batched_stmt_cnt() == arraybinding_size_) {
+        && ctx_.get_batch_params_count() == arraybinding_size_) {
       // 执行成功，全部数据都完成batch优化，直接回eof包
       if (OB_SUCCESS != (response_ret = send_eof_packet(session, 0, false, true, false))) {
         ret = response_ret;
@@ -1205,8 +1208,8 @@ int ObMPStmtPrexecute::send_param_field_packet(ObSQLSessionInfo &session,
       if (OB_FAIL(ObMySQLResultSet::to_mysql_field(ob_field, field))) {
         LOG_WARN("fail to copy param field", K(ob_field));
       } else {
-        OMPKField fp(field);
         ObMySQLResultSet::replace_lob_type(session, ob_field, field);
+        OMPKField fp(field);
         if (OB_FAIL(response_packet(fp, &session))) {
           LOG_DEBUG("response packet fail", K(ret));
         } else {
@@ -1229,9 +1232,10 @@ int ObMPStmtPrexecute::send_param_packet(ObSQLSessionInfo &session,
   for (int64_t i = 0; OB_SUCC(ret) && i < params_cnt; ++i) {
     ObField param_field;
     ObMySQLField field;
-    param_field.type_.set_type(params->at(i).get_type()); // @bug
+    param_field.type_.set_type(ObIntType); // @bug
     param_field.cname_ = ObString::make_string("?");
     OZ (ObMySQLResultSet::to_mysql_field(param_field, field));
+    ObMySQLResultSet::replace_lob_type(session, param_field, field);
     OMPKField fp(field);
     OZ (response_packet(fp, &session));
   }

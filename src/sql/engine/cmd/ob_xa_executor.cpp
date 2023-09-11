@@ -202,7 +202,7 @@ int ObPlXaEndExecutor::execute(ObExecContext &ctx, ObXaEndStmt &stmt)
     ObSQLSessionInfo::LockGuard session_query_guard(my_session->get_query_lock());
     ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     int64_t flags = stmt.get_flags();
-    flags = my_session->has_tx_level_temp_table() ? (flags | ObXAFlag::TEMPTABLE) : flags;
+    flags = my_session->has_tx_level_temp_table() ? (flags | ObXAFlag::OBTEMPTABLE) : flags;
     my_session->get_raw_audit_record().trans_id_ = my_session->get_tx_id();
     if (OB_FAIL(MTL(transaction::ObXAService*)->xa_end(xid, flags,
           my_session->get_tx_desc()))) {
@@ -395,6 +395,7 @@ int ObPlXaEndTransExecutor::execute_(const ObString &gtrid_str,
 
 int ObPlXaCommitExecutor::execute(ObExecContext &ctx, ObXaCommitStmt &stmt)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx);
   ObTxDesc *tx_desc = my_session->get_tx_desc();

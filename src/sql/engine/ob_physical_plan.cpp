@@ -555,6 +555,7 @@ void ObPhysicalPlan::update_plan_stat(const ObAuditRecordData &record,
       //            - (record.exec_timestamp_.run_ts_ - record.exec_timestamp_.receive_ts_));
       ATOMIC_AAF(&(stat_.evolution_stat_.cpu_time_), record.exec_timestamp_.executor_t_);
       ATOMIC_AAF(&(stat_.evolution_stat_.elapsed_time_), record.get_elapsed_time());
+      ATOMIC_STORE(&(stat_.evolution_stat_.last_exec_ts_), record.exec_timestamp_.executor_end_ts_);
     }
     if (stat_.is_bind_sensitive_ && execute_count > 0) {
       int64_t pos = execute_count % ObPlanStat::MAX_SCAN_STAT_SIZE;
@@ -1114,8 +1115,7 @@ int ObPhysicalPlan::set_expected_worker_map(const common::hash::ObHashMap<ObAddr
   }
   return ret;
 }
-
-const common::hash::ObHashMap<ObAddr, int64_t>& ObPhysicalPlan:: get_expected_worker_map() const
+const ObPlanStat::AddrMap& ObPhysicalPlan:: get_expected_worker_map() const
 {
   return stat_.expected_worker_map_;
 }
@@ -1129,12 +1129,7 @@ int ObPhysicalPlan::set_minimal_worker_map(const common::hash::ObHashMap<ObAddr,
   return ret;
 }
 
-const common::hash::ObHashMap<ObAddr, int64_t>& ObPhysicalPlan::get_minimal_worker_map() const
-{
-  return stat_.minimal_worker_map_;
-}
-
-int ObPhysicalPlan::assign_worker_map(common::hash::ObHashMap<ObAddr, int64_t> &worker_map, const common::hash::ObHashMap<ObAddr, int64_t> &c)
+int ObPhysicalPlan::assign_worker_map(ObPlanStat::AddrMap &worker_map, const common::hash::ObHashMap<ObAddr, int64_t> &c)
 {
   int ret = OB_SUCCESS;
   ObMemAttr attr(MTL_ID(), "WorkerMap");

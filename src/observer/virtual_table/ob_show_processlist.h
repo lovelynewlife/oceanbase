@@ -69,7 +69,15 @@ private:
     SQL_TRACE,
     PLAN_ID,
     TENANT_ID,
-    EFFECTIVE_TENANT_ID
+    EFFECTIVE_TENANT_ID,
+    LEVEL,
+    SAMPLE_PERCENTAGE,
+    RECORD_POLICY,
+    VID,
+    VIP,
+    VPORT,
+    IN_BYTES,
+    OUT_BYTES
   };
   class FillScanner
   {

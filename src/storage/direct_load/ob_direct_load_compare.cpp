@@ -1,7 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
-
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/direct_load/ob_direct_load_compare.h"
@@ -276,7 +283,8 @@ bool ObDirectLoadDatumArrayCompare::operator()(const ObDirectLoadConstDatumArray
  */
 
 int ObDirectLoadExternalRowCompare::init(const ObStorageDatumUtils &datum_utils,
-                                         sql::ObLoadDupActionType dup_action)
+                                         sql::ObLoadDupActionType dup_action,
+                                         bool ignore_seq_no)
 {
   int ret = OB_SUCCESS;
   if (IS_INIT) {
@@ -287,6 +295,7 @@ int ObDirectLoadExternalRowCompare::init(const ObStorageDatumUtils &datum_utils,
       LOG_WARN("fail to init datum array compare", KR(ret));
     } else {
       dup_action_ = dup_action;
+      ignore_seq_no_ = ignore_seq_no;
       is_inited_ = true;
     }
   }
@@ -329,7 +338,7 @@ int ObDirectLoadExternalRowCompare::compare(const ObDirectLoadExternalRow *lhs,
                                                   &rhs->rowkey_datum_array_, cmp_ret))) {
     LOG_WARN("fail to compare rowkey", KR(ret), KP(lhs), K(rhs), K(cmp_ret));
   } else {
-    if (cmp_ret == 0) {
+    if (cmp_ret == 0 && !ignore_seq_no_) {
       if (lhs->seq_no_ == rhs->seq_no_) {
         cmp_ret = 0;
       } else if (lhs->seq_no_ > rhs->seq_no_) {
@@ -355,7 +364,8 @@ int ObDirectLoadExternalRowCompare::compare(const ObDirectLoadExternalRow *lhs,
  */
 
 int ObDirectLoadExternalMultiPartitionRowCompare::init(const ObStorageDatumUtils &datum_utils,
-                                                       sql::ObLoadDupActionType dup_action)
+                                                       sql::ObLoadDupActionType dup_action,
+                                                        bool ignore_seq_no)
 {
   int ret = OB_SUCCESS;
   if (IS_INIT) {
@@ -366,11 +376,13 @@ int ObDirectLoadExternalMultiPartitionRowCompare::init(const ObStorageDatumUtils
       LOG_WARN("fail to init datum array compare", KR(ret));
     } else {
       dup_action_ = dup_action;
+      ignore_seq_no_ = ignore_seq_no;
       is_inited_ = true;
     }
   }
   return ret;
 }
+
 
 bool ObDirectLoadExternalMultiPartitionRowCompare::operator()(
   const ObDirectLoadExternalMultiPartitionRow *lhs,
@@ -436,7 +448,7 @@ int ObDirectLoadExternalMultiPartitionRowCompare::compare(
                                                     &rhs->external_row_.rowkey_datum_array_,
                                                     cmp_ret))) {
       LOG_WARN("fail to compare rowkey", KR(ret), KP(lhs), K(rhs), K(cmp_ret));
-    } else if (cmp_ret == 0) {
+    } else if (cmp_ret == 0 && !ignore_seq_no_) {
       if (lhs->external_row_.seq_no_ == rhs->external_row_.seq_no_) {
         cmp_ret = 0;
       } else if (lhs->external_row_.seq_no_ > rhs->external_row_.seq_no_) {
@@ -475,7 +487,7 @@ int ObDirectLoadExternalMultiPartitionRowCompare::compare(
     } else if (OB_FAIL(datum_array_compare_.compare(&lhs->rowkey_datum_array_,
                                                     &rhs->rowkey_datum_array_, cmp_ret))) {
       LOG_WARN("fail to compare rowkey", KR(ret), KP(lhs), K(rhs), K(cmp_ret));
-    } else if (cmp_ret == 0) {
+    } else if (cmp_ret == 0 && !ignore_seq_no_) {
       if (lhs->seq_no_ == rhs->seq_no_) {
         cmp_ret = 0;
       } else if (lhs->seq_no_ > rhs->seq_no_) {

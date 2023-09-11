@@ -38,9 +38,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#define PRINT_CREATE_ARG(arg) (ObSimpleBatchCreateTabletArg(arg))
-
-using namespace oceanbase::obrpc;
 using namespace oceanbase::common;
 using namespace oceanbase::share;
 using namespace oceanbase::share::schema;
@@ -58,7 +55,7 @@ int ObTabletCreateDeleteHelper::get_tablet(
     ObTabletHandle &handle,
     const int64_t timeout_us)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   static const int64_t SLEEP_TIME_US = 10;
   ObTenantMetaMemMgr *t3m = MTL(ObTenantMetaMemMgr*);
@@ -491,7 +488,7 @@ int ObTabletCreateDeleteHelper::acquire_tmp_tablet(
     common::ObArenaAllocator &allocator,
     ObTabletHandle &handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   ObTenantMetaMemMgr *t3m = MTL(ObTenantMetaMemMgr*);
   if (OB_UNLIKELY(!key.is_valid())) {
@@ -666,47 +663,6 @@ int ObTabletCreateDeleteHelper::build_create_sstable_param(
   }
 
   return ret;
-}
-
-ObSimpleBatchCreateTabletArg::ObSimpleBatchCreateTabletArg(const ObBatchCreateTabletArg &arg)
-  : arg_(arg)
-{
-}
-
-int64_t ObSimpleBatchCreateTabletArg::to_string(char *buf, const int64_t buf_len) const
-{
-  int64_t pos = 0;
-  if (OB_ISNULL(buf) || OB_UNLIKELY(buf_len <= 0)) {
-    // do nothing
-  } else {
-    J_OBJ_START();
-    J_NAME("ObSimpleBatchCreateTabletArg");
-    J_COLON();
-    J_KV("id", arg_.id_,
-         "major_frozen_scn", arg_.major_frozen_scn_,
-         "total_tablet_cnt", arg_.get_tablet_count());
-    J_COMMA();
-
-    BUF_PRINTF("tablets");
-    J_COLON();
-    J_OBJ_START();
-    for (int64_t i = 0; i < arg_.tablets_.count(); ++i) {
-      const ObCreateTabletInfo &info = arg_.tablets_.at(i);
-      ObCurTraceId::TraceId *trace_id = ObCurTraceId::get_trace_id();
-      J_NEWLINE();
-      BUF_PRINTF("[%ld] [", GETTID());
-      BUF_PRINTO(PC(trace_id));
-      BUF_PRINTF("] ");
-      J_KV("data_tablet_id", info.data_tablet_id_,
-           "tablet_ids", info.tablet_ids_,
-           "compat_mode", info.compat_mode_,
-           "is_create_bind_hidden_tablets", info.is_create_bind_hidden_tablets_);
-    }
-    J_NEWLINE();
-    J_OBJ_END();
-    J_OBJ_END();
-  }
-  return pos;
 }
 } // namespace storage
 } // namespace oceanbase

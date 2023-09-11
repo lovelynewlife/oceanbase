@@ -76,6 +76,7 @@ public:
       const obrpc::ObBatchCreateTabletArg &arg,
       const share::SCN &scn,
       mds::BufferCtx &ctx);
+  static int check_create_new_tablets(const int64_t inc_tablet_cnt);
 private:
   static int check_create_new_tablets(const obrpc::ObBatchCreateTabletArg &arg);
   static int check_create_arg(
@@ -153,6 +154,7 @@ private:
       const share::SCN &scn,
       mds::BufferCtx &ctx,
       const bool for_old_mds);
+  static void handle_ret_for_replay(int &ret);
 };
 } // namespace storage
 } // namespace oceanbase

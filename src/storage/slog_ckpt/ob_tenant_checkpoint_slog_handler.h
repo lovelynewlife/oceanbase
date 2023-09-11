@@ -76,7 +76,7 @@ public:
     static const int64_t FAIL_WRITE_CHECKPOINT_ALERT_INTERVAL = 1000L * 1000L * 3600LL;  // 6h
     static const int64_t WRITE_CHECKPOINT_INTERVAL_US = 1000L * 1000L * 60L;             // 1min
     static const int64_t RETRY_WRITE_CHECKPOINT_MIN_INTERVAL = 1000L * 1000L * 300L;     // 5min
-    static const int64_t MIN_WRITE_CHECKPOINT_LOG_CNT = 50000; // TODO(fenggu)
+    static const int64_t MIN_WRITE_CHECKPOINT_LOG_CNT = 100000; // TODO(fenggu)
 
     explicit ObWriteCheckpointTask(ObTenantCheckpointSlogHandler *handler) : handler_(handler)
     {
@@ -225,7 +225,7 @@ private:
   int64_t finished_replay_tablet_cnt_;
   int replay_create_tablet_errcode_;
   common::TCRWLock lock_;  // protect block_handle
-  lib::ObMutex mutex_;
+  common::TCRWLock slog_check_lock_; // protect is_copying_tablets_
   common::hash::ObHashSet<ObTabletMapKey> tablet_key_set_;
   bool is_copying_tablets_;
   ObLogCursor ckpt_cursor_;

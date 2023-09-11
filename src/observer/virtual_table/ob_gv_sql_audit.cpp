@@ -148,7 +148,7 @@ int ObGvSqlAudit::check_ip_and_port(bool &is_valid)
         ObObj ip_low = (req_id_range.get_start_key().get_obj_ptr()[PRI_KEY_IP_IDX]);
         ObObj ip_high = (req_id_range.get_end_key().get_obj_ptr()[PRI_KEY_IP_IDX]);
         ip_obj.set_varchar(ipstr_);
-        ip_obj.set_collation_type(ip_low.get_collation_type());
+        ip_obj.set_collation_type(ObCharset::get_system_collation());
         if (ip_obj.compare(ip_low) >= 0 && ip_obj.compare(ip_high) <= 0) {
           ObObj port_obj;
           port_obj.set_int32(port_);
@@ -732,7 +732,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
           // max wait event related
         case EVENT: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_varchar(OB_WAIT_EVENTS[event_no].event_name_);
           } else {
             cells[cell_idx].set_varchar("");
@@ -742,7 +742,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case P1TEXT: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_varchar(OB_WAIT_EVENTS[event_no].param1_);
           } else {
             cells[cell_idx].set_varchar("");
@@ -756,7 +756,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case P2TEXT: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_varchar(OB_WAIT_EVENTS[event_no].param2_);
           } else {
             cells[cell_idx].set_varchar("");
@@ -770,7 +770,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case P3TEXT: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_varchar(OB_WAIT_EVENTS[event_no].param3_);
           } else {
             cells[cell_idx].set_varchar("");
@@ -788,7 +788,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case WAIT_CLASS_ID: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_int(EVENT_NO_TO_CLASS_ID(event_no));
           } else {
             cells[cell_idx].set_int(common::OB_INVALID_ID);
@@ -797,7 +797,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case WAIT_CLASS_NO: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_int(OB_WAIT_EVENTS[event_no].wait_class_);
           } else {
             cells[cell_idx].set_int(common::OB_INVALID_ID);
@@ -806,7 +806,7 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
         }
         case WAIT_CLASS: {
           int64_t event_no = record.data_.exec_record_.max_wait_event_.event_no_;
-          if (event_no >= 0 && event_no < ObWaitEventIds::WAIT_EVENT_END) {
+          if (event_no >= 0 && event_no < WAIT_EVENTS_TOTAL) {
             cells[cell_idx].set_varchar(EVENT_NO_TO_CLASS(event_no));
           } else {
             cells[cell_idx].set_varchar("");
@@ -1033,6 +1033,17 @@ int ObGvSqlAudit::fill_cells(obmysql::ObMySQLRequestRecord &record)
           cells[cell_idx].set_uint64(record.data_.txn_free_route_version_);
           break;
         }
+        case FLT_TRACE_ID: {
+          if (OB_MAX_UUID_STR_LENGTH == strlen(record.data_.flt_trace_id_)) {
+            cells[cell_idx].set_varchar(record.data_.flt_trace_id_,
+                                        static_cast<ObString::obstr_size_t>(OB_MAX_UUID_STR_LENGTH));
+          } else {
+            cells[cell_idx].set_varchar("");
+          }
+          cells[cell_idx].set_collation_type(ObCharset::get_default_collation(
+                                              ObCharset::get_default_charset()));
+
+        } break;
         default: {
           ret = OB_ERR_UNEXPECTED;
           SERVER_LOG(WARN, "invalid column id", K(ret), K(cell_idx), K(col_id));

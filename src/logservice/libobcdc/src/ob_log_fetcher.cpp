@@ -41,10 +41,12 @@ int64_t ObLogFetcher::g_inner_heartbeat_interval =
 
 ObLogFetcher::ObLogFetcher() :
     is_inited_(false),
+    is_running_(false),
     is_loading_data_dict_baseline_data_(false),
     fetching_mode_(ClientFetchingMode::FETCHING_MODE_UNKNOWN),
     archive_dest_(),
     large_buffer_pool_(),
+    log_ext_handler_concurrency_(0),
     log_ext_handler_(),
     task_pool_(NULL),
     sys_ls_handler_(NULL),
@@ -112,10 +114,7 @@ int ObLogFetcher::init(
     configure(cfg);
     const common::ObRegion prefer_region(cfg.region.str());
 
-    // currently, libobcdc would output error log is is_tenant_mode is true and tenant_id is invalid.
-    // TODO: enable tenant_mode querying gv$ob_log_stat;
-    // const bool is_tenant_mode = TCTX.is_tenant_sync_mode();
-    const bool is_tenant_mode = false;
+    const bool is_tenant_mode = TCTX.is_tenant_sync_mode();
 
     if (is_integrated_fetching_mode(fetching_mode) && OB_FAIL(log_route_service_.init(
         proxy,
@@ -133,7 +132,7 @@ int ObLogFetcher::init(
         cfg.blacklist_history_overdue_time_min,
         cfg.blacklist_history_clear_interval_min,
         is_tenant_mode,
-        OB_INVALID_TENANT_ID))) {
+        TCTX.tenant_id_))) {
       LOG_ERROR("ObLogRouterService init failer", KR(ret), K(prefer_region), K(cluster_id));
     } else if (OB_FAIL(progress_controller_.init(cfg.ls_count_upper_limit))) {
       LOG_ERROR("init progress controller fail", KR(ret));
@@ -144,7 +143,7 @@ int ObLogFetcher::init(
       LOG_ERROR("init part trans resolver factory fail", KR(ret));
     } else if (OB_FAIL(large_buffer_pool_.init("ObLogFetcher", 1L * 1024 * 1024 * 1024))) {
       LOG_ERROR("init large buffer pool failed", KR(ret));
-    } else if (OB_FAIL(log_ext_handler_.init())) {
+    } else if (is_direct_fetching_mode(fetching_mode) && OB_FAIL(log_ext_handler_.init())) {
       LOG_ERROR("init log ext handler failed", KR(ret));
     } else if (OB_FAIL(ls_fetch_mgr_.init(
         max_cached_ls_fetch_ctx_count,
@@ -199,6 +198,7 @@ int ObLogFetcher::init(
       is_loading_data_dict_baseline_data_ = is_loading_data_dict_baseline_data;
       fetching_mode_ = fetching_mode;
       archive_dest_ = archive_dest;
+      log_ext_handler_concurrency_ = cfg.cdc_read_archive_log_concurrency;
       stop_flag_ = true;
       is_inited_ = true;
 
@@ -222,44 +222,50 @@ void ObLogFetcher::destroy()
 {
   stop();
 
-  // TODO: Global destroy all memory
-  is_inited_ = false;
-  is_loading_data_dict_baseline_data_ = false;
-  archive_dest_.reset();
-  large_buffer_pool_.destroy();
-  task_pool_ = NULL;
-  sys_ls_handler_ = NULL;
-  err_handler_ = NULL;
+  if (is_inited_) {
+    // TODO: Global destroy all memory
+    is_inited_ = false;
+    is_loading_data_dict_baseline_data_ = false;
+    archive_dest_.reset();
+    large_buffer_pool_.destroy();
+    task_pool_ = NULL;
+    sys_ls_handler_ = NULL;
+    err_handler_ = NULL;
 
-  misc_tid_ = 0;
-  heartbeat_dispatch_tid_ = 0;
-  last_timestamp_ = OB_INVALID_TIMESTAMP;
-  stop_flag_ = true;
-  paused_ = false;
-  pause_time_ = OB_INVALID_TIMESTAMP;
-  resume_time_ = OB_INVALID_TIMESTAMP;
+    misc_tid_ = 0;
+    heartbeat_dispatch_tid_ = 0;
+    last_timestamp_ = OB_INVALID_TIMESTAMP;
+    stop_flag_ = true;
+    paused_ = false;
+    pause_time_ = OB_INVALID_TIMESTAMP;
+    resume_time_ = OB_INVALID_TIMESTAMP;
 
-  stream_worker_.destroy();
-  fs_container_mgr_.destroy();
-  idle_pool_.destroy();
-  dead_pool_.destroy();
-  start_lsn_locator_.destroy();
-  rpc_.destroy();
-  progress_controller_.destroy();
-  ls_fetch_mgr_.destroy();
-  part_trans_resolver_factory_.destroy();
-  dispatcher_ = nullptr;
-  cluster_id_filter_.destroy();
-  if (is_integrated_fetching_mode(fetching_mode_)) {
-    log_route_service_.wait();
-    log_route_service_.destroy();
+    stream_worker_.destroy();
+    fs_container_mgr_.destroy();
+    idle_pool_.destroy();
+    dead_pool_.destroy();
+    start_lsn_locator_.destroy();
+    rpc_.destroy();
+    progress_controller_.destroy();
+    ls_fetch_mgr_.destroy();
+    part_trans_resolver_factory_.destroy();
+    dispatcher_ = nullptr;
+    cluster_id_filter_.destroy();
+    if (is_integrated_fetching_mode(fetching_mode_)) {
+      log_route_service_.wait();
+      log_route_service_.destroy();
+    }
+    // Finally reset fetching_mode_ because of some processing dependencies, such as ObLogRouteService
+    if (is_direct_fetching_mode(fetching_mode_)) {
+      log_ext_handler_.wait();
+      log_ext_handler_.destroy();
+    }
+    fetching_mode_ = ClientFetchingMode::FETCHING_MODE_UNKNOWN;
+    log_ext_handler_concurrency_ = 0;
+
+
+    LOG_INFO("destroy fetcher succ");
   }
-  // Finally reset fetching_mode_ because of some processing dependencies, such as ObLogRouteService
-  fetching_mode_ = ClientFetchingMode::FETCHING_MODE_UNKNOWN;
-  log_ext_handler_.wait();
-  log_ext_handler_.destroy();
-
-  LOG_INFO("destroy fetcher succ");
 }
 
 int ObLogFetcher::start()
@@ -278,8 +284,8 @@ int ObLogFetcher::start()
   } else {
     stop_flag_ = false;
 
-    // TODO by wenyue.zxl: change the concurrency of 'log_ext_handler_'(see resize interface)
-    if (OB_FAIL(log_ext_handler_.start(0))) {
+    if (is_direct_fetching_mode(fetching_mode_) &&
+        OB_FAIL(log_ext_handler_.start(log_ext_handler_concurrency_))) {
       LOG_ERROR("start ObLogExternalStorageHandler fail", KR(ret));
     } else if (is_integrated_fetching_mode(fetching_mode_) && OB_FAIL(log_route_service_.start())) {
       LOG_ERROR("start LogRouterService fail", KR(ret));
@@ -299,6 +305,7 @@ int ObLogFetcher::start()
       LOG_ERROR("start fetcher heartbeat dispatch thread fail", K(pthread_ret), KERRNOMSG(pthread_ret));
       ret = OB_ERR_UNEXPECTED;
     } else {
+      is_running_ = true;
       LOG_INFO("start fetcher succ", K(misc_tid_), K(heartbeat_dispatch_tid_));
     }
   }
@@ -308,35 +315,42 @@ int ObLogFetcher::start()
 void ObLogFetcher::stop()
 {
   if (OB_LIKELY(is_inited_)) {
-    stop_flag_ = true;
+    mark_stop_flag();
 
-    LOG_INFO("stop fetcher begin");
-    stream_worker_.stop();
-    dead_pool_.stop();
-    idle_pool_.stop();
-    start_lsn_locator_.stop();
+    if (is_running_) {
+      is_running_ = false;
+      LOG_INFO("stop fetcher begin");
+      stream_worker_.stop();
+      dead_pool_.stop();
+      idle_pool_.stop();
+      start_lsn_locator_.stop();
 
-    if (0 != misc_tid_) {
-      int pthread_ret = pthread_join(misc_tid_, NULL);
-      if (0 != pthread_ret) {
-        LOG_ERROR_RET(OB_ERR_SYS, "join fetcher misc thread fail", K(misc_tid_), K(pthread_ret),
-            KERRNOMSG(pthread_ret));
+      if (0 != misc_tid_) {
+        int pthread_ret = pthread_join(misc_tid_, NULL);
+        if (0 != pthread_ret) {
+          LOG_ERROR_RET(OB_ERR_SYS, "join fetcher misc thread fail", K(misc_tid_), K(pthread_ret),
+              KERRNOMSG(pthread_ret));
+        }
+        misc_tid_ = 0;
       }
-      misc_tid_ = 0;
-    }
 
-    if (0 != heartbeat_dispatch_tid_) {
-      int pthread_ret = pthread_join(heartbeat_dispatch_tid_, NULL);
-      if (0 != pthread_ret) {
-        LOG_ERROR_RET(OB_ERR_SYS, "join fetcher heartbeat dispatch thread fail", K(heartbeat_dispatch_tid_),
-            K(pthread_ret), KERRNOMSG(pthread_ret));
+      if (0 != heartbeat_dispatch_tid_) {
+        int pthread_ret = pthread_join(heartbeat_dispatch_tid_, NULL);
+        if (0 != pthread_ret) {
+          LOG_ERROR_RET(OB_ERR_SYS, "join fetcher heartbeat dispatch thread fail", K(heartbeat_dispatch_tid_),
+              K(pthread_ret), KERRNOMSG(pthread_ret));
+        }
+        heartbeat_dispatch_tid_ = 0;
       }
-      heartbeat_dispatch_tid_ = 0;
+      if (is_integrated_fetching_mode(fetching_mode_)) {
+        log_route_service_.stop();
+      }
+      log_ext_handler_.stop();
+      LOG_INFO("stop fetcher succ");
     }
-    if (is_integrated_fetching_mode(fetching_mode_)) {
-      log_route_service_.stop();
+    if (is_direct_fetching_mode(fetching_mode_)) {
+      log_ext_handler_.stop();
     }
-    log_ext_handler_.stop();
 
     LOG_INFO("stop fetcher succ");
   }
@@ -386,6 +400,9 @@ void ObLogFetcher::mark_stop_flag()
     dead_pool_.mark_stop_flag();
     idle_pool_.mark_stop_flag();
     start_lsn_locator_.mark_stop_flag();
+    if (is_direct_fetching_mode(fetching_mode_)) {
+      log_ext_handler_.stop();
+    }
     LOG_INFO("mark fetcher stop succ",K_(is_loading_data_dict_baseline_data));
   }
 }
@@ -541,6 +558,7 @@ void ObLogFetcher::configure(const ObLogConfig &cfg)
   const int64_t blacklist_survival_time_penalty_period_min = cfg.blacklist_survival_time_penalty_period_min;
   const int64_t blacklist_history_overdue_time_min = cfg.blacklist_history_overdue_time_min;
   const int64_t blacklist_history_clear_interval_min = cfg.blacklist_history_clear_interval_min;
+  const int64_t log_ext_handler_concurrency = cfg.cdc_read_archive_log_concurrency;
 
   ATOMIC_STORE(&g_print_ls_heartbeat_info, print_ls_heartbeat_info);
   ATOMIC_STORE(&g_inner_heartbeat_interval, inner_heartbeat_interval);
@@ -578,6 +596,12 @@ void ObLogFetcher::configure(const ObLogConfig &cfg)
     } else if (OB_FAIL(log_route_service_.update_background_refresh_time(log_router_background_refresh_interval_sec))) {
       LOG_ERROR("update_background_refresh_time failed", KR(ret),
           "log_router_background_refresh_interval_sec", log_router_background_refresh_interval_sec);
+    }
+  } else if (IS_INIT && is_direct_fetching_mode(fetching_mode_)) {
+    if (OB_FAIL(log_ext_handler_.resize(log_ext_handler_concurrency))) {
+      LOG_ERROR("log_ext_handler failed to resize when reloading configure", K(log_ext_handler_concurrency));
+    } else {
+      log_ext_handler_concurrency_ = log_ext_handler_concurrency;
     }
   }
 }
@@ -727,8 +751,10 @@ void ObLogFetcher::heartbeat_dispatch_routine()
       int64_t heartbeat_tstamp = OB_INVALID_TIMESTAMP;
       PartTransTask *task = NULL;
 
+      if (!TCTX.is_running()) {
+        LOG_INFO("OBCDC not launch finish, skip generate heartbeat");
       // Get the next heartbeat timestamp
-      if (OB_FAIL(next_heartbeat_timestamp_(heartbeat_tstamp, last_timestamp_))) {
+      } else if (OB_FAIL(next_heartbeat_timestamp_(heartbeat_tstamp, last_timestamp_))) {
         if (OB_NEED_RETRY != ret) {
           if (OB_EMPTY_RESULT != ret) {
             LOG_ERROR("next_heartbeat_timestamp_ fail", KR(ret), K(heartbeat_tstamp), K_(last_timestamp));
@@ -792,7 +818,9 @@ void ObLogFetcher::print_fetcher_stat_()
 
   // Get global minimum progress
   if (OB_FAIL(progress_controller_.get_min_progress(min_progress))) {
-    LOG_ERROR("get_min_progress fail", KR(ret), K(progress_controller_));
+    if (OB_EMPTY_RESULT != ret) {
+      LOG_ERROR("get_min_progress fail", KR(ret), K(progress_controller_));
+    }
   } else if (OB_UNLIKELY(OB_INVALID_TIMESTAMP == min_progress)) {
     //LOG_ERROR("current min progress is invalid", K(min_progress), K(progress_controller_));
     ret = OB_INVALID_ERROR;

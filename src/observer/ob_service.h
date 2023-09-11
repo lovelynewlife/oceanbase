@@ -53,7 +53,8 @@ public:
   void destroy();
   virtual void runTimerTask() override;
 private:
-  const static int64_t REFRESH_INTERVAL = 30L * 60L * 1000L * 1000L; // 30min
+  int schedule_();
+private:
   ObServerSchemaUpdater *schema_updater_;
   bool is_inited_;
 };
@@ -146,6 +147,7 @@ public:
   int check_sys_task_exist(const share::ObTaskId &arg, bool &res);
   int check_migrate_task_exist(const share::ObTaskId &arg, bool &res);
   int delete_backup_ls_task(const obrpc::ObLSBackupCleanArg &arg);
+  int notify_archive(const obrpc::ObNotifyArchiveArg &arg);
   int report_backup_over(const obrpc::ObBackupTaskRes &res);
   int report_backup_clean_over(const obrpc::ObBackupTaskRes &res);
 
@@ -208,6 +210,15 @@ public:
       obrpc::ObBatchBroadcastSchemaResult &result);
 
   ////////////////////////////////////////////////////////////////
+#ifdef OB_BUILD_TDE_SECURITY
+  int wait_master_key_in_sync(const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg);
+  int trigger_tenant_config(const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg);
+  int do_wait_master_key_in_sync(
+      const common::ObIArray<std::pair<uint64_t, uint64_t> > &got_version_array);
+  int convert_tenant_max_key_version(
+      const common::ObIArray<std::pair<uint64_t, share::ObLeaseResponse::TLRpKeyVersion> > &,
+      common::ObIArray<std::pair<uint64_t, uint64_t> > &);
+#endif
   // ObReportReplicaP @RS::admin to report replicas
   int report_replica();
   int load_leader_cluster_login_info();
@@ -247,6 +258,9 @@ public:
   int handle_heartbeat(
       const share::ObHBRequest &hb_request,
       share::ObHBResponse &hb_response);
+  int ob_admin_unlock_member_list(
+      const obrpc::ObAdminUnlockMemberListOpArg &arg);
+
 private:
   int get_role_from_palf_(
       logservice::ObLogService &log_service,

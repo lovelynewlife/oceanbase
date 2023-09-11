@@ -14,6 +14,7 @@
 #include "lib/allocator/ob_malloc.h"
 #include "lib/utility/serialization.h"
 #include "lib/utility/ob_tracepoint.h"
+#ifndef OB_BUILD_TDE_SECURITY
 
 namespace oceanbase
 {
@@ -128,9 +129,10 @@ OB_DEF_SERIALIZE_SIZE(ObCLogEncryptInfo)
   return size;
 }
 
-OB_SERIALIZE_MEMBER(ObSerializeEncryptMeta, master_key_version_, encrypt_algorithm_,
-    random_, master_key_, table_key_, encrypted_table_key_);
+OB_SERIALIZE_MEMBER(ObSerializeEncryptMeta, master_key_version_, encrypt_algorithm_, master_key_,
+                    table_key_, encrypted_table_key_);
 OB_SERIALIZE_MEMBER(ObEncryptMetaCache, table_id_, local_index_id_, meta_);
 
 }//transaction
 }//oceanbase
+#endif

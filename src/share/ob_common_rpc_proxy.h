@@ -64,6 +64,8 @@ public:
   RPC_S(PRD create_database, obrpc::OB_CREATE_DATABASE, (ObCreateDatabaseArg), UInt64);
   RPC_S(PRD create_tablegroup, obrpc::OB_CREATE_TABLEGROUP, (ObCreateTablegroupArg), UInt64);
   RPC_S(PRD create_table, obrpc::OB_CREATE_TABLE, (ObCreateTableArg), ObCreateTableRes);
+  RPC_S(PRD recover_restore_table_ddl, obrpc::OB_RECOVER_RESTORE_TABLE_DDL, (ObRecoverRestoreTableDDLArg));
+  RPC_S(PRD parallel_create_table, obrpc::OB_PARALLEL_CREATE_TABLE, (ObCreateTableArg), ObCreateTableRes);
   RPC_S(PRD alter_table, obrpc::OB_ALTER_TABLE, (ObAlterTableArg), ObAlterTableRes);
   RPC_S(PRD create_hidden_table, obrpc::OB_CREATE_HIDDEN_TABLE, (obrpc::ObCreateHiddenTableArg), ObCreateHiddenTableRes);
   RPC_S(PRD alter_database, obrpc::OB_ALTER_DATABASE, (ObAlterDatabaseArg));
@@ -269,6 +271,7 @@ public:
   RPC_S(PR5 backup_manage, obrpc::OB_BACKUP_MANAGE, (ObBackupManageArg));
   RPC_S(PR5 backup_delete, obrpc::OB_BACKUP_CLEAN, (obrpc::ObBackupCleanArg));
   RPC_S(PR5 delete_policy, obrpc::OB_DELETE_POLICY, (obrpc::ObDeletePolicyArg));
+  RPC_S(PR5 recover_table, obrpc::OB_RECOVER_TABLE, (obrpc::ObRecoverTableArg));
   //RPC_S(PRD standby_upgrade_virtual_schema, obrpc::OB_UPGRADE_STANDBY_SCHEMA,
   //          (ObDDLNopOpreatorArg)); // use ddl thread
   RPC_S(PR5 check_backup_scheduler_working, obrpc::OB_CHECK_BACKUP_SCHEDULER_WORKING, Bool);
@@ -293,6 +296,12 @@ public:
   RPC_S(PR5 admin_sync_rewrite_rules, obrpc::OB_ADMIN_SYNC_REWRITE_RULES, (ObSyncRewriteRuleArg));
   //----End of Definitions for sync rewrite rules----
 
+#ifdef OB_BUILD_ARBITRATION
+  RPC_S(PR5 admin_add_arbitration_service, obrpc::OB_ADMIN_ADD_ARBITRATION_SERVICE, (ObAdminAddArbitrationServiceArg));
+  RPC_S(PR5 admin_remove_arbitration_service, obrpc::OB_ADMIN_REMOVE_ARBITRATION_SERVICE, (ObAdminRemoveArbitrationServiceArg));
+  RPC_S(PR5 admin_replace_arbitration_service, obrpc::OB_ADMIN_REPLACE_ARBITRATION_SERVICE, (ObAdminReplaceArbitrationServiceArg));
+  RPC_S(PR5 remove_cluster_info_from_arb_server, obrpc::OB_REMOVE_CLUSTER_INFO_FROM_ARB_SERVER, (ObRemoveClusterInfoFromArbServerArg));
+#endif
   //----Definitions for managing row level security----
   RPC_S(PRD handle_rls_policy_ddl, obrpc::OB_HANDLE_RLS_POLICY_DDL, (ObRlsPolicyDDLArg));
   RPC_S(PRD handle_rls_group_ddl, obrpc::OB_HANDLE_RLS_GROUP_DDL, (ObRlsGroupDDLArg));
@@ -301,6 +310,9 @@ public:
 
   RPC_S(PRD recompile_all_views_batch, obrpc::OB_RECOMPILE_ALL_VIEWS_BATCH, (ObRecompileAllViewsBatchArg));
   RPC_S(PRD try_add_dep_infos_for_synonym_batch, obrpc::OB_TRY_ADD_DEP_INFOS_FOR_SYNONYM_BATCH, (ObTryAddDepInofsForSynonymBatchArg));
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_S(PR5 get_root_key, obrpc::OB_GET_ROOT_KEY, (obrpc::ObRootKeyArg), obrpc::ObRootKeyResult);
+#endif
 public:
   void set_rs_mgr(share::ObRsMgr &rs_mgr)
   {

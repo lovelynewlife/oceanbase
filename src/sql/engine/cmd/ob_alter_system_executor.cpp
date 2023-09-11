@@ -31,6 +31,12 @@
 #include "share/rc/ob_context.h"
 #include "observer/ob_server_struct.h"
 #include "observer/mysql/ob_mysql_request_manager.h"
+#ifdef OB_BUILD_ARBITRATION
+#include "share/arbitration_service/ob_arbitration_service_utils.h" //ObArbitrationServiceUtils
+#endif
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 #include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "observer/omt/ob_tenant.h" //ObTenant
@@ -39,6 +45,7 @@
 #include "rpc/obmysql/ob_sql_sock_session.h"
 #include "sql/plan_cache/ob_plan_cache.h"
 #include "sql/plan_cache/ob_ps_cache.h"
+#include "share/table/ob_ttl_util.h"
 namespace oceanbase
 {
 using namespace common;
@@ -66,7 +73,7 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
   } else {
     if (!stmt.is_major_freeze()) {
       const uint64_t local_tenant_id = MTL_ID();
-      bool freeze_all = stmt.is_freeze_all();
+      bool freeze_all = (stmt.is_freeze_all_user() || stmt.is_freeze_all_meta());
       ObRootMinorFreezeArg arg;
       if (OB_FAIL(arg.tenant_ids_.assign(stmt.get_tenant_ids()))) {
         LOG_WARN("failed to assign tenant_ids", K(ret));
@@ -83,8 +90,33 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
           if (OB_ISNULL(GCTX.schema_service_)) {
             ret = OB_INVALID_ARGUMENT;
             LOG_WARN("invalid GCTX", KR(ret));
-          } else if (OB_FAIL(GCTX.schema_service_->get_tenant_ids(arg.tenant_ids_))) {
-            LOG_WARN("fail to get all tenant ids", KR(ret));
+          } else if (stmt.is_freeze_all_user() == stmt.is_freeze_all_meta()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("freeze_all_user and freeze_all_meta cannot be true together",
+                     KR(ret), "freeze_all_user", stmt.is_freeze_all_user(),
+                     "freeze_all_meta", stmt.is_freeze_all_meta());
+          } else {
+            common::ObSArray<uint64_t> tmp_tenant_ids;
+            if (OB_FAIL(GCTX.schema_service_->get_tenant_ids(tmp_tenant_ids))) {
+              LOG_WARN("fail to get all tenant ids", KR(ret));
+            } else {
+              using FUNC_TYPE = bool (*) (const uint64_t);
+              FUNC_TYPE func = nullptr;
+              if (stmt.is_freeze_all_user()) {
+                func = is_user_tenant;
+              } else {
+                func = is_meta_tenant;
+              }
+              arg.tenant_ids_.reset();
+              for (int64_t i = 0; OB_SUCC(ret) && (i < tmp_tenant_ids.count()); ++i) {
+                uint64_t tmp_tenant_id = tmp_tenant_ids.at(i);
+                if (func(tmp_tenant_id)) {
+                  if (OB_FAIL(arg.tenant_ids_.push_back(tmp_tenant_id))) {
+                    LOG_WARN("failed to push back tenant_id", KR(ret));
+                  }
+                }
+              }
+            }
           }
         // get local tenant to freeze if there is no any parameter except server_list
         } else if (arg.tenant_ids_.empty() &&
@@ -124,9 +156,10 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
       }
     } else {
       rootserver::ObMajorFreezeParam param;
-      param.freeze_all_ = stmt.is_freeze_all();
+      param.freeze_all_user_ = stmt.is_freeze_all_user();
+      param.freeze_all_meta_ = stmt.is_freeze_all_meta();
       param.transport_ = GCTX.net_frame_->get_req_transport();
-      for (int64_t i = 0; (i < stmt.get_tenant_ids().count()) && OB_SUCC(ret); ++i) {
+      for (int64_t i = 0; i < stmt.get_tenant_ids().count() && OB_SUCC(ret); ++i) {
         uint64_t tenant_id = stmt.get_tenant_ids().at(i);
         if (OB_FAIL(param.add_freeze_info(tenant_id))) {
           LOG_WARN("fail to assign", KR(ret), K(tenant_id));
@@ -605,6 +638,13 @@ int ObAdminServerExecutor::execute(ObExecContext &ctx, ObAdminServerStmt &stmt)
         // check whether all leaders are switched out
         if (OB_FAIL(wait_leader_switch_out_(*(ctx.get_sql_proxy()), arg.servers_))) {
           LOG_WARN("fail to wait leader switch out", KR(ret), K(arg));
+#ifdef OB_BUILD_ARBITRATION
+        // check whether all 2f tenant with arb service finished degration
+        } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_2f_tenants_arb_service_degration(
+                               *(ctx.get_sql_proxy()),
+                               arg.servers_))) {
+          LOG_WARN("fail to wait degration for arb service", KR(ret), K(arg));
+#endif
         }
       }
     } else {
@@ -768,6 +808,13 @@ int ObAdminZoneExecutor::execute(ObExecContext &ctx, ObAdminZoneStmt &stmt)
         } else if (OB_FAIL(wait_leader_switch_out_(*(ctx.get_sql_proxy()), arg))) {
           // check whether all leaders are switched out
           LOG_WARN("fail to wait leader switch out", KR(ret), K(arg));
+#ifdef OB_BUILD_ARBITRATION
+        // check whether all 2f tenant with arb service finished degration
+        } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_2f_tenants_arb_service_degration(
+                               *(ctx.get_sql_proxy()),
+                               server_list))) {
+          LOG_WARN("fail to wait degration for arb service", KR(ret), K(arg), K(server_list));
+#endif
         }
       } else {} // force stop, no need to wait leader switch
     } else if (ObAdminZoneArg::MODIFY == stmt.get_op()) {
@@ -1154,30 +1201,115 @@ int ObMigrateUnitExecutor::execute(ObExecContext &ctx, ObMigrateUnitStmt &stmt)
 int ObAddArbitrationServiceExecutor::execute(ObExecContext &ctx, ObAddArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "add arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("add arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_FAIL(common_rpc->admin_add_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("add arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  }
+#endif
   return ret;
 }
 
 int ObRemoveArbitrationServiceExecutor::execute(ObExecContext &ctx, ObRemoveArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "remove arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("remove arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_FAIL(common_rpc->admin_remove_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("remove arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  }
+#endif
   return ret;
 }
 
 int ObReplaceArbitrationServiceExecutor::execute(ObExecContext &ctx, ObReplaceArbitrationServiceStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ARBITRATION
   UNUSEDx(ctx, stmt);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support in CE Version", KR(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace arbitration service in CE version");
+#else
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  bool is_compatible = false;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_FAIL(ObShareUtil::check_compat_version_for_arbitration_service(
+                         OB_SYS_TENANT_ID, is_compatible))) {
+    LOG_WARN("fail to check compat version with arbitration service", KR(ret));
+  } else if (!is_compatible) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("replace arbitration service with data version below 4.1 not supported", KR(ret));
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(GCTX.sql_proxy_));
+  } else if (OB_FAIL(common_rpc->admin_replace_arbitration_service(stmt.get_rpc_arg()))) {
+    LOG_WARN("replace arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_tenant_with_arb_has_arb_member(
+                 *GCTX.sql_proxy_,
+                 stmt.get_rpc_arg().get_arbitration_service(),
+                 stmt.get_rpc_arg().get_previous_arbitration_service()))) {
+    LOG_WARN("fail to wait all tenant with arb service has expected arb member",
+             KR(ret), "rpc_arg", stmt.get_rpc_arg());
+  } else {
+    // try clean cluster info from arb server
+    ObRemoveClusterInfoFromArbServerArg remove_cluster_info_arg;
+    int tmp_ret = OB_SUCCESS; // for remove_cluster_info operation
+    if (OB_TMP_FAIL(remove_cluster_info_arg.init(stmt.get_rpc_arg().get_previous_arbitration_service()))) {
+      LOG_WARN("fail to init a rpc arg", K(tmp_ret), "rpc_arg", stmt.get_rpc_arg());
+    } else if (OB_TMP_FAIL(common_rpc->remove_cluster_info_from_arb_server(remove_cluster_info_arg))) {
+      LOG_WARN("fail to remove cluster info from arb server", K(tmp_ret), K(remove_cluster_info_arg));
+    }
+    if (OB_SUCCESS != tmp_ret) {
+      LOG_USER_WARN(OB_CLUSTER_INFO_MAYBE_REMAINED, stmt.get_rpc_arg().get_previous_arbitration_service().length(),
+                    stmt.get_rpc_arg().get_previous_arbitration_service().ptr());
+    }
+  }
+#endif
   return ret;
 }
 
@@ -2146,6 +2278,13 @@ int ObDeletePolicyExecutor::execute(ObExecContext &ctx, ObDeletePolicyStmt &stmt
 int ObBackupKeyExecutor::execute(ObExecContext &ctx, ObBackupKeyStmt &stmt)
 {
   int ret = OB_SUCCESS;
+#ifdef OB_BUILD_TDE_SECURITY
+  if (OB_FAIL(ObMasterKeyUtil::backup_key(stmt.get_tenant_id(),
+                                          stmt.get_backup_dest(),
+                                          stmt.get_encrypt_key()))) {
+    LOG_WARN("failed to backup master key", K(ret));
+  }
+#endif
   return ret;
 }
 
@@ -2435,6 +2574,27 @@ int ObCheckpointSlogExecutor::execute(ObExecContext &ctx, ObCheckpointSlogStmt &
   return ret;
 }
 
+int ObRecoverTableExecutor::execute(ObExecContext &ctx, ObRecoverTableStmt &stmt)
+{
+  int ret = OB_SUCCESS;
+  ObTaskExecutorCtx *task_exec_ctx = nullptr;
+  ObCommonRpcProxy *common_proxy = nullptr;
+  ObAddr server;
+  if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor failed");
+  } else if (OB_ISNULL(common_proxy = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed");
+  } else if (OB_FAIL(common_proxy->recover_table(stmt.get_rpc_arg()))) {
+    LOG_WARN("failed to send recover table rpc", K(ret));
+  } else {
+    const obrpc::ObRecoverTableArg &recover_table_rpc_arg = stmt.get_rpc_arg();
+    LOG_INFO("send recover table rpc finish", K(recover_table_rpc_arg));
+  }
+  return ret;
+}
+
 int ObCancelRestoreExecutor::execute(ObExecContext &ctx, ObCancelRestoreStmt &stmt)
 {
   int ret = OB_SUCCESS;
@@ -2468,6 +2628,44 @@ int ObCancelRestoreExecutor::execute(ObExecContext &ctx, ObCancelRestoreStmt &st
   return ret;
 }
 
+int ObTableTTLExecutor::execute(ObExecContext& ctx, ObTableTTLStmt& stmt)
+{
+  int ret = OB_SUCCESS;
+  ObTaskExecutorCtx* task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy* common_rpc_proxy = NULL;
+
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed");
+  } else if (OB_FAIL(task_exec_ctx->get_common_rpc(common_rpc_proxy))) {
+    LOG_WARN("get common rpc proxy failed", K(ret));
+  } else if (OB_ISNULL(common_rpc_proxy)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("common_rpc_proxy is null", K(ret));
+  } else {
+    FLOG_INFO("ObTableTTLExecutor::execute", K(stmt), K(ctx));
+    common::ObTTLParam param;
+    ObSEArray<common::ObSimpleTTLInfo, 32> ttl_info_array;
+    param.ttl_all_ = stmt.is_ttl_all();
+    param.transport_ = GCTX.net_frame_->get_req_transport();
+    param.type_ = stmt.get_type();
+    for (int64_t i = 0; (i < stmt.get_tenant_ids().count()) && OB_SUCC(ret); i++) {
+      uint64_t tenant_id = stmt.get_tenant_ids().at(i);
+      if (OB_FAIL(param.add_ttl_info(tenant_id))) {
+        LOG_WARN("fail to assign ttl info", KR(ret), K(tenant_id));
+      }
+    }
+    if (OB_FAIL(ret)) {
+      // do nothing
+    } else if (OB_UNLIKELY(!param.ttl_all_ && param.ttl_info_array_.empty())) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid argument", K(ret), K(param), KR(ret));
+    } else if (OB_FAIL(ObTTLUtil::dispatch_ttl_cmd(param))) {
+      LOG_WARN("fail to dispatch ttl cmd", K(ret), K(param));
+    }
+  }
+  return ret;
+}
 
 } // end namespace sql
 } // end namespace oceanbase

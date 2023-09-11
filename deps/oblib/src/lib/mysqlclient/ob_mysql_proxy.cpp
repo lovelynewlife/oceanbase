@@ -18,6 +18,9 @@
 #include "lib/mysqlclient/ob_isql_connection_pool.h"
 #include "lib/mysqlclient/ob_mysql_proxy.h"
 #include "common/sql_mode/ob_sql_mode_utils.h"
+#ifdef OB_BUILD_DBLINK
+#include "lib/oracleclient/ob_oci_environment.h"
+#endif
 using namespace oceanbase::common;
 using namespace oceanbase::common::sqlclient;
 
@@ -411,6 +414,11 @@ int ObDbLinkProxy::switch_dblink_conn_pool(DblinkDriverProto type, ObISQLConnect
     case DBLINK_DRV_OB:
       dblink_conn_pool = static_cast<ObISQLConnectionPool *>(&(link_pool_->get_mysql_pool()));
       break;
+#ifdef OB_BUILD_DBLINK
+    case DBLINK_DRV_OCI :
+      dblink_conn_pool = static_cast<ObISQLConnectionPool *>(&(link_pool_->get_oci_pool()));
+      break;
+#endif
     default:
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unknown dblink type", K(ret), K(type));
@@ -534,6 +542,32 @@ int ObDbLinkProxy::execute_init_sql(const sqlclient::dblink_param_ctx &param_ctx
       }
     }
   }
+#ifdef OB_BUILD_DBLINK
+  else if (DBLINK_DRV_OCI == param_ctx.link_type_) {
+    static sql_ptr_type sql_ptr_ora[] = {
+      "alter session set nls_date_format='YYYY-MM-DD HH24:MI:SS'",
+      "alter session set nls_timestamp_format = 'YYYY-MM-DD HH24:MI:SS.FF'",
+      "alter session set nls_timestamp_tz_format = 'YYYY-MM-DD HH24:MI:SS.FF TZR TZD'"
+    };
+    // oracle init
+    OciStatement stmt;
+    ObOciConnection *conn = static_cast<ObOciConnection *>(dblink_conn);
+    if (OB_ISNULL(conn)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("null oci connection", K(ret));
+    }
+    int64_t affected_rows = 0; //no use
+    for (int i = 0; OB_SUCC(ret) && i < sizeof(sql_ptr_ora) / sizeof(sql_ptr_type); ++i) {
+      if (OB_FAIL(stmt.init_stmt(conn->get_oci_connection()))) {
+        LOG_WARN("init oci statement failed", K(ret), K(param_ctx));
+      } else if (OB_FAIL(stmt.set_sql_text(ObString(sql_ptr_ora[i])))) {
+        LOG_WARN("failed to set sql text", K(ret), K(ObString(sql_ptr_ora[i])));
+      } else if (OB_FAIL(stmt.execute_update(affected_rows))) {
+        LOG_WARN("execute sql failed",  K(ret), K(param_ctx));
+      }
+    }
+  }
+#endif
   return ret;
 }
 
@@ -581,10 +615,135 @@ int ObDbLinkProxy::dblink_write(ObISQLConnection *dblink_conn, int64_t &affected
   return ret;
 }
 
+int ObDbLinkProxy::dblink_execute_proc(ObISQLConnection *dblink_conn)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn));
+  } else if (OB_FAIL(dblink_conn->execute_proc())) {
+    LOG_WARN("execute_proc failed", K(ret));
+  }
+  return ret;
+}
+
+
+int ObDbLinkProxy::dblink_prepare(sqlclient::ObISQLConnection *dblink_conn, const char *sql)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn) || OB_ISNULL(sql)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn), KP(sql));
+  } else if (OB_FAIL(dblink_conn->prepare(sql))) {
+    LOG_WARN("prepare to dblink failed", K(ret), K(ObString(sql)));
+  }
+  return ret;
+}
+
+int ObDbLinkProxy::dblink_bind_basic_type_by_pos(sqlclient::ObISQLConnection *dblink_conn,
+                                                 uint64_t position,
+                                                 void *param,
+                                                 int64_t param_size,
+                                                 int32_t datatype,
+                                                 int32_t &indicator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn));
+  } else if (OB_FAIL(dblink_conn->bind_basic_type_by_pos(position, param, param_size, datatype, indicator))) {
+    LOG_WARN("bind_basic_type_by_pos to dblink failed", K(ret));
+  } else {
+    LOG_DEBUG("succ to bind_basic_type_by_pos dblink", K(ret));
+  }
+  return ret;
+}
+
+int ObDbLinkProxy::dblink_bind_array_type_by_pos(sqlclient::ObISQLConnection *dblink_conn,
+                                                 uint64_t position,
+                                                 void *array,
+                                                 int32_t *indicators,
+                                                 int64_t ele_size,
+                                                 int32_t ele_datatype,
+                                                 uint64_t array_size,
+                                                 uint32_t *out_valid_array_size)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn));
+  } else if (OB_FAIL(dblink_conn->bind_array_type_by_pos(position, array, indicators, ele_size, ele_datatype,
+                                                        array_size, out_valid_array_size))) {
+    LOG_WARN("bind_array_type_by_pos failed", K(ret));
+  } else {
+    LOG_DEBUG("succ to bind_array_type_by_pos dblink", K(ret));
+  }
+  return ret;
+}
+
+int ObDbLinkProxy::dblink_get_server_major_version(sqlclient::ObISQLConnection *dblink_conn,
+                                                   int64_t &major_version)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn));
+  } else if (OB_FAIL(dblink_conn->get_server_major_version(major_version))) {
+    LOG_WARN("get server major version failed", K(ret));
+  }
+  return ret;
+}
+
+int ObDbLinkProxy::dblink_get_package_udts(common::sqlclient::ObISQLConnection *dblink_conn,
+                                           ObIAllocator &alloctor,
+                                           const common::ObString &database_name,
+                                           const common::ObString &package_name,
+                                           common::ObIArray<pl::ObUserDefinedType *> &udts,
+                                           uint64_t dblink_id,
+                                           uint64_t &next_object_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn));
+  } else if (OB_FAIL(dblink_conn->get_package_udts(alloctor,
+                                                   database_name,
+                                                   package_name,
+                                                   udts,
+                                                   dblink_id,
+                                                   next_object_id))) {
+    LOG_WARN("get package udts failed", K(ret), K(database_name), K(package_name));
+  }
+  return ret;
+}
+
+int ObDbLinkProxy::dblink_execute_proc(const uint64_t tenant_id,
+                                       sqlclient::ObISQLConnection *dblink_conn,
+                                       ObIAllocator &allocator,
+                                       ParamStore &params,
+                                       ObString &sql,
+                                       const share::schema::ObRoutineInfo &routine_info,
+                                       const common::ObIArray<const pl::ObUserDefinedType *> &udts,
+                                       const ObTimeZoneInfo *tz_info)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(dblink_conn) || sql.empty()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ptr", K(ret), KP(dblink_conn), K(sql));
+  } else if (OB_FAIL(dblink_conn->execute_proc(tenant_id, allocator, params, sql,
+                                               routine_info, udts, tz_info))) {
+    LOG_WARN("call procedure to dblink failed", K(ret), K(dblink_conn), K(sql));
+  } else {
+    LOG_DEBUG("succ to call procedure by dblink", K(sql));
+  }
+  return ret;
+}
+
 int ObDbLinkProxy::rollback(ObISQLConnection *dblink_conn)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(dblink_conn)) {
+    ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dblink conn is NULL", K(ret));
   } else if (OB_FAIL(dblink_conn->rollback())) {
     LOG_WARN("read from dblink failed", K(ret));
@@ -603,6 +762,15 @@ int ObDbLinkProxy::clean_dblink_connection(uint64_t tenant_id)
     if (OB_FAIL(link_pool_->get_mysql_pool().clean_dblink_connection(tenant_id))) {
       LOG_WARN("clean mysql pool failed", K(ret));
     }
+#ifdef OB_BUILD_DBLINK
+    int tmp_ret = ret;
+    if (OB_FAIL(link_pool_->get_oci_pool().clean_dblink_connection(tenant_id))) {
+      LOG_WARN("clean oci pool failed", K(ret));
+    }
+    if (OB_SUCC(ret) && OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
+      ret = tmp_ret;
+    }
+#endif
   }
   return ret;
 }

@@ -29,7 +29,7 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "lib/geo/ob_geo_utils.h"
 #include "sql/ob_sql_utils.h"
-
+#include "sql/engine/dml/ob_fk_checker.h"
 namespace oceanbase
 {
 using namespace common;
@@ -41,11 +41,12 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
                                        ObEvalCtx &eval_ctx,
                                        int64_t row_num,
                                        const ColContentIArray &column_infos,
-                                       bool is_ignore,
+                                       const ObDASDMLBaseCtDef &das_ctdef,
                                        bool is_single_value,
                                        ObTableModifyOp &dml_op)
 {
   int ret = OB_SUCCESS;
+  const bool is_ignore = das_ctdef.is_ignore_;
   ObSQLSessionInfo *session = NULL;
   CK(row.count() >= column_infos.count());
   if (OB_ISNULL(session = dml_op.get_exec_ctx().get_my_session())) {
@@ -57,7 +58,8 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
     const bool is_nullable = column_infos.at(i).is_nullable_;
     uint64_t col_idx = column_infos.at(i).projector_index_;
     if (OB_FAIL(row.at(col_idx)->eval(eval_ctx, datum))) {
-      dml_op.log_user_error_inner(ret, row_num, column_infos.at(i));
+      common::ObString column_name = column_infos.at(i).column_name_;
+      ret = ObDMLService::log_user_error_inner(ret, row_num, column_name, dml_op.get_exec_ctx());
     } else if (!is_nullable && datum->is_null()) {
       if (is_ignore ||
           (lib::is_mysql_mode() && !is_single_value && !is_strict_mode(session->get_sql_mode()))) {
@@ -73,8 +75,10 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
         } else if (OB_FAIL(ObObjCaster::get_zero_value(
             row.at(col_idx)->obj_meta_.get_type(),
             row.at(col_idx)->obj_meta_.get_collation_type(),
+            das_ctdef.column_accuracys_.at(col_idx).get_length(),
+            eval_ctx.exec_ctx_.get_allocator(),
             zero_obj))) {
-          LOG_WARN("get column default zero value failed", K(ret), K(column_infos.at(i)));
+          LOG_WARN("get column default zero value failed", K(ret), K(column_infos.at(i)), K(row.at(col_idx)->max_length_));
         } else if (OB_FAIL(ObTextStringResult::ob_convert_obj_temporay_lob(zero_obj, eval_ctx.exec_ctx_.get_allocator()))) {
           LOG_WARN("convert lob types zero obj failed", K(ret), K(zero_obj));
         } else if (OB_FAIL(row_datum.from_obj(zero_obj))) {
@@ -109,12 +113,14 @@ int ObDMLService::check_column_type(const ExprFixedArray &dml_row,
   int ret = OB_SUCCESS;
   CK(dml_row.count() >= column_infos.count());
   ObArenaAllocator tmp_allocator(ObModIds::OB_LOB_ACCESS_BUFFER, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+  dml_op.get_exec_ctx().set_cur_rownum(row_num);
   for (int64_t i = 0; OB_SUCC(ret) && i < column_infos.count(); ++i) {
     const ColumnContent &column_info = column_infos.at(i);
     ObExpr *expr = dml_row.at(column_info.projector_index_);
     ObDatum *datum = nullptr;
     if (OB_FAIL(expr->eval(dml_op.get_eval_ctx(), datum))) {
-      dml_op.log_user_error_inner(ret, row_num, column_info);
+      common::ObString column_name = column_infos.at(i).column_name_;
+      ret = ObDMLService::log_user_error_inner(ret, row_num, column_name, dml_op.get_exec_ctx());
     } else if (!datum->is_null() && expr->obj_meta_.is_geometry()) {
       // geo column type
       const uint32_t column_srid = column_info.srs_info_.srid_;
@@ -595,7 +601,7 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
                                       dml_op.get_eval_ctx(),
                                       ins_rtdef.cur_row_num_,
                                       ins_ctdef.column_infos_,
-                                      ins_ctdef.das_ctdef_.is_ignore_,
+                                      ins_ctdef.das_ctdef_,
                                       ins_ctdef.is_single_value_,
                                       dml_op))) {
       LOG_WARN("check row null failed", K(ret));
@@ -811,7 +817,7 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
                                         dml_op.get_eval_ctx(),
                                         upd_rtdef.cur_row_num_,
                                         upd_ctdef.assign_columns_,
-                                        upd_ctdef.dupd_ctdef_.is_ignore_,
+                                        upd_ctdef.dupd_ctdef_,
                                         false,
                                         dml_op))) {
         LOG_WARN("check row null failed", K(ret), K(upd_ctdef), K(upd_rtdef));
@@ -862,9 +868,11 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
     }
   }
   ret = (ret == OB_SUCCESS ? dml_op.err_log_rt_def_.first_err_ret_ : ret);
-  LOG_DEBUG("process update row", K(ret), K(is_skipped), K(upd_ctdef), K(upd_rtdef),
-            "old_row", ROWEXPR2STR(dml_op.get_eval_ctx(), upd_ctdef.old_row_),
-            "new_row", ROWEXPR2STR(dml_op.get_eval_ctx(), upd_ctdef.new_row_));
+  if (OB_SUCC(ret) && !is_skipped) {
+    LOG_DEBUG("process update row", K(ret), K(is_skipped), K(upd_ctdef), K(upd_rtdef),
+                "old_row", ROWEXPR2STR(dml_op.get_eval_ctx(), upd_ctdef.old_row_),
+                "new_row", ROWEXPR2STR(dml_op.get_eval_ctx(), upd_ctdef.new_row_));
+  }
   return ret;
 }
 
@@ -1024,7 +1032,11 @@ int ObDMLService::update_row(const ObUpdCtDef &upd_ctdef,
     }
   } else if (OB_UNLIKELY(old_tablet_loc != new_tablet_loc)) {
     //the updated row may be moved across partitions
-    if (OB_LIKELY(!upd_ctdef.multi_ctdef_->is_enable_row_movement_)) {
+    if (upd_ctdef.dupd_ctdef_.is_ignore_) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Cross-partition update ignore");
+      LOG_WARN("update ignore is not supported in across partition update, it will induce lost data error", K(ret));
+    } else if (OB_LIKELY(!upd_ctdef.multi_ctdef_->is_enable_row_movement_)) {
       ret = OB_ERR_UPD_CAUSE_PART_CHANGE;
       LOG_WARN("the updated row is moved across partitions", K(ret),
                KPC(old_tablet_loc), KPC(new_tablet_loc));
@@ -1197,11 +1209,61 @@ int ObDMLService::init_trigger_for_insert(
   return ret;
 }
 
+int ObDMLService::init_fk_checker_array(ObDMLRtCtx &dml_rtctx,
+                                        const ObDMLBaseCtDef &dml_ctdef,
+                                        FkCheckerArray &fk_checker_array)
+{
+  int ret = OB_SUCCESS;
+  ObIAllocator &allocator = dml_rtctx.get_exec_ctx().get_allocator();
+  const ObForeignKeyArgArray &fk_args = dml_ctdef.fk_args_;
+  if (!fk_args.empty()) {
+    if (OB_FAIL(fk_checker_array.allocate_array(allocator, fk_args.count()))) {
+      LOG_WARN("failed to create foreign key checker array", K(ret));
+    } else {
+      for (int i = 0; OB_SUCC(ret) && i < fk_args.count(); ++i) {
+        fk_checker_array.at(i) = nullptr;
+      }
+    }
+  }
+  for (int i = 0; OB_SUCC(ret) && i < fk_args.count(); ++i) {
+    const ObForeignKeyArg &fk_arg = fk_args.at(i);
+    ObForeignKeyChecker *fk_checker = nullptr;
+    if (fk_arg.use_das_scan_) {
+      if (OB_ISNULL(fk_arg.fk_ctdef_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("need to perform foreign key check by das scan task, but scan ctdef is null", K(ret));
+      } else {
+        // create fk_checker here
+        void *checker_buf = allocator.alloc(sizeof(ObForeignKeyChecker));
+        if (OB_ISNULL(checker_buf)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("cllocate foreign key checker buffer failed", K(ret));
+        } else {
+          fk_checker = new(checker_buf) ObForeignKeyChecker(dml_rtctx.get_eval_ctx(), *fk_arg.fk_ctdef_);
+          fk_checker_array.at(i) = fk_checker;
+          const ObExprFrameInfo *expr_frame_info = NULL;
+          expr_frame_info = nullptr != dml_rtctx.op_.get_spec().expr_frame_info_
+                               ? dml_rtctx.op_.get_spec().expr_frame_info_
+                               : &(dml_rtctx.op_.get_spec().plan_->get_expr_frame_info());
+          int64_t estimate_row = dml_rtctx.op_.get_spec().rows_;
+          ObIAllocator *allocator = &dml_rtctx.op_.get_exec_ctx().get_allocator();
+          if (OB_FAIL(fk_checker->init_foreign_key_checker(estimate_row, expr_frame_info, *fk_arg.fk_ctdef_,
+                                                           dml_ctdef.new_row_, allocator))) {
+            LOG_WARN("failed to init foreign key checker", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDMLService::init_ins_rtdef(
   ObDMLRtCtx &dml_rtctx,
   ObInsRtDef &ins_rtdef,
   const ObInsCtDef &ins_ctdef,
-  ObIArray<ObExpr*> &clear_exprs)
+  ObIArray<ObExpr*> &clear_exprs,
+  ObIArray<ObForeignKeyChecker*> &fk_checkers)
 {
   int ret = OB_SUCCESS;
   dml_rtctx.get_exec_ctx().set_dml_event(ObDmlEventType::DE_INSERTING);
@@ -1220,9 +1282,16 @@ int ObDMLService::init_ins_rtdef(
     LOG_WARN("init related das ctdef failed", K(ret));
   } else if (OB_FAIL(init_trigger_for_insert(dml_rtctx, ins_ctdef, ins_rtdef, clear_exprs))) {
     LOG_WARN("failed to init trigger for insert", K(ret));
+  } else if (OB_FAIL(init_fk_checker_array(dml_rtctx, ins_ctdef, ins_rtdef.fk_checker_array_))) {
+    LOG_WARN("failed to init foreign key checker array", K(ret));
   } else {
     ins_rtdef.das_rtdef_.related_ctdefs_ = &ins_ctdef.related_ctdefs_;
     ins_rtdef.das_rtdef_.related_rtdefs_ = &ins_rtdef.related_rtdefs_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < ins_rtdef.fk_checker_array_.count(); ++i) {
+      if (OB_NOT_NULL(ins_rtdef.fk_checker_array_.at(i))) {
+        fk_checkers.push_back(ins_rtdef.fk_checker_array_.at(i));
+      }
+    }
   }
   return ret;
 }
@@ -1261,6 +1330,8 @@ int ObDMLService::init_del_rtdef(ObDMLRtCtx &dml_rtctx,
     LOG_WARN("init related das ctdef failed", K(ret));
   } else if (OB_FAIL(init_trigger_for_delete(dml_rtctx, del_ctdef, del_rtdef))) {
     LOG_WARN("failed to init trigger for delete", K(ret));
+  } else if (OB_FAIL(init_fk_checker_array(dml_rtctx, del_ctdef, del_rtdef.fk_checker_array_))) {
+    LOG_WARN("failed to init foreign key checker array", K(ret));
   } else {
     del_rtdef.das_rtdef_.related_ctdefs_ = &del_ctdef.related_ctdefs_;
     del_rtdef.das_rtdef_.related_rtdefs_ = &del_rtdef.related_rtdefs_;
@@ -1387,7 +1458,8 @@ int ObDMLService::init_upd_rtdef(
   ObDMLRtCtx &dml_rtctx,
   ObUpdRtDef &upd_rtdef,
   const ObUpdCtDef &upd_ctdef,
-  ObIArray<ObExpr*> &clear_exprs)
+  ObIArray<ObExpr*> &clear_exprs,
+  ObIArray<ObForeignKeyChecker*> &fk_checkers)
 {
   int ret = OB_SUCCESS;
   const ObDASTableLocMeta *loc_meta = get_table_loc_meta(upd_ctdef.multi_ctdef_);
@@ -1406,10 +1478,17 @@ int ObDMLService::init_upd_rtdef(
     LOG_WARN("init related das ctdef failed", K(ret));
   } else if (OB_FAIL(init_trigger_for_update(dml_rtctx, upd_ctdef, upd_rtdef, dml_rtctx.op_, clear_exprs))) {
     LOG_WARN("failed to init trigger for update", K(ret));
+  } else if (OB_FAIL(init_fk_checker_array(dml_rtctx, upd_ctdef, upd_rtdef.fk_checker_array_))) {
+    LOG_WARN("failed to init foreign key checker array", K(ret));
   } else {
     upd_rtdef.dupd_rtdef_.related_ctdefs_ = &upd_ctdef.related_upd_ctdefs_;
     upd_rtdef.dupd_rtdef_.related_rtdefs_ = &upd_rtdef.related_upd_rtdefs_;
     dml_rtctx.get_exec_ctx().set_update_columns(&upd_ctdef.assign_columns_);
+    for (int64_t i = 0; OB_SUCC(ret) && i < upd_rtdef.fk_checker_array_.count(); ++i) {
+      if (OB_NOT_NULL(upd_rtdef.fk_checker_array_.at(i))) {
+        fk_checkers.push_back(upd_rtdef.fk_checker_array_.at(i));
+      }
+    }
   }
 
   if (OB_SUCC(ret) && T_DISTINCT_NONE != upd_ctdef.distinct_algo_) {
@@ -1657,7 +1736,7 @@ int ObDMLService::convert_exprs_to_stored_row(ObIAllocator &allocator,
 }
 
 int ObDMLService::catch_violate_error(int err_ret,
-                                      int64_t savepoint_no,
+                                      transaction::ObTxSEQ savepoint_no,
                                       ObDMLRtCtx &dml_rtctx,
                                       ObErrLogRtDef &err_log_rt_def,
                                       ObErrLogCtDef &error_logging_ctdef,
@@ -1848,7 +1927,7 @@ int ObDMLService::check_nested_sql_legality(ObExecContext &ctx, common::ObTableI
   return ret;
 }
 
-int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, int64_t &savepoint)
+int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, transaction::ObTxSEQ &savepoint)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObSqlTransControl::create_anonymous_savepoint(tx_desc, savepoint))) {
@@ -1857,7 +1936,7 @@ int ObDMLService::create_anonymous_savepoint(ObTxDesc &tx_desc, int64_t &savepoi
   return ret;
 }
 
-int ObDMLService::rollback_local_savepoint(ObTxDesc &tx_desc, int64_t savepoint, int64_t expire_ts)
+int ObDMLService::rollback_local_savepoint(ObTxDesc &tx_desc, const transaction::ObTxSEQ savepoint, int64_t expire_ts)
 {
   int ret = OB_SUCCESS;
   ObTransService *tx = MTL(transaction::ObTransService*);
@@ -2069,68 +2148,82 @@ int ObDMLService::get_nested_dup_table_ctx(const uint64_t table_id,  DASDelCtxLi
   return ret;
 }
 
-int ObDMLService::handle_after_row_processing_batch(ObDMLModifyRowsList *dml_modify_rows)
+int ObDMLService::handle_after_processing_multi_row(ObDMLModifyRowsList *dml_modify_rows, ObTableModifyOp *dml_op)
 {
   int ret = OB_SUCCESS;
   const ObDmlEventType t_insert = ObDmlEventType::DE_INSERTING;
   const ObDmlEventType t_update = ObDmlEventType::DE_UPDATING;
   const ObDmlEventType t_delete = ObDmlEventType::DE_DELETING;
-  ObDMLModifyRowsList::iterator row_iter = dml_modify_rows->begin();
-  for (; OB_SUCC(ret) && row_iter != dml_modify_rows->end(); row_iter++) {
-    ObDMLModifyRowNode &modify_row = *row_iter;
-    if (OB_ISNULL(modify_row.full_row_) && OB_ISNULL(modify_row.new_row_) && OB_ISNULL(modify_row.old_row_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid parameter for batch post row processing", K(ret));
-    } else if (OB_ISNULL(modify_row.dml_op_) || OB_ISNULL(modify_row.dml_ctdef_) || OB_ISNULL(modify_row.dml_rtdef_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid parameter for batch post row processing", K(ret));
-    } else {
-      ObTableModifyOp &op = *modify_row.dml_op_;
-      const ObDMLBaseCtDef &dml_ctdef = *modify_row.dml_ctdef_;
-      ObDMLBaseRtDef &dml_rtdef = *modify_row.dml_rtdef_;
-      const ObDmlEventType dml_event = modify_row.dml_event_;
-      // process foreign key
-      if (OB_NOT_NULL(modify_row.full_row_) && OB_FAIL(modify_row.full_row_->to_expr(modify_row.dml_ctdef_->full_row_, op.get_eval_ctx()))) {
-        LOG_WARN("failed to covert stored full row to expr", K(ret));
-      } else if (OB_NOT_NULL(modify_row.old_row_) && OB_FAIL(modify_row.old_row_->to_expr(dml_ctdef.old_row_, op.get_eval_ctx()))) {
-        LOG_WARN("failed to covert stored old row to expr", K(ret));
-      } else if (OB_NOT_NULL(modify_row.new_row_) && OB_FAIL(modify_row.new_row_->to_expr(dml_ctdef.new_row_, op.get_eval_ctx()))) {
-        LOG_WARN("failed to covert stored new row to expr", K(ret));
+  if (OB_ISNULL(dml_modify_rows) || OB_ISNULL(dml_op)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("dml operator or modify rows list is null", K(dml_modify_rows), K(dml_op));
+  } else {
+    ObDMLModifyRowsList::iterator row_iter = dml_modify_rows->begin();
+    for (; OB_SUCC(ret) && row_iter != dml_modify_rows->end(); row_iter++) {
+      ObDMLModifyRowNode &modify_row = *row_iter;
+      if (OB_ISNULL(modify_row.full_row_) && OB_ISNULL(modify_row.new_row_) && OB_ISNULL(modify_row.old_row_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid parameter for batch post row processing", K(ret));
+      } else if (OB_ISNULL(modify_row.dml_op_) || OB_ISNULL(modify_row.dml_ctdef_) || OB_ISNULL(modify_row.dml_rtdef_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid parameter for batch post row processing", K(ret));
       } else {
-        if (t_update == dml_event) {
-          // for update op, Foreign key checks need to be performed only if the value has changed
-          if (reinterpret_cast<ObUpdRtDef &>(dml_rtdef).is_row_changed_ && OB_FAIL(ForeignKeyHandle::do_handle(op, dml_ctdef, dml_rtdef))) {
-            LOG_WARN("failed to handle foreign key constraints", K(ret));
+        ObTableModifyOp &op = *modify_row.dml_op_;
+        const ObDMLBaseCtDef &dml_ctdef = *modify_row.dml_ctdef_;
+        ObDMLBaseRtDef &dml_rtdef = *modify_row.dml_rtdef_;
+        const ObDmlEventType dml_event = modify_row.dml_event_;
+        // process foreign key
+        if (OB_NOT_NULL(modify_row.full_row_) && OB_FAIL(modify_row.full_row_->to_expr(modify_row.dml_ctdef_->full_row_, op.get_eval_ctx()))) {
+          LOG_WARN("failed to covert stored full row to expr", K(ret));
+        } else if (OB_NOT_NULL(modify_row.old_row_) && OB_FAIL(modify_row.old_row_->to_expr(dml_ctdef.old_row_, op.get_eval_ctx()))) {
+          LOG_WARN("failed to covert stored old row to expr", K(ret));
+        } else if (OB_NOT_NULL(modify_row.new_row_) && OB_FAIL(modify_row.new_row_->to_expr(dml_ctdef.new_row_, op.get_eval_ctx()))) {
+          LOG_WARN("failed to covert stored new row to expr", K(ret));
+        } else if (op.need_foreign_key_checks()) {
+          if (t_update == dml_event && !reinterpret_cast<ObUpdRtDef &>(dml_rtdef).is_row_changed_) {
+            LOG_DEBUG("update operation don't change any value, no need to perform foreign key check");
+          } else {
+            // if check foreign key in batch, build fk check tasks here
+            if (dml_op->get_spec().check_fk_batch_) {
+              if (OB_FAIL(build_batch_fk_check_tasks(dml_ctdef, dml_rtdef))) {
+                LOG_WARN("failed to build batch check foreign key checks", K(ret));
+              }
+            } else if (OB_FAIL(ForeignKeyHandle::do_handle(op, dml_ctdef, dml_rtdef))) {
+              LOG_WARN("failed to handle foreign key constraints", K(ret));
+            }
           }
-        } else if (OB_FAIL(ForeignKeyHandle::do_handle(op, dml_ctdef, dml_rtdef))) {
-          LOG_WARN("failed to handle foreign key constraints", K(ret));
+        }
+        // process after row trigger
+        if (OB_SUCC(ret) && dml_ctdef.trig_ctdef_.all_tm_points_.has_after_row()) {
+          ObEvalCtx &eval_ctx = op.get_eval_ctx();
+          if (dml_event != t_insert && dml_event != t_update && dml_event != t_delete) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid trigger event", K(ret));
+          } else if (t_insert == dml_event && OB_FAIL(TriggerHandle::init_param_new_row(
+              eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
+            LOG_WARN("failed to init trigger parameter for new row", K(ret));
+          } else if (t_delete == dml_event && OB_FAIL(TriggerHandle::init_param_old_row(
+              eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
+            LOG_WARN("failed to init trigger parameter for old row", K(ret));
+          } else if (t_update == dml_event && OB_FAIL(TriggerHandle::init_param_rows(
+              eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
+            LOG_WARN("failed to init trigger parameter for old row and new row", K(ret));
+          } else if (OB_FAIL(TriggerHandle::do_handle_after_row(op, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_, dml_event))) {
+            LOG_WARN("failed to handle after trigger", K(ret));
+          }
         }
       }
-      // process after row trigger
-      if (OB_SUCC(ret) && dml_ctdef.trig_ctdef_.all_tm_points_.has_after_row()) {
-        ObEvalCtx &eval_ctx = op.get_eval_ctx();
-        if (dml_event != t_insert && dml_event != t_update && dml_event != t_delete) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid trigger event", K(ret));
-        } else if (t_insert == dml_event && OB_FAIL(TriggerHandle::init_param_new_row(
-            eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
-          LOG_WARN("failed to init trigger parameter for new row", K(ret));
-        } else if (t_delete == dml_event && OB_FAIL(TriggerHandle::init_param_old_row(
-            eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
-          LOG_WARN("failed to init trigger parameter for old row", K(ret));
-        } else if (t_update == dml_event && OB_FAIL(TriggerHandle::init_param_rows(
-            eval_ctx, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_))) {
-          LOG_WARN("failed to init trigger parameter for old row and new row", K(ret));
-        } else if (OB_FAIL(TriggerHandle::do_handle_after_row(op, dml_ctdef.trig_ctdef_, dml_rtdef.trig_rtdef_, dml_event))) {
-          LOG_WARN("failed to handle after trigger", K(ret));
-        }
-      }
+    }
+
+    // check the result of batch foreign key check results
+    if (OB_SUCC(ret) && dml_op->get_spec().check_fk_batch_ && OB_FAIL(dml_op->perform_batch_fk_check())) {
+      LOG_WARN("failed to perform batch foreign key check", K(ret));
     }
   }
   return ret;
 }
 
-int ObDMLService::handle_after_row_processing_single(ObDMLModifyRowsList *dml_modify_rows)
+int ObDMLService::handle_after_processing_single_row(ObDMLModifyRowsList *dml_modify_rows)
 {
   int ret = OB_SUCCESS;
   // for single-row processing, the expr defined in ctdef and trig parameters haven't been refreshed
@@ -2175,20 +2268,128 @@ int ObDMLService::handle_after_row_processing_single(ObDMLModifyRowsList *dml_mo
   return ret;
 }
 
-int ObDMLService::handle_after_row_processing(bool execute_single_row, ObDMLModifyRowsList *dml_modify_rows)
+int ObDMLService::handle_after_row_processing(ObTableModifyOp *op,
+                                              ObDMLModifyRowsList *dml_modify_rows)
 {
   int ret = OB_SUCCESS;
-  if (1 > dml_modify_rows->size()) {
+  if (OB_ISNULL(op) || OB_ISNULL(dml_modify_rows)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table modify operator or list of the modify rows is null", K(ret), K(op), K(dml_modify_rows));
+  } else if (1 > dml_modify_rows->size()) {
     // after row processing list is empty, nothing to do
     #ifndef NDEBUG
       LOG_INFO("No row need to perform foreign key check or after row trigger");
     #endif
-  } else if (execute_single_row) {
-    ret = handle_after_row_processing_single(dml_modify_rows);
+  } else if (op->execute_single_row_) {
+    ret = handle_after_processing_single_row(dml_modify_rows);
   } else {
-    ret = handle_after_row_processing_batch(dml_modify_rows);
+    ret = handle_after_processing_multi_row(dml_modify_rows, op);
   }
   return ret;
 }
+
+int ObDMLService::build_batch_fk_check_tasks(const ObDMLBaseCtDef &dml_ctdef,
+                                             ObDMLBaseRtDef &dml_rtdef)
+{
+  int ret = OB_SUCCESS;
+  if (dml_rtdef.fk_checker_array_.count() != dml_ctdef.fk_args_.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("foreign key aruments count is not equal with foreign key checker count",
+              K(ret),K(dml_rtdef.fk_checker_array_.count()), K(dml_ctdef.fk_args_.count()));
+  } else {
+    for (int i = 0; OB_SUCC(ret) && i < dml_rtdef.fk_checker_array_.count(); ++i) {
+      ObForeignKeyChecker *fk_checker = dml_rtdef.fk_checker_array_.at(i);
+      const ObForeignKeyArg &fk_arg = dml_ctdef.fk_args_.at(i);
+      bool need_check = true;
+      if (OB_ISNULL(fk_checker)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("foreign key checker is nullptr", K(ret), K(i));
+      } else if (!fk_arg.use_das_scan_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("foreign key check can not use das scan", K(ret), K(i));
+      } else if (OB_FAIL(fk_checker->build_fk_check_das_task(fk_arg.columns_, dml_ctdef.new_row_, need_check))) {
+        LOG_WARN("failed to build batch foreign key check scan task", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLService::log_user_error_inner(
+    int ret,
+    int64_t row_num,
+    common::ObString &column_name,
+    ObExecContext &ctx)
+{
+  if (OB_DATA_OUT_OF_RANGE == ret) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_DATA_OUT_OF_RANGE, column_name.length(), column_name.ptr(), row_num);
+  } else if (OB_ERR_DATA_TOO_LONG == ret && lib::is_mysql_mode()) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_DATA_TOO_LONG, column_name.length(), column_name.ptr(), row_num);
+  } else if (OB_ERR_VALUE_LARGER_THAN_ALLOWED == ret) {
+    LOG_USER_ERROR(OB_ERR_VALUE_LARGER_THAN_ALLOWED);
+  } else if (OB_INVALID_DATE_VALUE == ret || OB_INVALID_DATE_FORMAT == ret) {
+    ret = OB_INVALID_DATE_VALUE;
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(
+        OB_ERR_INVALID_DATE_MSG_FMT_V2,
+        column_name.length(),
+        column_name.ptr(),
+        row_num);
+  } else if ((OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD == ret || OB_INVALID_NUMERIC == ret)
+      && lib::is_mysql_mode()) {
+    ret = OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD;
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(
+        OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD,
+        column_name.length(),
+        column_name.ptr(),
+        row_num);
+  } else if (OB_ERR_WARN_DATA_OUT_OF_RANGE == ret && lib::is_mysql_mode()) {
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_WARN_DATA_OUT_OF_RANGE, column_name.length(), column_name.ptr(), row_num);
+  } else if ((OB_ERR_DATA_TRUNCATED == ret || OB_ERR_DOUBLE_TRUNCATED == ret)
+      && lib::is_mysql_mode()) {
+    ret = OB_ERR_DATA_TRUNCATED;
+    ob_reset_tsi_warning_buffer();
+    ObSQLUtils::copy_and_convert_string_charset(
+        ctx.get_allocator(),
+        column_name,
+        column_name,
+        CS_TYPE_UTF8MB4_BIN,
+        ctx.get_my_session()->get_local_collation_connection());
+    LOG_USER_ERROR(OB_ERR_DATA_TRUNCATED, column_name.length(), column_name.ptr(), row_num);
+  } else {
+    LOG_WARN("fail to operate row", K(ret));
+  }
+  return ret;
+}
+
 }  // namespace sql
 }  // namespace oceanbase

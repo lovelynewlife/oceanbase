@@ -148,11 +148,12 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
       } else if (!write_handle.is_empty() && OB_FAIL(write_handle.wait(io_timeout_ms))) {
         STORAGE_LOG(WARN, "failed to wait write handle", K(ret));
       } else if (header.is_reuse_macro_block_) {
+        //TODO(muwei.ym) reuse macro block in 4.3
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("header is reuse macro block", K(ret));
       } else {
         write_info.buffer_ = data.data();
-        write_info.size_ = data.capacity();
+        write_info.size_ = data.upper_align_length();
         write_handle.reset();
         if (OB_FAIL(ObBlockManager::async_write_block(write_info, write_handle))) {
           STORAGE_LOG(WARN, "fail to async write block", K(ret), K(write_info), K(write_handle));

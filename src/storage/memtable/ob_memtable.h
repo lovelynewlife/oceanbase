@@ -59,6 +59,7 @@ struct ObMtStat
   int64_t ready_for_flush_time_;
   int64_t create_flush_dag_time_;
   int64_t release_time_;
+  int64_t push_table_into_gc_queue_time_;
   int64_t last_print_time_;
 };
 
@@ -314,6 +315,7 @@ public:
   ObMtStat& get_mt_stat() { return mt_stat_; }
   int64_t get_size() const;
   int64_t get_occupied_size() const;
+  int64_t get_physical_row_cnt() const { return query_engine_.btree_size(); }
   inline bool not_empty() const { return INT64_MAX != get_protection_clock(); };
   void set_max_schema_version(const int64_t schema_version);
   virtual int64_t get_max_schema_version() const override;
@@ -370,6 +372,11 @@ public:
   virtual int64_t get_upper_trans_version() const override;
   virtual int estimate_phy_size(const ObStoreRowkey* start_key, const ObStoreRowkey* end_key, int64_t& total_bytes, int64_t& total_rows) override;
   virtual int get_split_ranges(const ObStoreRowkey* start_key, const ObStoreRowkey* end_key, const int64_t part_cnt, common::ObIArray<common::ObStoreRange> &range_array) override;
+  int split_ranges_for_sample(const blocksstable::ObDatumRange &table_scan_range,
+                              const double sample_rate_percentage,
+                              ObIAllocator &allocator,
+                              ObIArray<blocksstable::ObDatumRange> &sample_memtable_ranges);
+
   ObQueryEngine &get_query_engine() { return query_engine_; }
   ObMvccEngine &get_mvcc_engine() { return mvcc_engine_; }
   const ObMvccEngine &get_mvcc_engine() const { return mvcc_engine_; }
@@ -451,7 +458,6 @@ public:
   virtual OB_INLINE int64_t get_timestamp() const override { return timestamp_; }
   void inc_timestamp(const int64_t timestamp) { timestamp_ = MAX(timestamp_, timestamp + 1); }
   int get_active_table_ids(common::ObIArray<uint64_t> &table_ids);
-  bool is_partition_memtable_empty(const uint64_t table_id) const;
   blocksstable::ObDatumRange &m_get_real_range(blocksstable::ObDatumRange &real_range,
                                         const blocksstable::ObDatumRange &range, const bool is_reverse) const;
   int get_tx_table_guard(storage::ObTxTableGuard &tx_table_guard);
@@ -463,6 +469,12 @@ public:
   void set_allow_freeze(const bool allow_freeze);
   inline bool allow_freeze() const { return ATOMIC_LOAD(&allow_freeze_); }
 
+#ifdef OB_BUILD_TDE_SECURITY
+  /*clog encryption related*/
+  int save_encrypt_meta(const uint64_t table_id, const share::ObEncryptMeta *encrypt_meta);
+  int get_encrypt_meta(transaction::ObTxEncryptMeta *&encrypt_meta);
+  bool need_for_save(const share::ObEncryptMeta *encrypt_meta);
+#endif
 
   // Print stat data in log.
   // For memtable debug.
@@ -482,6 +494,7 @@ public:
                        K_(read_barrier), K_(is_flushed), K_(freeze_state), K_(allow_freeze),
                        K_(mt_stat_.frozen_time), K_(mt_stat_.ready_for_flush_time),
                        K_(mt_stat_.create_flush_dag_time), K_(mt_stat_.release_time),
+                       K_(mt_stat_.push_table_into_gc_queue_time),
                        K_(mt_stat_.last_print_time), K_(ls_id), K_(transfer_freeze_flag), K_(recommend_snapshot_version));
 private:
   static const int64_t OB_EMPTY_MEMSTORE_MAX_SIZE = 10L << 20; // 10MB
@@ -542,6 +555,12 @@ private:
   int64_t dec_unsubmitted_cnt_();
   int64_t inc_unsynced_cnt_();
   int64_t dec_unsynced_cnt_();
+  int64_t try_split_range_for_sample_(const ObStoreRowkey &start_key,
+                                      const ObStoreRowkey &end_key,
+                                      const int64_t range_count,
+                                      ObIAllocator &allocator,
+                                      ObIArray<blocksstable::ObDatumRange> &sample_memtable_ranges);
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMemtable);
   bool is_inited_;

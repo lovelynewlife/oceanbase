@@ -30,10 +30,10 @@ uloop_t global_ussl_loop_struct;
 static int ussl_has_listened = 0;
 static ussl_sf_t acceptfd_fty;
 static ussl_sf_t clientfd_fty;
-static pthread_t ussl_bg_thread_id;
+static void *ussl_bg_thread_id;
 
-int ob_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
-                      void *(*start_routine) (void *), void *arg);
+int ob_pthread_create(void **ptr, void *(*start_routine) (void *), void *arg);
+void ob_pthread_join(void *ptr);
 void ob_set_thread_name(const char* type);
 
 static int uloop_init(uloop_t *l)
@@ -102,7 +102,7 @@ int ussl_init_bg_thread()
   if (0 == ret) {
     if (0 != uloop_init(&global_ussl_loop_struct)) {
       ussl_log_error("initialize uloop failed.")
-    } else if (0 != ob_pthread_create(&ussl_bg_thread_id, NULL, bg_thread_func, NULL)) {
+    } else if (0 != ob_pthread_create(&ussl_bg_thread_id, bg_thread_func, NULL)) {
       ret = EIO;
       ussl_log_error("create background thread failed, errno:%d", errno);
     } else {
@@ -116,7 +116,8 @@ extern int is_ussl_bg_thread_started;
 void ussl_wait_bg_thread()
 {
   if (ATOMIC_LOAD(&is_ussl_bg_thread_started)) {
-    pthread_join(ussl_bg_thread_id, NULL);
+    ob_pthread_join(ussl_bg_thread_id);
+    ussl_bg_thread_id = NULL;
     ATOMIC_STORE(&is_ussl_bg_thread_started, 0);
   }
 }
@@ -166,26 +167,22 @@ void check_and_handle_timeout_event()
     if (CLIENT_SOCK == type) {
       clientfd_sk_t *client_sk = ussl_structof(p, clientfd_sk_t, timeout_link);
       if (cur_time - client_sk->start_time > TIMEOUT_THRESHOLD_SEC) {
-        ussl_log_warn("clientfd timeout, fd:%d", client_sk->fd);
+        char dst_addr[IP_STRING_MAX_LEN] = {0};
+        ussl_get_peer_addr(client_sk->fd, dst_addr, IP_STRING_MAX_LEN);
+        ussl_log_warn("clientfd timeout, fd:%d, dst_addr:%s", client_sk->fd, dst_addr);
         ussl_dlink_delete(&client_sk->ready_link);
         ussl_dlink_delete(p);
         handle_client_timeout_event(client_sk);
-      } else {
-        char src_addr[IP_STRING_MAX_LEN] = {0};
-        get_src_addr(client_sk->fd, src_addr, IP_STRING_MAX_LEN);
-        ussl_log_info("fd is in processing, fd:%d, type:clientfd, peer_addr:%s", client_sk->fd, src_addr);
       }
     } else {
       acceptfd_sk_t *accept_sk = ussl_structof(p, acceptfd_sk_t, timeout_link);
       if (cur_time - accept_sk->start_time > TIMEOUT_THRESHOLD_SEC) {
-        ussl_log_warn("acceptfd timeout, fd:%d", accept_sk->fd);
+        char src_addr[IP_STRING_MAX_LEN] = {0};
+        ussl_get_peer_addr(accept_sk->fd, src_addr, IP_STRING_MAX_LEN);
+        ussl_log_warn("acceptfd timeout, fd:%d, src_addr:%s", accept_sk->fd, src_addr);
         ussl_dlink_delete(&accept_sk->ready_link);
         ussl_dlink_delete(p);
         handle_server_timeout_event(accept_sk);
-      } else {
-        char src_addr[IP_STRING_MAX_LEN] = {0};
-        get_src_addr(accept_sk->fd, src_addr, IP_STRING_MAX_LEN);
-        ussl_log_info("fd is in processing, fd:%d, type:acceptfd, peer_addr:%s", accept_sk->fd, src_addr);
       }
     }
   }

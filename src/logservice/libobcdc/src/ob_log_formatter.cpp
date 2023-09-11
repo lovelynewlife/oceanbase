@@ -37,6 +37,7 @@
 #include "ob_cdc_lob_aux_table_parse.h"    // ObCDCLobAuxMetaStorager
 #include "ob_cdc_udt.h"                 // ObCDCUdtValueBuilder
 #include "ob_log_trace_id.h"            // ObLogTraceIdGuard
+#include "ob_log_timezone_info_getter.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
@@ -312,8 +313,8 @@ int ObLogFormatter::get_task_count(
 int ObLogFormatter::handle(void *data, const int64_t thread_index, volatile bool &stop_flag)
 {
   int ret = OB_SUCCESS;
-  set_cdc_thread_name("Formatter", thread_index);
   ObLogTraceIdGuard trace_guard;
+  set_cdc_thread_name("Formatter", thread_index);
   bool cur_stmt_need_callback = false;
   IStmtTask *stmt_task = static_cast<IStmtTask *>(data);
   DmlStmtTask *dml_stmt_task = dynamic_cast<DmlStmtTask *>(stmt_task);
@@ -1057,7 +1058,8 @@ int ObLogFormatter::build_row_value_(
   ColValueList *old_cols = nullptr;
   ObLobDataOutRowCtxList *new_lob_ctx_cols = nullptr;
   TableSchemaInfo *tb_schema_info = NULL;
-  IObLogTenantMgr *tenant_mgr_ = TCTX.tenant_mgr_;
+  IObCDCTimeZoneInfoGetter *tz_info_getter = TCTX.timezone_info_getter_;
+  ObCDCTenantTimeZoneInfo *obcdc_tenant_tz_info = nullptr;
   ObTimeZoneInfoWrap *tz_info_wrap = nullptr;
 
   if (OB_UNLIKELY(! inited_)) {
@@ -1082,12 +1084,13 @@ int ObLogFormatter::build_row_value_(
   } else if (OB_ISNULL(tb_schema_info)) {
     LOG_ERROR("tb_schema_info is null", K(tb_schema_info));
     ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(tenant_mgr_)) {
+  } else if (OB_ISNULL(tz_info_getter)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("tenant_mgr_ is nullptr", KR(ret), K(tenant_mgr_));
-  } else if (OB_FAIL(tenant_mgr_->get_tenant_tz_wrap(tenant_id, tz_info_wrap))) {
+    LOG_ERROR("tz_info_getter is nullptr", KR(ret), K(tz_info_getter));
+  } else if (OB_FAIL(tz_info_getter->get_tenant_tz_info(tenant_id, obcdc_tenant_tz_info))) {
     LOG_ERROR("get_tenant_tz_wrap failed", KR(ret), K(tenant_id));
   } else {
+    const ObTimeZoneInfoWrap *tz_info_wrap = &(obcdc_tenant_tz_info->get_tz_wrap());
     const int64_t column_num = tb_schema_info->get_usr_column_count();
     const uint64_t aux_lob_meta_tid = tb_schema_info->get_aux_lob_meta_tid();
     const bool is_cur_stmt_task_cb_progress = stmt_task->is_callback();
@@ -1730,9 +1733,9 @@ int ObLogFormatter::format_dml_delete_(IBinlogRecord *br_data, const RowValue *r
           }
 
           if (OB_ISNULL(str)) {
-            LOG_ERROR("old column value and original default value are all invalid",
-                K(i), "column_num", row_value->column_num_);
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("old column value and original default value are all invalid", KR(ret),
+                K(i), "column_num", row_value->column_num_);
           } else {
             br_data->putOld(str->ptr(), str->length());
           }
@@ -1774,9 +1777,9 @@ int ObLogFormatter::format_dml_insert_(IBinlogRecord *br_data, const RowValue *r
         ObString *str_val = row_value->new_columns_[i];
 
         if (OB_ISNULL(str_val)) {
-          LOG_ERROR("changed column new value is NULL", K(i),
-              "column_num", row_value->column_num_);
           ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR("changed column new value is NULL", KR(ret), K(i),
+              "column_num", row_value->column_num_);
         } else {
           br_data->putNew(str_val->ptr(), str_val->length());
         }
@@ -1809,10 +1812,10 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
           }
 
           if (OB_ISNULL(str_val)) {
-            LOG_ERROR("new column value, old column value and original default value "
-                "are all invalid",
-                K(i), "column_num", row_value->column_num_);
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("new column value, old column value and original default value "
+                "are all invalid", KR(ret),
+                K(i), "column_num", row_value->column_num_);
           } else {
             br_data->putNew(str_val->ptr(), str_val->length());
           }
@@ -1824,9 +1827,9 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
         ObString *str_val = row_value->new_columns_[i];
 
         if (OB_ISNULL(str_val)) {
-          LOG_ERROR("changed column new value is NULL", K(i),
-              "column_num", row_value->column_num_);
           ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR("changed column new value is NULL", KR(ret), K(i),
+              "column_num", row_value->column_num_);
         } else {
           br_data->putNew(str_val->ptr(), str_val->length());
         }
@@ -1850,7 +1853,7 @@ int ObLogFormatter::format_dml_update_(IBinlogRecord *br_data, const RowValue *r
               LOG_DEBUG("old_column is invalid, may outrow lob updated to inrow", K(i), K(row_value));
             } else {
               ret = OB_ERR_UNEXPECTED;
-              LOG_ERROR("old column value and original default value are all invalid",
+              LOG_ERROR("old column value and original default value are all invalid", KR(ret),
                   K(i), "column_num", row_value->column_num_,
                   "is_changed", row_value->is_changed_[i]);
             }
@@ -2109,7 +2112,7 @@ int ObLogFormatter::parse_aux_lob_meta_table_insert_(
     const transaction::ObTransID &trans_id = log_entry_task.get_trans_id();
     const uint64_t aux_lob_meta_table_id = stmt_task.get_table_id();
     ObLobId lob_id;
-    int64_t row_seq_no = stmt_task.get_row_seq_no();
+    const ObTxSEQ &row_seq_no = stmt_task.get_row_seq_no();
     const char *lob_data = nullptr;
     int64_t lob_data_len = 0;
     ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
@@ -2143,7 +2146,7 @@ int ObLogFormatter::parse_aux_lob_meta_table_delete_(
     const transaction::ObTransID &trans_id = log_entry_task.get_trans_id();
     const uint64_t aux_lob_meta_table_id = stmt_task.get_table_id();
     ObLobId lob_id;
-    int64_t row_seq_no = stmt_task.get_row_seq_no();
+    const transaction::ObTxSEQ &row_seq_no = stmt_task.get_row_seq_no();
     const char *lob_data = nullptr;
     int64_t lob_data_len = 0;
     ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;

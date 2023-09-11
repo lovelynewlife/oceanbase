@@ -43,12 +43,25 @@ class ObTxTableGuard;
 
 class ObTxTable
 {
-  // Delay recycle tx data 5 minutes
-  const static int64_t TX_DATA_DELAY_RECYCLE_TIME_NS = 5L * 60L * 1000L * 1000L * 1000L;
+  struct RecycleSCNCache
+  {
+    share::SCN val_;
+    int64_t update_ts_;
+
+    RecycleSCNCache() { reset(); }
+
+    void reset() {
+      val_.reset();
+      update_ts_ = 0;
+    }
+
+    TO_STRING_KV(K(val_), K(update_ts_));
+  };
 
 public:
   static const int64_t INVALID_READ_EPOCH = -1;
   static const int64_t CHECK_AND_ONLINE_PRINT_INVERVAL_US = 5 * 1000 * 1000; // 5 seconds
+  static const int64_t DEFAULT_TX_RESULT_RETENTION_S = 300L;
 
   enum TxTableState : int64_t
   {
@@ -68,8 +81,8 @@ public:
         tx_data_table_(default_tx_data_table_),
         mini_cache_hit_cnt_(0),
         kv_cache_hit_cnt_(0),
-        read_tx_data_table_cnt_(0)
-
+        read_tx_data_table_cnt_(0),
+        recycle_scn_cache_()
   {}
 
   ObTxTable(ObTxDataTable &tx_data_table)
@@ -81,7 +94,8 @@ public:
         tx_data_table_(tx_data_table),
         mini_cache_hit_cnt_(0),
         kv_cache_hit_cnt_(0),
-        read_tx_data_table_cnt_(0)
+        read_tx_data_table_cnt_(0),
+        recycle_scn_cache_()
   {}
   ~ObTxTable() {}
 
@@ -121,12 +135,11 @@ public:
    * @param[in] read_trans_id 
    * @param[in] data_trans_id 
    * @param[in] sql_sequence 
-   * @param[in] read_epoch 
    * @param[out] lock_state 
    */
   int check_row_locked(ObReadTxDataArg &read_tx_data_arg,
                        const transaction::ObTransID &read_tx_id,
-                       const int64_t sql_sequence,
+                       const transaction::ObTxSEQ sql_sequence,
                        storage::ObStoreRowLockState &lock_state);
 
   /**
@@ -134,10 +147,11 @@ public:
    * 
    * @param[in] data_tx_id 
    * @param[in] sql_sequence 
-   * @param[in] read_epoch 
    * @param[out] can_read 
    */
-  int check_sql_sequence_can_read(ObReadTxDataArg &read_tx_data_arg, const int64_t sql_sequence, bool &can_read);
+  int check_sql_sequence_can_read(ObReadTxDataArg &read_tx_data_arg,
+                                  const transaction::ObTxSEQ &sql_sequence,
+                                  bool &can_read);
 
   /**
    * @brief fetch the state of txn DATA_TRANS_ID when replaying to LOG_TS the requirement can be seen from
@@ -320,6 +334,7 @@ private:
   int64_t mini_cache_hit_cnt_;
   int64_t kv_cache_hit_cnt_;
   int64_t read_tx_data_table_cnt_;
+  RecycleSCNCache recycle_scn_cache_;
 };
 }  // namespace storage
 }  // namespace oceanbase

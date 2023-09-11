@@ -46,6 +46,8 @@
 #include "share/backup/ob_archive_store.h"
 #include "share/backup/ob_backup_data_table_operator.h"
 #include "share/backup/ob_backup_connectivity.h"
+#include "share/rc/ob_tenant_base.h"
+#include "observer/omt/ob_tenant.h"
 #include <algorithm>
 
 using namespace oceanbase::blocksstable;
@@ -3569,6 +3571,9 @@ int ObLSBackupMetaTask::backup_ls_meta_and_tablet_metas_(const uint64_t tenant_i
   int ret = OB_SUCCESS;
   storage::ObLSHandle ls_handle;
   storage::ObLS *ls = NULL;
+  ObTenantDagScheduler *scheduler = NULL;
+  share::ObTenantBase *tenant_base = MTL_CTX();
+  omt::ObTenant *tenant = NULL;
   ObBackupLSMetaInfo ls_meta_info;
   ObExternTabletMetaWriter writer;
   ObBackupDest backup_set_dest;
@@ -3617,7 +3622,14 @@ int ObLSBackupMetaTask::backup_ls_meta_and_tablet_metas_(const uint64_t tenant_i
     return ret;
   };
 
-  if (OB_FAIL(get_ls_handle(tenant_id, ls_id, ls_handle))) {
+  if (OB_ISNULL(scheduler = MTL(ObTenantDagScheduler*))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get ObTenantDagScheduler from MTL", K(ret));
+  } else if (OB_ISNULL(tenant_base)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tenant base should not be NULL", K(ret), KP(tenant_base));
+  } else if (FALSE_IT(tenant = static_cast<omt::ObTenant *>(tenant_base))) {
+  } else if (OB_FAIL(get_ls_handle(tenant_id, ls_id, ls_handle))) {
     LOG_WARN("failed to get ls", K(ret), K(tenant_id), K(ls_id));
   } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
@@ -3627,12 +3639,43 @@ int ObLSBackupMetaTask::backup_ls_meta_and_tablet_metas_(const uint64_t tenant_i
   } else if (OB_FAIL(writer.init(backup_set_dest, param_.ls_id_, param_.turn_id_, param_.retry_id_))) {
     LOG_WARN("failed to init tablet info writer", K(ret));
   } else {
-    if (OB_FAIL(ls->get_ls_meta_package_and_tablet_metas(
+    const int64_t WAIT_GC_LOCK_TIMEOUT = 3 * 60 * 1000 * 1000; // 3 min
+    const int64_t CHECK_GC_LOCK_INTERVAL = 1000000; // 1s
+    const int64_t wait_gc_lock_start_ts = ObTimeUtility::current_time();
+    int64_t cost_ts = 0;
+    do {
+      if (ls->is_stopped()) {
+        ret = OB_NOT_RUNNING;
+        LOG_WARN("ls is not running, stop backup", K(ret), KPC(ls));
+      } else if (scheduler->has_set_stop()) {
+        ret = OB_SERVER_IS_STOPPING;
+        LOG_WARN("tenant dag scheduler has set stop, stop backup", K(ret), KPC(ls));
+      } else if (tenant->has_stopped()) {
+        ret = OB_TENANT_HAS_BEEN_DROPPED;
+        LOG_WARN("tenant has been stopped, stop backup", K(ret), KPC(ls));
+      } else if (OB_FAIL(ls->get_ls_meta_package_and_tablet_metas(
                 false/* check_archive */,
                 save_ls_meta_f,
                 backup_tablet_meta_f))) {
-      LOG_WARN("failed to get ls meta package and tablet meta", K(ret), KPC(ls));
-    } else if (OB_FAIL(backup_ls_meta_package_(ls_meta_info))) {
+        if (OB_TABLET_GC_LOCK_CONFLICT != ret) {
+          LOG_WARN("failed to get ls meta package and tablet meta", K(ret), KPC(ls));
+        } else {
+          cost_ts = ObTimeUtility::current_time() - wait_gc_lock_start_ts;
+          if (WAIT_GC_LOCK_TIMEOUT <= cost_ts) {
+            ret = OB_EAGAIN;
+            LOG_WARN("get ls meta package and tablet meta timeout, need try again.", K(ret), K(ls_id));
+          } else {
+            ob_usleep(CHECK_GC_LOCK_INTERVAL);
+          }
+        }
+      } else {
+        cost_ts = ObTimeUtility::current_time() - wait_gc_lock_start_ts;
+        LOG_INFO("succeed to get ls meta package and tablet meta", K(ls_id), K(cost_ts));
+      }
+    } while (OB_TABLET_GC_LOCK_CONFLICT == ret);
+
+
+    if (FAILEDx(backup_ls_meta_package_(ls_meta_info))) {
       LOG_WARN("failed to backup ls meta package", K(ret), K(ls_meta_info));
     } else if (OB_FAIL(ObBackupLSTaskOperator::update_max_tablet_checkpoint_scn(
                        *report_ctx_.sql_proxy_,
@@ -3734,7 +3777,8 @@ int ObLSBackupPrepareTask::process()
     ret = OB_NOT_INIT;
     LOG_WARN("prepare task do not init", K(ret));
   } else if (OB_SUCCESS != ls_backup_ctx_->get_result_code()) {
-    LOG_INFO("backup already failed, do nothing");
+    ret = ls_backup_ctx_->get_result_code();
+    LOG_WARN("backup already failed, do nothing", K(ret));
   } else if (OB_FAIL(may_need_advance_checkpoint_())) {
     LOG_WARN("may need advance checkpoint failed", K(ret), K_(param));
   } else if (OB_FAIL(prepare_backup_tx_table_filled_tx_scn_())) {
@@ -4563,6 +4607,7 @@ int ObLSBackupComplementLogTask::BackupPieceOp::func(const dirent *entry)
   char file_name[OB_MAX_BACKUP_DEST_LENGTH] = { 0 };
   int64_t file_id = -1;
   int32_t len = 0;
+  ObString entry_suffix;
   if (OB_ISNULL(entry)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid entry", K(ret));
@@ -4570,6 +4615,11 @@ int ObLSBackupComplementLogTask::BackupPieceOp::func(const dirent *entry)
   } else if (len <= 0) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("file name without a unified suffix", K(ret), K(entry->d_name), K(OB_ARCHIVE_SUFFIX));
+  } else if (FALSE_IT(entry_suffix.assign_ptr(entry->d_name + len, strlen(OB_ARCHIVE_SUFFIX)))) {
+  } else if (!entry_suffix.prefix_match(OB_ARCHIVE_SUFFIX)) {
+    // not ended with archive suffix
+    ObString file_name_str(entry->d_name);
+    LOG_INFO("skip file which is not archive file", K(file_name_str), K(entry_suffix));
   } else if (OB_FAIL(databuff_printf(file_name, sizeof(file_name), "%.*s", len, entry->d_name))) {
     LOG_WARN("fail to save tmp file name", K(ret), K(file_name));
   } else if (0 == ObString::make_string(file_name).case_compare(OB_STR_LS_FILE_INFO)) {
@@ -4610,6 +4660,7 @@ ObLSBackupComplementLogTask::ObLSBackupComplementLogTask()
       compl_end_scn_(),
       turn_id_(0),
       retry_id_(-1),
+      archive_dest_(),
       report_ctx_()
 {}
 
@@ -5065,7 +5116,7 @@ int ObLSBackupComplementLogTask::inner_get_piece_file_list_(const share::ObLSID 
   const share::SCN &start_scn = piece_attr.start_scn_;
   if (OB_FAIL(get_src_backup_piece_dir_(ls_id, piece_attr, src_piece_dir_path))) {
     LOG_WARN("failed to get src backup piece dir", K(ret), K(round_id), K(piece_id), K(ls_id), K(piece_attr));
-  } else if (OB_FAIL(util.list_files(src_piece_dir_path.get_obstr(), backup_dest_.get_storage_info(), op))) {
+  } else if (OB_FAIL(util.list_files(src_piece_dir_path.get_obstr(), archive_dest_.get_storage_info(), op))) {
     LOG_WARN("failed to list files", K(ret), K(src_piece_dir_path));
   } else if (OB_FAIL(op.get_file_id_list(file_id_list))) {
     LOG_WARN("failed to get files", K(ret));
@@ -5322,7 +5373,7 @@ int ObLSBackupComplementLogTask::inner_transfer_clog_file_(
   if (OB_FAIL(util.open_with_access_type(
           device_handle, fd, backup_dest_.get_storage_info(), dst_path.get_obstr(), OB_STORAGE_ACCESS_RANDOMWRITER))) {
     LOG_WARN("failed to open with access type", K(ret));
-  } else if (OB_FAIL(get_file_length_(src_path.get_obstr(), backup_dest_.get_storage_info(), src_len))) {
+  } else if (OB_FAIL(get_file_length_(src_path.get_obstr(), archive_dest_.get_storage_info(), src_len))) {
     LOG_WARN("failed to get file length", K(ret), K(src_path));
   } else if (OB_FAIL(get_file_length_(dst_path.get_obstr(), backup_dest_.get_storage_info(), dst_len))) {
     LOG_WARN("failed to get file length", K(ret), K(dst_path));
@@ -5336,7 +5387,7 @@ int ObLSBackupComplementLogTask::inner_transfer_clog_file_(
   } else if (OB_ISNULL(buf = static_cast<char *>(allocator.alloc(transfer_len)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate memory", K(ret), K(transfer_len));
-  } else if (OB_FAIL(util.read_part_file(src_path.get_obstr(), backup_dest_.get_storage_info(), buf, transfer_len, dst_len, read_len))) {
+  } else if (OB_FAIL(util.read_part_file(src_path.get_obstr(), archive_dest_.get_storage_info(), buf, transfer_len, dst_len, read_len))) {
     LOG_WARN("failed to read part file", K(ret), K(src_path));
   } else if (read_len != transfer_len) {
     ret = OB_ERR_UNEXPECTED;
@@ -5593,6 +5644,8 @@ int ObLSBackupComplementLogTask::get_archive_backup_dest_(
   if (OB_FAIL(ObBackupStorageInfoOperator::get_backup_dest(
       *report_ctx_.sql_proxy_, tenant_id_, path, archive_dest))) {
     LOG_WARN("failed to get archive dest", K(ret), K(tenant_id_), K(path));
+  } else if (OB_FAIL(archive_dest_.deep_copy(archive_dest))) {
+    LOG_WARN("failed to deep copy archive dest", K(ret));
   } else {
     LOG_INFO("succ get backup dest", K(tenant_id_), K(path));
   }

@@ -92,7 +92,7 @@ public:
 #define OB_CLUSTER_PARAMETER(args...) args
   // Liboblog config.
   // max memory occupied by libobcdc: 20G
-  DEF_CAP(memory_limit, OB_CLUSTER_PARAMETER, "20G", "[2G,]", "memory limit");
+  DEF_CAP(memory_limit, OB_CLUSTER_PARAMETER, "8G", "[2G,]", "memory limit");
   // Preserve the lower bound of system memory in %, in the range of 10% ~ 80%
   // i.e.: ensure that the system memory remaining cannot be lower than this percentage based on the memory occupied by libobcdc
   DEF_INT(system_memory_avail_percentage_lower_bound, OB_CLUSTER_PARAMETER, "10", "[10, 80]", "system memory avail upper bound");
@@ -177,6 +177,7 @@ public:
   // default value '0:not_skip'
   T_DEF_BOOL(skip_ob_version_compat_check, OB_CLUSTER_PARAMETER, 0, "0:not_skip, 1:skip")
 
+#ifndef OB_USE_DRCMSG
   // default DFT_BR(LogRecordImpl), add DFT_BR_PB
   // passed in via IObLog::init interface
   // string LogMsgFactory::DFT_ColMeta = "ColMetaImpl";
@@ -185,6 +186,17 @@ public:
   // string LogMsgFactory::DFT_METAS = "MetaDataCollectionsImpl";
   // string LogMsgFactory::DFT_LR = "LogRecordImpl";
   DEF_STR(drc_message_factory_binlog_record_type, OB_CLUSTER_PARAMETER, "LogRecordImpl", "LogMsgFactory::DFT_BR");
+#else
+  // default DFT_BR(BinlogRecordImpl), add DFT_BR_PB
+  // passed in via IObLog::init interface
+  // string DRCMessageFactory::DFT_ColMeta = "ColMetaImpl";
+  // string DRCMessageFactory::DFT_TableMeta = "TableMetaImpl";
+  // string DRCMessageFactory::DFT_DBMeta = "DBMetaImpl";
+  // string DRCMessageFactory::DFT_METAS = "MetaDataCollectionsImpl";
+  // string DRCMessageFactory::DFT_BR = "BinlogRecordImpl";
+  // string DRCMessageFactory::DFT_BR_PB = "BinlogRecordProtobuf";
+  DEF_STR(drc_message_factory_binlog_record_type, OB_CLUSTER_PARAMETER, "BinlogRecordImpl", "DRCMessageFactory::DFT_BR");
+#endif
 
   // whether to check ObTraceId
   T_DEF_BOOL(need_verify_ob_trace_id, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
@@ -243,6 +255,7 @@ public:
   T_DEF_INT_INFT(io_thread_num, OB_CLUSTER_PARAMETER, 4, 1, "io thread number");
   T_DEF_INT(idle_pool_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 32, "idle pool thread num");
   T_DEF_INT(dead_pool_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "dead pool thread num");
+  T_DEF_INT(cdc_read_archive_log_concurrency, OB_CLUSTER_PARAMETER, 8, 1, 64, "log external storage handler thread num");
   T_DEF_INT(stream_worker_thread_num, OB_CLUSTER_PARAMETER, 8, 1, 64, "stream worker thread num");
   T_DEF_INT(start_lsn_locator_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 32, "start lsn locator thread num");
   T_DEF_INT_INFT(start_lsn_locator_locate_count, OB_CLUSTER_PARAMETER, 1, 1, "start lsn locator locate count");
@@ -348,7 +361,7 @@ public:
   T_DEF_INT_INFT(blacklist_survival_time_sec, OB_CLUSTER_PARAMETER, 30, 1, "blacklist-server surival time in seconds");
 
   // The maximum time the server can be blacklisted, in minutes
-  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 4, 1, "blacklist-server survival time upper limit in minute");
+  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 1, 1, "blacklist-server survival time upper limit in minute");
 
   // The server is blacklisted in the logstream, based on the time of the current server service logstream - to decide whether to penalize the survival time
   // When the service time is less than a certain interval, a doubling-live-time policy is adopted
@@ -388,10 +401,10 @@ public:
   T_DEF_BOOL(print_ls_server_list_update_info, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
   // Whether to sequentially output within a transaction
   // Not on by default (participatn-by-participant output)
-  T_DEF_BOOL(enable_output_trans_order_by_sql_operation, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
+  T_DEF_BOOL(enable_output_trans_order_by_sql_operation, OB_CLUSTER_PARAMETER, 1, "0:disabled, 1:enabled");
   // redo dispatcher memory limit
-  DEF_CAP(redo_dispatcher_memory_limit, OB_CLUSTER_PARAMETER, "512M", "[128M,]", "redo dispatcher memory limit");
-  DEF_CAP(extra_redo_dispatch_memory_size, OB_CLUSTER_PARAMETER, "4M", "[0, 512M]", "extra redo dispatcher memory for data skew participant");
+  DEF_CAP(redo_dispatcher_memory_limit, OB_CLUSTER_PARAMETER, "64M", "[0M,]", "redo dispatcher memory limit");
+  DEF_CAP(extra_redo_dispatch_memory_size, OB_CLUSTER_PARAMETER, "1M", "[0, 512M]", "extra redo dispatcher memory for data skew participant");
   // redo diepatcher memory limit ratio for output br by sql operation(compare with redo_dispatcher_memory_limit)
   T_DEF_INT_INFT(redo_dispatched_memory_limit_exceed_ratio, OB_CLUSTER_PARAMETER, 2, 1,
       "redo_dispatcher_memory_limit ratio for output by sql operation order");

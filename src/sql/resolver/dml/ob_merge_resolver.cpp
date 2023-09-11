@@ -228,6 +228,8 @@ int ObMergeResolver::resolve_target_relation(const ParseNode *target_node)
   } else if (OB_ISNULL(table_item)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table_item is NULL", K(ret));
+  } else if (OB_FAIL(resolve_foreign_key_constraint(table_item))) {
+    LOG_WARN("failed to resolve foreign key constraint", K(ret), K(table_item->ref_id_));
   } else if (OB_FAIL(column_namespace_checker_.add_reference_table(table_item))) {
     LOG_WARN("add reference table to column namespace checker failed", K(ret));
   } else if (table_item->is_generated_table()) {
@@ -340,12 +342,7 @@ int ObMergeResolver::resolve_table(const ParseNode &parse_tree, TableItem *&tabl
         break;
       }
       case T_SELECT: {
-        alias_node = parse_tree.children_[1];
-        ObString alias_name;
-        if (alias_node != NULL) {
-          alias_name.assign_ptr((char *)(alias_node->str_value_), static_cast<int32_t>(alias_node->str_len_));
-        }
-        if (OB_FAIL(resolve_generate_table(*table_node, alias_name, table_item))) {
+        if (OB_FAIL(resolve_generate_table(*table_node, parse_tree.children_[1], table_item))) {
           LOG_WARN("fail to resolve generate taable", K(ret));
         }
         break;
@@ -433,7 +430,7 @@ int ObMergeResolver::check_column_validity(ObColumnRefRawExpr *col_expr)
 }
 
 int ObMergeResolver::resolve_generate_table(const ParseNode &table_node,
-                                            const ObString &alias_name,
+                                            const ParseNode *alias_node,
                                             TableItem *&table_item)
 {
   int ret = OB_SUCCESS;
@@ -460,7 +457,10 @@ int ObMergeResolver::resolve_generate_table(const ParseNode &table_node,
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("create table item failed", K(ret));
   } else {
-    
+    ObString alias_name;
+    if (alias_node != NULL) {
+      alias_name.assign_ptr((char *)(alias_node->str_value_), static_cast<int32_t>(alias_node->str_len_));
+    }
     item->ref_query_ = child_stmt;
     item->table_id_ = generate_table_id();
     item->table_name_ = alias_name;
@@ -482,18 +482,16 @@ int ObMergeResolver::resolve_match_condition(const ParseNode *condition_node)
   ObMergeStmt *merge_stmt = get_merge_stmt();
   column_namespace_checker_.enable_check_unique();
   resolve_clause_ = MATCH_CLAUSE;
+  ObStmtScope old_scope = current_scope_;
+  current_scope_ = T_ON_SCOPE;
   if (OB_ISNULL(condition_node) || OB_ISNULL(merge_stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid arguement", K(condition_node), K(merge_stmt), K(ret));
-  } else if (OB_FAIL(ObSQLUtils::has_outer_join_symbol(condition_node, has_outer_join_symbol))) {
-    LOG_WARN("fail to check has_outer_join_symbol", K(ret));
-  } else if (has_outer_join_symbol) {
-    ret = OB_ERR_OUTER_JOIN_ON_CORRELATION_COLUMN;
-    LOG_WARN("an outer join cannot be specified on a correlation column", K(ret));
   } else if (OB_FAIL(resolve_and_split_sql_expr(*condition_node,
                                                 merge_stmt->get_match_condition_exprs()))) {
     LOG_WARN("fail to resolve match condition expr", K(ret));
   }
+  current_scope_ = old_scope;
   resolve_clause_ = NONE_CLAUSE;
   column_namespace_checker_.disable_check_unique();
   return ret;

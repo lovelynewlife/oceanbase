@@ -129,17 +129,18 @@ int ObTMService::tm_rm_start(ObExecContext &exec_ctx,
   }
 
   // step 3, xa start for dblink connection
+  ObXATransID remote_xid;
   if (OB_SUCCESS != ret) {
   } else if (OB_FAIL(xa_service->xa_start_for_dblink_client(dblink_type,
-          dblink_conn, tx_desc))) {
-    LOG_WARN("fail to execute xa start for dblink client", K(ret), K(xid));
+          dblink_conn, tx_desc, remote_xid))) {
+    LOG_WARN("fail to execute xa start for dblink client", K(ret), K(xid), K(remote_xid));
   } else {
     tx_id = tx_desc->tid();
   }
   my_session->get_raw_audit_record().trans_id_ = my_session->get_tx_id();
-  LOG_INFO("tm rm start", K(ret), K(tx_id), K(xid), K(need_start), K(need_promote));
+  LOG_INFO("tm rm start", K(ret), K(tx_id), K(remote_xid), K(need_start), K(need_promote));
 
-  // TODO, if fail, the trans needs rollback
+  // if fail, the trans should be rolled back by client
 
   return ret;
 }
@@ -165,10 +166,13 @@ int ObTMService::tm_commit(ObExecContext &exec_ctx,
     ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
     tx_id = tx_desc->tid();
     my_session->get_raw_audit_record().trans_id_ = tx_id;
-    if (OB_FAIL(xa_service->commit_for_dblink_trans(tx_desc))) {
-      LOG_WARN("fail to commit for dblink trans", K(ret));
-    } else {
-      // do nothing
+    {
+      ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
+      if (OB_FAIL(xa_service->commit_for_dblink_trans(tx_desc))) {
+        LOG_WARN("fail to commit for dblink trans", K(ret));
+      } else {
+        // do nothing
+      }
     }
     // TODO, if fail, kill trans forcely and reset session
     // reset

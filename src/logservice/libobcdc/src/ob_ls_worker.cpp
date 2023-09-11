@@ -98,20 +98,21 @@ void ObLSWorker::destroy()
 {
   stop();
 
-  inited_ = false;
-  stream_paused_ = false;
-  fetcher_resume_time_ = OB_INVALID_TIMESTAMP;
-  StreamWorkerThread::destroy();
+  if (inited_) {
+    LOG_INFO("destroy stream worker begin");
+    inited_ = false;
+    stream_paused_ = false;
+    fetcher_resume_time_ = OB_INVALID_TIMESTAMP;
+    StreamWorkerThread::destroy();
+    timer_.destroy();
+    fetcher_host_ = nullptr;
+    idle_pool_ = NULL;
+    dead_pool_ = NULL;
+    err_handler_ = NULL;
+    stream_task_seq_ = 0;
 
-  timer_.destroy();
-
-  fetcher_host_ = nullptr;
-  idle_pool_ = NULL;
-  dead_pool_ = NULL;
-  err_handler_ = NULL;
-  stream_task_seq_ = 0;
-
-  LOG_INFO("destroy stream worker succ");
+    LOG_INFO("destroy stream worker succ");
+  }
 }
 
 int ObLSWorker::start()
@@ -133,6 +134,9 @@ int ObLSWorker::start()
 void ObLSWorker::stop()
 {
   if (OB_LIKELY(inited_)) {
+    LOG_INFO("stop stream worker begin");
+    mark_stop_flag();
+    timer_.stop();
     StreamWorkerThread::stop();
     LOG_INFO("stop stream worker succ");
   }
@@ -140,8 +144,10 @@ void ObLSWorker::stop()
 
 void ObLSWorker::mark_stop_flag()
 {
+  LOG_INFO("stream worker mark_stop_flag begin");
   timer_.mark_stop_flag();
   StreamWorkerThread::mark_stop_flag();
+  LOG_INFO("stream worker mark_stop_flag end");
 }
 
 void ObLSWorker::pause()
@@ -179,8 +185,8 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
     LOG_ERROR("not init", K(inited_));
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(idle_pool_) || OB_ISNULL(dead_pool_)) {
-    LOG_ERROR("invalid handlers", K(idle_pool_), K(dead_pool_));
     ret = OB_INVALID_ERROR;
+    LOG_ERROR("invalid handlers", KR(ret), K(idle_pool_), K(dead_pool_));
   }
   // Recycle deleted partitions and add them to DEAD POOL
   else if (OB_UNLIKELY(task.is_discarded())) {
@@ -206,7 +212,7 @@ int ObLSWorker::dispatch_fetch_task(LSFetchCtx &task, const char *dispatch_reaso
         //  server is not available, blacklisted
         int64_t svr_service_time = 0;
         int64_t survival_time = ATOMIC_LOAD(&g_blacklist_survival_time);
-        if (task.add_into_blacklist(request_svr, svr_service_time, survival_time)) {
+        if (OB_FAIL(task.add_into_blacklist(request_svr, svr_service_time, survival_time))) {
           // add server to blacklist
           LOG_ERROR("not-avail server, task add into blacklist fail", KR(ret), K(task), K(request_svr),
                     "svr_service_time", TVAL_TO_STR(svr_service_time),

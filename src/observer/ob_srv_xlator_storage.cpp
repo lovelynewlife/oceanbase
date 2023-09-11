@@ -70,6 +70,9 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcIsEmptyServerP, gctx_);
     RPC_PROCESSOR(ObRpcCheckServerForAddingServerP, gctx_);
     RPC_PROCESSOR(ObRpcCheckDeploymentModeP, gctx_);
+#ifdef OB_BUILD_TDE_SECURITY
+    RPC_PROCESSOR(ObRpcWaitMasterKeyInSyncP, gctx_);
+#endif
     RPC_PROCESSOR(ObRpcSyncAutoincValueP, gctx_);
     RPC_PROCESSOR(ObRpcClearAutoincCacheP, gctx_);
     RPC_PROCESSOR(ObReportReplicaP, gctx_);
@@ -88,6 +91,7 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcBackupMetaP, gctx_);
     RPC_PROCESSOR(ObRpcBackupLSDataResP, gctx_);
     RPC_PROCESSOR(ObRpcBackupCleanLSResP, gctx_);
+    RPC_PROCESSOR(ObRpcNotifyArchiveP, gctx_);
 
     RPC_PROCESSOR(ObRpcCheckBackupTaskExistP, gctx_);
     RPC_PROCESSOR(ObRenewInZoneHbP, gctx_);
@@ -110,6 +114,10 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcGenUniqueIDP, gctx_);
     RPC_PROCESSOR(ObRpcStartTransferTaskP, gctx_);
     RPC_PROCESSOR(ObRpcFinishTransferTaskP, gctx_);
+#ifdef OB_BUILD_ARBITRATION
+    RPC_PROCESSOR(ObRpcAddArbP, gctx_);
+    RPC_PROCESSOR(ObRpcRemoveArbP, gctx_);
+#endif
     RPC_PROCESSOR(ObRpcDDLCheckTabletMergeStatusP, gctx_);
     RPC_PROCESSOR(ObRpcCreateDuplicateLSP, gctx_);
 }

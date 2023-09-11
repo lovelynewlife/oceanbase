@@ -67,7 +67,6 @@ DEFINE_LOG_SUB_MOD(EASY)                 // libeasy
 DEFINE_LOG_SUB_MOD(DETECT)               // dead lock
 DEFINE_LOG_SUB_MOD(PALF)                 // palf
 DEFINE_LOG_SUB_MOD(STANDBY)              // primary and standby cluster
-DEFINE_LOG_SUB_MOD(REASY)                 // libreasy
 DEFINE_LOG_SUB_MOD(COORDINATOR)          // leader coordinator
 DEFINE_LOG_SUB_MOD(FLT)                // trace
 DEFINE_LOG_SUB_MOD(OBTRACE)                // trace
@@ -75,6 +74,7 @@ DEFINE_LOG_SUB_MOD(BALANCE)              // balance module
 DEFINE_LOG_SUB_MOD(MDS)                  // multi data source
 DEFINE_LOG_SUB_MOD(DATA_DICT)            // data_dictionary module
 DEFINE_LOG_SUB_MOD(MVCC)                 // concurrency_control
+DEFINE_LOG_SUB_MOD(WR)                 // workload repository
 LOG_MOD_END(ROOT)
 
 //statement of WRS's sub_modules
@@ -186,6 +186,7 @@ DEFINE_LOG_SUB_MOD(CG)                   // code_generator
 DEFINE_LOG_SUB_MOD(MONITOR)              // monitor
 DEFINE_LOG_SUB_MOD(DTL)                  // data transfer layer
 DEFINE_LOG_SUB_MOD(DAS)                  // data access service
+DEFINE_LOG_SUB_MOD(SPM)                  // sql plan baseline
 DEFINE_LOG_SUB_MOD(QRR)                  // query rewrite rule
 LOG_MOD_END(SQL)
 
@@ -453,6 +454,8 @@ LOG_MOD_END(PL)
 #define _DDLOG(level, _fmt_, args...) _OB_MOD_LOG(DATA_DICT, level, _fmt_, ##args)
 #define MVCC_LOG(level, info_string, args...) OB_MOD_LOG(MVCC, level, info_string, ##args)
 #define _MVCC_LOG(level, _fmt_, args...) _OB_MOD_LOG(MVCC, level, _fmt_, ##args)
+#define WR_LOG(level, info_string, args...) OB_MOD_LOG(WR, level, info_string, ##args)
+#define _WR_LOG(level, _fmt_, args...) _OB_MOD_LOG(WR, level, _fmt_, ##args)
 
 //dfine ParMod_SubMod_LOG
 #define WRS_CLUSTER_LOG(level, info_string, args...) OB_SUB_MOD_LOG(WRS, CLUSTER, level,        \
@@ -784,11 +787,14 @@ LOG_MOD_END(PL)
                                                                     info_string, ##args)
 #define _SQL_DAS_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(SQL, DAS, level,                     \
                                                                 _fmt_, ##args)
+#define SQL_SPM_LOG(level, info_string, args...) OB_SUB_MOD_LOG(SQL, SPM, level,                 \
+                                                                    info_string, ##args)
+#define _SQL_SPM_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(SQL, SPM, level,                     \
+                                                                _fmt_, ##args)
 #define SQL_QRR_LOG(level, info_string, args...) OB_SUB_MOD_LOG(SQL, QRR, level,                 \
                                                                     info_string, ##args)
 #define _SQL_QRR_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(SQL, QRR, level,                     \
                                                                 _fmt_, ##args)
-
 #define DETECT_LOG_LOG(level, info_string, args...) OB_SUB_MOD_LOG(DETECT, LOG,level,              \
                                                                 info_string,  ##args)
 #define _DETECT_LOG_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(DETECT, LOG,level,                  \

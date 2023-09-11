@@ -238,7 +238,7 @@
   "max_allowed_packet": {
     "id": 14,
     "name": "max_allowed_packet",
-    "default_value": "4194304",
+    "default_value": "16777216",
     "base_value": "4194304",
     "data_type": "int",
     "info": "Max packet length to send to or receive from the server",
@@ -2673,8 +2673,8 @@
   "secure_file_priv": {
     "id": 10102,
     "name": "secure_file_priv",
-    "default_value": "NULL",
-    "base_value": "NULL",
+    "default_value": "",
+    "base_value": "",
     "data_type": "varchar",
     "info": "limit the effect of data import and export operations",
     "flags": "GLOBAL | INFLUENCE_PLAN | NULL",

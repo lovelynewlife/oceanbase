@@ -31,6 +31,7 @@
 #include "wrs/ob_weak_read_util.h"               // ObWeakReadUtil
 #include "storage/memtable/ob_memtable_context.h"
 #include "storage/memtable/ob_memtable.h"
+#include "storage/tx_storage/ob_ls_service.h"
 #include "common/storage/ob_sequence.h"
 #include "observer/ob_srv_network_frame.h"
 #include "share/rc/ob_tenant_module_init_ctx.h"
@@ -613,6 +614,38 @@ int ObTransService::get_max_decided_scn(const share::ObLSID &ls_id, share::SCN &
   return ret;
 }
 
+int ObTransService::check_dup_table_lease_valid(const ObLSID ls_id,
+                                                bool &is_dup_ls,
+                                                bool &is_lease_valid)
+{
+  int ret = OB_SUCCESS;
+
+  ObLSHandle ls_handle;
+  is_dup_ls = false;
+  is_lease_valid = false;
+
+  if (!ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid argument", K(ret), K(ls_id));
+  } else if (!dup_table_loop_worker_.is_useful_dup_ls(ls_id)) {
+    is_dup_ls = false;
+    ret = OB_SUCCESS;
+  } else if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id, ls_handle, ObLSGetMod::TRANS_MOD))) {
+    is_dup_ls = false;
+    TRANS_LOG(WARN, "get ls failed", K(ret), K(ls_id), K(ls_handle));
+  } else if (!ls_handle.is_valid()) {
+    is_dup_ls = false;
+    ret = OB_ERR_UNEXPECTED;
+    TRANS_LOG(WARN, "invalid ls handle", K(ret), K(ls_id), K(ls_handle));
+  } else if (ls_handle.get_ls()->get_dup_table_ls_handler()->is_dup_table_lease_valid()) {
+    is_dup_ls = true;
+    is_lease_valid = true;
+    ret = OB_SUCCESS;
+  }
+
+  return ret;
+}
+
 int ObTransService::handle_redo_sync_task_(ObDupTableRedoSyncTask *task, bool &need_release_task)
 {
   UNUSED(task);
@@ -729,7 +762,7 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
   tx_param.access_mode_ = tx_desc.access_mode_;
   tx_param.isolation_ = tx_desc.isolation_;
   tx_param.timeout_us_ = tx_desc.timeout_us_;
-  int64_t savepoint = 0;
+  ObTxSEQ savepoint;
   if (OB_UNLIKELY(!tx_desc.is_valid() || !ls_id.is_valid() || type <= ObTxDataSourceType::UNKNOWN
                   || type >= ObTxDataSourceType::MAX_TYPE || OB_ISNULL(buf) || buf_len < 0)) {
     ret = OB_INVALID_ARGUMENT;
@@ -873,7 +906,7 @@ int ObTransService::register_mds_into_ctx_(ObTxDesc &tx_desc,
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", KR(ret), K(tx_desc), K(ls_id), KP(buf), K(buf_len));
   } else if (FALSE_IT(store_ctx.ls_id_ = ls_id)) {
-  } else if (OB_FAIL(get_write_store_ctx(tx_desc, snapshot, write_flag, store_ctx, true))) {
+  } else if (OB_FAIL(get_write_store_ctx(tx_desc, snapshot, write_flag, store_ctx, ObTxSEQ::INVL(), true))) {
     TRANS_LOG(WARN, "get store ctx failed", KR(ret), K(tx_desc), K(ls_id));
   } else {
     ObPartTransCtx *ctx = store_ctx.mvcc_acc_ctx_.tx_ctx_;

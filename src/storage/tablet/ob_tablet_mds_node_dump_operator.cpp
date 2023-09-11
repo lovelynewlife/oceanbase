@@ -30,7 +30,8 @@ namespace storage
 {
 ObTabletDumpMdsNodeOperator::ObTabletDumpMdsNodeOperator(ObTabletMdsData &mds_data, common::ObIAllocator &allocator)
   : mds_data_(mds_data),
-    allocator_(allocator)
+    allocator_(allocator),
+    dumped_(false)
 {
 }
 
@@ -197,6 +198,8 @@ int ObTabletDumpMdsNodeOperator::operator()(const mds::MdsDumpKV &kv)
   } else if (OB_UNLIKELY(!dumped)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("unexpected kv type, not dumped", K(ret), K(kv), K(dumped));
+  } else {
+    dumped_ = true;
   }
 
   return ret;
@@ -205,7 +208,8 @@ int ObTabletDumpMdsNodeOperator::operator()(const mds::MdsDumpKV &kv)
 
 ObTabletMediumInfoNodeOperator::ObTabletMediumInfoNodeOperator(ObTabletDumpedMediumInfo &medium_info_list, common::ObIAllocator &allocator)
   : medium_info_list_(medium_info_list),
-    allocator_(allocator)
+    allocator_(allocator),
+    dumped_(false)
 {
 }
 
@@ -224,6 +228,8 @@ int ObTabletMediumInfoNodeOperator::operator()(const mds::MdsDumpKV &kv)
       LOG_WARN("invalid state", K(ret), K(state));
     } else if (OB_FAIL(medium_info_list_.append(key, node))) {
       LOG_WARN("failed to copy mds dump node", K(ret));
+    } else {
+      dumped_ = true;
     }
   }
 

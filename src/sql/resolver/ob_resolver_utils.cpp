@@ -392,7 +392,7 @@ int ObResolverUtils::get_candidate_routines(ObSchemaChecker &schema_checker,
   const ObString &package_name, const ObString &routine_name,
   const share::schema::ObRoutineType routine_type,
   common::ObIArray<const share::schema::ObIRoutineInfo *> &routines,
-  uint64_t udt_id)
+  uint64_t udt_id, const pl::ObPLResolveCtx *resolve_ctx)
 {
   int ret = OB_SUCCESS;
 
@@ -483,6 +483,18 @@ if ((OB_FAIL(ret) || 0 == routines.count())   \
     TRY_SYNONYM(routine_name);
     if (OB_SUCC(ret) && need_try_synonym) {
       GET_STANDALONE_ROUTINE();
+      if (OB_SUCC(ret) && OB_ISNULL(routine_info) && OB_NOT_NULL(resolve_ctx)) {
+        // try dblink synonym
+        ObString tmp_name = object_name;
+        ObString full_object_name = tmp_name.split_on('@');
+        if (full_object_name.empty()) {
+          // not a dblink
+        } else {
+          ObString remote_db_name = full_object_name.split_on('.');
+          OZ (resolve_ctx->package_guard_.dblink_guard_.get_routine_infos_with_synonym(resolve_ctx->session_info_,
+              resolve_ctx->schema_guard_, tmp_name, remote_db_name, ObString(""), full_object_name, routines));
+        }
+      }
     }
   } else { // try package routines
     OZ (schema_checker.get_database_id(tenant_id, real_db_name, database_id));
@@ -720,7 +732,7 @@ int ObResolverUtils::check_type_match(const pl::ObPLResolveCtx &resolve_ctx,
     } else if (dst_pl_type.is_cursor_type()) {
       // TODO: check cursor type compatible
       OX (match_info = (ObRoutineMatchInfo::MatchInfo(false, src_type, dst_type)));
-    } else if (resolve_ctx.params_.is_execute_call_stmt_ &&
+    } else if (resolve_ctx.is_prepare_protocol_ &&
                ObExtendType == src_type &&
                OB_INVALID_ID == src_type_id &&
                T_QUESTIONMARK == expr->get_expr_type()) { // 匿名数组
@@ -998,7 +1010,19 @@ int ObResolverUtils::check_match(const pl::ObPLResolveCtx &resolve_ctx,
                                                   resolve_ctx.session_info_,
                                                   resolve_ctx.allocator_,
                                                   resolve_ctx.sql_proxy_,
-                                                  dst_pl_type));
+                                                  dst_pl_type,
+                                                  NULL,
+                                                  &resolve_ctx.package_guard_.dblink_guard_));
+#ifdef OB_BUILD_ORACLE_PL
+      if (OB_SUCC(ret) && dst_pl_type.is_subtype()) {
+        const ObUserDefinedType *user_type = NULL;
+        const ObUserDefinedSubType *sub_type = NULL;
+        OZ (resolve_ctx.get_user_type(
+          dst_pl_type.get_user_type_id(), user_type, &(resolve_ctx.allocator_)));
+        CK (OB_NOT_NULL(sub_type = static_cast<const ObUserDefinedSubType *>(sub_type)));
+        OX (dst_pl_type = *(sub_type->get_base_type()));
+      }
+#endif
     } else {
       dst_pl_type = routine_param->get_pl_data_type();
     }
@@ -1025,7 +1049,7 @@ int ObResolverUtils::match_vacancy_parameters(
   // 处理空缺参数, 如果有默认值填充默认值, 否则报错
   for (int64_t i = 0; OB_SUCC(ret) && i < match_info.match_info_.count(); ++i) {
     ObIRoutineParam *routine_param = NULL;
-    if (ObMaxType == match_info.match_info_.at(i).dest_type_) {
+    if(ObMaxType == match_info.match_info_.at(i).dest_type_) {
       OZ (routine_info.get_routine_param(i, routine_param));
       CK (OB_NOT_NULL(routine_param));
       if (OB_FAIL(ret)) {
@@ -1227,7 +1251,8 @@ int ObResolverUtils::pick_routine(const pl::ObPLResolveCtx &resolve_ctx,
   return ret;
 }
 
-int ObResolverUtils::get_routine(ObResolverParams &params,
+int ObResolverUtils::get_routine(pl::ObPLPackageGuard &package_guard,
+                                 ObResolverParams &params,
                                  uint64_t tenant_id,
                                  const ObString &current_database,
                                  const ObString &db_name,
@@ -1235,16 +1260,26 @@ int ObResolverUtils::get_routine(ObResolverParams &params,
                                  const ObString &routine_name,
                                  const share::schema::ObRoutineType routine_type,
                                  const common::ObIArray<ObRawExpr *> &expr_params,
-                                 const ObRoutineInfo *&routine)
+                                 const ObRoutineInfo *&routine,
+                                 const ObString &dblink_name,
+                                 ObIAllocator *allocator)
 {
   int ret = OB_SUCCESS;
+#define COPY_DBLINK_ROUTINE(dblink_routine) \
+  ObRoutineInfo *copy_routine = NULL; \
+  CK (OB_NOT_NULL(allocator)); \
+  OZ (ObSchemaUtils::alloc_schema(*allocator, \
+                                  *(static_cast<const ObRoutineInfo *>(dblink_routine)), \
+                                  copy_routine)); \
+  OX (routine = copy_routine);
+
+  const ObRoutineInfo *tmp_routine_info = NULL;
   CK (OB_NOT_NULL(params.allocator_));
   CK (OB_NOT_NULL(params.session_info_));
   CK (OB_NOT_NULL(params.schema_checker_));
   CK (OB_NOT_NULL(params.schema_checker_->get_schema_guard()));
   CK (OB_NOT_NULL(GCTX.sql_proxy_));
   if (OB_SUCC(ret)) {
-    ObPLPackageGuard package_guard(params.session_info_->get_effective_tenant_id());
     ObPLResolveCtx resolve_ctx(*(params.allocator_),
                                *(params.session_info_),
                                *(params.schema_checker_->get_schema_guard()),
@@ -1258,15 +1293,104 @@ int ObResolverUtils::get_routine(ObResolverParams &params,
     resolve_ctx.params_.param_list_ = params.param_list_;
     resolve_ctx.params_.is_execute_call_stmt_ = params.is_execute_call_stmt_;
     OZ (package_guard.init());
-    OZ (get_routine(resolve_ctx,
-                    tenant_id,
-                    current_database,
-                    db_name,
-                    package_name,
-                    routine_name,
-                    routine_type,
-                    expr_params,
-                    routine));
+    if (dblink_name.empty()) {
+      OZ (get_routine(resolve_ctx,
+                      tenant_id,
+                      current_database,
+                      db_name,
+                      package_name,
+                      routine_name,
+                      routine_type,
+                      expr_params,
+                      tmp_routine_info));
+      if (OB_SUCC(ret)) {
+        if (OB_INVALID_ID == tmp_routine_info->get_dblink_id()) {
+          routine = tmp_routine_info;
+        } else {
+          COPY_DBLINK_ROUTINE(tmp_routine_info);
+        }
+      }
+      if (OB_ERR_SP_DOES_NOT_EXIST == ret) {
+        /* Example 1: create or replace synonym test.pkg100_syn for webber.pkg100@oci_link;
+        *    `pkg100` is a package name in remote database `webber`.
+        * Example 2: create or replace synonym test.p101_syn for webber.p101@oci_link;
+        *    `p101` is a procedure name in remote database `webber`.
+        *
+        * If the code executes here, there are the following situations
+        * 1. Only `db_name.empty()` is true , this is not possible;
+        * 2. Only `package_name.empty()` is true, user call statement is `call test.p101_syn(1)`;
+        * 3. `(db_name.empty() && package_name.empty()` is true,  user call statement is `call p101_syn(1)`;
+        * 4. `db_name.empty()` is false and `package_name.empty()` is false,
+        *     user call statement is `call test.pkg100_syn.p1(1)`
+        */
+
+        ret = OB_SUCCESS;
+        uint64_t database_id = OB_INVALID_ID;
+        uint64_t object_db_id = OB_INVALID_ID;
+        bool exist = false;
+        ObString object_name;
+        ObSchemaChecker schema_checker;
+        ObSynonymChecker synonym_checker;
+        bool routine_name_is_synonym = package_name.empty();
+        const ObString &synonym_name = routine_name_is_synonym ? routine_name : package_name;
+        OZ (schema_checker.init(resolve_ctx.schema_guard_));
+        OZ (schema_checker.get_database_id(tenant_id, (db_name.empty() ? current_database : db_name), database_id));
+        OZ (resolve_synonym_object_recursively(schema_checker, synonym_checker, tenant_id, database_id,
+                                               synonym_name, object_db_id, object_name, exist));
+        LOG_INFO("after find synonym", K(ret), K(synonym_name), K(object_name), K(object_db_id), K(exist));
+        if (OB_SUCC(ret) && exist) {
+          ObString tmp_name;
+          if (OB_FAIL(ob_write_string(*params.allocator_, object_name, tmp_name))) {
+            LOG_WARN("write string failed", K(ret));
+          } else {
+            ObString full_object_name = tmp_name.split_on('@');
+            if (full_object_name.empty()) {
+              exist = false;
+            } else {
+              ObString remote_db_name = full_object_name.split_on('.');
+              const ObIRoutineInfo *dblink_routine_info = NULL;
+              // ObRoutineInfo *tmp_routine_info = NULL;
+              if (routine_name_is_synonym) {
+                OZ (ObPLResolver::resolve_dblink_routine(resolve_ctx,
+                                                        tmp_name,
+                                                        remote_db_name,
+                                                        ObString(""),
+                                                        full_object_name,
+                                                        expr_params,
+                                                        dblink_routine_info));
+              } else {
+                OZ (ObPLResolver::resolve_dblink_routine(resolve_ctx,
+                                                         tmp_name,
+                                                         remote_db_name,
+                                                         full_object_name,
+                                                         routine_name,
+                                                         expr_params,
+                                                         dblink_routine_info));
+              }
+              if (OB_SUCC(ret) && OB_NOT_NULL(dblink_routine_info)) {
+                COPY_DBLINK_ROUTINE(dblink_routine_info);
+              }
+            }
+          }
+        }
+        if (OB_SUCC(ret) && !exist) {
+          ret = OB_ERR_SP_DOES_NOT_EXIST;
+          LOG_WARN("routine not exist", K(ret));
+        }
+      }
+    } else {
+      const ObIRoutineInfo *dblink_routine_info = NULL;
+      OZ (ObPLResolver::resolve_dblink_routine(resolve_ctx,
+                                              dblink_name,
+                                              db_name,
+                                              package_name,
+                                              routine_name,
+                                              expr_params,
+                                              dblink_routine_info));
+      if (OB_SUCC(ret) && OB_NOT_NULL(dblink_routine_info)) {
+        COPY_DBLINK_ROUTINE(dblink_routine_info);
+      }
+    }
   }
   return ret;
 }
@@ -1296,7 +1420,8 @@ int ObResolverUtils::get_routine(const pl::ObPLResolveCtx &resolve_ctx,
                                      routine_name,
                                      routine_type,
                                      candidate_routine_infos,
-                                     udt_id))) {
+                                     udt_id,
+                                     &resolve_ctx))) {
     LOG_WARN("failed to get candidate routine infos",
              K(db_name), K(package_name), K(routine_name), K(ret));
   } else {
@@ -1345,6 +1470,7 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
 {
   int ret = OB_SUCCESS;
   ParseResult parser_result;
+  ObString dblink_name;
   ObStmtNodeTree *parser_tree = NULL;
   lib::Worker::CompatMode compat_mode = lib::Worker::CompatMode::MYSQL;
   if (OB_FAIL(share::ObCompatModeGetter::get_tenant_mode(tenant_id, compat_mode))) {
@@ -1381,7 +1507,7 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
                                               tenant_id,
                                               current_database,
                                               *(parser_tree->children_[0]->children_[0]),
-                                              database_name, package_name, routine_name))) {
+                                              database_name, package_name, routine_name, dblink_name))) {
       LOG_WARN("failed to resolve_sp_access_name",
                K(ret), K(procedure_name), K(tenant_id), K(current_database));
     }
@@ -1437,7 +1563,8 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
                                             const ParseNode &sp_access_name_node,
                                             ObString &db_name,
                                             ObString &package_name,
-                                            ObString &routine_name)
+                                            ObString &routine_name,
+                                            ObString &dblink_name)
 {
   int ret = OB_SUCCESS;
 
@@ -1473,6 +1600,7 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
         ObString package_or_db_name;
         uint64_t package_id = OB_INVALID_ID;
         uint64_t database_id = OB_INVALID_ID;
+        bool is_dblink_routine = false;
         if (OB_UNLIKELY(package_or_db_node->type_ != T_IDENT)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("package_or_db_node is invalid", K(package_or_db_node));
@@ -1511,6 +1639,22 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
                 } else if (OB_FAIL(schema_checker.get_package_id(
                                     tenant_id, object_db_id, object_name, COMPATIBLE_ORACLE_MODE, package_id))) {
                   LOG_WARN("failed to get package id", K(ret), K(object_db_id), K(object_name));
+                  // If failed, object_name may be a dblink object
+                  if (OB_ERR_PACKAGE_DOSE_NOT_EXIST == ret) {
+                    ret = OB_SUCCESS;
+                    ObString full_pkg_name = object_name.split_on('@');
+                    if (full_pkg_name.empty()) {
+                      // not a dblink
+                    } else {
+                      dblink_name = object_name;
+                      db_name = full_pkg_name.split_on('.');
+                      package_name = full_pkg_name;
+                      is_dblink_routine = true;
+                    }
+                    if (OB_SUCC(ret) && !is_dblink_routine) {
+                      ret = OB_ERR_PACKAGE_DOSE_NOT_EXIST;
+                    }
+                  }
                 } else {
                   package_name = object_name;
                 }
@@ -1519,7 +1663,8 @@ int ObResolverUtils::resolve_sp_access_name(ObSchemaChecker &schema_checker,
                 object_name = package_or_db_name;
               }
             }
-            if (OB_FAIL(ret) || OB_INVALID_ID == package_id) {
+            if (is_dblink_routine) {
+            } else if (OB_FAIL(ret) || OB_INVALID_ID == package_id) {
               if (OB_FAIL(schema_checker.get_package_id(
                     OB_SYS_TENANT_ID, OB_SYS_DATABASE_ID,
                     object_name, COMPATIBLE_ORACLE_MODE, package_id))) {
@@ -1678,7 +1823,7 @@ int ObResolverUtils::resolve_column_ref(const ParseNode *node, const ObNameCaseM
   ObString column_name;
   ObString table_name;
   ObString database_name;
-  if (OB_ISNULL(node) || OB_UNLIKELY(node->type_ != T_COLUMN_REF)) {
+  if (OB_ISNULL(node) || node->num_child_ < 3) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("parse node is invalid", K(node));
   } else {
@@ -5233,6 +5378,11 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
                                        const bool convert_real_type_to_decimal /*false*/)
 {
   int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!ob_is_valid_obj_type(static_cast<ObObjType>(type_node.type_)))) {
+    ret = OB_ERR_ILLEGAL_TYPE;
+    SQL_RESV_LOG(WARN, "Unsupport data type of column definiton",
+                        K(ident_name), K((type_node.type_)), K(ret));
+  } else {
   data_type.set_obj_type(static_cast<ObObjType>(type_node.type_));
   int32_t length = type_node.int32_values_[0];
   int16_t precision = type_node.int16_values_[0];
@@ -5245,11 +5395,11 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
       (precision >= 0 && scale >= 0)) {
       if (static_cast<ObObjType>(type_node.type_) == ObFloatType ||
           static_cast<ObObjType>(type_node.type_) == ObDoubleType) {
-         data_type.set_obj_type(ObNumberType);
-       } else if (static_cast<ObObjType>(type_node.type_) == ObUFloatType ||
+        data_type.set_obj_type(ObNumberType);
+      } else if (static_cast<ObObjType>(type_node.type_) == ObUFloatType ||
                   static_cast<ObObjType>(type_node.type_) == ObUDoubleType) {
-         data_type.set_obj_type(ObUNumberType);
-       }
+        data_type.set_obj_type(ObUNumberType);
+      }
   }
   const ObAccuracy &default_accuracy = ObAccuracy::DDL_DEFAULT_ACCURACY2[is_oracle_mode][data_type.get_obj_type()];
 
@@ -5282,17 +5432,17 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
           LOG_USER_ERROR(OB_ERR_TOO_BIG_SCALE, scale, ident_name.ptr(), OB_MAX_DOUBLE_FLOAT_SCALE);
           LOG_WARN("scale of double overflow", K(ret), K(scale), K(precision));
         } else if (OB_UNLIKELY(OB_DECIMAL_NOT_SPECIFIED == scale &&
-                               precision > OB_MAX_DOUBLE_FLOAT_PRECISION)) {
+                              precision > OB_MAX_DOUBLE_FLOAT_PRECISION)) {
           ret = OB_ERR_COLUMN_SPEC;
           LOG_USER_ERROR(OB_ERR_COLUMN_SPEC, ident_name.length(), ident_name.ptr());
           LOG_WARN("precision of double overflow", K(ret), K(scale), K(precision));
         } else if (OB_UNLIKELY(OB_DECIMAL_NOT_SPECIFIED != scale &&
-                   precision > OB_MAX_DOUBLE_FLOAT_DISPLAY_WIDTH ||
-                   (0 == scale && 0 == precision))) {
+                  precision > OB_MAX_DOUBLE_FLOAT_DISPLAY_WIDTH ||
+                  (0 == scale && 0 == precision))) {
           ret = OB_ERR_TOO_BIG_DISPLAYWIDTH;
           LOG_USER_ERROR(OB_ERR_TOO_BIG_DISPLAYWIDTH,
-                         ident_name.ptr(),
-                         OB_MAX_INTEGER_DISPLAY_WIDTH);
+                        ident_name.ptr(),
+                        OB_MAX_INTEGER_DISPLAY_WIDTH);
         } else if (OB_UNLIKELY(precision < scale)) {
           ret = OB_ERR_M_BIGGER_THAN_D;
           LOG_USER_ERROR(OB_ERR_M_BIGGER_THAN_D, to_cstring(ident_name));
@@ -5347,7 +5497,7 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
       } else if (is_oracle_mode) {
         if ((number_type == NPT_PERC_SCALE || number_type == NPT_PERC)
             &&(OB_UNLIKELY(precision < OB_MIN_NUMBER_PRECISION)
-               || OB_UNLIKELY(precision > OB_MAX_NUMBER_PRECISION))) {
+              || OB_UNLIKELY(precision > OB_MAX_NUMBER_PRECISION))) {
           ret = OB_NUMERIC_PRECISION_OUT_RANGE;
           LOG_WARN("precision of number overflow", K(ret), K(scale), K(precision));
         } else if (-86 == scale) {
@@ -5358,8 +5508,8 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
 
         if (OB_SUCC(ret)) {
           if ((number_type == NPT_PERC_SCALE || number_type == NPT_STAR_SCALE)
-               && (OB_UNLIKELY(scale < OB_MIN_NUMBER_SCALE)
-                   || OB_UNLIKELY(scale > OB_MAX_NUMBER_SCALE))) {
+              && (OB_UNLIKELY(scale < OB_MIN_NUMBER_SCALE)
+                  || OB_UNLIKELY(scale > OB_MAX_NUMBER_SCALE))) {
             ret = OB_NUMERIC_SCALE_OUT_RANGE;
             LOG_WARN("scale of number out of range", K(ret), K(scale));
           }
@@ -5465,9 +5615,9 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
         ret = OB_ERR_TOO_LONG_COLUMN_LENGTH;
         LOG_WARN("column data length is invalid", K(ret), K(length), K(data_type));
         LOG_USER_ERROR(OB_ERR_TOO_LONG_COLUMN_LENGTH, ident_name.ptr(),
-             static_cast<int>((ObVarcharType == data_type.get_obj_type() || ObNVarchar2Type == data_type.get_obj_type())
-                 ? OB_MAX_ORACLE_VARCHAR_LENGTH :
-                 (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE : OB_MAX_ORACLE_CHAR_LENGTH_BYTE)));
+            static_cast<int>((ObVarcharType == data_type.get_obj_type() || ObNVarchar2Type == data_type.get_obj_type())
+                ? OB_MAX_ORACLE_VARCHAR_LENGTH :
+                (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE : OB_MAX_ORACLE_CHAR_LENGTH_BYTE)));
       } else if (ObVarcharType != data_type.get_obj_type()
           && ObCharType != data_type.get_obj_type()
           && ObNVarchar2Type != data_type.get_obj_type()
@@ -5476,7 +5626,7 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
         SQL_RESV_LOG(ERROR,"column type must be ObVarcharType or ObCharType", K(ret));
       } else if (type_node.int32_values_[1]/*is binary*/) {
         if (is_for_pl_type && ObVarcharType == data_type.get_obj_type()
-                           && OB_MAX_MYSQL_VARCHAR_LENGTH < length) {
+                          && OB_MAX_MYSQL_VARCHAR_LENGTH < length) {
           ret = OB_ERR_TOO_LONG_COLUMN_LENGTH;
           LOG_WARN("column data length is invalid", K(ret), K(length), K(data_type));
           LOG_USER_ERROR(OB_ERR_TOO_LONG_COLUMN_LENGTH, ident_name.ptr(),
@@ -5496,22 +5646,22 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
           ret = OB_ERR_ZERO_LEN_COL;
           LOG_WARN("Oracle not allowed zero length", K(ret));
         } else if (OB_FAIL(ObCharset::get_mbminlen_by_coll(
-                             nls_session_param.nls_nation_collation_, nchar_mbminlen))) {
+                            nls_session_param.nls_nation_collation_, nchar_mbminlen))) {
           LOG_WARN("fail to get mbminlen of nchar", K(ret), K(nls_session_param));
         } else if (((ObVarcharType == data_type.get_obj_type() || ObNVarchar2Type == data_type.get_obj_type()) && OB_MAX_ORACLE_VARCHAR_LENGTH < length)
-                   || (ObCharType == data_type.get_obj_type()
-                   && (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE < length :
+                  || (ObCharType == data_type.get_obj_type()
+                  && (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE < length :
                                         OB_MAX_ORACLE_CHAR_LENGTH_BYTE < length))
-                   || (ObNCharType == data_type.get_obj_type()
-                       && (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE < length * nchar_mbminlen:
+                  || (ObNCharType == data_type.get_obj_type()
+                      && (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE < length * nchar_mbminlen:
                                             OB_MAX_ORACLE_CHAR_LENGTH_BYTE < length * nchar_mbminlen))) {
           ret = OB_ERR_TOO_LONG_COLUMN_LENGTH;
           LOG_WARN("column data length is invalid",
-                   K(ret), K(length), K(data_type), K(nchar_mbminlen));
+                  K(ret), K(length), K(data_type), K(nchar_mbminlen));
           LOG_USER_ERROR(OB_ERR_TOO_LONG_COLUMN_LENGTH, ident_name.ptr(),
-             static_cast<int>((ObVarcharType == data_type.get_obj_type() || ObNVarchar2Type == data_type.get_obj_type())
-                 ? OB_MAX_ORACLE_VARCHAR_LENGTH :
-                 (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE : OB_MAX_ORACLE_CHAR_LENGTH_BYTE)));
+            static_cast<int>((ObVarcharType == data_type.get_obj_type() || ObNVarchar2Type == data_type.get_obj_type())
+                ? OB_MAX_ORACLE_VARCHAR_LENGTH :
+                (is_for_pl_type ? OB_MAX_ORACLE_PL_CHAR_LENGTH_BYTE : OB_MAX_ORACLE_CHAR_LENGTH_BYTE)));
         } else if (type_node.length_semantics_ == LS_DEFAULT) {
           data_type.set_length_semantics(nls_session_param.nls_length_semantics_);
         } else if (OB_UNLIKELY(type_node.length_semantics_ != LS_BYTE && type_node.length_semantics_ != LS_CHAR)) {
@@ -5524,12 +5674,12 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
         data_type.set_collation_type(cs_type);
         LOG_DEBUG("check data type after resolve", K(ret), K(data_type));
       } else if (!is_oracle_mode && ObCharType == data_type.get_obj_type()
-                                 && OB_MAX_CHAR_LENGTH < length) {
+                                && OB_MAX_CHAR_LENGTH < length) {
         // varchar length check , TODO:
         ret = OB_ERR_TOO_LONG_COLUMN_LENGTH;
         LOG_WARN("column data length is invalid", K(ret), K(length), K(data_type));
         LOG_USER_ERROR(OB_ERR_TOO_LONG_COLUMN_LENGTH, ident_name.ptr(),
-                       static_cast<int>(OB_MAX_CHAR_LENGTH));
+                      static_cast<int>(OB_MAX_CHAR_LENGTH));
       } else {}
       break;
     case ObRawTC:
@@ -5656,7 +5806,7 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
           ret = OB_ERR_TOO_LONG_COLUMN_LENGTH;
           LOG_WARN("column data length is invalid", K(ret), K(length), K(data_type));
           LOG_USER_ERROR(OB_ERR_TOO_LONG_COLUMN_LENGTH, ident_name.ptr(),
-             static_cast<int>(OB_MAX_USER_ROW_KEY_LENGTH));
+            static_cast<int>(OB_MAX_USER_ROW_KEY_LENGTH));
         } else {
           data_type.set_length(length);
         }
@@ -5689,6 +5839,7 @@ int ObResolverUtils::resolve_data_type(const ParseNode &type_node,
       ret = OB_ERR_ILLEGAL_TYPE;
       SQL_RESV_LOG(WARN, "Unsupport data type of column definiton", K(ident_name), K(data_type), K(ret));
       break;
+  }
   }
   LOG_DEBUG("resolve data type", K(ret), K(data_type), K(lbt()));
   return ret;
@@ -7430,9 +7581,7 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
 {
   int ret = OB_SUCCESS;
 
-  if (secure_file_priv.empty()) {
-    // pass security check
-  } else if (0 == secure_file_priv.case_compare(N_NULL)) {
+  if (secure_file_priv.empty() || 0 == secure_file_priv.case_compare(N_NULL)) {
     ret = OB_ERR_NO_PRIVILEGE;
     LOG_WARN("no priv", K(ret), K(secure_file_priv), K(full_path));
   } else if (OB_UNLIKELY(secure_file_priv.length() >= DEFAULT_BUF_LENGTH)) {
@@ -7847,6 +7996,217 @@ int ObResolverUtils::resolve_file_format_string_value(const ParseNode *node,
     } else {
       result_value = value_obj.get_string();
     }
+  }
+  return ret;
+}
+
+int ObResolverUtils::check_keystore_status(const uint64_t tenant_id,
+                                           ObSchemaChecker &schema_checker)
+{
+  int ret = OB_SUCCESS;
+  const ObKeystoreSchema *keystore_schema = NULL;
+  if (OB_FAIL(schema_checker.get_keystore_schema(tenant_id, keystore_schema))) {
+    LOG_WARN("fail to get keystore schema", K(ret));
+  } else if (OB_ISNULL(keystore_schema)) {
+    ret = OB_KEYSTORE_NOT_EXIST;
+    LOG_WARN("the keystore is not exist", K(ret));
+  } else if (0 == keystore_schema->get_status()) {
+    ret = OB_KEYSTORE_NOT_OPEN;
+    LOG_WARN("the keystore is not open", K(ret));
+  } else if (2 == keystore_schema->get_status()) {
+    ret = OB_KEYSTORE_OPEN_NO_MASTER_KEY;
+    LOG_WARN("the keystore dont have any master key", K(ret));
+  }
+  return ret;
+}
+
+int ObResolverUtils::check_encryption_name(ObString &encryption_name, bool &need_encrypt)
+{
+  int ret = OB_SUCCESS;
+  bool is_oracle = lib::is_oracle_mode();
+  if (0 == encryption_name.length()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("encryption name cannot be empty", K(ret));
+  } else if (0 == encryption_name.case_compare("aes-128") ||
+             0 == encryption_name.case_compare("aes-192") ||
+             0 == encryption_name.case_compare("aes-256") ||
+             0 == encryption_name.case_compare("aes-128-gcm") ||
+             0 == encryption_name.case_compare("aes-192-gcm") ||
+             0 == encryption_name.case_compare("aes-256-gcm") ||
+             0 == encryption_name.case_compare("sm4-cbc") ||
+             0 == encryption_name.case_compare("sm4-gcm")) {
+    need_encrypt = true;
+  } else if (!is_oracle && 0 == encryption_name.case_compare("y")) {
+    need_encrypt = true;
+    encryption_name = common::ObString::make_string("aes-256");
+  } else if (!is_oracle && 0 == encryption_name.case_compare("n")) {
+    need_encrypt = false;
+  } else if (is_oracle && 0 == encryption_name.case_compare("none")){
+    need_encrypt = false;
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("the encryption name is invalid", K(ret), K(encryption_name));
+  }
+  return ret;
+}
+
+int ObResolverUtils::check_not_supported_tenant_name(const ObString &tenant_name)
+{
+  int ret = OB_SUCCESS;
+  if (0 == tenant_name.case_compare("all") ||
+      0 == tenant_name.case_compare("all_user") ||
+      0 == tenant_name.case_compare("all_meta")) {
+    ret = OB_NOT_SUPPORTED;
+  }
+  return ret;
+}
+
+int ObResolverUtils::rm_space_for_neg_num(ParseNode *param_node, ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  char *buf = NULL;
+  int64_t pos = 0;
+  int64_t idx = 0;
+  if (param_node->str_len_ <= 0) {
+    // do nothing
+  } else if ('-' != param_node->str_value_[idx]) {
+     // 'select - 1.2 from dual' and 'select 1.2 from dual' will hit the same plan, the key is
+     // select ? from dual, so '- 1.2' and '1.2' will all go here, if '-' is not presented,
+     // do nothing
+    LOG_TRACE("rm space for neg num", K(idx), K(ObString(param_node->str_len_, param_node->str_value_)));
+  } else if (OB_ISNULL(buf = (char *)allocator.alloc(param_node->str_len_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocator memory", K(ret), K(param_node->str_len_));
+  } else {
+    buf[pos++] =  '-';
+    idx += 1;
+    for (; idx < param_node->str_len_ && isspace(param_node->str_value_[idx]); idx++);
+    int32_t len = (int32_t)(param_node->str_len_ - idx);
+    if (len > 0) {
+      MEMCPY(buf + pos, param_node->str_value_ + idx, len);
+    }
+    pos += len;
+    param_node->str_value_ = buf;
+    param_node->str_len_ = pos;
+    LOG_TRACE("rm space for neg num", K(idx), K(ObString(param_node->str_len_, param_node->str_value_)));
+  }
+  return ret;
+}
+
+int ObResolverUtils::handle_varchar_charset(ObCharsetType charset_type,
+                                            ObIAllocator &allocator,
+                                            ParseNode *&node)
+{
+  int ret = OB_SUCCESS;
+  if ((T_HEX_STRING == node->type_ || T_VARCHAR == node->type_)
+      && CHARSET_INVALID != charset_type) {
+    ParseNode *charset_node = new_node(&allocator, T_CHARSET, 0);
+    ParseNode *varchar_node = new_non_terminal_node(&allocator, T_VARCHAR, 2, charset_node, node);
+
+    if (OB_ISNULL(charset_node) || OB_ISNULL(varchar_node)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      const char *name = ObCharset::charset_name(charset_type);
+      charset_node->str_value_ = parse_strdup(name, &allocator, &(charset_node->str_len_));
+      if (NULL == charset_node->str_value_) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        varchar_node->str_value_ = node->str_value_;
+        varchar_node->str_len_ = node->str_len_;
+        varchar_node->raw_text_ = node->raw_text_;
+        varchar_node->text_len_ = node->text_len_;
+        varchar_node->type_ = T_VARCHAR;
+
+        node = varchar_node;
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObResolverUtils::resolver_param(ObPlanCacheCtx &pc_ctx,
+                                    ObSQLSessionInfo &session,
+                                    const ParamStore &phy_ctx_params,
+                                    const stmt::StmtType stmt_type,
+                                    const ObCharsetType param_charset_type,
+                                    const ObBitSet<> &neg_param_index,
+                                    const ObBitSet<> &not_param_index,
+                                    const ObBitSet<> &must_be_positive_idx,
+                                    const ObPCParam *pc_param,
+                                    const int64_t param_idx,
+                                    ObObjParam &obj_param,
+                                    bool &is_param)
+{
+  int ret = OB_SUCCESS;
+  ParseNode *raw_param = NULL;
+  ObString literal_prefix;
+  const bool is_paramlize = false;
+  int64_t server_collation = CS_TYPE_INVALID;
+  obj_param.reset();
+  if (OB_ISNULL(pc_param) || OB_ISNULL(raw_param = pc_param->node_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret));
+  } else if (not_param_index.has_member(param_idx)) {
+    /* do nothing */
+    is_param = false;
+    SQL_PC_LOG(TRACE, "not_param", K(param_idx), K(raw_param->type_), K(raw_param->value_),
+                      "str_value", ObString(raw_param->str_len_, raw_param->str_value_));
+  } else {
+          // select -  1.2 from dual
+          // "-  1.2" will be treated as a const node with neg sign
+          // however, ObNumber::from("-  1.2") will throw a error, for there are spaces between neg sign and num
+          // so remove spaces before resolve_const is called
+    if (neg_param_index.has_member(param_idx) &&
+        OB_FAIL(rm_space_for_neg_num(raw_param, pc_ctx.allocator_))) {
+      SQL_PC_LOG(WARN, "fail to remove spaces for neg node", K(ret));
+    } else if (OB_FAIL(handle_varchar_charset(param_charset_type, pc_ctx.allocator_, raw_param))) {
+      SQL_PC_LOG(WARN, "fail to handle varchar charset");
+    } else if (T_QUESTIONMARK == raw_param->type_) {
+      int64_t idx = raw_param->value_;
+      CK (idx >= 0 && idx < phy_ctx_params.count());
+      OX (obj_param.set_is_boolean(phy_ctx_params.at(idx).is_boolean()));
+    }
+    if (OB_FAIL(ret)) {
+    } else if (lib::is_oracle_mode() &&
+               OB_FAIL(session.get_sys_variable(share::SYS_VAR_COLLATION_SERVER, server_collation))) {
+      LOG_WARN("get sys variable failed", K(ret));
+    } else if (OB_FAIL(ObResolverUtils::resolve_const(raw_param, stmt_type, pc_ctx.allocator_,
+                       static_cast<ObCollationType>(session.get_local_collation_connection()),
+                       session.get_nls_collation_nation(), session.get_timezone_info(),
+                       obj_param, is_paramlize, literal_prefix,
+                       session.get_actual_nls_length_semantics(),
+                       static_cast<ObCollationType>(server_collation), NULL,
+                       session.get_sql_mode()))) {
+      SQL_PC_LOG(WARN, "fail to resolve const", K(ret));
+    } else if (FALSE_IT(obj_param.set_raw_text_info(static_cast<int32_t>(raw_param->raw_sql_offset_),
+                                                    static_cast<int32_t>(raw_param->text_len_)))) {
+      /* nothing */
+    } else if (ob_is_numeric_type(obj_param.get_type())) {
+      // -0 is also counted as negative
+      if (must_be_positive_idx.has_member(param_idx)) {
+        if (obj_param.is_boolean()) {
+          // boolean will skip this check
+        } else if (lib::is_oracle_mode()) {
+          if (obj_param.is_negative_number() ||
+              (obj_param.is_zero_number() && '-' == raw_param->str_value_[0])) {
+            ret = OB_ERR_UNEXPECTED;
+            pc_ctx.should_add_plan_ = false; // 内部主动抛出not supported时候需要设置这个标志，以免新计划add plan导致锁冲突
+            LOG_TRACE("param must be positive", K(ret), K(param_idx), K(obj_param));
+          }
+        } else if (lib::is_mysql_mode()) {
+          if (obj_param.is_integer_type() &&
+              (obj_param.get_int() < 0 || (0 == obj_param.get_int() && '-' == raw_param->str_value_[0]))) {
+            ret = OB_ERR_UNEXPECTED;
+            pc_ctx.should_add_plan_ = false;
+            LOG_TRACE("param must be positive", K(ret), K(param_idx), K(obj_param));
+          }
+        }
+      }
+    }
+    is_param = true;
+    LOG_TRACE("is_param", K(param_idx), K(obj_param), K(raw_param->type_), K(raw_param->value_),
+              "str_value", ObString(raw_param->str_len_, raw_param->str_value_));
   }
   return ret;
 }

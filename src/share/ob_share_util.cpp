@@ -17,14 +17,115 @@
 #include "lib/time/ob_time_utility.h"
 #include "lib/oblog/ob_log_module.h"
 #include "share/ob_cluster_version.h" // for GET_MIN_DATA_VERSION
+#ifdef OB_BUILD_ARBITRATION
+#include "share/arbitration_service/ob_arbitration_service_utils.h" // ObArbitrationServiceUtils
+#endif
 #include "lib/mysqlclient/ob_isql_client.h"
 #include "observer/omt/ob_tenant_config_mgr.h" // ObTenantConfigGuard
+#include "storage/ls/ob_ls.h" //ObLS
 
 namespace oceanbase
 {
 using namespace common;
 namespace share
 {
+
+void ObIDGenerator::reset()
+{
+  inited_ = false;
+  step_ = 0;
+  start_id_ = common::OB_INVALID_ID;
+  end_id_ = common::OB_INVALID_ID;
+  current_id_ = common::OB_INVALID_ID;
+}
+
+int ObIDGenerator::init(
+    const uint64_t step,
+    const uint64_t start_id,
+    const uint64_t end_id)
+{
+  int ret = OB_SUCCESS;
+  reset();
+  if (OB_UNLIKELY(start_id > end_id || 0 == step)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid start_id/end_id", KR(ret), K(start_id), K(end_id), K(step));
+  } else {
+    step_ = step;
+    start_id_ = start_id;
+    end_id_ = end_id;
+    current_id_ = start_id - step_;
+    inited_ = true;
+  }
+  return ret;
+}
+
+int ObIDGenerator::next(uint64_t &current_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("generator is not inited", KR(ret), KPC(this));
+  } else if (current_id_ >= end_id_) {
+    ret = OB_ITER_END;
+  } else {
+    current_id_ += step_;
+    current_id = current_id_;
+  }
+  return ret;
+}
+
+int ObIDGenerator::get_start_id(uint64_t &start_id) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("generator is not inited", KR(ret), KPC(this));
+  } else {
+    start_id = start_id_;
+  }
+  return ret;
+}
+
+int ObIDGenerator::get_current_id(uint64_t &current_id) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("generator is not inited", KR(ret), KPC(this));
+  } else {
+    current_id = current_id_;
+  }
+  return ret;
+}
+
+int ObIDGenerator::get_end_id(uint64_t &end_id) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("generator is not inited", KR(ret), KPC(this));
+  } else {
+    end_id = end_id_;
+  }
+  return ret;
+}
+
+int ObIDGenerator::get_id_cnt(uint64_t &cnt) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("generator is not inited", KR(ret), KPC(this));
+  } else if (OB_UNLIKELY(end_id_ < start_id_
+             || step_ <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid start_id/end_id/step", KR(ret), KPC(this));
+  } else {
+    cnt = (end_id_ - start_id_) / step_ + 1;
+  }
+  return ret;
+}
+
 int ObShareUtil::set_default_timeout_ctx(ObTimeoutCtx &ctx, const int64_t default_timeout)
 {
   int ret = OB_SUCCESS;
@@ -124,6 +225,13 @@ int ObShareUtil::generate_arb_replica_num(
                   || !ls_id.is_valid_with_tenant(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_id));
+#ifdef OB_BUILD_ARBITRATION
+  } else if (OB_FAIL(ObArbitrationServiceUtils::generate_arb_replica_num(
+                         tenant_id,
+                         ls_id,
+                         arb_replica_num))) {
+    LOG_WARN("fail to generate arb replica number", KR(ret), K(tenant_id), K(ls_id));
+#endif
   }
   return ret;
 }
@@ -292,7 +400,7 @@ int ObShareUtil::get_ora_rowscn(
       LOG_WARN("fail to get next row", KR(ret));
     } else {
       EXTRACT_INT_FIELD_MYSQL(*result, "ORA_ROWSCN", ora_rowscn_val, int64_t);
-      if (OB_FAIL(ora_rowscn.convert_for_inner_table_field(ora_rowscn_val))) {
+      if (FAILEDx(ora_rowscn.convert_for_inner_table_field(ora_rowscn_val))) {
         LOG_WARN("fail to convert val to SCN", KR(ret), K(ora_rowscn_val));
       }
     }
@@ -320,6 +428,79 @@ bool ObShareUtil::is_tenant_enable_rebalance(const uint64_t tenant_id)
     }
   }
   return bret;
+}
+
+bool ObShareUtil::is_tenant_enable_transfer(const uint64_t tenant_id)
+{
+  bool bret = false;
+  if (is_valid_tenant_id(tenant_id)) {
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+    if (OB_UNLIKELY(!tenant_config.is_valid())) {
+      LOG_WARN_RET(OB_ERR_UNEXPECTED, "tenant config is invalid", K(tenant_id));
+    } else if (!tenant_config->enable_rebalance) {
+      // if enable_rebalance is disabled, transfer is not allowed
+      bret = false;
+    } else {
+      bret = tenant_config->enable_transfer;
+    }
+  }
+  return bret;
+}
+
+ERRSIM_POINT_DEF(ERRSIM_USER_LS_SYNC_SCN);
+int ObShareUtil::wait_user_ls_sync_scn_locally(const share::SCN &sys_ls_target_scn, storage::ObLS &ls)
+{
+  int ret = OB_SUCCESS;
+  logservice::ObLogHandler *log_handler = ls.get_log_handler();
+  transaction::ObKeepAliveLSHandler *keep_alive_handler = ls.get_keep_alive_ls_handler();
+  ObLSID ls_id = ls.get_ls_id();
+  uint64_t tenant_id = ls.get_tenant_id();
+  ObTimeoutCtx ctx;
+  if (OB_ISNULL(keep_alive_handler) || OB_ISNULL(log_handler )) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("keep_alive_ls_handler or log_handler is null", KR(ret), K(ls_id),
+        KP(keep_alive_handler), KP(log_handler));
+  } else if (OB_UNLIKELY(!sys_ls_target_scn.is_valid_and_not_min())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid sys_ls_target_scn", KR(ret), K(sys_ls_target_scn));
+  } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.rpc_timeout))) {
+    LOG_WARN("fail to set timeout", KR(ret));
+  } else {
+    bool need_retry = true;
+    share::SCN curr_end_scn;
+    curr_end_scn.set_min();
+    (void) keep_alive_handler->set_sys_ls_end_scn(sys_ls_target_scn);
+    do {
+      if (OB_UNLIKELY(ctx.is_timeouted())) {
+        ret = OB_TIMEOUT;
+        need_retry = false;
+        LOG_WARN("ctx timeout", KR(ret), K(ctx));
+      } else {
+        if (OB_FAIL(log_handler->get_end_scn(curr_end_scn))) {
+          LOG_WARN("fail to get ls end scn", KR(ret), K(ls_id));
+        } else {
+          // switchover to standby timeout
+          curr_end_scn = ERRSIM_USER_LS_SYNC_SCN ? SCN::scn_dec(sys_ls_target_scn) : curr_end_scn;
+          LOG_TRACE("wait curr_end_scn >= sys_ls_target_scn", K(curr_end_scn), K(sys_ls_target_scn),
+              "is_errsim_opened", ERRSIM_USER_LS_SYNC_SCN ? true : false);
+        }
+        if (OB_SUCC(ret) && curr_end_scn >= sys_ls_target_scn) {
+          LOG_INFO("current user ls end scn >= sys ls target scn now", K(curr_end_scn),
+              K(sys_ls_target_scn), "is_errsim_opened", ERRSIM_USER_LS_SYNC_SCN ? true : false,
+              K(tenant_id), K(ls_id));
+          need_retry = false;
+        }
+      }
+      if (need_retry) {
+        ob_usleep(50 * 1000); // wait 50ms
+      }
+    } while (need_retry && OB_SUCC(ret));
+    if (OB_UNLIKELY(need_retry && OB_SUCC(ret))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("the wait loop should not be terminated", KR(ret), K(curr_end_scn), K(sys_ls_target_scn));
+    }
+  }
+  return ret;
 }
 
 } //end namespace share

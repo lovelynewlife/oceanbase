@@ -571,7 +571,7 @@ int ObLSServiceHelper::wait_all_tenants_user_ls_sync_scn(
   int ret = OB_SUCCESS;
   share::SCN sys_ls_target_scn;
   ObTimeoutCtx timeout_ctx;
-  const int64_t DEFAULT_TIMEOUT = GCONF.internal_sql_execute_timeout;
+  const int64_t DEFAULT_TIMEOUT = GCONF.internal_sql_execute_timeout * 10;
   sys_ls_target_scn.set_invalid();
   if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, DEFAULT_TIMEOUT))) {
     LOG_WARN("fail to get default timeout", KR(ret));
@@ -586,7 +586,7 @@ int ObLSServiceHelper::wait_all_tenants_user_ls_sync_scn(
       if (OB_UNLIKELY(timeout_ctx.is_timeouted())) {
         ret = OB_TIMEOUT;
         LOG_WARN("wait tenant_sync_scn timeout", KR(ret), K(timeout_ctx));
-      } else if (OB_FAIL(check_if_need_wait_user_ls_sync_scn(tenant_id, sys_ls_target_scn))) {
+      } else if (OB_FAIL(check_if_need_wait_user_ls_sync_scn_(tenant_id, sys_ls_target_scn))) {
         if (OB_NEED_WAIT != ret) {
           LOG_WARN("fail to check tenant_sync_scn", KR(ret), K(tenant_id), K(sys_ls_target_scn));
         } else {
@@ -603,8 +603,7 @@ int ObLSServiceHelper::wait_all_tenants_user_ls_sync_scn(
   return ret;
 }
 
-ERRSIM_POINT_DEF(ERRSIM_USER_LS_SYNC_SCN);
-int ObLSServiceHelper::check_if_need_wait_user_ls_sync_scn(
+int ObLSServiceHelper::check_if_need_wait_user_ls_sync_scn_(
     const uint64_t tenant_id,
     const share::SCN &sys_ls_target_scn)
 {
@@ -624,14 +623,10 @@ int ObLSServiceHelper::check_if_need_wait_user_ls_sync_scn(
   } else if (OB_FAIL(ls_recovery.get_user_ls_sync_scn(tenant_id, *GCTX.sql_proxy_, user_ls_sync_scn))) {
     LOG_WARN("failed to get user scn", KR(ret), K(tenant_id));
   } else {
-    bool is_errsim_opened = ERRSIM_USER_LS_SYNC_SCN ? true : false;
-    user_ls_sync_scn = is_errsim_opened ? SCN::scn_dec(sys_ls_target_scn) : user_ls_sync_scn;
-    // if ERRSIM_USER_LS_SYNC_SCN is true, user_ls_sync_scn will be always smaller than sys_ls_target_scn
-    // thus, the related operation will fail due to timeout.
     if (user_ls_sync_scn < sys_ls_target_scn) {
       ret = OB_NEED_WAIT;
       LOG_WARN("wait some time, user_ls_sync_scn cannot be smaller than sys_ls_target_scn",
-          KR(ret), K(tenant_id), K(user_ls_sync_scn), K(sys_ls_target_scn), K(is_errsim_opened));
+          KR(ret), K(tenant_id), K(user_ls_sync_scn), K(sys_ls_target_scn));
     } else {
       LOG_INFO("user_ls_sync_scn >= sys_ls_target_scn now", K(tenant_id), K(user_ls_sync_scn), K(sys_ls_target_scn));
     }
@@ -904,10 +899,14 @@ int ObLSServiceHelper::create_new_ls_in_trans(
   return ret;
 }
 
-int ObLSServiceHelper::balance_ls_group(ObTenantLSInfo& tenant_ls_info)
+int ObLSServiceHelper::balance_ls_group(
+    const bool need_execute_balance,
+    ObTenantLSInfo& tenant_ls_info,
+    bool &is_balanced)
 {
   int ret = OB_SUCCESS;
   int64_t task_cnt = 0;
+  is_balanced = true;
   if (OB_FAIL(tenant_ls_info.gather_stat())) {
     LOG_WARN("failed to gather stat", KR(ret));
   } else if (OB_FAIL(try_shrink_standby_unit_group_(tenant_ls_info, task_cnt))) {
@@ -938,12 +937,13 @@ int ObLSServiceHelper::balance_ls_group(ObTenantLSInfo& tenant_ls_info)
         }
       }//end for
       if (OB_SUCC(ret) && max_count - min_count > 1) {
-        if (OB_FAIL(balance_ls_group_between_unit_group_(tenant_ls_info, min_index, max_index))) {
+        is_balanced = false;
+        if (need_execute_balance && OB_FAIL(balance_ls_group_between_unit_group_(tenant_ls_info, min_index, max_index))) {
           LOG_WARN("failed to balance ls group between unit group", KR(ret), K(tenant_ls_info),
               K(min_index), K(max_index));
         }
       }
-    } while (OB_SUCC(ret) && (max_count - min_count) > 1);
+    } while (OB_SUCC(ret) && (max_count - min_count) > 1 && need_execute_balance);
   }
   return ret;
 }

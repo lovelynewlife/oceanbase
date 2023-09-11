@@ -17,14 +17,16 @@
 namespace oceanbase {
 namespace memtable {
 class ObMvccAccessCtx;
-class ObMvccValueIterator;
+class ObMvccRow;
 }
 namespace transaction {
 class ObTransID;
+class ObTxSEQ;
 }
 namespace common {
 class ObTabletID;
 class ObStoreRowkey;
+class ObQueryFlag;
 }
 namespace share {
 class ObLSID;
@@ -45,12 +47,13 @@ public:
   // snapshot_version of current transaction, it will cause tsc.
   // If the check meet this case, we should return error code to sql layer, and it will
   // choose to retry or throw an exception according to the isolation level.
-  static int check_foreign_key_constraint_for_memtable(memtable::ObMvccValueIterator *value_iter,
+  static int check_foreign_key_constraint_for_memtable(memtable::ObMvccAccessCtx *ctx,
+                                                       memtable::ObMvccRow *row,
                                                        storage::ObStoreRowLockState &lock_state);
   static int check_foreign_key_constraint_for_sstable(storage::ObTxTableGuards &tx_table_guards,
                                                       const transaction::ObTransID &read_trans_id,
                                                       const transaction::ObTransID &data_trans_id,
-                                                      const int64_t sql_sequence,
+                                                      const transaction::ObTxSEQ &sql_sequence,
                                                       const int64_t trans_version,
                                                       const int64_t snapshot_version,
                                                       const share::SCN &end_scn,

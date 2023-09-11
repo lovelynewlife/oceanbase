@@ -65,6 +65,8 @@ public:
   virtual int get_role(bool &is_leader, int64_t &epoch) = 0;
   virtual int get_max_decided_scn(share::SCN &scn) = 0;
 
+  virtual int get_append_mode_initial_scn(share::SCN &ref_scn) = 0;
+
   /**
    * Dup Table Inerface
    * */
@@ -84,8 +86,11 @@ public:
                                         const share::SCN &redo_completed_scn,
                                         bool &redo_sync_finish,
                                         share::SCN &total_max_read_version);
+  virtual bool is_dup_table_lease_valid() { return false; }
   virtual bool has_dup_tablet() { return false; }
   virtual int64_t get_committing_dup_trx_cnt();
+  virtual int add_commiting_dup_trx(const ObTransID &tx_id);
+  virtual int remove_commiting_dup_trx(const ObTransID &tx_id);
 };
 
 class ObLSTxLogAdapter : public ObITxLogAdapter
@@ -101,6 +106,8 @@ public:
                  const bool need_nonblock);
   int get_role(bool &is_leader, int64_t &epoch);
   int get_max_decided_scn(share::SCN &scn);
+
+  int get_append_mode_initial_scn(share::SCN &ref_scn);
 
   /**
    * Dup Table Inerface
@@ -121,8 +128,11 @@ public:
                                 const share::SCN &redo_completed_scn,
                                 bool &redo_sync_finish,
                                 share::SCN &total_max_read_version);
+  bool is_dup_table_lease_valid();
   bool has_dup_tablet();
   int64_t get_committing_dup_trx_cnt();
+  int add_commiting_dup_trx(const ObTransID &tx_id);
+  int remove_commiting_dup_trx(const ObTransID &tx_id);
 private:
   logservice::ObLogHandler *log_handler_;
   ObDupTableLSHandler *dup_table_ls_handler_;

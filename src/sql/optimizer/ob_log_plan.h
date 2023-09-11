@@ -84,6 +84,7 @@ class ObDelUpdStmt;
 class ObExchangeInfo;
 class ObDmlTableInfo;
 struct IndexDMLInfo;
+class ValuesTablePath;
 
 struct FunctionTableDependInfo {
   TO_STRING_KV(
@@ -564,6 +565,9 @@ public:
   int allocate_function_table_path(FunctionTablePath *func_table_path,
                                    ObLogicalOperator *&out_access_path_op);
 
+  int allocate_values_table_path(ValuesTablePath *values_table_path,
+                                 ObLogicalOperator *&out_access_path_op);
+
   int get_has_global_index_filters(const ObIArray<ObRawExpr*> &filter_exprs,
                                    const ObIArray<uint64_t> &index_columns,
                                    bool &has_index_scan_filter,
@@ -927,6 +931,7 @@ public:
 
   /** @brief Allocate sequence op on top of plan candidates */
   int candi_allocate_sequence();
+  int check_has_dblink_sequence(bool &has);
   int allocate_sequence_as_top(ObLogicalOperator *&old_top);
 
   int candi_allocate_err_log(const ObDelUpdStmt *stmt);
@@ -1336,6 +1341,8 @@ public:
 
   int perform_gather_stat_replace(ObLogicalOperator *op);
 
+  common::ObIArray<ObRawExpr *> &get_new_or_quals() { return new_or_quals_; }
+
 protected:
   virtual int generate_normal_raw_plan() = 0;
   virtual int generate_dblink_raw_plan();
@@ -1736,6 +1743,13 @@ public:
   bool has_added_win_dist() const { return outline_print_flags_ & ADDED_WIN_DIST_HINT; }
   void set_added_win_dist() { outline_print_flags_ |= ADDED_WIN_DIST_HINT; }
   const common::ObIArray<ObRawExpr*> &get_onetime_query_refs() const { return onetime_query_refs_; }
+  int deduce_redundant_join_conds(const ObIArray<ObRawExpr*> &quals,
+                                  const ObIArray<TableItem*> &table_items,
+                                  ObIArray<ObRawExpr*> &redundancy_quals);
+  int deduce_redundant_join_conds_with_equal_set(const ObIArray<ObRawExpr*> &equal_set,
+                                                 ObIArray<ObRelIds> &connect_infos,
+                                                 ObIArray<ObRelIds> &single_table_ids,
+                                                 ObIArray<ObRawExpr*> &redundancy_quals);
 private:
   static const int64_t IDP_PATHNUM_THRESHOLD = 5000;
 protected: // member variable
@@ -1883,6 +1897,7 @@ private:
   common::ObSEArray<ObExecParamRawExpr *, 4, common::ModulePageAllocator, true> onetime_params_;
   common::ObSEArray<std::pair<ObRawExpr *, ObRawExpr *>, 4,
                     common::ModulePageAllocator, true > onetime_replaced_exprs_;
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> new_or_quals_;
   DISALLOW_COPY_AND_ASSIGN(ObLogPlan);
 };
 

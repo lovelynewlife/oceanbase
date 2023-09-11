@@ -142,6 +142,9 @@
 #include "sql/resolver/cmd/ob_load_data_stmt.h"
 #include "share/stat/ob_stat_define.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_mgr.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 
 namespace oceanbase
 {
@@ -1862,8 +1865,26 @@ int ObStaticEngineCG::generate_spec(ObLogExprValues &op,
     if (spec.ins_values_batch_opt_) {
       spec.contain_ab_param_ = true;
     }
-    if (OB_FAIL(spec.values_.prepare_allocate(op.get_value_exprs().count()))) {
+    bool find_group = false;
+    int64_t group_idx = -1;
+    ObExecContext * exec_ctx = nullptr;
+    if (OB_ISNULL(opt_ctx_) || OB_ISNULL(exec_ctx = opt_ctx_->get_exec_ctx())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("fail to get exec context", K(ret), KP(opt_ctx_));
+    } else if (exec_ctx->has_dynamic_values_table()) {
+      if (OB_FAIL(op.get_array_param_group_id(group_idx, find_group))) {
+        LOG_WARN("failed to get_array_param_group_id", K(ret));
+      } else if (find_group) {
+        spec.array_group_idx_ = group_idx;
+        spec.contain_ab_param_ = true;
+      }
+    }
+
+    if (OB_FAIL(ret)) { /* do nothing */
+    } else if (OB_FAIL(spec.values_.prepare_allocate(op.get_value_exprs().count()))) {
       LOG_WARN("init fixed array failed", K(ret), K(op.get_value_exprs().count()));
+    } else if (OB_FAIL(spec.column_names_.prepare_allocate(op.get_value_desc().count()))) {
+      LOG_WARN("init fixed array failed", K(ret), K(op.get_value_desc().count()));
     } else if (OB_FAIL(spec.str_values_array_.prepare_allocate(op.get_output_exprs().count()))) {
       LOG_WARN("init fixed array failed", K(ret), K(op.get_output_exprs().count()));
     } else if (OB_FAIL(spec.is_strict_json_desc_.prepare_allocate(op.get_value_desc().count()))) {
@@ -1889,6 +1910,13 @@ int ObStaticEngineCG::generate_spec(ObLogExprValues &op,
       for (int64_t i = 0; OB_SUCC(ret) && i < op.get_value_desc().count(); i++) {
         ObColumnRefRawExpr *col_expr = op.get_value_desc().at(i);
         spec.is_strict_json_desc_.at(i) = (col_expr->is_strict_json_column() == IS_JSON_CONSTRAINT_STRICT);
+        if (OB_FAIL(
+            deep_copy_ob_string(
+                phy_plan_->get_allocator(),
+                col_expr->get_column_name(),
+                spec.column_names_.at(i)))) {
+          LOG_WARN("failed to deep copy string", K(ret));
+        }
       }
       // Add str_values to spec: str_values_ is worked for enum/set type for type conversion.
       // According to code in ob_expr_values_op.cpp, it should be in the same order as output_exprs.
@@ -1997,6 +2025,37 @@ int ObStaticEngineCG::generate_merge_with_das(ObLogMerge &op,
     OZ(generate_rt_exprs(op.get_delete_condition(), spec.delete_conds_));
   }
 
+  if (OB_SUCC(ret)) {
+    ObMergeCtDef *merge_ctdef = spec.merge_ctdefs_.at(0);
+    bool find = false;
+
+    if (OB_NOT_NULL(merge_ctdef->upd_ctdef_)) {
+      const ObUpdCtDef &upd_ctdef = *merge_ctdef->upd_ctdef_;
+      for (int64_t i = 0; OB_SUCC(ret) && !find && i < upd_ctdef.fk_args_.count(); ++i) {
+        const ObForeignKeyArg &fk_arg = upd_ctdef.fk_args_.at(i);
+        if (!fk_arg.use_das_scan_) {
+          find = true;
+        }
+      }
+    }
+
+    if (OB_SUCC(ret) && !find) {
+      if (OB_NOT_NULL(merge_ctdef->del_ctdef_)) {
+        const ObDelCtDef &del_ctdef = *merge_ctdef->del_ctdef_;
+        if (del_ctdef.fk_args_.count() > 0) {
+          find = true;
+        }
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      if (find) {
+        spec.check_fk_batch_ = false;
+      } else {
+        spec.check_fk_batch_ = true;
+      }
+    }
+  }
   return ret;
 }
 
@@ -2025,6 +2084,7 @@ int ObStaticEngineCG::generate_spec(ObLogicalOperator &op,
 int ObStaticEngineCG::generate_insert_with_das(ObLogInsert &op, ObTableInsertSpec &spec)
 {
   int ret = OB_SUCCESS;
+  spec.check_fk_batch_ = true;
   const ObIArray<IndexDMLInfo *> &index_dml_infos = op.get_index_dml_infos();
   if (OB_ISNULL(phy_plan_)) {
     ret = OB_INVALID_ARGUMENT;
@@ -2120,6 +2180,7 @@ int ObStaticEngineCG::generate_delete_with_das(ObLogDelete &op, ObTableDeleteSpe
 {
   int ret = OB_SUCCESS;
   const ObIArray<uint64_t> &delete_table_list = op.get_table_list();
+  spec.check_fk_batch_ = false;
   if (OB_ISNULL(phy_plan_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), KP(phy_plan_));
@@ -2255,6 +2316,27 @@ int ObStaticEngineCG::generate_spec(ObLogInsert &op, ObTableReplaceSpec &spec, c
       LOG_DEBUG("print replace_ctdef", K(ret), KPC(replace_ctdef));
     } // for index_dml_infos end
   }
+
+  if (OB_SUCC(ret)) {
+    ObReplaceCtDef *replace_ctdef = spec.replace_ctdefs_.at(0);
+    if (OB_ISNULL(replace_ctdef)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("replace ctdef is null", K(ret));
+    } else {
+      const ObInsCtDef *ins_ctdef = replace_ctdef->ins_ctdef_;
+      const ObDelCtDef *del_ctdef = replace_ctdef->del_ctdef_;
+      if (OB_NOT_NULL(ins_ctdef) && OB_NOT_NULL(del_ctdef)) {
+        if (del_ctdef->fk_args_.count() > 0) {
+          spec.check_fk_batch_ = false;
+        } else {
+          spec.check_fk_batch_ = true;
+        }
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("insert or delete ctdef is null", K(ret), K(ins_ctdef), K(del_ctdef));
+      }
+    }
+  }
   return ret;
 }
 
@@ -2291,6 +2373,7 @@ int ObStaticEngineCG::generate_update_with_das(ObLogUpdate &op, ObTableUpdateSpe
       LOG_WARN("generate ab stmt id expr failed", K(ret));
     }
   }
+  bool find = false;
   for (int64_t i = 0; OB_SUCC(ret) && i < table_list.count(); ++i) {
     const uint64_t loc_table_id = table_list.at(i);
     ObSEArray<IndexDMLInfo *, 4> index_dml_infos;
@@ -2314,9 +2397,18 @@ int ObStaticEngineCG::generate_update_with_das(ObLogUpdate &op, ObTableUpdateSpe
       } else {
         upd_ctdef->has_instead_of_trigger_ = op.has_instead_of_trigger();
         ctdefs.at(j) = upd_ctdef;
+        for (int64_t j = 0; j < upd_ctdef->fk_args_.count() && !find; ++j) {
+          const ObForeignKeyArg &fk_arg = upd_ctdef->fk_args_.at(j);
+          if (!fk_arg.use_das_scan_) {
+            find = true;
+          }
+        }
       }
     }  // for index_dml_infos end
   } //for table_columns end
+  if (OB_SUCC(ret)) {
+    spec.check_fk_batch_ = !find;
+  }
   return ret;
 }
 
@@ -2453,6 +2545,30 @@ int ObStaticEngineCG::generate_spec(ObLogInsert &op, ObTableInsertUpSpec &spec, 
           LOG_WARN("fail to generate all_saved_expr", K(ret), K(all_need_save_exprs));
         } else {
           LOG_DEBUG("print all_need_save_exprs", K(all_need_save_exprs));
+        }
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    const ObInsertUpCtDef *insert_up_ctdef = spec.insert_up_ctdefs_.at(0);
+    if (OB_ISNULL(insert_up_ctdef)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("insert update ctdef is nullptr", K(ret));
+    } else {
+      const ObInsCtDef *ins_ctdef = insert_up_ctdef->ins_ctdef_;
+      const ObUpdCtDef *upd_ctdef = insert_up_ctdef->upd_ctdef_;
+      if (OB_ISNULL(ins_ctdef) || OB_ISNULL(upd_ctdef)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("insert or update ctdef is null", K(ret));
+      } else {
+        spec.check_fk_batch_ = true;
+        for (int64_t i = 0; i < upd_ctdef->fk_args_.count() && spec.check_fk_batch_; ++i) {
+          const ObForeignKeyArg &fk_arg = upd_ctdef->fk_args_.at(i);
+          if (!fk_arg.use_das_scan_) {
+            spec.check_fk_batch_ = false;
+            break;
+          }
         }
       }
     }
@@ -4097,6 +4213,9 @@ int ObStaticEngineCG::generate_pump_exprs(ObLogJoin &op, ObNLConnectBySpecBase &
   if (OB_ISNULL(left_op) || OB_ISNULL(right_op)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected status: child is null", K(ret));
+  } else if (OB_UNLIKELY(left_output.count() != right_output.count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected status: left and right output size not same", K(ret));
   } else if (OB_FAIL(generate_pseudo_column_expr(op, spec))) {
     LOG_WARN("failed to generate pseudo column", K(ret));
   } else if (OB_FAIL(spec.connect_by_prior_exprs_.init(left_output.count()))) {
@@ -4128,7 +4247,7 @@ int ObStaticEngineCG::generate_pump_exprs(ObLogJoin &op, ObNLConnectBySpecBase &
       } else if (OB_FAIL(spec.left_prior_exprs_.push_back(left_expr))) {
         LOG_WARN("failed to push back left expr", K(ret));
       } else if (OB_FAIL(spec.right_prior_exprs_.push_back(right_expr))) {
-        LOG_WARN("failed to push back left expr", K(ret));
+        LOG_WARN("failed to push back right expr", K(ret));
       }
     }
     if (OB_SUCC(ret)) {
@@ -6497,6 +6616,7 @@ int ObStaticEngineCG::generate_spec(ObLogInsertAll &op,
 int ObStaticEngineCG::generate_insert_all_with_das(ObLogInsertAll &op, ObTableInsertAllSpec &spec)
 {
   int ret = OB_SUCCESS;
+  spec.check_fk_batch_ = true;
   if (OB_ISNULL(op.get_insert_all_table_info()) ||
       OB_ISNULL(phy_plan_) ||
       OB_UNLIKELY(op.get_table_list().count() != op.get_insert_all_table_info()->count())) {
@@ -6855,6 +6975,40 @@ int ObStaticEngineCG::set_other_properties(const ObLogPlan &log_plan, ObPhysical
     }
   }
 
+#ifdef OB_BUILD_TDE_SECURITY
+  // set encrypt info in phy plan
+  if (OB_SUCC(ret)) {
+    const ObIArray<ObSchemaObjVersion> *dependency_table = log_plan.get_stmt()->get_global_dependency_table();
+    if (OB_ISNULL(dependency_table)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid argument", K(ret));
+    } else {
+      int64_t table_id = OB_INVALID_ID;
+      const share::schema::ObTableSchema *full_table_schema = NULL;
+      ObArray<transaction::ObEncryptMetaCache>metas;
+      for (int64_t i = 0; OB_SUCC(ret) && i < dependency_table->count(); i++) {
+        if (DEPENDENCY_TABLE == dependency_table->at(i).object_type_) {
+          full_table_schema = NULL;
+          table_id = dependency_table->at(i).get_object_id();
+          if (OB_FAIL(schema_guard->get_table_schema(
+              MTL_ID(), table_id, full_table_schema))) {
+            LOG_WARN("fail to get table schema", K(ret), K(table_id));
+          } else if (OB_ISNULL(full_table_schema)) {
+            ret = OB_TABLE_NOT_EXIST;
+            LOG_WARN("table is not exist", K(ret), K(full_table_schema));
+          } else if (OB_FAIL(init_encrypt_metas(full_table_schema, schema_guard, metas))) {
+            LOG_WARN("fail to init encrypt table meta", K(ret));
+          }
+        }
+      }
+      if (OB_SUCC(ret) && metas.count() > 0) {
+        if (OB_FAIL(phy_plan.get_encrypt_meta_array().assign(metas))) {
+          LOG_WARN("fail to assgin encrypt meta", K(ret));
+        }
+      }
+    }
+  }
+#endif
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(log_plan.get_stmt())) {
       ret = OB_ERR_UNEXPECTED;
@@ -7206,6 +7360,105 @@ int ObStaticEngineCG::classify_anti_monotone_filter_exprs(const ObIArray<ObRawEx
   return ret;
 }
 
+#ifdef OB_BUILD_TDE_SECURITY
+int ObStaticEngineCG::init_encrypt_metas(
+    const share::schema::ObTableSchema *table_schema,
+    share::schema::ObSchemaGetterGuard *guard,
+    ObIArray<transaction::ObEncryptMetaCache> &meta_array)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(table_schema) || OB_ISNULL(guard)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table schema is invalid", K(ret));
+  } else if (OB_FAIL(init_encrypt_table_meta(table_schema, guard, meta_array))) {
+    LOG_WARN("fail to init encrypt_table_meta", KPC(table_schema), K(ret));
+  } else if (!table_schema->is_user_table()) {
+    /*do nothing*/
+  } else {
+    ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
+    const ObTableSchema *index_schema = nullptr;
+    if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos))) {
+      LOG_WARN("get simple_index_infos failed", K(ret));
+    }
+    for (int i = 0; i < simple_index_infos.count() && OB_SUCC(ret); ++i) {
+      if (OB_FAIL(guard->get_table_schema(
+          MTL_ID(),
+          simple_index_infos.at(i).table_id_, index_schema))) {
+        LOG_WARN("fail to get table schema", K(ret));
+      } else if (OB_ISNULL(index_schema)) {
+        ret = OB_SCHEMA_ERROR;
+        LOG_WARN("index schema not exist", K(simple_index_infos.at(i).table_id_), K(ret));
+      } else if (!index_schema->is_index_local_storage()) {
+        // do nothing
+      } else if (OB_FAIL(init_encrypt_table_meta(index_schema, guard, meta_array))) {
+        LOG_WARN("fail to init encrypt_table_meta", KPC(index_schema), K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStaticEngineCG::init_encrypt_table_meta(
+    const share::schema::ObTableSchema *table_schema,
+    share::schema::ObSchemaGetterGuard *guard,
+    ObIArray<transaction::ObEncryptMetaCache>&meta_array)
+{
+  int ret = OB_SUCCESS;
+  transaction::ObEncryptMetaCache meta_cache;
+  char master_key[OB_MAX_MASTER_KEY_LENGTH];
+  int64_t master_key_length = 0;
+  if (OB_ISNULL(table_schema) || OB_ISNULL(guard)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table schema is invalid", K(ret));
+  } else if (!(table_schema->need_encrypt() && table_schema->get_master_key_id() > 0 &&
+               table_schema->get_encrypt_key_len() > 0)) {
+    // do nothing
+  } else if (OB_FAIL(table_schema->get_encryption_id(meta_cache.meta_.encrypt_algorithm_))) {
+    LOG_WARN("fail to get encryption id", K(ret));
+  } else {
+    if (table_schema->is_index_local_storage()) {
+      meta_cache.table_id_ = table_schema->get_data_table_id();
+      meta_cache.local_index_id_ = table_schema->get_table_id();
+    } else {
+      meta_cache.table_id_ = table_schema->get_table_id();
+    }
+    meta_cache.meta_.tenant_id_ = table_schema->get_tenant_id();
+    meta_cache.meta_.master_key_version_ = table_schema->get_master_key_id();
+    if (OB_FAIL(meta_cache.meta_.encrypted_table_key_.set_content(
+        table_schema->get_encrypt_key()))) {
+      LOG_WARN("fail to assign encrypt key", K(ret));
+    }
+    #ifdef ERRSIM
+      else if (OB_FAIL(OB_E(EventTable::EN_ENCRYPT_GET_MASTER_KEY_FAILED) OB_SUCCESS)) {
+      LOG_WARN("ERRSIM, fail to get master key", K(ret));
+    }
+    #endif
+      else if (OB_FAIL(share::ObMasterKeyGetter::get_master_key(table_schema->get_tenant_id(),
+                       table_schema->get_master_key_id(), master_key, OB_MAX_MASTER_KEY_LENGTH,
+                       master_key_length))) {
+      LOG_WARN("fail to get master key", K(ret));
+      // 如果在cg阶段获取主密钥失败了, 有可能是因为RS执行内部sql没有租户资源引起的.
+      // 在没有租户资源的情况下获取主密钥, 获取加密租户配置项时会失败
+      // 在这种情况下, 我们认为这里是合理的, 缓存中可以不保存主密钥内容
+      // cg阶段获取主密钥的任何失败我们可以接受
+      // 兜底是执行期再次获取, 再次获取成功了则继续往下走, 失败了则报错出来.
+      // 见bug
+      ret = OB_SUCCESS;
+    } else if (OB_FAIL(meta_cache.meta_.master_key_.set_content(
+                                                        ObString(master_key_length, master_key)))) {
+      LOG_WARN("fail to assign master_key", K(ret));
+    } else if (OB_FAIL(ObEncryptionUtil::decrypt_table_key(meta_cache.meta_))) {
+      LOG_WARN("failed to decrypt_table_key", K(ret));
+    } else {/*do nothing*/}
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(meta_array.push_back(meta_cache))) {
+      LOG_WARN("fail to push back meta array", K(ret));
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObStaticEngineCG::map_value_param_index(const ObInsertStmt *insert_stmt,
                                             RowParamMap &row_params_map)

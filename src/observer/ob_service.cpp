@@ -63,6 +63,7 @@
 #include "storage/ls/ob_ls.h"
 #include "logservice/ob_log_service.h"        // ObLogService
 #include "logservice/palf_handle_guard.h"     // PalfHandleGuard
+#include "logservice/archiveservice/ob_archive_service.h"
 #include "share/scn.h"     // PalfHandleGuard
 #include "storage/backup/ob_backup_handler.h"
 #include "storage/backup/ob_ls_backup_clean_mgr.h"
@@ -74,12 +75,16 @@
 #include "observer/report/ob_tenant_meta_checker.h"//ObTenantMetaChecker
 #include "rootserver/backup/ob_backup_task_scheduler.h" // ObBackupTaskScheduler
 #include "rootserver/backup/ob_backup_schedule_task.h" // ObBackupScheduleTask
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
 #include "share/ob_cluster_event_history_table_operator.h"//CLUSTER_EVENT_INSTANCE
 #include "storage/ddl/ob_tablet_ddl_kv_mgr.h"
 #include "share/backup/ob_backup_struct.h"
 #include "observer/ob_heartbeat_handler.h"
 #include "storage/slog/ob_storage_logger_manager.h"
+#include "storage/high_availability/ob_transfer_lock_utils.h"
 
 namespace oceanbase
 {
@@ -92,6 +97,7 @@ using namespace share::schema;
 using namespace storage;
 using namespace backup;
 using namespace palf;
+using namespace archive;
 
 namespace observer
 {
@@ -110,8 +116,8 @@ int ObSchemaReleaseTimeTask::init(ObServerSchemaUpdater &schema_updater, int tg_
   } else {
     schema_updater_ = &schema_updater;
     is_inited_ = true;
-    if (OB_FAIL(TG_SCHEDULE(tg_id, *this, REFRESH_INTERVAL, true /*schedule repeatly*/))) {
-      LOG_WARN("fail to schedule task ObSchemaReleaseTimeTask", K(ret));
+    if (OB_FAIL(schedule_())) {
+      LOG_WARN("fail to schedule ObSchemaReleaseTimeTask in init", KR(ret));
     }
   }
   return ret;
@@ -121,6 +127,19 @@ void ObSchemaReleaseTimeTask::destroy()
 {
   is_inited_ = false;
   schema_updater_ = nullptr;
+}
+
+int ObSchemaReleaseTimeTask::schedule_()
+{
+  int ret = OB_SUCCESS;
+  int64_t memory_recycle_interval = GCONF._schema_memory_recycle_interval;
+  if (0 == memory_recycle_interval) {
+    memory_recycle_interval = 15L * 60L * 1000L * 1000L; //15mins
+  }
+  if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::ServerGTimer, *this, memory_recycle_interval, false /*not schedule repeatly*/))) {
+    LOG_ERROR("fail to schedule task ObSchemaReleaseTimeTask", KR(ret));
+  }
+  return ret;
 }
 
 void ObSchemaReleaseTimeTask::runTimerTask()
@@ -134,6 +153,10 @@ void ObSchemaReleaseTimeTask::runTimerTask()
     LOG_WARN("ObSchemaReleaseTimeTask task got null ptr", K(ret));
   } else if (OB_FAIL(schema_updater_->try_release_schema())) {
     LOG_WARN("ObSchemaReleaseTimeTask failed", K(ret));
+  }
+  // we should ignore error to schedule task
+  if (OB_FAIL(schedule_())) {
+    LOG_WARN("fail to schedule ObSchemaReleaseTimeTask in runTimerTask", KR(ret));
   }
 }
 
@@ -249,8 +272,8 @@ int ObService::register_self()
     LOG_WARN("register self failed", KR(ret));
   } else if (!lease_state_mgr_.is_valid_heartbeat()) {
     ret = OB_ERROR;
-    LOG_ERROR("can't renew lease", KR(ret),
-              "heartbeat_expire_time", lease_state_mgr_.get_heartbeat_expire_time());
+    LOG_ERROR("can't renew lease, the time difference between local and RS may be more than 2s",
+        KR(ret), "heartbeat_expire_time", lease_state_mgr_.get_heartbeat_expire_time());
   } else {
     in_register_process_ = false;
     service_started_ = true;
@@ -866,6 +889,32 @@ int ObService::delete_backup_ls_task(const obrpc::ObLSBackupCleanArg &arg)
     LOG_WARN("failed to schedule backup clean dag", K(ret), K(arg));
   } else {
     LOG_INFO("success receive delete backup ls task rpc", K(arg));
+  }
+
+  return ret;
+}
+
+int ObService::notify_archive(const obrpc::ObNotifyArchiveArg &arg)
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("recieve notify archive request", K(arg));
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObService not init", K(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(arg));
+  } else {
+    MTL_SWITCH(arg.tenant_id_){
+      archive::ObArchiveService *archive_service = MTL(ObArchiveService*);
+      if (OB_ISNULL(archive_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null MTL scheduler", K(ret), KP(archive_service));
+      } else {
+        archive_service->wakeup();
+        LOG_INFO("succeed to notify archive service", K(arg));
+      }
+    }
   }
 
   return ret;
@@ -1626,6 +1675,125 @@ int ObService::get_partition_count(obrpc::ObGetPartitionCountResult &result)
   return ret;
 }
 
+#ifdef OB_BUILD_TDE_SECURITY
+int ObService::convert_tenant_max_key_version(
+    const ObIArray<std::pair<uint64_t, ObLeaseResponse::TLRpKeyVersion> > &max_key_version,
+    ObIArray<std::pair<uint64_t, uint64_t> > &got_version_array)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < max_key_version.count(); ++i) {
+      const std::pair<uint64_t, ObLeaseResponse::TLRpKeyVersion> &key_version
+        = max_key_version.at(i);
+      std::pair<uint64_t, uint64_t> got_version;
+      got_version.first = key_version.first;
+      got_version.second = key_version.second.max_key_version_;
+      if (OB_FAIL(got_version_array.push_back(got_version))) {
+        LOG_WARN("fail to push back", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObService::do_wait_master_key_in_sync(
+    const common::ObIArray<std::pair<uint64_t, uint64_t> > &got_version_array)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else {
+    const int64_t abs_time = THIS_WORKER.get_timeout_ts();
+    int64_t finished_idx = -1;
+    const int64_t SLEEP_INTERVAL = 50L * 1000L;
+    LOG_INFO("do wait master key in sync", K(abs_time));
+    while (ObTimeUtility::current_time() < abs_time && OB_SUCC(ret)) {
+      for (int64_t i = finished_idx + 1; OB_SUCC(ret) && i < got_version_array.count(); ++i) {
+        uint64_t max_stored_key_version = 0;
+        const std::pair<uint64_t, uint64_t> &got_version = got_version_array.at(i);
+        if (OB_FAIL(ObMasterKeyGetter::instance().get_max_stored_version(
+                got_version.first, max_stored_key_version))) {
+          LOG_WARN("fail to get max active version", KR(ret),
+                   "tenant_id", got_version.first);
+        } else if (max_stored_key_version >= got_version.second) {
+          finished_idx = i;
+        } else {
+          // TODO: wenduo
+          // remove got_versions after renqing make got_versions has a retry logic in it
+          (void)ObMasterKeyGetter::instance().got_versions(got_version_array);
+          ob_usleep(std::min(SLEEP_INTERVAL, abs_time - ObTimeUtility::current_time()));
+          break;
+        }
+      }
+      if (OB_FAIL(ret)) {
+        // failed
+      } else if (finished_idx >= got_version_array.count() - 1) {
+        break; // succ
+        LOG_INFO("wait master key in sync succ");
+      } else if (ObTimeUtility::current_time() >= abs_time) {
+        ret = OB_TIMEOUT;
+        LOG_WARN("fail master key in sync timeout", KR(ret), K(finished_idx));
+      } else {
+        // still need wait
+      }
+    }
+  }
+  return ret;
+}
+
+int ObService::trigger_tenant_config(
+    const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret), K(ret));
+  } else {
+    // ignore ret in for condition
+    for (int64_t i = 0; i < wms_in_sync_arg.tenant_config_version_.count(); ++i) {
+      const uint64_t tenant_id = wms_in_sync_arg.tenant_config_version_.at(i).first;
+      const int64_t version = wms_in_sync_arg.tenant_config_version_.at(i).second;
+      OTC_MGR.add_tenant_config(tenant_id); // ignore ret
+      OTC_MGR.got_version(tenant_id, version); // ignore ret
+    }
+  }
+  return ret;
+}
+
+int ObService::wait_master_key_in_sync(
+    const obrpc::ObWaitMasterKeyInSyncArg &wms_in_sync_arg)
+{
+  int ret = OB_SUCCESS;
+  common::ObArray<std::pair<uint64_t, uint64_t> > got_version_array;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (OB_FAIL(broadcast_rs_list(wms_in_sync_arg.rs_list_arg_))) {
+    LOG_WARN("fail to broadcast rs list", KR(ret), "rs_list_arg", wms_in_sync_arg.rs_list_arg_);
+  } else if (wms_in_sync_arg.tenant_max_key_version_.count() <= 0) {
+    // bypass, since tenant max key version is empty
+  } else if (OB_FAIL(convert_tenant_max_key_version(
+          wms_in_sync_arg.tenant_max_key_version_, got_version_array))) {
+    LOG_WARN("fail to convert tenant max key version", KR(ret), K(wms_in_sync_arg));
+  } else {
+    ObRefreshSchemaInfo schema_info;
+    if (OB_FAIL(schema_updater_.try_reload_schema(schema_info))) {
+      LOG_WARN("fail to try reload schema", KR(ret));
+    } else if (OB_FAIL(trigger_tenant_config(wms_in_sync_arg))) {
+      LOG_WARN("fail to got versions", KR(ret));
+    } else if (OB_FAIL(ObMasterKeyGetter::instance().got_versions(got_version_array))) {
+      LOG_WARN("fail to get versions", KR(ret));
+    } else if (OB_FAIL(do_wait_master_key_in_sync(got_version_array))) {
+      LOG_WARN("fail to do wait master key in sync", KR(ret));
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObService::check_server_empty(bool &is_empty)
 {
@@ -1648,6 +1816,14 @@ int ObService::check_server_empty(bool &is_empty)
         is_empty = false;
       }
     }
+#ifdef OB_BUILD_TDE_SECURITY
+    if (is_empty) {
+      if (ObMasterKeyGetter::instance().is_wallet_exist()) {
+        FLOG_WARN("[CHECK_SERVER_EMPTY] master_key file exists");
+        is_empty = false;
+      }
+    }
+#endif
   }
   return ret;
 }
@@ -2182,42 +2358,41 @@ int ObService::build_ddl_single_replica_request(const ObDDLBuildSingleReplicaReq
   } else {
     if (DDL_DROP_COLUMN == arg.ddl_type_
         || DDL_ADD_COLUMN_OFFLINE == arg.ddl_type_
-        || DDL_COLUMN_REDEFINITION == arg.ddl_type_) {
-      MTL_SWITCH(arg.tenant_id_) {
-        int saved_ret = OB_SUCCESS;
-        ObTenantDagScheduler *dag_scheduler = nullptr;
-        ObComplementDataDag *dag = nullptr;
-        if (OB_ISNULL(dag_scheduler = MTL(ObTenantDagScheduler *))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("dag scheduler is null", K(ret));
-        } else if (OB_FAIL(dag_scheduler->alloc_dag(dag))) {
-          LOG_WARN("fail to alloc dag", K(ret));
-        } else if (OB_ISNULL(dag)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected error, dag is null", K(ret), KP(dag));
-        } else if (OB_FAIL(dag->init(arg))) {
-          LOG_WARN("fail to init complement data dag", K(ret), K(arg));
-        } else if (OB_FAIL(dag->create_first_task())) {
-          LOG_WARN("create first task failed", K(ret));
-        } else if (OB_FAIL(dag_scheduler->add_dag(dag))) {
-          saved_ret = ret;
-          LOG_WARN("add dag failed", K(ret), K(arg));
-          if (OB_EAGAIN == saved_ret) {
-            dag_scheduler->get_complement_data_dag_progress(dag, res.row_scanned_, res.row_inserted_);
-          }
-        } else {
-          dag = nullptr;
+        || DDL_COLUMN_REDEFINITION == arg.ddl_type_
+        || DDL_TABLE_RESTORE == arg.ddl_type_) {
+      int saved_ret = OB_SUCCESS;
+      ObTenantDagScheduler *dag_scheduler = nullptr;
+      ObComplementDataDag *dag = nullptr;
+      if (OB_ISNULL(dag_scheduler = MTL(ObTenantDagScheduler *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("dag scheduler is null", K(ret));
+      } else if (OB_FAIL(dag_scheduler->alloc_dag(dag))) {
+        LOG_WARN("fail to alloc dag", K(ret));
+      } else if (OB_ISNULL(dag)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected error, dag is null", K(ret), KP(dag));
+      } else if (OB_FAIL(dag->init(arg))) {
+        LOG_WARN("fail to init complement data dag", K(ret), K(arg));
+      } else if (OB_FAIL(dag->create_first_task())) {
+        LOG_WARN("create first task failed", K(ret));
+      } else if (OB_FAIL(dag_scheduler->add_dag(dag))) {
+        saved_ret = ret;
+        LOG_WARN("add dag failed", K(ret), K(arg));
+        if (OB_EAGAIN == saved_ret) {
+          dag_scheduler->get_complement_data_dag_progress(dag, res.row_scanned_, res.row_inserted_);
         }
-        if (OB_NOT_NULL(dag)) {
-          (void) dag->handle_init_failed_ret_code(ret);
-          dag_scheduler->free_dag(*dag);
-          dag = nullptr;
-        }
-        if (OB_FAIL(ret)) {
-          // RS does not retry send RPC to tablet leader when the dag exists.
-          ret = OB_EAGAIN == saved_ret ? OB_SUCCESS : ret;
-          ret = OB_SIZE_OVERFLOW == saved_ret ? OB_EAGAIN : ret;
-        }
+      } else {
+        dag = nullptr;
+      }
+      if (OB_NOT_NULL(dag)) {
+        (void) dag->handle_init_failed_ret_code(ret);
+        dag_scheduler->free_dag(*dag);
+        dag = nullptr;
+      }
+      if (OB_FAIL(ret)) {
+        // RS does not retry send RPC to tablet leader when the dag exists.
+        ret = OB_EAGAIN == saved_ret ? OB_SUCCESS : ret;
+        ret = OB_SIZE_OVERFLOW == saved_ret ? OB_EAGAIN : ret;
       }
       LOG_INFO("obs get rpc to build drop column dag", K(ret));
     } else {
@@ -2658,8 +2833,8 @@ int ObService::estimate_tablet_block_count(const obrpc::ObEstBlockArg &arg,
   if (!inited_) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("service is not inited", K(ret));
-  } else if (OB_FAIL(sql::ObStorageEstimator::estimate_block_count(arg, res))) {
-    LOG_WARN("failed to estimate partition rowcount", K(ret));
+  } else if (OB_FAIL(sql::ObStorageEstimator::estimate_block_count_and_row_count(arg, res))) {
+    LOG_WARN("failed to estimate block count and row count", K(ret));
   }
   return ret;
 }
@@ -2935,6 +3110,34 @@ int ObService::update_tenant_info_cache(
   }
   return ret;
 }
+
+int ObService::ob_admin_unlock_member_list(
+    const obrpc::ObAdminUnlockMemberListOpArg &arg)
+{
+  LOG_INFO("start ob_admin_unlock_member_list", K(arg));
+  int ret = OB_SUCCESS;
+  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
+
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("arg is invaild", KR(ret), K(arg));
+  } else if (arg.tenant_id_ != MTL_ID() && OB_FAIL(guard.switch_to(arg.tenant_id_))) {
+    LOG_WARN("switch tenant failed", KR(ret), K(arg));
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(ObMemberListLockUtils::unlock_for_ob_admin(arg.tenant_id_, arg.ls_id_, arg.lock_id_))) {
+      LOG_WARN("failed to unlock member list", K(ret), K(arg));
+    } else {
+      LOG_INFO("finish ob_admin_unlock_member_list", K(arg));
+    }
+  }
+  return ret;
+}
+
 
 }// end namespace observer
 }// end namespace oceanbase

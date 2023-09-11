@@ -170,6 +170,7 @@ public:
   static int reset_session_tx_state(ObSQLSessionInfo *session, bool reuse_tx_desc = false);
   static int reset_session_tx_state(ObBasicSessionInfo *session, bool reuse_tx_desc = false);
   static int create_stash_savepoint(ObExecContext &exec_ctx, const ObString &name);
+  static int release_stash_savepoint(ObExecContext &exec_ctx, const ObString &name);
   static int explicit_start_trans(ObExecContext &exec_ctx, const bool read_only, const ObString hint = ObString());
   static int explicit_end_trans(ObExecContext &exec_ctx, const bool is_rollback, const ObString hint = ObString());
   static int implicit_end_trans(ObExecContext &exec_ctx,
@@ -196,6 +197,7 @@ public:
                                   const ObPhysicalPlanCtx *plan_ctx,
                                   transaction::ObTransService *txs);
   static int stmt_refresh_snapshot(ObExecContext &ctx);
+  static int set_fk_check_snapshot(ObExecContext &exec_ctx);
   static int stmt_setup_savepoint_(ObSQLSessionInfo *session,
                                    ObDASCtx &das_ctx,
                                    ObPhysicalPlanCtx *plan_ctx,
@@ -256,7 +258,7 @@ private:
   static uint32_t get_real_session_id(ObSQLSessionInfo &session);
   static int get_first_lsid(const ObDASCtx &das_ctx, share::ObLSID &first_lsid);
   static bool has_same_lsid(const ObDASCtx &das_ctx,
-                            const share::SCN &snapshot_version,
+                            const transaction::ObTxReadSnapshot &snapshot,
                             share::ObLSID &first_lsid);
 public:
   /*
@@ -266,8 +268,8 @@ public:
    * capability:
    *   only support inner stmt savepoint, and can not been used to cross stmt rollback
    */
-  static int create_anonymous_savepoint(ObExecContext &exec_ctx, int64_t &savepoint);
-  static int create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, int64_t &savepoint);
+  static int create_anonymous_savepoint(ObExecContext &exec_ctx, transaction::ObTxSEQ &savepoint);
+  static int create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, transaction::ObTxSEQ &savepoint);
   /*
    * rollback to savepoint
    *
@@ -281,7 +283,7 @@ public:
    * for example: the sql-task executed timeout and its result was unknown, and then do rollback_savepoint;
    *   in this case, the trans_result was incomplete, the flag must been set.
    */
-  static int rollback_savepoint(ObExecContext &exec_ctx, const int64_t savepoint);
+  static int rollback_savepoint(ObExecContext &exec_ctx, const transaction::ObTxSEQ savepoint);
 
   //
   // Transaction free route relative

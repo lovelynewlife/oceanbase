@@ -498,6 +498,7 @@ template <typename DUMP_OP,
           typename std::enable_if<OB_TRAIT_IS_FUNCTION_LIKE(DUMP_OP,
                                                             int(const MdsDumpKV &)), bool>::type>
 int MdsTableHandle::for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(DUMP_OP &&for_each_op,
+                                                                                     const int64_t mds_construct_sequence,
                                                                                      const bool for_flush) const
 {
   int ret = OB_SUCCESS;
@@ -506,7 +507,7 @@ int MdsTableHandle::for_each_unit_from_small_key_to_big_from_old_node_to_new_to_
     return for_each_op(kv);
   };
   if (OB_FAIL(p_mds_table_base_->
-              for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(op, for_flush))) {
+              for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(op, mds_construct_sequence, for_flush))) {
     MDS_LOG(WARN, "fail to do for_each dump op", KR(ret), K(*this));
   }
   return ret;
@@ -545,14 +546,6 @@ inline int MdsTableHandle::get_rec_scn(share::SCN &rec_scn) const
   int ret = OB_SUCCESS;
   CHECK_MDS_TABLE_INIT();
   rec_scn = p_mds_table_base_->get_rec_scn();
-  return ret;
-}
-
-inline int MdsTableHandle::dump_status() const
-{
-  int ret = OB_SUCCESS;
-  CHECK_MDS_TABLE_INIT();
-  p_mds_table_base_->dump_status();
   return ret;
 }
 
@@ -692,7 +685,7 @@ inline int MdsTableHandle::fill_virtual_info(ObIArray<MdsNodeInfoForVirtualTable
   return ret;
 }
 
-inline int MdsTableHandle::mark_removed_from_t3m(ObTabletPointer *pointer)
+inline int MdsTableHandle::mark_removed_from_t3m(ObTabletPointer *pointer) const
 {
   int ret = OB_SUCCESS;
   CHECK_MDS_TABLE_INIT();
@@ -701,6 +694,32 @@ inline int MdsTableHandle::mark_removed_from_t3m(ObTabletPointer *pointer)
     MDS_LOG(WARN, "p_mds_table_base_ is invalid", K(*this));
   } else {
     p_mds_table_base_->mark_removed_from_t3m(pointer);
+  }
+  return ret;
+}
+
+inline int MdsTableHandle::mark_switched_to_empty_shell() const
+{
+  int ret = OB_SUCCESS;
+  CHECK_MDS_TABLE_INIT();
+  if (!p_mds_table_base_.is_valid()) {
+    ret = OB_BAD_NULL_ERROR;
+    MDS_LOG(WARN, "p_mds_table_base_ is invalid", K(*this));
+  } else {
+    p_mds_table_base_->mark_switched_to_empty_shell();
+  }
+  return ret;
+}
+
+inline int MdsTableHandle::is_switched_to_empty_shell(bool &is_switched_to_empty_shell) const
+{
+  bool ret = OB_SUCCESS;
+  CHECK_MDS_TABLE_INIT();
+  if (!p_mds_table_base_.is_valid()) {
+    ret = OB_BAD_NULL_ERROR;
+    MDS_LOG(WARN, "p_mds_table_base_ is invalid", K(*this));
+  } else {
+    is_switched_to_empty_shell = p_mds_table_base_->is_switched_to_empty_shell();
   }
   return ret;
 }

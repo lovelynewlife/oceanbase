@@ -321,6 +321,7 @@ public:
   int64_t bit_count() const { return static_cast<int64_t>(desc_.len_) * PER_BITSETWORD_BITS; }
   bool is_empty() const { return 0 == num_members(); }
   bool is_valid() const { return desc_.inited_; }
+  int get_init_err() const { return desc_.inited_ ? OB_SUCCESS : desc_.init_errcode_;  }
   void clear_all()
   {
     if (!is_valid()) {
@@ -1127,6 +1128,7 @@ public:
       : database_name_(),
         tbl_name_(),
         col_name_(),
+        dblink_name_(),
         is_star_(false),
         ref_expr_(NULL),
         parents_expr_info_(),
@@ -1143,6 +1145,7 @@ public:
     database_name_ = other.database_name_;
     tbl_name_ = other.tbl_name_;
     col_name_ = other.col_name_;
+    dblink_name_ = other.dblink_name_;
     is_star_ = other.is_star_;
     ref_expr_ = other.ref_expr_;
     parents_expr_info_ = other.parents_expr_info_;
@@ -1225,6 +1228,7 @@ public:
   TO_STRING_KV(N_DATABASE_NAME, database_name_,
                N_TABLE_NAME, tbl_name_,
                N_COLUMN, col_name_,
+               K_(dblink_name),
                K_(is_star),
                K_(ref_expr),
                K_(parents_expr_info),
@@ -1236,6 +1240,7 @@ public:
   common::ObString database_name_;
   common::ObString tbl_name_; //当用于UDF的时候，表示package name
   common::ObString col_name_; //当用于UDF的时候，表示function name
+  common::ObString dblink_name_;
   bool is_star_;
   ObColumnRefRawExpr *ref_expr_;
   ObExprInfo parents_expr_info_;
@@ -1559,7 +1564,8 @@ struct ObResolveContext
     is_for_dynamic_sql_(false),
     is_for_dbms_sql_(false),
     tg_timing_event_(TG_TIMING_EVENT_INVALID),
-    view_ref_id_(OB_INVALID_ID)
+    view_ref_id_(OB_INVALID_ID),
+    is_variable_allowed_(true)
   {
   }
 
@@ -1604,6 +1610,7 @@ struct ObResolveContext
   bool is_for_dbms_sql_;
   TgTimingEvent tg_timing_event_; // for msyql trigger
   uint64_t view_ref_id_;
+  bool is_variable_allowed_;
 };
 
 typedef ObResolveContext<ObRawExprFactory> ObExprResolveContext;
@@ -2074,7 +2081,8 @@ public:
   ObConstRawExpr()
     :is_date_unit_(false),
      is_literal_bool_(false),
-     is_batch_stmt_parameter_(false)/*: precalc_expr_(NULL)*/
+     is_batch_stmt_parameter_(false),/*: precalc_expr_(NULL)*/
+     array_param_group_id_(-1)
   { ObRawExpr::set_expr_class(ObRawExpr::EXPR_CONST); }
   ObConstRawExpr(common::ObIAllocator &alloc)
     : ObIRawExpr(alloc),
@@ -2082,7 +2090,8 @@ public:
       ObConstExpr(),
       is_date_unit_(false),
       is_literal_bool_(false),
-      is_batch_stmt_parameter_(false)
+      is_batch_stmt_parameter_(false),
+      array_param_group_id_(-1)
   { ObIRawExpr::set_expr_class(ObIRawExpr::EXPR_CONST); }
   ObConstRawExpr(const oceanbase::common::ObObj &val, ObItemType expr_type = T_INVALID)
     : ObIRawExpr(expr_type),
@@ -2090,7 +2099,8 @@ public:
       ObConstExpr(),
       is_date_unit_(false),
       is_literal_bool_(false),
-      is_batch_stmt_parameter_(false)
+      is_batch_stmt_parameter_(false),
+      array_param_group_id_(-1)
   {
     set_value(val);
     set_expr_class(ObIRawExpr::EXPR_CONST);
@@ -2120,6 +2130,8 @@ public:
   bool is_literal_bool() const { return is_literal_bool_; }
   void set_is_batch_stmt_parameter() { is_batch_stmt_parameter_ = true; }
   bool is_batch_stmt_parameter() { return is_batch_stmt_parameter_; }
+  void set_array_param_group_id(int64_t id) { array_param_group_id_ = id; }
+  int64_t get_array_param_group_id() const { return array_param_group_id_; }
   DECLARE_VIRTUAL_TO_STRING;
 
 private:
@@ -2131,6 +2143,7 @@ private:
   // is_batch_stmt_parameter_ only used for array_binding batch_execution optimization
   // Indicates that the current parameter is the batch parameter
   bool is_batch_stmt_parameter_;
+  int64_t array_param_group_id_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConstRawExpr);
 };
@@ -3402,12 +3415,14 @@ public:
   ObSysFunRawExpr(common::ObIAllocator &alloc)
     : ObOpRawExpr(alloc),
       func_name_(),
-      operator_id_(common::OB_INVALID_ID)
+      operator_id_(common::OB_INVALID_ID),
+      dblink_id_(common::OB_INVALID_ID)
       { set_expr_class(ObIRawExpr::EXPR_SYS_FUNC); }
   ObSysFunRawExpr()
     : ObOpRawExpr(),
       func_name_(),
-      operator_id_(common::OB_INVALID_ID)
+      operator_id_(common::OB_INVALID_ID),
+      dblink_id_(common::OB_INVALID_ID)
     { set_expr_class(ObIRawExpr::EXPR_SYS_FUNC); }
   virtual ~ObSysFunRawExpr() {}
   int assign(const ObRawExpr &other) override;
@@ -3436,6 +3451,11 @@ public:
   int get_autoinc_nextval_name(char *buf, int64_t buf_len, int64_t &pos) const;
   void set_op_id(int64_t operator_id) { operator_id_ = operator_id; }
   int64_t get_op_id() const { return operator_id_; }
+  void set_dblink_name(const common::ObString &name) { dblink_name_ = name; }
+  const common::ObString &get_dblink_name() const { return dblink_name_; }
+  void set_dblink_id(int64_t dblink_id) { dblink_id_ = dblink_id; }
+  int64_t get_dblink_id() const { return dblink_id_; }
+  bool is_dblink_sys_func() const { return common::OB_INVALID_ID != dblink_id_; }
 
   VIRTUAL_TO_STRING_KV_CHECK_STACK_OVERFLOW(N_ITEM_TYPE, type_,
                                             N_RESULT_TYPE, result_type_,
@@ -3443,13 +3463,17 @@ public:
                                             N_REL_ID, rel_ids_,
                                             N_FUNC, func_name_,
                                             N_CHILDREN, exprs_,
-                                            K_(enum_set_values));
+                                            K_(enum_set_values),
+                                            K_(dblink_name),
+                                            K_(dblink_id));
 private:
   int check_param_num_internal(int32_t param_num, int32_t param_count, ObExprOperatorType type);
   DISALLOW_COPY_AND_ASSIGN(ObSysFunRawExpr);
   common::ObString func_name_;
+  common::ObString dblink_name_;
   //用于记录rownum表达式归属的count算子的op_id_
   uint64_t operator_id_;
+  uint64_t dblink_id_;
 };
 
 inline void ObSysFunRawExpr::set_func_name(const common::ObString &name)
@@ -4303,7 +4327,7 @@ public:
   ObRawExpr *date_unit_expr_;
 
   ObRawExpr *exprs_[BOUND_EXPR_MAX];
-  TO_STRING_KV(K_(type), K_(is_preceding), K_(is_nmb_literal), KP_(interval_expr),
+  TO_STRING_KV(K_(type), K_(is_preceding), K_(is_nmb_literal), KPC_(interval_expr),
                K_(date_unit_expr));
 };
 
@@ -4661,7 +4685,12 @@ public:
       raw_expr->set_allocator(allocator_);
       raw_expr->set_expr_factory(*this);
       raw_expr->set_expr_type(expr_type);
-      if (OB_FAIL(expr_store_.store_obj(raw_expr))) {
+      if (OB_FAIL(raw_expr->get_expr_info().get_init_err()) ||
+          OB_FAIL(raw_expr->get_relation_ids().get_init_err())) {
+        SQL_RESV_LOG(WARN, "failed to init ObSqlBitSet", K(ret));
+        raw_expr->~ExprType();
+        raw_expr = NULL;
+      } else if (OB_FAIL(expr_store_.store_obj(raw_expr))) {
         SQL_RESV_LOG(WARN, "store raw expr failed", K(ret));
         raw_expr->~ExprType();
         raw_expr = NULL;

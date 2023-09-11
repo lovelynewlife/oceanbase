@@ -197,6 +197,7 @@ public:
   int64_t get_free_macro_block_count() const;
   int64_t get_used_macro_block_count() const;
   int64_t get_max_macro_block_count(int64_t reserved_size) const;
+  int get_all_macro_ids(ObArray<MacroBlockId> &ids_array);
 
   int check_macro_block_free(const MacroBlockId &macro_id, bool &is_free) const;
   int get_bad_block_infos(common::ObIArray<ObBadBlockInfo> &bad_block_infos);
@@ -273,7 +274,7 @@ private:
   {
   public:
     GetOldestHoldBlockFunctor(
-        common::hash::ObHashSet<MacroBlockId> &id_set,
+        common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &id_set,
         ObSimpleMacroBlockInfo &info)
       : ret_code_(common::OB_SUCCESS),
         macro_id_set_(id_set),
@@ -284,7 +285,7 @@ private:
     int get_ret_code() const { return ret_code_; }
   private:
     int ret_code_;
-    common::hash::ObHashSet<MacroBlockId> &macro_id_set_;
+    common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set_;
     ObSimpleMacroBlockInfo &oldest_hold_block_info_;
   };
 
@@ -293,11 +294,9 @@ private:
   public:
     GetPendingFreeBlockFunctor(
         MacroBlkIdMap &blk_map,
-        int64_t &disk_block_count,
         int64_t &hold_count)
       : ret_code_(common::OB_SUCCESS),
         blk_map_(blk_map),
-        disk_block_count_(disk_block_count),
         hold_count_(hold_count)
     {}
     ~GetPendingFreeBlockFunctor() = default;
@@ -308,7 +307,6 @@ private:
   private:
     int ret_code_;
     MacroBlkIdMap &blk_map_;
-    int64_t &disk_block_count_;
     int64_t &hold_count_;
   };
 
@@ -332,58 +330,61 @@ private:
 private:
   int get_macro_block_info(const MacroBlockId &macro_id, ObMacroBlockInfo &macro_block_info) const;
   bool is_bad_block(const MacroBlockId &macro_block_id);
-
-  void reset_mark_status();
   int mark_macro_blocks(
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_held_shared_block(
       const MacroBlockId &macro_id,
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_tenant_blocks(
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_sstable_blocks(
       MacroBlkIdMap &mark_info,
       storage::ObTabletHandle &handle,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_sstable_meta_block(
       const blocksstable::ObSSTable &sstable,
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_tablet_meta_blocks(
       MacroBlkIdMap &mark_info,
       storage::ObTabletHandle &handle,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_tenant_ckpt_blocks(
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set,
-      storage::ObTenantCheckpointSlogHandler &hdl);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      storage::ObTenantCheckpointSlogHandler &hdl,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_tmp_file_blocks(
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_server_meta_blocks(
       MacroBlkIdMap &mark_info,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set);
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   bool continue_mark();
   int do_sweep(MacroBlkIdMap &mark_info);
 
   int update_mark_info(
       const common::ObIArray<MacroBlockId> &macro_block_list,
-      common::hash::ObHashSet<MacroBlockId> &macro_id_set,
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
       MacroBlkIdMap &mark_info);
   int update_mark_info(
       const MacroBlockId &macro_id,
       MacroBlkIdMap &mark_info);
-  void update_marker_status(const bool mark_finished);
+  void update_marker_status(const ObMacroBlockMarkerStatus &tmp_status);
   void disable_mark_sweep() { ATOMIC_SET(&is_mark_sweep_enabled_, false); }
   void enable_mark_sweep() { ATOMIC_SET(&is_mark_sweep_enabled_, true); }
   bool is_mark_sweep_enabled() { return ATOMIC_LOAD(&is_mark_sweep_enabled_); }
-
-  int  wait_mark_sweep_finish();
-  void set_mark_sweep_doing();
-  void set_mark_sweep_done();
 
   int  extend_file_size_if_need();
   bool check_can_be_extend(
@@ -454,24 +455,11 @@ private:
   storage::ObServerSuperBlock super_block_; // read only memory cache
   ObSuperBlockBufferHolder super_block_buf_holder_;
   int64_t default_block_size_;
-
-  // mark status
-  int64_t used_macro_cnt_[ObMacroBlockCommonHeader::MaxMacroType];
-  int64_t mark_cost_time_;
-  int64_t sweep_cost_time_;
-  int64_t reserved_count_;
-  int64_t hold_count_;
-  int64_t pending_free_count_;
-  int64_t disk_block_count_;
-  int64_t start_time_;
-  int64_t last_end_time_;
-  ObSimpleMacroBlockInfo hold_info_;
   ObMacroBlockMarkerStatus marker_status_;
   common::SpinRWLock marker_lock_;
 
   bool is_mark_sweep_enabled_;
-  bool is_doing_mark_sweep_;
-  ObThreadCond cond_; // for mark sweep
+  common::SpinRWLock sweep_lock_;
 
   MarkBlockTask mark_block_task_;
   InspectBadBlockTask inspect_bad_block_task_;
@@ -482,11 +470,11 @@ private:
 
   common::ObIODevice *io_device_;
   ObMacroBlockSeqGenerator blk_seq_generator_;
+  int64_t alloc_num_;
+  lib::ObMutex resize_file_lock_;
 
   bool is_inited_;
   bool is_started_;
-
-  lib::ObMutex resize_file_lock_;
 };
 
 class ObServerBlockManager : public ObBlockManager

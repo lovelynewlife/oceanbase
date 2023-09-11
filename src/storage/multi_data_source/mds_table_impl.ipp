@@ -14,6 +14,7 @@
 #define STORAGE_MULTI_DATA_SOURCE_MDS_TABLE_IMPL_IPP
 
 #include "ob_clock_generator.h"
+#include "share/ob_errno.h"
 #include "storage/multi_data_source/mds_table_base.h"
 #ifndef STORAGE_MULTI_DATA_SOURCE_MDS_TABLE_IMPL_H_IPP
 #define STORAGE_MULTI_DATA_SOURCE_MDS_TABLE_IMPL_H_IPP
@@ -64,8 +65,14 @@ MdsTableImpl<MdsTableType>::MdsTableImpl() : MdsTableBase::MdsTableBase()
 template <typename MdsTableType>
 MdsTableImpl<MdsTableType>::~MdsTableImpl() {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(unregister_from_mds_table_mgr())) {
-    MDS_LOG(ERROR, "fail to unregister from mds table mgr", K(*this));
+  if (!is_removed_from_t3m()) {
+    if (OB_FAIL(unregister_from_mds_table_mgr())) {
+      MDS_LOG(ERROR, "fail to unregister from mds table mgr", K(*this));
+      ret = OB_SUCCESS;
+    }
+  }
+  if (OB_FAIL(unregister_from_removed_recorder())) {
+    MDS_LOG(ERROR, "fail to unregister from removed_recorder", K(*this));
   }
   MDS_LOG(INFO, "mds table destructed", K(*this));
 }
@@ -838,6 +845,7 @@ int MdsTableImpl<MdsTableType>::is_locked_by_others(int64_t unit_id,
 template <typename MdsTableType>
 int MdsTableImpl<MdsTableType>::for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(
                                 ObFunction<int(const MdsDumpKV&)> &for_each_op,
+                                const int64_t mds_construct_sequence,
                                 const bool for_flush) const {
   int ret = OB_SUCCESS;
   MDS_TG(100_ms);// scan could be slow
@@ -847,7 +855,7 @@ int MdsTableImpl<MdsTableType>::for_each_unit_from_small_key_to_big_from_old_nod
                       for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(
     [for_each_op](const MdsDumpKV& data) {
       return for_each_op(data);
-    }, for_flush
+    }, mds_construct_sequence, for_flush
   ))) {
     MDS_LOG(WARN, "mds table switch state failed", KR(ret), K(*this));
   }
@@ -976,7 +984,7 @@ int MdsTableImpl<MdsTableType>::flush(share::SCN need_advanced_rec_scn_lower_lim
     on_flush_(do_flush_scn, OB_SUCCESS);
   } else {
 #ifndef UNITTEST_DEBUG
-    if (MDS_FAIL(merge(do_flush_scn))) {
+    if (MDS_FAIL(merge(construct_sequence_, do_flush_scn))) {
       MDS_LOG_FLUSH(WARN, "failed to commit merge mds table dag");
     } else {
       flushing_scn_ = do_flush_scn;
@@ -1093,28 +1101,37 @@ template <typename DUMP_OP,
                                                             int(const MdsDumpKV &)), bool>::type>
 int MdsTableImpl<MdsTableType>::
     for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(DUMP_OP &&for_each_op,
+      const int64_t mds_construct_sequence,
       const bool for_flush/*false is for transfer to bring mds data from old tablet to new*/) {
-  #define PRINT_WRAPPER KR(ret), K(*this)
+  #define PRINT_WRAPPER KR(ret), K(mds_construct_sequence), K(*this)
   MDS_TG(100_ms);
   int ret = OB_SUCCESS;
   share::SCN flushing_version;
   MdsRLockGuard lg(lock_);
   CLICK();
-  if (for_flush) {
-    if (!flushing_scn_.is_valid()) {
-      ret = OB_ERR_UNEXPECTED;
-      MDS_LOG_FLUSH(WARN, "not in flushing process");
-    } else {
-      flushing_version = flushing_scn_;
+  if (mds_construct_sequence != 0) {
+    if (mds_construct_sequence != ATOMIC_LOAD(&construct_sequence_)) {
+      ret = OB_VERSION_NOT_MATCH;
+      MDS_LOG_FLUSH(WARN, "construct sequence mismatch");
     }
-  } else {
-    flushing_version = share::SCN::max_scn();
   }
   if (OB_SUCC(ret)) {
-    if (MDS_FAIL(for_each_to_dump_node_(std::forward<DUMP_OP>(for_each_op), flushing_version, for_flush))) {
-      MDS_LOG_FLUSH(WARN, "for each node to dump failed");
+    if (for_flush) {
+      if (!flushing_scn_.is_valid()) {
+        ret = OB_ERR_UNEXPECTED;
+        MDS_LOG_FLUSH(WARN, "not in flushing process");
+      } else {
+        flushing_version = flushing_scn_;
+      }
     } else {
-      MDS_LOG_FLUSH(TRACE, "for each node to dump success");
+      flushing_version = share::SCN::max_scn();
+    }
+    if (OB_SUCC(ret)) {
+      if (MDS_FAIL(for_each_to_dump_node_(std::forward<DUMP_OP>(for_each_op), flushing_version, for_flush))) {
+        MDS_LOG_FLUSH(WARN, "for each node to dump failed");
+      } else {
+        MDS_LOG_FLUSH(TRACE, "for each node to dump success");
+      }
     }
   }
   return ret;
@@ -1198,7 +1215,7 @@ template <typename T>
 int MdsTableImpl<MdsTableType>::is_locked_by_others(bool &is_locked, const MdsWriter &self) const
 {
   auto read_op_wrapper = [&is_locked, &self](const UserMdsNode<DummyKey, T> &node) -> int {
-    OB_ASSERT(node.status_.union_.field_.state_ != TwoPhaseCommitState::ON_ABORT);
+    MDS_ASSERT(node.status_.union_.field_.state_ != TwoPhaseCommitState::ON_ABORT);
     if (node.status_.union_.field_.state_ == TwoPhaseCommitState::ON_COMMIT) {// no lock on decided node
       is_locked = false;
     } else if (node.status_.union_.field_.writer_type_ == self.writer_type_ &&
@@ -1317,7 +1334,7 @@ int MdsTableImpl<MdsTableType>::is_locked_by_others(const Key &key,
                                                     const MdsWriter &self) const
 {
   auto read_op_wrapper = [&is_locked, &self](const UserMdsNode<Key, Value> &node) -> int {
-    OB_ASSERT(node.status_.union_.field_.state_ != TwoPhaseCommitState::ON_ABORT);
+    MDS_ASSERT(node.status_.union_.field_.state_ != TwoPhaseCommitState::ON_ABORT);
     if (node.status_.union_.field_.state_ == TwoPhaseCommitState::ON_COMMIT) {
       is_locked = false;
     } else if (node.status_.union_.field_.writer_type_ == self.writer_type_ &&
@@ -1358,7 +1375,7 @@ struct RecycleNodeOp
         MDS_TG(1_ms);
         {
           CLICK();
-          OB_ASSERT(!mds_node.is_aborted_());// should not see aborted node cause cause it is deleted immediatly
+          MDS_ASSERT(!mds_node.is_aborted_());// should not see aborted node cause cause it is deleted immediatly
           if (mds_node.is_committed_()) {
             if (mds_node.end_scn_ == share::SCN::max_scn()) {// must has an associated valid end LOG to commit/abort
               ret = OB_ERR_UNEXPECTED;
@@ -1460,13 +1477,16 @@ int MdsTableImpl<MdsTableType>::forcely_reset_mds_table(const char *reason)
 }
 
 template <typename MdsTableType>
-inline int MdsTableImpl<MdsTableType>::dump_status() const
+inline int MdsTableImpl<MdsTableType>::operate(const ObFunction<int(MdsTableBase &)> &operation)
 {
-  #define PRINT_WRAPPER K(*this)
+  #define PRINT_WRAPPER KR(ret), K(*this)
+  int ret = OB_SUCCESS;
   MDS_TG(10_ms);
   MdsWLockGuard lg(lock_);
-  MDS_LOG_NONE(INFO, "dump mds table status");
-  return OB_SUCCESS;
+  if (OB_FAIL(operation(*this))) {
+    MDS_LOG_NONE(INFO, "fail to apply upper layer operation");
+  }
+  return ret;
   #undef PRINT_WRAPPER
 }
 

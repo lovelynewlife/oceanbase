@@ -92,6 +92,9 @@ int ObFlashBackTableFromRecyclebinResolver::resolve(const ParseNode &parser_tree
         if (OB_ISNULL(session_info_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("session_info_ is null", K(ret));
+        } else if (OB_UNLIKELY(session_info_->get_database_name().empty())) {
+          ret = OB_ERR_NO_DB_SELECTED;
+          LOG_WARN("database not specified", K(ret));
         } else {
           flashback_table_from_recyclebin_stmt->set_origin_db_name(
               session_info_->get_database_name());
@@ -395,7 +398,14 @@ int ObFlashBackTenantResolver::resolve(const ParseNode &parser_tree)
       } else {
         new_tenant_name.assign_ptr(new_tenant_node->str_value_,
                                    static_cast<int32_t>(new_tenant_node->str_len_));
-        flashback_tenant_stmt->set_new_tenant_name(new_tenant_name);
+        if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(new_tenant_name))) {
+          LOG_WARN("since 4.2.1, renaming a tenant to all/all_user/all_meta is not supported",
+                   KR(ret), K(new_tenant_name));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                         "since 4.2.1, renaming a tenant to all/all_user/all_meta is");
+        } else {
+          flashback_tenant_stmt->set_new_tenant_name(new_tenant_name);
+        }
       }
     }
   }

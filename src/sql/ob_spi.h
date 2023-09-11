@@ -19,6 +19,9 @@
 #include "sql/engine/basic/ob_ra_row_store.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/ob_result_set.h"
+#ifdef OB_BUILD_ORACLE_PL
+#include "pl/dblink/ob_pl_dblink_info.h"
+#endif
 namespace oceanbase
 {
 namespace observer
@@ -338,6 +341,12 @@ public:
                                       int64_t expr_idx,
                                       ObObjParam *result);
 
+  static int spi_calc_package_expr_v1(const pl::ObPLResolveCtx &resolve_ctx,
+                                      sql::ObExecContext &exec_ctx,
+                                      ObIAllocator &allocator,
+                                      uint64_t package_id,
+                                      int64_t expr_idx,
+                                      ObObjParam *result);
   static int spi_calc_package_expr(pl::ObPLExecCtx *ctx,
                            uint64_t package_id,
                            int64_t expr_idx,
@@ -565,6 +574,13 @@ public:
 
   static int spi_sub_nestedtable(pl::ObPLExecCtx *ctx, int64_t src_idx, int64_t dst_idx, int32_t lower, int32_t upper);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_extend_assoc_array(int64_t tenant_id,
+                                    const pl::ObPLINS *ns,
+                                    ObIAllocator &allocator,
+                                    pl::ObPLAssocArray &assoc_array,
+                                    int64_t n);
+#endif
   static int spi_get_package_allocator(pl::ObPLExecCtx *ctx, uint64_t package_id, ObIAllocator *&allocator);
 
   static int spi_copy_datum(pl::ObPLExecCtx *ctx,
@@ -674,6 +690,11 @@ public:
   static int spi_update_package_change_info(
     pl::ObPLExecCtx *ctx, uint64_t package_id, uint64_t var_idx);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_copy_opaque(
+      pl::ObPLExecCtx *ctx, ObIAllocator *allocator,
+      pl::ObPLOpaque &src, pl::ObPLOpaque *&dest, uint64_t package_id = OB_INVALID_ID);
+#endif
   static int spi_check_composite_not_null(ObObjParam *v);
 
   static int spi_update_location(pl::ObPLExecCtx *ctx, uint64_t location);
@@ -689,6 +710,23 @@ public:
   static void adjust_pl_status_for_xa(sql::ObExecContext &ctx, int &result);
   static int fill_cursor(ObResultSet &result_set, ObSPICursor *cursor);
 
+#ifdef OB_BUILD_ORACLE_PL
+  static int spi_execute_dblink(pl::ObPLExecCtx *ctx,
+                                uint64_t dblink_id,
+                                uint64_t package_id,
+                                uint64_t proc_id,
+                                ParamStore &params);
+  static int spi_execute_dblink(ObExecContext &exec_ctx,
+                                ObIAllocator &allocator,
+                                const pl::ObPLDbLinkInfo *dblink_info,
+                                const ObRoutineInfo *routine_info,
+                                ParamStore &params);
+  static int spi_after_execute_dblink(ObSQLSessionInfo *session,
+                                      const ObRoutineInfo *routine_info,
+                                      ObIAllocator &allocator,
+                                      ParamStore &params,
+                                      ParamStore &exec_params);
+#endif
 private:
   static int recreate_implicit_savapoint_if_need(pl::ObPLExecCtx *ctx, int &result);
   static int recreate_implicit_savapoint_if_need(sql::ObExecContext &ctx, int &result);
@@ -935,8 +973,8 @@ private:
                                 ObIArray<ObDataType> &row_desc,
                                 bool is_type_record);
 
-  static int store_datums(ObObj &dest_addr, const ObIArray<ObObj> &result,
-                          ObIAllocator *alloc, bool is_schema_object);
+  static int store_datums(ObObj &dest_addr, ObIArray<ObObj> &result,
+                          ObIAllocator *alloc, ObSQLSessionInfo *session_info, bool is_schema_object);
 
   static int store_datum(int64_t &current_addr, const ObObj &obj);
 

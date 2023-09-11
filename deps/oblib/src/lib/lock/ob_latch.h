@@ -42,13 +42,17 @@ extern bool USE_CO_LATCH;
     if (lib::is_diagnose_info_enabled()) {                                        \
       ObDiagnoseTenantInfo *di = ObDiagnoseTenantInfo::get_local_diagnose_info(); \
       if (NULL != di) {                                                           \
-        ObLatchStat &latch_stat = di->get_latch_stats().items_[latch_id];         \
-        if (OB_SUCC(ret)) {                                                       \
-          ++latch_stat.immediate_gets_;                                           \
-        } else {                                                                  \
-          ++latch_stat.immediate_misses_;                                         \
-        }                                                                         \
-        latch_stat.spin_gets_ += spin_cnt;                                        \
+        ObLatchStat *p_latch_stat = di->get_latch_stats().get_or_create_item(latch_id); \
+        if (OB_ISNULL(p_latch_stat)) {                                              \
+        } else {                                                                    \
+          ObLatchStat &latch_stat = *p_latch_stat;                                  \
+          if (OB_SUCC(ret)) {                                                       \
+            ++latch_stat.immediate_gets_;                                           \
+          } else {                                                                  \
+            ++latch_stat.immediate_misses_;                                         \
+          }                                                                         \
+          latch_stat.spin_gets_ += spin_cnt;                                        \
+        } \
       }                                                                           \
     }                                                                             \
   } while(0)
@@ -58,21 +62,25 @@ extern bool USE_CO_LATCH;
     if (lib::is_diagnose_info_enabled()) {                                                 \
       ObDiagnoseTenantInfo *di = ObDiagnoseTenantInfo::get_local_diagnose_info();          \
       if (NULL != di) {                                                                    \
-        ObLatchStat &latch_stat = di->get_latch_stats().items_[latch_id];                  \
-        ++latch_stat.gets_;                                                                \
-        latch_stat.spin_gets_ += spin_cnt;                                                 \
-        latch_stat.sleeps_ += yield_cnt;                                                   \
-        if (OB_UNLIKELY(waited)) {                                                         \
-          ++latch_stat.misses_;                                                            \
-          ObDiagnoseSessionInfo *dsi = ObDiagnoseSessionInfo::get_local_diagnose_info();   \
-          if (NULL != dsi) {                                                               \
-            latch_stat.wait_time_ += dsi->get_curr_wait().wait_time_;                      \
-            if (dsi->get_curr_wait().wait_time_ > 1000 * 1000) {                           \
-              COMMON_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "The Latch wait too much time, ", \
-                  K(dsi->get_curr_wait()), KCSTRING(lbt()));                               \
-            }                                                                              \
-          }                                                                                \
-        }                                                                                  \
+        ObLatchStat *p_latch_stat = di->get_latch_stats().get_or_create_item(latch_id);      \
+        if (OB_ISNULL(p_latch_stat)) {                                                       \
+        } else {                                                                             \
+          ObLatchStat &latch_stat = *p_latch_stat;                                           \
+          ++latch_stat.gets_;                                                                \
+          latch_stat.spin_gets_ += spin_cnt;                                                 \
+          latch_stat.sleeps_ += yield_cnt;                                                   \
+          if (OB_UNLIKELY(waited)) {                                                         \
+            ++latch_stat.misses_;                                                            \
+            ObDiagnoseSessionInfo *dsi = ObDiagnoseSessionInfo::get_local_diagnose_info();   \
+            if (NULL != dsi) {                                                               \
+              latch_stat.wait_time_ += dsi->get_curr_wait().wait_time_;                      \
+              if (dsi->get_curr_wait().wait_time_ > 1000 * 1000) {                           \
+                COMMON_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "The Latch wait too much time, ", \
+                    K(dsi->get_curr_wait()), KCSTRING(lbt()));                               \
+              }                                                                              \
+            }                                                                                \
+          }                                                                                   \
+        } \
       }                                                                                    \
     }                                                                                      \
   } while(0)
@@ -223,6 +231,7 @@ public:
   inline bool is_wrlocked() const;
   inline bool is_wrlocked_by(const uint32_t *puid = NULL) const;
   inline uint32_t get_wid() const;
+  inline uint32_t get_rdcnt() const;
   int64_t to_string(char* buf, const int64_t buf_len) const;
   void enable_record_stat(bool enable) { record_stat_ = enable; }
   bool need_record_stat() const { return record_stat_; }
@@ -530,6 +539,12 @@ inline uint32_t ObLatch::get_wid() const
 {
   uint32_t lock = ATOMIC_LOAD(&lock_);
   return (0 == (lock & WRITE_MASK)) ? 0 : (lock & ~(WAIT_MASK | WRITE_MASK));
+}
+
+inline uint32_t ObLatch::get_rdcnt() const
+{
+  uint32_t lock = ATOMIC_LOAD(&lock_);
+  return (0 == (lock & WRITE_MASK)) ? (lock & ~(WAIT_MASK | WRITE_MASK)) : 0;
 }
 
 inline int ObLatch::LowTryRDLock::operator()(volatile uint32_t *latch,

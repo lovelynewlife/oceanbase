@@ -21,37 +21,11 @@ namespace memtable
 {
 using namespace common;
 
-ObQueryEngine::TableIndex * const ObQueryEngine::PLACE_HOLDER =
-  (ObQueryEngine::TableIndex *)0x1;
-
 // modify buf size in ob_keybtree.h together, otherwise there may be memory waste or overflow.
 STATIC_ASSERT(sizeof(ObQueryEngine::Iterator<keybtree::BtreeIterator<ObStoreRowkeyWrapper, ObMvccRow *>>) <= 5120, "Iterator size exceeded");
 STATIC_ASSERT(sizeof(keybtree::Iterator<ObStoreRowkeyWrapper, ObMvccRow *>) == 376, "Iterator size changed");
 
-int ObQueryEngine::TableIndex::init()
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(is_inited_)) {
-    ret = OB_INIT_TWICE;
-    TRANS_LOG(WARN, "init twice", K(this));
-  } else if (OB_FAIL(keybtree_.init())) {
-    TRANS_LOG(WARN, "keybtree init fail", KR(ret));
-  } else {
-    is_inited_ = true;
-  }
-  if (OB_FAIL(ret)) {
-    destroy();
-  }
-  return ret;
-}
-
-void ObQueryEngine::TableIndex::destroy()
-{
-  is_inited_ = false;
-  keybtree_.destroy();
-}
-
-void ObQueryEngine::TableIndex::check_cleanout(bool &is_all_cleanout,
+void ObQueryEngine::check_cleanout(bool &is_all_cleanout,
                                                bool &is_all_delay_cleanout,
                                                int64_t &count)
 {
@@ -88,7 +62,7 @@ void ObQueryEngine::TableIndex::check_cleanout(bool &is_all_cleanout,
   }
 }
 
-void ObQueryEngine::TableIndex::dump2text(FILE* fd)
+void ObQueryEngine::dump2text(FILE* fd)
 {
   int ret = OB_SUCCESS;
   Iterator<BtreeIterator> iter;
@@ -127,7 +101,7 @@ void ObQueryEngine::TableIndex::dump2text(FILE* fd)
   }
 }
 
-int ObQueryEngine::TableIndex::dump_keyhash(FILE *fd) const
+int ObQueryEngine::dump_keyhash(FILE *fd) const
 {
   int ret = OB_SUCCESS;
   const bool print_bucket_node = true;
@@ -145,50 +119,34 @@ int ObQueryEngine::TableIndex::dump_keyhash(FILE *fd) const
   return ret;
 }
 
-int ObQueryEngine::TableIndex::dump_keybtree(FILE* fd)
+int ObQueryEngine::dump_keybtree(FILE* fd)
 {
   keybtree_.dump(fd);
   return OB_SUCCESS;
 }
 
-int64_t ObQueryEngine::TableIndex::hash_size() const
+int64_t ObQueryEngine::hash_size() const
 {
   int64_t arr_size = keyhash_.get_arr_size();
   return arr_size;
 }
 
-int64_t ObQueryEngine::TableIndex::hash_alloc_memory() const
+int64_t ObQueryEngine::hash_alloc_memory() const
 {
   int64_t alloc_mem = keyhash_.get_alloc_memory();
   return alloc_mem;
 }
 
-int64_t ObQueryEngine::TableIndex::btree_size() const
+int64_t ObQueryEngine::btree_size() const
 {
   int64_t obj_cnt = keybtree_.size();
   return obj_cnt;
 }
 
-int64_t ObQueryEngine::TableIndex::btree_alloc_memory() const
+int64_t ObQueryEngine::btree_alloc_memory() const
 {
   int64_t alloc_mem = sizeof(KeyBtree);
   return alloc_mem;
-}
-
-
-bool ObQueryEngine::is_partition_memtable_empty(const uint64_t table_id) const
-{
-  bool b_ret = false;
-  int ret = OB_SUCCESS;
-
-  TableIndex *node_ptr = nullptr;
-  if (OB_TABLE_NOT_EXIST == (ret = (get_table_index(node_ptr)))) {
-    b_ret = true;
-  } else {
-    b_ret = false;
-  }
-
-  return b_ret;
 }
 
 int ObQueryEngine::init(const uint64_t tenant_id)
@@ -200,6 +158,8 @@ int ObQueryEngine::init(const uint64_t tenant_id)
   } else if (OB_UNLIKELY(is_inited_)) {
     TRANS_LOG(WARN, "init twice", K(this));
     ret = OB_INIT_TWICE;
+  } else if (OB_FAIL(keybtree_.init())) {
+    TRANS_LOG(WARN, "keybtree init fail", KR(ret));
   } else {
     tenant_id_ = tenant_id;
     is_inited_ = true;
@@ -214,11 +174,10 @@ void ObQueryEngine::destroy()
 {
   if (IS_NOT_INIT) {
     // do nothing
-  } else if (OB_NOT_NULL(index_) && NOT_PLACE_HOLDER(index_)) {
-    index_->destroy();
-    memstore_allocator_.free(index_);
-    index_ = nullptr;
+  } else {
+    keybtree_.destroy();
     btree_allocator_.reset();
+    keyhash_.destroy();
   }
   is_inited_ = false;
 }
@@ -234,20 +193,14 @@ int ObQueryEngine::set(const ObMemtableKey *key, ObMvccRow *value)
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid param when query_engine set", KR(ret), KP(key), KP(value));
   } else {
-    TableIndex *node_ptr = nullptr;
-    if (OB_UNLIKELY(OB_TABLE_NOT_EXIST == (ret = (get_table_index(node_ptr))))) {
-      ret = set_table_index(key->get_rowkey()->get_obj_cnt(), node_ptr);
-    }
-    if (OB_SUCC(ret) && OB_NOT_NULL(node_ptr)) {
-      ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
-      if (OB_FAIL(hash_ret = node_ptr->get_keyhash().insert(&key_wrapper, value))) {
-        if (OB_ENTRY_EXIST != hash_ret) {
-          TRANS_LOG(WARN, "put to keyhash fail", "hash_ret", hash_ret, "key", key);
-        }
-        ret = hash_ret;
-      } else {
-        value->set_hash_indexed();
+    ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
+    if (OB_FAIL(hash_ret = keyhash_.insert(&key_wrapper, value))) {
+      if (OB_ENTRY_EXIST != hash_ret) {
+        TRANS_LOG(WARN, "put to keyhash fail", "hash_ret", hash_ret, "key", key);
       }
+      ret = hash_ret;
+    } else {
+      value->set_hash_indexed();
     }
   }
   if (OB_FAIL(ret) && OB_ENTRY_EXIST != ret) {
@@ -267,27 +220,18 @@ int ObQueryEngine::get(const ObMemtableKey *parameter_key, ObMvccRow *&row, ObMe
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid param", KP(parameter_key));
   } else {
-    TableIndex *node_ptr = nullptr;
-    if (OB_FAIL(get_table_index(node_ptr))) {
-      // FIXME fengshuo.fs : to keep compatibility, return old version ret.
-      ret = OB_ENTRY_NOT_EXIST;
-    } else if (OB_ISNULL(node_ptr)) {
-      ret = OB_ERR_UNEXPECTED;
-      TRANS_LOG(ERROR, "node_ptr is nullptr", K(*parameter_key));
-    } else {
-      const ObStoreRowkeyWrapper parameter_key_wrapper(parameter_key->get_rowkey());
-      const ObStoreRowkeyWrapper *copy_inner_key_wrapper = nullptr;
-      if (OB_FAIL(node_ptr->get_keyhash().get(&parameter_key_wrapper, row, copy_inner_key_wrapper))) {
-        if (OB_ENTRY_NOT_EXIST != ret) {
-          TRANS_LOG(WARN, "get from keyhash fail", KR(ret), K(*parameter_key));
-        }
-        row = nullptr;
-      } else if (OB_ISNULL(row)) {
-        ret = OB_ERR_UNEXPECTED;
-        TRANS_LOG(ERROR, "get NULL value from keyhash", KR(ret), K(*parameter_key));
-      } else {
-        ret = returned_key->encode(copy_inner_key_wrapper->get_rowkey());
+    const ObStoreRowkeyWrapper parameter_key_wrapper(parameter_key->get_rowkey());
+    const ObStoreRowkeyWrapper *copy_inner_key_wrapper = nullptr;
+    if (OB_FAIL(keyhash_.get(&parameter_key_wrapper, row, copy_inner_key_wrapper))) {
+      if (OB_ENTRY_NOT_EXIST != ret) {
+        TRANS_LOG(WARN, "get from keyhash fail", KR(ret), K(*parameter_key));
       }
+      row = nullptr;
+    } else if (OB_ISNULL(row)) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(ERROR, "get NULL value from keyhash", KR(ret), K(*parameter_key));
+    } else {
+      ret = returned_key->encode(copy_inner_key_wrapper->get_rowkey());
     }
   }
   return ret;
@@ -303,28 +247,24 @@ int ObQueryEngine::ensure(const ObMemtableKey *key, ObMvccRow *value)
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "query_engine ensure error, invalid param", KR(ret), KP(key), KP(value));
   } else {
-    TableIndex *node_ptr = nullptr;
-    if (OB_UNLIKELY(OB_TABLE_NOT_EXIST == (ret = get_table_index(node_ptr)))) {
-      ret = set_table_index(key->get_rowkey()->get_obj_cnt(), node_ptr);
-    }
-    if (OB_SUCC(ret) && OB_NOT_NULL(node_ptr)) {
-      if (value->is_btree_indexed()) {
-        if (value->is_btree_tag_del()) {
-          ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
-          if (OB_FAIL(node_ptr->get_keybtree().re_insert(key_wrapper, value))) {
-            TRANS_LOG(WARN, "ensure keybtree fail", KR(ret), K(*key));
-          } else {
-            value->clear_btree_tag_del();
-          }
-        }
-      } else {
-        ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
-        if (OB_FAIL(node_ptr->get_keybtree().insert(key_wrapper, value))) {
+    ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
+    if (value->is_btree_indexed()) {
+      if (value->is_btree_tag_del()) {
+        if (OB_FAIL(keybtree_.re_insert(key_wrapper, value))) {
           TRANS_LOG(WARN, "ensure keybtree fail", KR(ret), K(*key));
         } else {
-          value->set_btree_indexed();
+          value->clear_btree_tag_del();
         }
       }
+    } else if (OB_FAIL(keybtree_.insert(key_wrapper, value))) {
+      if (OB_ENTRY_EXIST == ret) {
+        TRANS_LOG(ERROR, "ensure keybtree fail", KR(ret), K(*key));
+        ob_abort();
+      } else {
+        TRANS_LOG(WARN, "ensure keybtree fail", KR(ret), K(*key));
+      }
+    } else {
+      value->set_btree_indexed();
     }
   }
   return ret;
@@ -357,14 +297,11 @@ int ObQueryEngine::purge(const ObMemtableKey *key, int64_t version)
 {
   int ret = OB_SUCCESS;
   ObMvccRow *value = nullptr;
-  TableIndex *node_ptr = nullptr;
   ObStoreRowkeyWrapper key_wrapper(key->get_rowkey());
   if (IS_NOT_INIT) {
     TRANS_LOG(WARN, "not init", "this", this);
     ret = OB_NOT_INIT;
-  } else if (OB_FAIL(get_table_index(node_ptr))) {
-    // do nothing
-  } else if (OB_FAIL(node_ptr->get_keybtree().del(key_wrapper, value, version))) {
+  } else if (OB_FAIL(keybtree_.del(key_wrapper, value, version))) {
     if (OB_UNLIKELY(OB_ENTRY_NOT_EXIST != ret)) {
       TRANS_LOG(WARN, "purge from keybtree fail", KR(ret), K(*key));
     }
@@ -380,22 +317,18 @@ int ObQueryEngine::scan(const ObMemtableKey *start_key, const bool start_exclude
 {
   int ret = OB_SUCCESS;
   Iterator<BtreeIterator> *iter = nullptr;
-  TableIndex *node_ptr = nullptr;
   if (IS_NOT_INIT) {
     TRANS_LOG(WARN, "not init", "this", this);
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(iter = iter_alloc_.alloc())) {
     TRANS_LOG(WARN, "alloc iter fail");
     ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(get_table_index(node_ptr))) {
-    // FIXME fengshuo.fs : to keep compatibility, return old version ret.
-    ret = OB_SUCCESS;
   } else {
     ObStoreRowkeyWrapper scan_start_key_wrapper(start_key->get_rowkey());
     ObStoreRowkeyWrapper scan_end_key_wrapper(end_key->get_rowkey());
     iter->reset();
     const_cast<ObMemtableKey *>(iter->get_key())->encode(nullptr);
-    if (OB_FAIL(node_ptr->get_keybtree().set_key_range(iter->get_read_handle(),
+    if (OB_FAIL(keybtree_.set_key_range(iter->get_read_handle(),
                                                        scan_start_key_wrapper, start_exclude,
                                                        scan_end_key_wrapper, end_exclude, version))) {
       ret = OB_ERR_UNEXPECTED;
@@ -438,15 +371,11 @@ int ObQueryEngine::sample_rows(Iterator<BtreeRawIterator> *iter, const ObMemtabl
   physical_row_count = 0;
   ratio = 1.5;
   const bool skip_purge_memtable = false;
-  TableIndex *node_ptr = nullptr;
   ObStoreRowkeyWrapper scan_start_key_wrapper(start_key->get_rowkey());
   ObStoreRowkeyWrapper scan_end_key_wrapper(end_key->get_rowkey());
   TRANS_LOG(DEBUG, "estimate row count, key range", K(*start_key), K(*end_key));
   iter->reset();
-  if (OB_FAIL(get_table_index(node_ptr))) {
-    // FIXME fengshuo.fs : to keep compatibility, return old version ret.
-    ret = OB_ITER_END;
-  } else if (OB_FAIL(node_ptr->get_keybtree().set_key_range(iter->get_read_handle(),
+  if (OB_FAIL(keybtree_.set_key_range(iter->get_read_handle(),
                                       scan_start_key_wrapper, start_exclude,
                                       scan_end_key_wrapper, end_exclude, 0/*unused version*/))) {
     TRANS_LOG(WARN, "set key range to btree scan handle failed", KR(ret));
@@ -517,21 +446,17 @@ int ObQueryEngine::init_raw_iter_for_estimate(Iterator<BtreeRawIterator>*& iter,
                                               const ObMemtableKey *end_key)
 {
   int ret = OB_SUCCESS;
-  TableIndex *node_ptr = nullptr;
   if (IS_NOT_INIT) {
     TRANS_LOG(WARN, "not init", "this", this);
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(iter = raw_iter_alloc_.alloc())) {
     TRANS_LOG(WARN, "alloc raw iter fail");
     ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(get_table_index(node_ptr))) {
-    // FIXME fengshuo.fs : to keep compatibility, return old version ret.
-    ret = OB_SUCCESS;
   } else {
     ObStoreRowkeyWrapper start_key_wrapper(start_key->get_rowkey());
     ObStoreRowkeyWrapper end_key_wrapper(end_key->get_rowkey());
     iter->reset();
-    if (OB_FAIL(node_ptr->get_keybtree().set_key_range(
+    if (OB_FAIL(keybtree_.set_key_range(
                     iter->get_read_handle(),
                     start_key_wrapper, 1,
                     end_key_wrapper, 1, 0/*unused version*/))) {
@@ -542,112 +467,72 @@ int ObQueryEngine::init_raw_iter_for_estimate(Iterator<BtreeRawIterator>*& iter,
 }
 
 int ObQueryEngine::estimate_size(const ObMemtableKey *start_key,
-                  const ObMemtableKey *end_key,
-                  int64_t& level,
-                  int64_t& branch_count,
-                  int64_t& total_bytes,
-                  int64_t& total_rows)
+                                 const ObMemtableKey *end_key,
+                                 int64_t &total_bytes,
+                                 int64_t &total_rows)
 {
   int ret = OB_SUCCESS;
-  Iterator<BtreeRawIterator> *iter = nullptr;
-  branch_count = 0;
-  for(level = 0; branch_count < ESTIMATE_CHILD_COUNT_THRESHOLD && OB_SUCC(ret); ) {
-    level++;
-    if (OB_FAIL(init_raw_iter_for_estimate(iter, start_key, end_key))) {
-      TRANS_LOG(WARN, "init raw iter fail", K(ret), K(*start_key), K(*end_key));
-    } else if (OB_ISNULL(iter)) {
-      ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(iter->get_read_handle().estimate_key_count(level, branch_count, total_rows))) {
-      if (OB_ENTRY_NOT_EXIST != ret) {
-        TRANS_LOG(WARN, "estimate key count fail", K(ret), K(*start_key), K(*end_key));
-      }
+  int64_t unused_top_level = 0;
+  int64_t unused_btree_node_count = 0;
+  if (OB_FAIL(inner_loop_find_level_(
+          start_key, end_key, ESTIMATE_CHILD_COUNT_THRESHOLD, unused_top_level, unused_btree_node_count, total_rows)))
+  {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+      total_bytes = 0;
+      total_rows = 0;
+    } else {
+      TRANS_LOG(WARN, "esitmate size failed", KR(ret), KPC(start_key), KPC(end_key));
     }
-    if (OB_NOT_NULL(iter)) {
-      iter->reset();
-      raw_iter_alloc_.free(iter);
-      iter = NULL;
-    }
-  }
-  if (OB_SUCC(ret)) {
+  } else {
     int64_t per_row_size = 100;
     total_bytes = total_rows * per_row_size;
-  } else if (OB_ENTRY_NOT_EXIST == ret) {
-    ret = OB_SUCCESS;
-    total_bytes = 0;
-    total_rows = 0;
   }
   return ret;
 }
 
 int ObQueryEngine::split_range(const ObMemtableKey *start_key,
                                const ObMemtableKey *end_key,
-                               int64_t part_count,
+                               int64_t range_count,
                                ObIArray<ObStoreRange> &range_array)
 {
   int ret = OB_SUCCESS;
   Iterator<BtreeRawIterator> *iter = nullptr;
-  int64_t level = 0;
-  int64_t branch_count = 0;
-  int64_t total_bytes = 0;
-  int64_t total_rows = 0;
+  int64_t top_level = 0;
+  int64_t btree_node_count = 0;
 
-  if (part_count < 1 || part_count > MAX_RANGE_SPLIT_COUNT) {
-    TRANS_LOG(WARN, "part count should be greater than 1 if you try to split range", K(part_count));
+  if (range_count < 1 || range_count > MAX_RANGE_SPLIT_COUNT) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "range count should be greater than 1 if you try to split range", KR(ret), K(range_count));
   } else {
-    HEAP_VAR(ObStoreRowkeyWrapper[MAX_RANGE_SPLIT_COUNT], key_array) {
-      if (OB_FAIL(estimate_size(start_key, end_key, level, branch_count, total_bytes, total_rows)) && OB_ENTRY_NOT_EXIST != ret) {
-        TRANS_LOG(WARN, "estimate size fail", K(ret), K(*start_key), K(*end_key));
-      } else if (OB_ENTRY_NOT_EXIST == ret) {
-        TRANS_LOG(WARN, "range too small, not enough rows ro split", K(ret), K(*start_key), K(*end_key), K(part_count));
-      } else if (branch_count < part_count) {
-        ret = OB_ENTRY_NOT_EXIST;
-        TRANS_LOG(WARN, "branch fan out less than part count", K(branch_count), K(part_count));
-      } else if (OB_FAIL(init_raw_iter_for_estimate(iter, start_key, end_key))) {
-        TRANS_LOG(WARN, "init raw iter fail", K(ret), K(*start_key), K(*end_key));
-      } else if (NULL == iter) {
-        ret = OB_ERR_UNEXPECTED;
-      } else if (OB_FAIL(iter->get_read_handle().split_range(level, branch_count, part_count, key_array))) {
-        TRANS_LOG(WARN, "split range fail", K(ret), K(*start_key), K(*end_key), K(part_count), K(level), K(branch_count), K(part_count));
-      } else {
-        ObStoreRange merge_range;
-        for (int64_t i = 0; OB_SUCC(ret) && i < part_count; i++) {
-          const ObStoreRowkey *rowkey = nullptr;
-          // start key
-          if (0 == i) {
-            if (OB_ISNULL(rowkey = start_key->get_rowkey())) {
-              ret = OB_ERR_UNEXPECTED;
-              TRANS_LOG(WARN, "Unexcepted null store rowkey", K(ret), KPC(start_key));
-            } else {
-              merge_range.set_start_key(*rowkey);
-            }
-          } else {
-            merge_range.set_start_key(*key_array[i - 1].get_rowkey());
-          }
-
-          // endkey
-          if (OB_FAIL(ret)) {
-          } else if (i == part_count - 1) {
-            if (OB_ISNULL(rowkey = end_key->get_rowkey())) {
-              ret = OB_ERR_UNEXPECTED;
-              TRANS_LOG(WARN, "Unexcepted null store rowkey", K(ret), KPC(start_key));
-            } else {
-              merge_range.set_end_key(*rowkey);
-            }
-          } else if (OB_ISNULL(rowkey = key_array[i].get_rowkey())) {
-            ret = OB_ERR_UNEXPECTED;
-            TRANS_LOG(WARN, "Unexpected null store rowkey", K(ret), K(i));
-          } else {
-            merge_range.set_end_key(*rowkey);
-          }
-          if (OB_SUCC(ret)) {
-            merge_range.set_left_open();
-            merge_range.set_right_closed();
-            if (OB_FAIL(range_array.push_back(merge_range))) {
-              TRANS_LOG(WARN, "Failed to push back the merge range to array", K(ret), K(merge_range));
-            }
-          }
-        }
-      }
+    // Here we can not use ESTIMATE_CHILD_COUNT_THRESHOLD to init SEArray due to the stack size limit
+    ObSEArray<ObStoreRowkeyWrapper, ESTIMATE_CHILD_COUNT_THRESHOLD/2> key_array;
+    if (OB_FAIL(find_split_range_level_(start_key, end_key, range_count, top_level, btree_node_count)) &&
+        OB_ENTRY_NOT_EXIST != ret) {
+      TRANS_LOG(WARN, "estimate size fail", K(ret), K(*start_key), K(*end_key));
+    } else if (OB_ENTRY_NOT_EXIST == ret) {
+      TRANS_LOG(WARN, "range too small, not enough rows ro split", K(ret), K(*start_key), K(*end_key), K(range_count));
+    } else if (btree_node_count < range_count) {
+      ret = OB_ENTRY_NOT_EXIST;
+      TRANS_LOG(WARN, "branch fan out less than range count", K(btree_node_count), K(range_count));
+    } else if (OB_FAIL(init_raw_iter_for_estimate(iter, start_key, end_key))) {
+      TRANS_LOG(WARN, "init raw iter fail", K(ret), K(*start_key), K(*end_key));
+    } else if (NULL == iter) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(iter->get_read_handle().split_range(top_level, btree_node_count, range_count, key_array))) {
+      TRANS_LOG(WARN,
+                "split range fail",
+                K(ret),
+                K(*start_key),
+                K(*end_key),
+                K(range_count),
+                K(top_level),
+                K(btree_node_count),
+                K(range_count));
+    } else if (OB_FAIL(convert_keys_to_store_ranges_(start_key, end_key, range_count, key_array, range_array))) {
+      TRANS_LOG(WARN, "convert keys to store ranges failed", KR(ret), K(range_count), K(key_array));
+    } else {
+      // split range succeed
     }
 
     if (OB_NOT_NULL(iter)) {
@@ -659,7 +544,103 @@ int ObQueryEngine::split_range(const ObMemtableKey *start_key,
   return ret;
 }
 
+int ObQueryEngine::find_split_range_level_(const ObMemtableKey *start_key,
+                                           const ObMemtableKey *end_key,
+                                           const int64_t range_count,
+                                           int64_t &top_level,
+                                           int64_t &btree_node_count)
+{
+  int64_t unused_total_rows = 0;
+  const int64_t node_threshold = MAX(ESTIMATE_CHILD_COUNT_THRESHOLD, range_count);
+  return inner_loop_find_level_(start_key, end_key, node_threshold, top_level, btree_node_count, unused_total_rows);
+}
 
+int ObQueryEngine::inner_loop_find_level_(const ObMemtableKey *start_key,
+                                           const ObMemtableKey *end_key,
+                                           const int64_t level_node_threshold,
+                                           int64_t &top_level,
+                                           int64_t &btree_node_count,
+                                           int64_t &total_rows)
+{
+  int ret = OB_SUCCESS;
+  Iterator<BtreeRawIterator> *iter = nullptr;
+
+  // directly loop on the third level because in theory, the second level of BTree can have a maximum of 15 * 15 = 225
+  // nodes, which does not meet the THRESHOLD requirement.
+  btree_node_count = 0;
+  top_level = 2;
+  while (OB_SUCC(ret) && btree_node_count < level_node_threshold) {
+    top_level++;
+    btree_node_count = 0;
+    if (OB_FAIL(init_raw_iter_for_estimate(iter, start_key, end_key))) {
+      TRANS_LOG(WARN, "init raw iter fail", K(ret), K(*start_key), K(*end_key));
+    } else if (OB_ISNULL(iter)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(iter->get_read_handle().estimate_key_count(top_level, btree_node_count, total_rows))) {
+      if (OB_ENTRY_NOT_EXIST != ret) {
+        TRANS_LOG(WARN, "find split range level failed", K(ret), K(*start_key), K(*end_key));
+      }
+    }
+    if (OB_NOT_NULL(iter)) {
+      iter->reset();
+      raw_iter_alloc_.free(iter);
+      iter = NULL;
+    }
+  }
+
+  STORAGE_LOG(INFO, "finish find split level", KR(ret), K(top_level), K(btree_node_count), K(total_rows));
+
+  return ret;
+}
+
+int ObQueryEngine::convert_keys_to_store_ranges_(const ObMemtableKey *start_key,
+                                                 const ObMemtableKey *end_key,
+                                                 const int64_t range_count,
+                                                 const common::ObIArray<ObStoreRowkeyWrapper> &key_array,
+                                                 ObIArray<ObStoreRange> &range_array)
+{
+  int ret = OB_SUCCESS;
+
+  ObStoreRange merge_range;
+  for (int64_t i = 0; OB_SUCC(ret) && i < range_count; i++) {
+    const ObStoreRowkey *rowkey = nullptr;
+    // start key
+    if (0 == i) {
+      if (OB_ISNULL(rowkey = start_key->get_rowkey())) {
+        ret = OB_ERR_UNEXPECTED;
+        TRANS_LOG(WARN, "Unexcepted null store rowkey", K(ret), KPC(start_key));
+      } else {
+        merge_range.set_start_key(*rowkey);
+      }
+    } else {
+      merge_range.set_start_key(*key_array.at(i - 1).get_rowkey());
+    }
+
+    // endkey
+    if (OB_FAIL(ret)) {
+    } else if (i == range_count - 1) {
+      if (OB_ISNULL(rowkey = end_key->get_rowkey())) {
+        ret = OB_ERR_UNEXPECTED;
+        TRANS_LOG(WARN, "Unexcepted null store rowkey", K(ret), KPC(start_key));
+      } else {
+        merge_range.set_end_key(*rowkey);
+      }
+    } else if (OB_ISNULL(rowkey = key_array.at(i).get_rowkey())) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(WARN, "Unexpected null store rowkey", K(ret), K(i));
+    } else {
+      merge_range.set_end_key(*rowkey);
+    }
+    if (OB_SUCC(ret)) {
+      merge_range.set_left_open();
+      merge_range.set_right_closed();
+      if (OB_FAIL(range_array.push_back(merge_range))) {
+        TRANS_LOG(WARN, "Failed to push back the merge range to array", K(ret), K(merge_range));
+      }
+    }
+  }
+  return ret;
+}
 int ObQueryEngine::estimate_row_count(const transaction::ObTransID &tx_id,
                                       const ObMemtableKey *start_key, const int start_exclude,
                                       const ObMemtableKey *end_key, const int end_exclude,
@@ -726,110 +707,6 @@ int ObQueryEngine::estimate_row_count(const transaction::ObTransID &tx_id,
     iter = NULL;
   }
   ret = OB_ITER_END == ret ? OB_SUCCESS : ret;
-  return ret;
-}
-
-void ObQueryEngine::check_cleanout(bool &is_all_cleanout,
-                                   bool &is_all_delay_cleanout,
-                                   int64_t &count)
-{
-  if (OB_NOT_NULL(index_)) {
-    index_->check_cleanout(is_all_cleanout,
-                           is_all_delay_cleanout,
-                           count);
-  }
-}
-
-void ObQueryEngine::dump2text(FILE *fd)
-{
-  TableIndex *index = ATOMIC_LOAD(&index_);
-  if (OB_NOT_NULL(index) && NOT_PLACE_HOLDER(index)) {
-    index->dump2text(fd);
-  }
-}
-
-int ObQueryEngine::get_table_index(TableIndex *&return_ptr) const
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    TRANS_LOG(WARN, "not init", "this", this);
-    ret = OB_NOT_INIT;
-  } else {
-    TableIndex *p = nullptr;
-    while (OB_SUCC(ret) && OB_ISNULL(return_ptr)) {
-      if (OB_ISNULL(p = ATOMIC_LOAD(&index_))) {
-        // if we found a empty slot, table_id must not be in the hash.
-        ret = OB_TABLE_NOT_EXIST;
-      } else if (OB_UNLIKELY(PLACE_HOLDER == p)) {
-        // allocing, spin to wait.
-        sched_yield();
-      } else {
-        // right position
-        return_ptr = p;
-      }
-    }
-  }
-  return ret;
-}
-
-int ObQueryEngine::set_table_index(const int64_t obj_cnt, TableIndex *&return_ptr)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    TRANS_LOG(WARN, "not init", "this", this);
-    ret = OB_NOT_INIT;
-  } else if (OB_FAIL(set_table_index_(obj_cnt, return_ptr))) {
-    TRANS_LOG(WARN, "set table index failed.", KR(ret));
-  } else {
-    // set table index succeed.
-  }
-  return ret;
-}
-
-int ObQueryEngine::set_table_index_(const int64_t obj_cnt, TableIndex *&return_ptr)
-{
-  int ret = OB_SUCCESS;
-  return_ptr = nullptr;
-  TableIndex *p = nullptr;
-  TableIndex *new_node = nullptr;
-  while (OB_SUCC(ret) && OB_ISNULL(return_ptr)) {
-    if (OB_NOT_NULL(p = ATOMIC_LOAD(&index_))) {
-      // cur position has been allocated.
-      if (OB_UNLIKELY(PLACE_HOLDER == p)) {
-        // allocing, spin to wait.
-        sched_yield();
-      } else {
-        // table_id is equal
-        return_ptr = p;
-      }
-    } else if (OB_LIKELY(ATOMIC_BCAS(&index_, nullptr, PLACE_HOLDER))) {
-      // hold the empty slot successfully
-      if (OB_NOT_NULL(new_node = reinterpret_cast<TableIndex *>(
-                        memstore_allocator_.alloc(sizeof(TableIndex))))
-          && OB_NOT_NULL(new (new_node)
-                           TableIndex(btree_allocator_, memstore_allocator_, obj_cnt))) {
-        if (OB_FAIL(new_node->init())) {
-          ret = OB_INIT_FAIL;
-          TRANS_LOG(ERROR, "table_index_node init failed", KR(ret), K(new_node));
-          new_node->~TableIndex();
-          memstore_allocator_.free(new_node);
-          new_node = nullptr;
-        } else {
-          return_ptr = new_node;
-        }
-      } else {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        TRANS_LOG(WARN, "alloc table_index_node failed", KR(ret)); 
-        new_node = nullptr;
-      }
-      // must unlock
-      ATOMIC_STORE(&index_, new_node);
-    } else {
-      // can not hold that slot, try in next loop
-      // other thead may insert equal table_id, so do not inc i.
-    }
-  }
-
   return ret;
 }
 

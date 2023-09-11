@@ -184,7 +184,7 @@ private:
 struct ObDDLRedoLogHandle final
 {
 public:
-  static const int64_t DDL_REDO_LOG_TIMEOUT = 10 * 1000 * 1000; // 10
+  static const int64_t DDL_REDO_LOG_TIMEOUT = 60 * 1000 * 1000; // 1min
   static const int64_t CHECK_DDL_REDO_LOG_FINISH_INTERVAL = 1000; // 1ms
   ObDDLRedoLogHandle();
   ~ObDDLRedoLogHandle();
@@ -224,7 +224,8 @@ public:
             const blocksstable::MacroBlockId &macro_block_id,
             char *buffer,
             ObDDLRedoLogHandle &handle);
-  int write_ddl_start_log(ObTabletHandle &tablet_handle,
+  int write_ddl_start_log(ObLSHandle &ls_handle,
+                          ObTabletHandle &tablet_handle,
                           ObDDLKvMgrHandle &ddl_kv_mgr_handle,
                           const ObDDLStartLog &log,
                           logservice::ObLogHandler *log_handler,
@@ -342,6 +343,7 @@ public:
       const ObMacroBlockHandle &macro_handle,
       const blocksstable::ObLogicMacroBlockId &logic_id,
       char *buf,
+      const int64_t buf_len,
       const int64_t data_seq);
   int wait();
   int prepare_block_buffer_if_need();

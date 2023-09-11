@@ -20,6 +20,7 @@
 #include "sql/parser/ob_char_type.h"
 #include "sql/parser/parse_malloc.h"
 #include "sql/udr/ob_udr_struct.h"
+#include "sql/plan_cache/ob_plan_cache_struct.h"
 
 namespace oceanbase
 {
@@ -67,7 +68,100 @@ public:
 			 						 int64_t &no_param_sql_len,
 			 						 ParamList *&param_list,
 			 						 int64_t &param_num,
-									 ObQuestionMarkCtx &ctx);
+									 ObFastParserResult &fp_result,
+									 int64_t &values_token_pos);
+};
+
+static const char INVALID_CHAR = -1;
+struct ObRawSql {
+	explicit ObRawSql() :
+		raw_sql_(nullptr), raw_sql_len_(0),
+		cur_pos_(0), search_end_(false) {}
+
+	inline void init(const char *raw_sql, const int64_t len)
+	{
+		cur_pos_ = 0;
+		raw_sql_ = raw_sql;
+		raw_sql_len_ = len;
+	}
+	inline bool is_search_end()
+	{
+		return search_end_ || cur_pos_ > raw_sql_len_ - 1;
+	}
+	inline char peek()
+	{
+		if (cur_pos_ >= raw_sql_len_ - 1) {
+			return INVALID_CHAR;
+		}
+		return raw_sql_[cur_pos_ + 1];
+	}
+	inline char scan(const int64_t offset)
+	{
+		if (cur_pos_ + offset >= raw_sql_len_) {
+			search_end_ = true;
+			cur_pos_ = raw_sql_len_;
+			return INVALID_CHAR;
+		}
+		cur_pos_ += offset;
+		return raw_sql_[cur_pos_];
+	}
+	inline char scan() { return scan(1); }
+	inline char reverse_scan()
+	{
+		if (cur_pos_ <= 0 || cur_pos_ >= raw_sql_len_ + 1) {
+			search_end_ = true;
+			return INVALID_CHAR;
+		}
+		return raw_sql_[--cur_pos_];
+	}
+	inline char char_at(int64_t idx)
+	{
+		if (idx < 0 || idx >= raw_sql_len_) {
+			return INVALID_CHAR;
+		}
+		return raw_sql_[idx];
+	}
+	inline const char *ptr(const int64_t pos)
+	{
+		if (pos < 0 || pos >= raw_sql_len_) {
+			return nullptr;
+		}
+		return &(raw_sql_[pos]);
+	}
+	inline int64_t strncasecmp(int64_t pos, const char *str, const int64_t size)
+	{
+		// It is not necessary to check if str is nullptr
+		char ch = char_at(pos);
+		for (int64_t i = 0; i < size; i++) {
+			if (ch >= 'A' && ch <= 'Z') {
+				ch += 32;
+			}
+			if (ch != str[i]) {
+				return -1;
+			}
+			ch = char_at(++pos);
+		}
+		return 0;
+	}
+	inline int64_t strncasecmp(const char *str, const int64_t size)
+	{
+		return strncasecmp(cur_pos_, str, size);
+	}
+	// Access a character (no bounds check)
+	// char operator[] (const int64_t idx) const { return raw_sql_[idx]; }
+	// For debug
+	common::ObString to_string() const
+	{
+		if (OB_UNLIKELY(nullptr == raw_sql_ || 0 == raw_sql_len_)) {
+			return common::ObString(0, nullptr);
+		}
+		return common::ObString(raw_sql_len_, raw_sql_);
+	}
+
+	const char *raw_sql_;
+	int64_t raw_sql_len_;
+	int64_t cur_pos_;
+	bool search_end_;
 };
 
 class ObFastParserBase
@@ -85,7 +179,26 @@ public:
 						char *&no_param_sql,
 						int64_t &no_param_sql_len,
 						ParamList *&param_list,
-						int64_t &param_num);
+						int64_t &param_num,
+						int64_t &values_token_pos);
+
+	int do_trim_for_insert(char *new_sql_buf,
+                         int64_t buff_len,
+                         const ObString &no_trim_sql,
+                         ObString &after_trim_sql,
+                         bool &trimed_succ);
+
+
+  int parser_insert_str(common::ObIAllocator &allocator,
+                        int64_t values_token_pos,
+                        const ObString &old_no_param_sql,
+                        ObString &new_truncated_sql,
+                        bool &can_batch_opt,
+                        int64_t &params_count,
+                        int64_t &upd_params_count,
+                        int64_t &lenth_delta,
+                        int64_t &row_count);
+
 	const ObQuestionMarkCtx &get_question_mark_ctx() const { return question_mark_ctx_; }
 
 protected:
@@ -97,6 +210,24 @@ protected:
 		IGNORE_TOKEN  // token that need to be ignored such as comments
 	};
 
+  enum ROW_STATE
+  {
+    START_STATE = 0,
+    LEFT_PAR_STATE,
+    PARS_MATCH,
+    ON_DUPLICATE_KEY,
+    UNEXPECTED_STATE
+  };
+
+  enum TRIM_STATE
+  {
+    START_TRIM_STATE = 0,
+    WITH_SPLII_CH,
+    WITH_OTHER_CH,
+    WITH_SPACE_CH,
+    TRIM_FAILED
+  };
+
 	// In the process of judging the identifer, we need to continuously scan next char
 	// in order to prevent the problem of memory access out of bounds, so we need to write
 	// a lot of judgment logic like the following
@@ -106,86 +237,8 @@ protected:
 	// There are too many such branches, making our code look very ugly. therefore, we use a special
 	// value of -1. when the allowed length is exceeded, peek, scan, reverse_scan, char_at return -1
 	// this will not affect any correctness issues, and will make the code look better
-	static const char INVALID_CHAR = -1;
 	static const int64_t PARSER_NODE_SIZE = sizeof(ParseNode);
 	static const int64_t FIEXED_PARAM_NODE_SIZE = PARSER_NODE_SIZE + sizeof(ParamList);
-
-	struct ObRawSql {
-		explicit ObRawSql() :
-			raw_sql_(nullptr), raw_sql_len_(0),
-			cur_pos_(0), search_end_(false) {}
-
-		inline void init(const char *raw_sql, const int64_t len)
-		{
-			cur_pos_ = 0;
-			raw_sql_ = raw_sql;
-			raw_sql_len_ = len;
-		}
-		inline bool is_search_end()
-		{
-			return search_end_ || cur_pos_ > raw_sql_len_ - 1;
-		}
-		inline char peek()
-		{
-			if (cur_pos_ >= raw_sql_len_ - 1) {
-				return INVALID_CHAR;
-			}
-			return raw_sql_[cur_pos_ + 1];
-		}
-		inline char scan(const int64_t offset)
-		{
-			if (cur_pos_ + offset >= raw_sql_len_) {
-				search_end_ = true;
-				cur_pos_ = raw_sql_len_;
-				return INVALID_CHAR;
-			}
-			cur_pos_ += offset;
-			return raw_sql_[cur_pos_];
-		}
-		inline char scan() { return scan(1); }
-		inline char reverse_scan()
-		{
-			if (cur_pos_ <= 0 || cur_pos_ >= raw_sql_len_ + 1) {
-				search_end_ = true;
-				return INVALID_CHAR;
-			}
-			return raw_sql_[--cur_pos_];
-		}
-		inline char char_at(int64_t idx)
-		{
-			if (idx < 0 || idx >= raw_sql_len_) {
-				return INVALID_CHAR;
-			}
-			return raw_sql_[idx];
-		}
-		inline const char *ptr(const int64_t pos)
-		{
-			if (pos < 0 || pos >= raw_sql_len_) {
-				return nullptr;
-			}
-			return &(raw_sql_[pos]);
-		}
-		int64_t strncasecmp(int64_t pos, const char *str, const int64_t size);
-		inline int64_t strncasecmp(const char *str, const int64_t size)
-		{
-			return strncasecmp(cur_pos_, str, size);
-		}
-		// Access a character (no bounds check)
-		// char operator[] (const int64_t idx) const { return raw_sql_[idx]; }
-		// For debug
-		common::ObString to_string() const
-		{
-			if (OB_UNLIKELY(nullptr == raw_sql_ || 0 == raw_sql_len_)) {
-				return common::ObString(0, nullptr);
-			}
-			return common::ObString(raw_sql_len_, raw_sql_);
-		}
-
-		const char *raw_sql_;
-		int64_t raw_sql_len_;
-		int64_t cur_pos_;
-		bool search_end_;
-	};
 
 protected:
 	/**
@@ -238,6 +291,13 @@ protected:
 	#define IS_MULTI_RIGHT_PARENTHESIS(pos, byte_len) \
 	DEF_RAW_SQL_MULTI_BYTE_CHARACTER_CHECK(right_parenthesis, pos, byte_len)
 	#define CHECK_EQ_STRNCASECMP(str, size) (0 == raw_sql_.strncasecmp(str, size))
+
+  #define DEF_RAW_SQL_MULTI_BYTE_CHARACTER_CHECK_V2(CHARACTER_NAME, raw_sql, pos, byte_len) \
+  is_multi_byte_##CHARACTER_NAME(raw_sql.raw_sql_, raw_sql.raw_sql_len_, pos, byte_len)
+  #define IS_MULTI_SPACE_V2(raw_sql, pos, byte_len) \
+  DEF_RAW_SQL_MULTI_BYTE_CHARACTER_CHECK_V2(space, raw_sql, pos, byte_len)
+  #define IS_MULTI_COMMA_V2(raw_sql, pos, byte_len) \
+  DEF_RAW_SQL_MULTI_BYTE_CHARACTER_CHECK_V2(space, raw_sql, pos, byte_len)
 
 	DEF_CHARACTER_CHECK_FUNCS(comma, ',');
 	DEF_CHARACTER_CHECK_FUNCS(left_parenthesis, '(');
@@ -490,6 +550,7 @@ protected:
 	int64_t is_interval_ds(int64_t pos);
 	// to{space}+(year|month)
 	int64_t is_interval_ym(int64_t pos);
+
 	/**
 	 * Used to parse ({interval_pricision}{space}*|{space}+)to{space}+
 	 * @param [in] : pos the position of the first character
@@ -524,6 +585,29 @@ protected:
 	 */
 	int process_interval();
 
+	int process_insert_or_replace(const char *str, const int64_t size);
+	virtual int process_values(const char *str) = 0;
+
+	int get_one_insert_row_str(ObRawSql &raw_sql,
+                             ObString &str,
+                             bool &is_valid,
+                             int64_t &ins_params_count,
+                             bool &is_insert_up,
+                             int64_t &on_duplicate_params,
+                             int64_t &end_pos);
+
+	int copy_trimed_data_buff(char *new_sql_buf,
+                            int64_t buf_len,
+                            int64_t &pos,
+                            const int64_t start_pos,
+                            const int64_t end_pos,
+                            ObRawSql &src);
+
+	bool is_split_character(ObRawSql &raw_sql);
+
+	int check_is_on_duplicate_key(ObRawSql &raw_sql, bool &is_on_duplicate_key);
+	bool skip_space(ObRawSql &raw_sql);
+
 protected:
 	ObRawSql raw_sql_;
 	char *no_param_sql_;
@@ -546,6 +630,8 @@ protected:
 	common::ObIAllocator &allocator_;
 	common::ObCharsetType charset_type_;
 	const ObCharsetInfo *charset_info_;
+	bool get_insert_;
+	int64_t values_token_pos_;
 	ParseNextTokenFunc parse_next_token_func_;
 	ProcessIdfFunc process_idf_func_;
 
@@ -568,7 +654,8 @@ public:
 		static_cast<ProcessIdfFunc>(&ObFastParserMysql::process_identifier));
 	}
 	~ObFastParserMysql() {}
-
+	virtual int process_values(const char *str) override;
+	ObIArray<ObValuesTokenPos> &get_values_tokens() { return values_tokens_; }
 private:
 	ObSQLMode sql_mode_;
 	int parse_next_token();
@@ -584,8 +671,8 @@ private:
 	int process_string(const char quote);
 	int process_zero_identifier();
 	int process_identifier_begin_with_n();
-	
 private:
+	ObSEArray<ObValuesTokenPos, 4> values_tokens_;
 	DISALLOW_COPY_AND_ASSIGN(ObFastParserMysql);
 };
 
@@ -603,7 +690,7 @@ public:
 		static_cast<ProcessIdfFunc>(&ObFastParserOracle::process_identifier));
 	}
 	~ObFastParserOracle() {}
-
+	virtual int process_values(const char *str) override;
 private:
 	int parse_next_token();
 	int process_identifier(bool is_number_begin);
@@ -614,6 +701,11 @@ private:
 	 */
 	int process_string(const bool in_q_quote);
 	int process_identifier_begin_with_n();
+	char *parse_strndup_with_trim_space_for_new_line(const char *str,
+                                                     size_t nbyte,
+													 char *buf,
+													 int *connection_collation,
+												     int64_t *new_len);
 
 private:
 	DISALLOW_COPY_AND_ASSIGN(ObFastParserOracle);

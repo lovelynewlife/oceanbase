@@ -15,16 +15,15 @@ namespace oceanbase
 {
 namespace common
 {
-const ObLatchDesc OB_LATCHES[] = {
-#define LATCH_DEF(def, id, name, policy, max_spin_cnt, max_yield_cnt, wait_event, display_name) \
-    {id, name, ObLatchPolicy::policy, max_spin_cnt, max_yield_cnt, ObWaitEventIds::wait_event, display_name},
+const ObLatchDesc OB_LATCHES[] __attribute__ ((init_priority(102))) = {
+#define LATCH_DEF(def, id, name, policy, max_spin_cnt, max_yield_cnt) \
+    {id, name, ObLatchPolicy::policy, max_spin_cnt, max_yield_cnt},
 #include "lib/stat/ob_latch_define.h"
 #undef LATCH_DEF
 };
 
-static_assert(ARRAYSIZEOF(OB_LATCHES) == 312, "DO NOT delete latch defination");
+static_assert(ARRAYSIZEOF(OB_LATCHES) == 314, "DO NOT delete latch defination");
 static_assert(ObLatchIds::LATCH_END == ARRAYSIZEOF(OB_LATCHES) - 1, "update id of LATCH_END before adding your defination");
 
 }
 }
-

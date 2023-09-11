@@ -592,7 +592,6 @@ void ObDupTableLSHandler::reset()
 
   total_block_confirm_ref_ = 0;
   self_max_replayed_scn_.reset();
-  committing_dup_trx_cnt_ = 0;
 
   interface_stat_.reset();
   for (int i = 0; i < DupTableDiagStd::TypeIndex::MAX_INDEX; i++) {
@@ -1059,8 +1058,8 @@ int ObDupTableLSHandler::check_dup_tablet_in_redo(const ObTabletID &tablet_id,
     is_dup_tablet = false;
   } else if (!has_dup_tablet()) {
     is_dup_tablet = false;
-  } else if (OB_FAIL(tablets_mgr_ptr_->find_dup_tablet_in_set(tablet_id, is_dup_tablet,
-                                                              base_snapshot, redo_scn))) {
+  } else if (OB_FAIL(tablets_mgr_ptr_->search_dup_tablet_in_redo_log(tablet_id, is_dup_tablet,
+                                                                     base_snapshot, redo_scn))) {
     DUP_TABLE_LOG(WARN, "check dup tablet failed", K(ret), K(tablet_id), K(base_snapshot),
                   K(redo_scn));
   }
@@ -1121,6 +1120,28 @@ int ObDupTableLSHandler::check_dup_tablet_readable(const ObTabletID &tablet_id,
   return ret;
 }
 
+bool ObDupTableLSHandler::is_dup_table_lease_valid()
+{
+  bool is_dup_lease_ls = false;
+  const bool is_election_leader = false;
+
+  if (has_dup_tablet()) {
+    if (OB_ISNULL(lease_mgr_ptr_)) {
+      is_dup_lease_ls = false;
+    } else if (ls_state_helper_.is_leader()) {
+      is_dup_lease_ls = true;
+      DUP_TABLE_LOG(INFO, "the lease is always valid for a dup ls leader", K(is_dup_lease_ls),
+                    KPC(this));
+    } else {
+      is_dup_lease_ls = lease_mgr_ptr_->is_follower_lease_valid();
+    }
+  } else {
+    is_dup_lease_ls = false;
+  }
+
+  return is_dup_lease_ls;
+}
+
 int64_t ObDupTableLSHandler::get_dup_tablet_count()
 {
   int64_t dup_tablet_cnt = 0;
@@ -1143,6 +1164,24 @@ bool ObDupTableLSHandler::has_dup_tablet()
     has_dup = tablets_mgr_ptr_->has_dup_tablet();
   }
   return has_dup;
+}
+
+bool ObDupTableLSHandler::is_dup_tablet(const common::ObTabletID &tablet_id)
+{
+  bool is_dup_tablet = false;
+  int ret = OB_SUCCESS;
+
+  if (!tablet_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    DUP_TABLE_LOG(WARN, "invalid argument", K(ret), K(tablet_id));
+  } else if (OB_ISNULL(tablets_mgr_ptr_)) {
+    is_dup_tablet = false;
+  } else if (OB_FAIL(tablets_mgr_ptr_->search_dup_tablet_for_read(tablet_id, is_dup_tablet))) {
+    DUP_TABLE_LOG(WARN, "check dup tablet failed", K(ret), K(tablet_id), K(is_dup_tablet));
+    is_dup_tablet = false;
+  }
+
+  return is_dup_tablet;
 }
 
 // if return false, there are no tablets and tablet set need log
@@ -1549,6 +1588,57 @@ int ObDupTableLSHandler::check_and_update_max_replayed_scn(const share::SCN &max
   return ret;
 }
 
+int64_t ObDupTableLSHandler::get_committing_dup_trx_cnt()
+{
+  ObSpinLockGuard guard(committing_dup_trx_lock_);
+  int64_t cnt = committing_dup_trx_set_.size();
+  if (cnt > 0) {
+    if (REACH_TIME_INTERVAL(60 * 1000 * 1000)) {
+      TRANS_LOG(INFO, "print committing dup trx cnt", K(cnt), K(committing_dup_trx_set_));
+    }
+  }
+  return cnt;
+}
+
+int ObDupTableLSHandler::add_commiting_dup_trx(const ObTransID &tx_id)
+{
+  int ret = OB_SUCCESS;
+  ObSpinLockGuard guard(committing_dup_trx_lock_);
+  if (!committing_dup_trx_set_.created()) {
+    if (OB_FAIL(committing_dup_trx_set_.create(128, "DupTrxBucket", "DupTrxCnt", MTL_ID()))) {
+      TRANS_LOG(WARN, "create dup trx set failed", K(ret), K(ls_id_), K(tx_id));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(committing_dup_trx_set_.set_refactored(tx_id))) {
+      TRANS_LOG(WARN, "insert into committing_dup_trx_cnt_ failed", K(ret), K(ls_id_), K(tx_id));
+    }
+  }
+  return ret;
+}
+
+int ObDupTableLSHandler::remove_commiting_dup_trx(const ObTransID &tx_id)
+{
+  int ret = OB_SUCCESS;
+  ObSpinLockGuard guard(committing_dup_trx_lock_);
+
+  if (OB_SUCC(ret)) {
+    if (!committing_dup_trx_set_.created()) {
+      ret = OB_SUCCESS;
+      TRANS_LOG(WARN, "removing a dup table trx with the empty set", K(ret), K(ls_id_), K(tx_id));
+    } else if (OB_FAIL(committing_dup_trx_set_.erase_refactored(tx_id))) {
+      if (OB_HASH_NOT_EXIST != ret) {
+        TRANS_LOG(WARN, "remove from committing_dup_trx_set_ failed", K(ret), K(ls_id_), K(tx_id));
+      } else {
+        ret = OB_SUCCESS;
+      }
+    }
+  }
+
+  return  ret;
+}
+
 int ObDupTableLSHandler::get_min_lease_ts_info_(DupTableTsInfo &min_ts_info)
 {
   int ret = OB_SUCCESS;
@@ -1906,5 +1996,18 @@ int ObDupTableLoopWorker::iterate_dup_ls(ObDupLSTabletsStatIterator &collect_ite
 
   return ret;
 }
+
+
+bool ObDupTableLoopWorker::is_useful_dup_ls(const share::ObLSID ls_id)
+{
+  bool is_useful = false;
+
+  if (OB_HASH_EXIST == (dup_ls_id_set_.exist_refactored(ls_id))) {
+    is_useful = true;
+  }
+
+  return is_useful;
+}
+
 } // namespace transaction
 } // namespace oceanbase

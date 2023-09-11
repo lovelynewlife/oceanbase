@@ -233,8 +233,8 @@ int ObExprObjAccess::ExtraInfo::get_collection_attr(int64_t* params,
   int64_t element_idx;
   CK (OB_NOT_NULL(current_coll));
   if (OB_SUCC(ret) && !current_coll->is_inited()) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("", K(ret), KPC(current_coll));
+    ret = OB_ERR_COLLECION_NULL;
+    LOG_WARN("Reference to uninitialized collection", K(ret), KPC(current_coll));
   }
   if (OB_SUCC(ret) && !current_access.is_property()) {
     if (current_access.is_const()) {
@@ -383,7 +383,7 @@ int ObExprObjAccess::ExtraInfo::calc(ObObj &result,
       OZ (get_attr_func(param_array.count(), param_ptr, &attr_addr, *ctx));
     }
     if (OB_FAIL(ret)) {
-      if (OB_NOT_INIT == ret && pl::ObCollectionType::EXISTS_PROPERTY == property_type_) {
+      if (OB_ERR_COLLECION_NULL == ret && pl::ObCollectionType::EXISTS_PROPERTY == property_type_) {
         ret = OB_SUCCESS;
         result.set_tinyint(0);
       }
@@ -408,6 +408,68 @@ int ObExprObjAccess::ExtraInfo::calc(ObObj &result,
         }
       }
       OX(result.set_extend(attr_addr, res_type.get_extend_type(), extend_size));
+#ifdef OB_BUILD_ORACLE_PL
+    } else if (pl::ObCollectionType::INVALID_PROPERTY != property_type_) {
+      pl::ObPLCollection *coll = reinterpret_cast<pl::ObPLCollection*>(attr_addr);
+      pl::ObPLAssocArray *assoc =
+        (OB_NOT_NULL(coll) && coll->is_associative_array())
+            ? static_cast<pl::ObPLAssocArray *>(coll) : NULL;
+      CK (OB_NOT_NULL(coll));
+      if (OB_SUCC(ret)) {
+        switch (property_type_) {
+          case pl::ObCollectionType::FIRST_PROPERTY: {
+            OZ (OB_NOT_NULL(assoc) ? assoc->first(result) : coll->first(result));
+          } break;
+          case pl::ObCollectionType::LAST_PROPERTY: {
+            OZ (OB_NOT_NULL(assoc) ? assoc->last(result) : coll->last(result));
+          } break;
+          case pl::ObCollectionType::PRIOR_PROPERTY: {
+            CK (param_array.count() > 1);
+            int64_t idx = param_array.count() - 1;
+            OZ (OB_NOT_NULL(assoc)
+              ? assoc->prior(param_array.at(idx), result) : coll->prior(param_array.at(idx), result));
+          } break;
+          case pl::ObCollectionType::NEXT_PROPERTY: {
+            CK (param_array.count() > 1);
+            int64_t idx = param_array.count() - 1;
+            int64_t index_val = param_array.at(idx);
+            if (OB_SUCC(ret)) {
+              if(OB_INVALID_INDEX == param_array.at(idx)) {
+                if (OB_NOT_NULL(assoc)) {
+                  OZ (assoc->next(index_val, result));
+                } else {
+                  result.set_null();
+                }
+              } else {
+                OZ (OB_NOT_NULL(assoc) ? assoc->next(index_val, result) : coll->next(index_val, result));
+              }
+            }
+          } break;
+          case pl::ObCollectionType::EXISTS_PROPERTY: {
+            CK (param_array.count() > 1);
+            int64_t idx = param_array.count() - 1;
+            OZ (OB_NOT_NULL(assoc)
+              ? assoc->exist(param_array.at(idx), result) : coll->exist(param_array.at(idx), result));
+          } break;
+          case pl::ObCollectionType::COUNT_PROPERTY: {
+            result.set_int(coll->get_actual_count());
+          } break;
+          case pl::ObCollectionType::LIMIT_PROPERTY: {
+            if (coll->is_varray()) {
+              pl::ObPLVArray *varr = static_cast<pl::ObPLVArray *>(coll);
+              CK (OB_NOT_NULL(varr));
+              OX (result.set_int(varr->get_capacity()));
+            } else {
+              result.set_null();
+            }
+          } break;
+          default: {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid property type", K(ret), K(property_type_));
+          } break;
+        }
+      }
+#endif
     } else {
       ObObj *datum = reinterpret_cast<ObObj*>(attr_addr);
       if (ObMaxType == datum->get_type()) { //means has been deleted

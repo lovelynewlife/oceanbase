@@ -282,7 +282,6 @@ void ObjectSet::free_normal_object(AObject *obj)
   auto ctx_id = blk_mgr_->get_ctx_id();
   auto tenant_id = blk_mgr_->get_tenant_id();
   if (newobj->nobjs_ == cells_per_block_) {
-    hold_bytes_ -= ablock_size_;
     normal_hold_bytes_ -= ablock_size_;
     free_block(newobj->block());
   } else if (OB_ISNULL(last_remainder_)) {
@@ -297,6 +296,7 @@ ABlock *ObjectSet::alloc_block(const uint64_t size, const ObMemAttr &attr)
   ABlock *block = blk_mgr_->alloc_block(size, attr);
 
   if (NULL != block) {
+    hold_bytes_ += block->hold();
     if (NULL != blist_) {
       block->prev_ = blist_->prev_;
       block->next_ = blist_;
@@ -306,7 +306,6 @@ ABlock *ObjectSet::alloc_block(const uint64_t size, const ObMemAttr &attr)
       block->prev_ = block->next_ = block;
       blist_ = block;
     }
-    hold_bytes_ += size;
     block->obj_set_ = this;
     block->ablock_size_ = ablock_size_;
     block->mem_context_ = reinterpret_cast<int64_t>(mem_context_);
@@ -330,6 +329,7 @@ void ObjectSet::free_block(ABlock *block)
   block->prev_->next_ = block->next_;
   block->next_->prev_ = block->prev_;
 
+  hold_bytes_ -= block->hold();
   // The pbmgr shouldn't be NULL or there'll be memory leak.
   blk_mgr_->free_block(block);
 }
@@ -354,8 +354,6 @@ void ObjectSet::free_big_object(AObject *obj)
   abort_unless(NULL != obj);
   abort_unless(NULL != obj->block());
   abort_unless(obj->is_valid());
-
-  hold_bytes_ -= obj->alloc_bytes_ + AOBJECT_META_SIZE;
 
   free_block(obj->block());
 }

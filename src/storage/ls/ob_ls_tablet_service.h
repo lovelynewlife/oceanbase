@@ -221,17 +221,6 @@ public:
   int get_bf_optimal_prefix(int64_t &prefix);
   int64_t get_tablet_count() const;
 
-  int replay_medium_compaction_clog(
-      const share::SCN &scn,
-      const char *buf,
-      const int64_t buf_size,
-      const int64_t pos);
-  int replay_update_reserved_snapshot(
-      const share::SCN &scn,
-      const char *buf,
-      const int64_t buf_size,
-      const int64_t pos);
-
   // update tablet
   int update_tablet_checkpoint(
     const ObTabletMapKey &key,
@@ -251,6 +240,7 @@ public:
       const ObIArray<storage::ObITable *> &tables);
   int build_new_tablet_from_mds_table(
       const common::ObTabletID &tablet_id,
+      const int64_t mds_construct_sequence,
       const share::SCN &flush_scn);
   int update_tablet_report_status(const common::ObTabletID &tablet_id);
   int update_tablet_restore_status(
@@ -393,10 +383,12 @@ public:
       ObIArray<ObEstRowCountRecord> &est_records,
       int64_t &logical_row_count,
       int64_t &physical_row_count);
-  int estimate_block_count(
+  int estimate_block_count_and_row_count(
       const common::ObTabletID &tablet_id,
       int64_t &macro_block_count,
-      int64_t &micro_block_count);
+      int64_t &micro_block_count,
+      int64_t &sstable_row_count,
+      int64_t &memtable_row_count);
 
   // iterator
   int build_tablet_iter(ObLSTabletIterator &iter);
@@ -423,7 +415,6 @@ public:
   int get_all_tablet_ids(const bool except_ls_inner_tablet, common::ObIArray<ObTabletID> &tablet_id_array);
 
   int flush_mds_table(int64_t recycle_scn);
-  int get_max_tablet_transfer_scn(share::SCN &transfer_scn);
 protected:
   virtual int prepare_dml_running_ctx(
       const common::ObIArray<uint64_t> *column_ids,

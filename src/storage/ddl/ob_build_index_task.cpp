@@ -87,7 +87,7 @@ int ObUniqueIndexChecker::calc_column_checksum(
     const common::ObIArray<bool> &need_reshape,
     const ObColDescIArray &cols_desc,
     const ObIArray<int32_t> &output_projector,
-    ObIStoreRowIterator &iterator,
+    ObLocalScan &iterator,
     common::ObIArray<int64_t> &column_checksum,
     int64_t &row_count)
 {
@@ -102,13 +102,14 @@ int ObUniqueIndexChecker::calc_column_checksum(
     STORAGE_LOG(WARN, "fail to reserve column", K(ret), K(column_cnt));
   } else {
     const ObDatumRow *row = NULL;
+    const ObDatumRow *unused_row = nullptr;
     for (int64_t i = 0; OB_SUCC(ret) && i < column_cnt; ++i) {
       if (OB_FAIL(column_checksum.push_back(0))) {
         STORAGE_LOG(WARN, "fail to push back column checksum", K(ret));
       }
     }
     while (OB_SUCC(ret)) {
-      if (OB_FAIL(iterator.get_next_row(row))) {
+      if (OB_FAIL(iterator.get_next_row(row, unused_row))) {
         if (OB_ITER_END == ret) {
           ret = OB_SUCCESS;
           break;
@@ -592,10 +593,12 @@ int ObUniqueIndexChecker::wait_trans_end(ObIDag *dag)
     LOG_WARN("get ls failed", K(ret), K(ls_id_));
   } else {
     const int64_t now = ObTimeUtility::current_time();
+    const int64_t timeout_us = 1000L * 1000L * 60L; // 1 min
     while (OB_SUCC(ret) && !dag->has_set_stop()) {
       transaction::ObTransID pending_tx_id;
       if (OB_FAIL(ls_handle.get_ls()->check_modify_time_elapsed(tablet_id_, now, pending_tx_id))) {
-        if (OB_EAGAIN == ret) {
+        // when timeout with EAGAIN, ddl scheduler of root service will retry
+        if (OB_EAGAIN == ret && ObTimeUtility::current_time() - now < timeout_us) {
           ret = OB_SUCCESS;
           ob_usleep(RETRY_INTERVAL);
           dag_yield();

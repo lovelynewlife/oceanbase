@@ -23,6 +23,9 @@
 #include "share/ob_lob_access_utils.h"
 #include "observer/mysql/obmp_stmt_prexecute.h"
 #include "src/pl/ob_pl_user_type.h"
+#ifdef OB_BUILD_ORACLE_XML
+#include "sql/engine/expr/ob_expr_xml_func_helper.h"
+#endif
 
 namespace oceanbase
 {
@@ -119,7 +122,7 @@ void ObSyncCmdDriver::free_output_row(ObMySQLResultSet &result)
 
 int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
 {
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_execution);
   int ret = OB_SUCCESS;
   bool process_ok = false;
   // for select SQL
@@ -220,7 +223,6 @@ int ObSyncCmdDriver::response_result(ObMySQLResultSet &result)
       LOG_WARN("send error packet fail", K(sret), K(ret));
     }
   }
-  ObActiveSessionGuard::get_stat().in_sql_execution_ = false;
   return ret;
 }
 
@@ -330,6 +332,10 @@ int ObSyncCmdDriver::response_query_result(ObMySQLResultSet &result)
       } else if ((value.is_lob() || value.is_lob_locator() || value.is_json() || value.is_geometry())
                   && OB_FAIL(process_lob_locator_results(value, result))) {
         LOG_WARN("convert lob locator to longtext failed", K(ret));
+#ifdef OB_BUILD_ORACLE_XML
+      } else if (value.is_user_defined_sql_type() && OB_FAIL(ObXMLExprHelper::process_sql_udt_results(value, result))) {
+        LOG_WARN("convert udt to client format failed", K(ret), K(value.get_udt_subschema_id()));
+#endif
       }
     }
 

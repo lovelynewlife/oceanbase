@@ -1847,9 +1847,12 @@ int ObCreateTableResolver::resolve_table_elements_from_select(const ParseNode &p
                         (ObRawExpr::EXPR_OPERATOR == expr->get_expr_class() &&
                          expr->is_static_const_expr())) &&
                         !expr->get_result_type().is_null()) {
-              common::ObObj zero_obj(0);
-              if (OB_FAIL(column.set_cur_default_value(zero_obj))) {
-                LOG_WARN("set default value failed", K(ret));
+              common::ObObjType result_type = expr->get_result_type().get_obj_meta().get_type();
+              if (ob_is_numeric_type(result_type) || ob_is_string_tc(result_type) || ob_is_time_tc(result_type)) {
+                common::ObObj zero_obj(0);
+                if (OB_FAIL(column.set_cur_default_value(zero_obj))) {
+                  LOG_WARN("set default value failed", K(ret));
+                }
               }
             } else { /*do nothing*/ }
           }
@@ -2401,7 +2404,9 @@ int ObCreateTableResolver::set_table_option_to_schema(ObTableSchema &table_schem
       if (OB_FAIL(table_schema.set_expire_info(expire_info_)) ||
           OB_FAIL(table_schema.set_compress_func_name(compress_method_)) ||
           OB_FAIL(table_schema.set_comment(comment_)) ||
-          OB_FAIL(table_schema.set_tablegroup_name(tablegroup_name_))) {
+          OB_FAIL(table_schema.set_tablegroup_name(tablegroup_name_)) ||
+          OB_FAIL(table_schema.set_ttl_definition(ttl_definition_)) ||
+          OB_FAIL(table_schema.set_kv_attributes(kv_attributes_))) {
         SQL_RESV_LOG(WARN, "set table_options failed", K(ret));
       }
     }

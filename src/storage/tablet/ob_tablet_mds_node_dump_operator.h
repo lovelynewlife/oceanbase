@@ -36,12 +36,14 @@ public:
   ObTabletDumpMdsNodeOperator(ObTabletMdsData &mds_data, common::ObIAllocator &allocator);
 public:
   int operator()(const mds::MdsDumpKV &kv);
+  bool dumped() const { return dumped_; }
 private:
   template <typename K, typename T>
   int dump(const mds::MdsDumpKV &kv, bool &dumped);
 private:
   ObTabletMdsData &mds_data_;
   common::ObIAllocator &allocator_;
+  bool dumped_;
 };
 
 class ObTabletMediumInfoNodeOperator
@@ -50,9 +52,11 @@ public:
   ObTabletMediumInfoNodeOperator(ObTabletDumpedMediumInfo &medium_info_list, common::ObIAllocator &allocator);
 public:
   int operator()(const mds::MdsDumpKV &kv);
+  bool dumped() const { return dumped_; }
 private:
   ObTabletDumpedMediumInfo &medium_info_list_;
   common::ObIAllocator &allocator_;
+  bool dumped_;
 };
 } // namespace storage
 } // namespace oceanbase

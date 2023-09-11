@@ -167,14 +167,15 @@ int ObLSTxService::get_read_store_ctx(const SCN &snapshot,
 int ObLSTxService::get_write_store_ctx(ObTxDesc &tx,
                                        const ObTxReadSnapshot &snapshot,
                                        const concurrent_control::ObWriteFlag write_flag,
-                                       storage::ObStoreCtx &store_ctx) const
+                                       storage::ObStoreCtx &store_ctx,
+                                       const ObTxSEQ &spec_seq_no) const
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(trans_service_)) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "not init", K(ret));
   } else {
-    ret = trans_service_->get_write_store_ctx(tx, snapshot, write_flag, store_ctx, false);
+    ret = trans_service_->get_write_store_ctx(tx, snapshot, write_flag, store_ctx, spec_seq_no, false);
   }
   return ret;
 }
@@ -219,7 +220,7 @@ int ObLSTxService::check_all_tx_clean_up() const
   if (OB_ISNULL(mgr_)) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "not init", KR(ret), K_(ls_id));
-  } else if (mgr_->get_tx_ctx_count() > 0) {
+  } else if (mgr_->get_active_tx_count() > 0) {
     // there is some tx not finished, retry.
     ret = OB_EAGAIN;
   } else {
@@ -232,10 +233,15 @@ ERRSIM_POINT_DEF(EN_GC_CHECK_RD_TX);
 int ObLSTxService::check_all_readonly_tx_clean_up() const
 {
   int ret = OB_SUCCESS;
+  int64_t active_readonly_request_count = 0;
   if (OB_ISNULL(mgr_)) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "not init", KR(ret), K_(ls_id));
-  } else if (mgr_->get_total_active_readonly_request_count() > 0) {
+  } else if ((active_readonly_request_count = mgr_->get_total_active_readonly_request_count()) > 0) {
+    if (REACH_TIME_INTERVAL(5000000)) {
+      TRANS_LOG(INFO, "readonly requests are active", K(active_readonly_request_count));
+      mgr_->dump_readonly_request(3);
+    }
     ret = OB_EAGAIN;
   } else {
     TRANS_LOG(INFO, "wait_all_readonly_tx_cleaned_up cleaned up success", K_(ls_id));
@@ -548,8 +554,7 @@ int ObLSTxService::get_common_checkpoint_info(
       TRANS_LOG(WARN, "the common_checkpoint should not be null", K(i));
     } else {
       ObCommonCheckpointVTInfo info;
-      info.tablet_id = common_checkpoint->get_tablet_id();
-      info.rec_scn = common_checkpoint->get_rec_scn();
+      info.rec_scn = common_checkpoint->get_rec_scn(info.tablet_id);
       info.checkpoint_type = i;
       info.is_flushing = common_checkpoint->is_flushing();
       common_checkpoint_array.push_back(info);
@@ -778,6 +783,7 @@ int ObLSTxService::set_max_replay_commit_version(share::SCN commit_version)
     TRANS_LOG(WARN, "not init", KR(ret), K_(ls_id));
   } else {
     mgr_->update_max_replay_commit_version(commit_version);
+    MTL(ObTransService *)->get_tx_version_mgr().update_max_commit_ts(commit_version, false /*elr*/);
     TRANS_LOG(INFO, "succ set max_replay_commit_version", K(commit_version));
   }
   return ret;

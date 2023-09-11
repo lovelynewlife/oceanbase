@@ -85,14 +85,6 @@ ObMPPacketSender::~ObMPPacketSender()
 
 void ObMPPacketSender::reset()
 {
-  if (conn_valid_) {
-    if (OB_NOT_NULL(req_)) {
-      if (rpc::ObRequest::TRANSPORT_PROTO_RDMA == nio_protocol_) {
-        SQL_REQ_OP.destroy(req_);
-      }
-    }
-  }
-
   req_ = NULL;
   seq_ = 0;
   comp_context_.reset();
@@ -355,6 +347,28 @@ int ObMPPacketSender::send_error_packet(int err,
         message = ObString::make_string(msg_buf); // default error message
       }
     }
+    if (OB_SUCC(ret)) {
+      ObArenaAllocator allocator(ObMemAttr(conn_->tenant_id_, "WARN_MSG"));
+      ObString new_message = message;
+      ObCollationType client_cs_type = CS_TYPE_UTF8MB4_BIN;
+
+      if (OB_UNLIKELY(OB_SUCCESS != get_session(session))) {
+        session = NULL;
+      } else {
+        client_cs_type = session->get_local_collation_connection();
+        if (OB_UNLIKELY(OB_SUCCESS != ObCharset::charset_convert(allocator,
+                                                                 message,
+                                                                 CS_TYPE_UTF8MB4_BIN,
+                                                                 client_cs_type,
+                                                                 new_message,
+                                                                 ObCharset::REPLACE_UNKNOWN_CHARACTER))) {
+        } else {
+          int64_t length = MIN(new_message.length(), MAX_MSG_BUF_SIZE);
+          MEMCPY(msg_buf, new_message.ptr(), length);
+          message.assign_ptr(msg_buf, length);
+        }
+      }
+    }
 
     if (ObServerConfig::get_instance().enable_rich_error_msg) {
       // 测试过程中，如果通过proxy访问oceanbase集群，
@@ -411,7 +425,7 @@ int ObMPPacketSender::send_error_packet(int err,
       if (OB_FAIL(fin_msg.append(message))) {
         LOG_WARN("append pl exact err msg fail", K(ret), K(message));
       } else if (has_pl()) {
-        if (OB_FAIL(get_session(session))) {
+        if (NULL == session && OB_FAIL(get_session(session))) {
           LOG_WARN("fail to get session", K(ret));
         } else if (OB_ISNULL(session)) {
           ret = OB_ERR_UNEXPECTED;
@@ -925,6 +939,7 @@ int ObMPPacketSender::flush_buffer(const bool is_last)
       }
     }
 
+    int64_t buf_sz = ez_buf_->last - ez_buf_->pos;
     if (OB_SUCCESS != ret) {
     } else if (ObRequest::TRANSPORT_PROTO_EASY == nio_protocol_) {
       ObFlushBufferParam flush_param(*ez_buf_, *req_->get_ez_req(), comp_context_,
@@ -969,6 +984,17 @@ int ObMPPacketSender::flush_buffer(const bool is_last)
       if (proto20_context_.is_proto20_used()) {
         // after flush, set pos to 0
         proto20_context_.curr_proto20_packet_start_pos_ = 0;
+      }
+      ObSQLSessionInfo *sess = nullptr;
+      if (OB_FAIL(get_session(sess))) {
+        LOG_WARN("fail to get session info", K(ret));
+      } else if (OB_ISNULL(sess)) {
+        // do nothing
+      } else {
+        sess->inc_out_bytes(buf_sz);
+      }
+      if (OB_NOT_NULL(sess)) {
+        GCTX.session_mgr_->revert_session(sess);
       }
     }
   }
@@ -1092,7 +1118,8 @@ bool ObMPPacketSender::has_pl()
 {
   bool has_pl = false;
   const obmysql::ObMySQLRawPacket &pkt = reinterpret_cast<const obmysql::ObMySQLRawPacket&>(req_->get_packet());
-  if (obmysql::COM_STMT_EXECUTE == pkt.get_cmd()
+  if (obmysql::COM_STMT_PREPARE == pkt.get_cmd()
+        || obmysql::COM_STMT_EXECUTE == pkt.get_cmd()
         || obmysql::COM_QUERY == pkt.get_cmd()
         || obmysql::COM_STMT_PREXECUTE == pkt.get_cmd()
         || obmysql::COM_STMT_FETCH == pkt.get_cmd()) {

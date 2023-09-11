@@ -28,6 +28,11 @@
 
 namespace oceanbase
 {
+namespace obmysql
+{
+  int get_fd_from_sess(void *sess);
+}
+
 namespace rpc
 {
 
@@ -39,7 +44,7 @@ class ObRequest: public common::ObLink
 public:
   friend class ObSqlRequestOperator;
   enum Type { OB_RPC, OB_MYSQL, OB_TASK, OB_TS_TASK, OB_SQL_TASK, OB_SQL_SOCK_TASK };
-  enum TransportProto { TRANSPORT_PROTO_EASY = 0, TRANSPORT_PROTO_POC = 1, TRANSPORT_PROTO_RDMA = 2 };
+  enum TransportProto { TRANSPORT_PROTO_EASY = 0, TRANSPORT_PROTO_POC = 1 };
   enum Stat {
       OB_EASY_REQUEST_EZ_RECV                 = 0,
       OB_EASY_REQUEST_RPC_DELIVER             = 1,
@@ -115,6 +120,7 @@ public:
   int32_t get_process_end_response_diff() const;
   bool get_discard_flag() const;
   int32_t get_retry_times() const;
+  int get_connfd();
 
   void set_connection_phase(ConnectionPhaseEnum connection_phase) { connection_phase_ = connection_phase; }
   bool is_in_connected_phase() const { return ConnectionPhaseEnum:: CPE_CONNECTED == connection_phase_; }
@@ -309,6 +315,21 @@ inline void ObRequest::set_discard_flag(const bool discard_flag)
 inline int32_t ObRequest::get_retry_times() const
 {
   return retry_times_;
+}
+
+inline int ObRequest::get_connfd()
+{
+  int connfd = -1;
+  if (TRANSPORT_PROTO_EASY == nio_protocol_) {
+    if (OB_ISNULL(ez_req_)) {
+      RPC_LOG_RET(ERROR, common::OB_INVALID_ARGUMENT, "invalid argument", K(ez_req_));
+    } else {
+      connfd = ez_req_->ms->c->fd;
+    }
+  } else if (TRANSPORT_PROTO_POC == nio_protocol_) {
+    connfd = obmysql::get_fd_from_sess(handle_ctx_);
+  }
+  return connfd;
 }
 
 inline void ObRequest::set_retry_times(const int32_t retry_times)

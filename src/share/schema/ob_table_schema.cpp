@@ -108,8 +108,8 @@ ObSimpleTableSchemaV2::ObSimpleTableSchemaV2()
 
 ObSimpleTableSchemaV2::ObSimpleTableSchemaV2(ObIAllocator *allocator)
     : ObPartitionSchema(allocator),
-      simple_foreign_key_info_array_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-      simple_constraint_info_array_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator))
+      simple_foreign_key_info_array_(SCHEMA_MID_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+      simple_constraint_info_array_(SCHEMA_MID_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator))
 {
   reset();
 }
@@ -1415,22 +1415,22 @@ ObTableSchema::ObTableSchema()
 ObTableSchema::ObTableSchema(ObIAllocator *allocator)
   : ObSimpleTableSchemaV2(allocator),
     view_schema_(allocator),
-    base_table_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    depend_table_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    simple_index_infos_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    aux_vp_tid_array_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    base_table_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    depend_table_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    simple_index_infos_(SCHEMA_MID_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    aux_vp_tid_array_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
     rowkey_info_(allocator),
     shadow_rowkey_info_(allocator),
     index_info_(allocator),
     partition_key_info_(allocator),
     subpartition_key_info_(allocator),
-    foreign_key_infos_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    label_se_column_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    trigger_list_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    depend_mock_fk_parent_table_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    rls_policy_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    rls_group_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    rls_context_ids_(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator(*allocator))
+    foreign_key_infos_(SCHEMA_BIG_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    label_se_column_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    trigger_list_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    depend_mock_fk_parent_table_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    rls_policy_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    rls_group_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    rls_context_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator))
 {
   reset();
 }
@@ -1648,6 +1648,15 @@ int ObTableSchema::assign(const ObTableSchema &src_schema)
         }
       }
     }
+  }
+
+
+  if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(src_schema.ttl_definition_, ttl_definition_))) {
+    LOG_WARN("deep copy ttl definition failed", K(ret));
+  }
+
+  if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(src_schema.kv_attributes_, kv_attributes_))) {
+    LOG_WARN("deep copy kv attributes failed", K(ret));
   }
 
   if (OB_FAIL(ret)) {
@@ -2150,6 +2159,79 @@ int ObTableSchema::alter_column(ObColumnSchemaV2 &column_schema, ObColumnCheckMo
   return ret;
 }
 
+int ObTableSchema::alter_mysql_table_columns(ObIArray<ObColumnSchemaV2> &columns,
+                                             ObIArray<ObString> &orig_names,
+                                             ObColumnCheckMode check_mode)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObColumnSchemaV2 *, 16> src_cols;
+  ObSEArray<ObColumnSchemaV2 *, 16> rename_cols;
+  bool is_oracle_mode = false;
+  if (OB_FAIL(check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("failed to check oracle mode", K(ret));
+  } else if (OB_UNLIKELY(is_oracle_mode)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("only for mysql mode", K(ret));
+  }
+  for (int i = 0; OB_SUCC(ret) && i < columns.count(); i++) {
+    ObColumnSchemaV2 *src_col = get_column_schema(orig_names.at(i));
+    if (OB_ISNULL(src_col)) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, orig_names.at(i).length(),
+                     orig_names.at(i).ptr(), table_name_.length(), table_name_.ptr());
+      LOG_WARN("column not exists", K(ret), "column_name", columns.at(i).get_column_name());
+    } else if (ObColumnCheckMode::CHECK_MODE_ONLINE == check_mode
+               && OB_FAIL(check_column_can_be_altered_online(src_col, &columns.at(i)))) {
+      if (OB_ERR_COLUMN_DUPLICATE == ret) {
+        // create table t (a int, b int);
+        // alter table t rename column a to b, rename column b to a;
+        // `check_column_can_be_altered_online` will report for scenrio above, ignore error for now,
+        // if the final columns have duplicated names, error will be reported later.
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("failed to alter column schema", K(ret));
+      }
+    } else if (ObColumnCheckMode::CHECK_MODE_OFFLINE == check_mode
+               && OB_FAIL(check_column_can_be_altered_offline(src_col, &columns.at(i)))) {
+      if (OB_ERR_COLUMN_DUPLICATE == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("check column can be altered offline failed", K(ret));
+      }
+    }
+
+    if (OB_SUCC(ret) && !src_col->is_autoincrement() && columns.at(i).is_autoincrement()) {
+      autoinc_column_id_ = columns.at(i).get_column_id();
+    }
+    if (OB_SUCC(ret) && src_col->is_autoincrement() && !columns.at(i).is_autoincrement()) {
+      autoinc_column_id_ = 0;
+    }
+    if (OB_SUCC(ret) && OB_FAIL(src_cols.push_back(src_col))) {
+      LOG_WARN("push back element failed", K(ret));
+    }
+    if (OB_SUCC(ret) && src_col->get_column_name_str() != columns.at(i).get_column_name_str()) {
+      if (OB_FAIL(remove_col_from_name_hash_array(is_oracle_mode, src_col))) {
+        LOG_WARN("failed to remove old column name from name_hash_array", K(ret));
+      } else if (OB_FAIL(src_col->set_column_name(columns.at(i).get_column_name_str()))) {
+        LOG_WARN("failed to change column namem", K(ret));
+      } else if (OB_FAIL(rename_cols.push_back(src_col))) {
+        LOG_WARN("push back element failed", K(ret));
+      }
+    }
+  }
+  for (int i = 0; OB_SUCC(ret) && i < rename_cols.count(); i++) {
+    if (OB_FAIL(add_col_to_name_hash_array(is_oracle_mode, rename_cols.at(i)))) {
+      LOG_WARN("failed to add new column name to name_hash_array", K(ret));
+    }
+  }
+  for (int i = 0; OB_SUCC(ret) && i < src_cols.count(); i++) {
+    if (OB_FAIL(src_cols.at(i)->assign(columns.at(i)))) {
+      LOG_WARN("failed to assign src schema", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObTableSchema::reorder_column(const ObString &column_name, const bool is_first, const ObString &prev_column_name, const ObString &next_column_name)
 {
   int ret = OB_SUCCESS;
@@ -2171,6 +2253,8 @@ int ObTableSchema::reorder_column(const ObString &column_name, const bool is_fir
     const ObString &target_name = is_before ? next_column_name : prev_column_name;
     if (OB_ISNULL(target_column = get_column_schema(target_name))) {
       ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, target_name.length(), target_name.ptr(),
+                     table_name_.length(), table_name_.ptr());
       LOG_WARN("failed to get target table schema by name", K(ret), K(target_name));
     } else {
       target_column_id = target_column->get_column_id();
@@ -3038,6 +3122,8 @@ int64_t ObTableSchema::get_convert_size() const
   convert_size += external_file_location_.length() + 1;
   convert_size += external_file_location_access_info_.length() + 1;
   convert_size += external_file_pattern_.length() + 1;
+  convert_size += ttl_definition_.length() + 1;
+  convert_size += kv_attributes_.length() + 1;
   return convert_size;
 }
 
@@ -3122,6 +3208,8 @@ void ObTableSchema::reset()
   external_file_location_.reset();
   external_file_location_access_info_.reset();
   external_file_pattern_.reset();
+  ttl_definition_.reset();
+  kv_attributes_.reset();
   ObSimpleTableSchemaV2::reset();
 }
 
@@ -5699,6 +5787,40 @@ int ObSimpleTableSchemaV2::get_index_name(const ObString &table_name, ObString &
   return ret;
 }
 
+uint64_t ObSimpleTableSchemaV2::extract_data_table_id_from_index_name(const ObString &index_name)
+{
+  int64_t pos = 0;
+  ObString data_table_id_str;
+  uint64_t data_table_id = OB_INVALID_ID;
+  if (!index_name.prefix_match(OB_INDEX_PREFIX)) {
+    LOG_WARN_RET(OB_INVALID_ARGUMENT, "index table name not in valid format", K(index_name));
+  } else {
+    pos = strlen(OB_INDEX_PREFIX);
+    while (NULL != index_name.ptr() &&
+        isdigit(*(index_name.ptr() + pos)) &&
+        pos < index_name.length()) {
+      ++pos;
+    }
+    if (pos + 1 >= index_name.length()) {
+      LOG_WARN_RET(OB_INVALID_ARGUMENT, "index table name not in valid format", K(pos), K(index_name), K(index_name.length()));
+    } else if ('_' != *(index_name.ptr() + pos)) {
+      LOG_WARN_RET(OB_INVALID_ARGUMENT, "index table name not in valid format", K(pos), K(index_name), K(index_name.length()));
+    } else {
+      data_table_id_str.assign_ptr(
+          index_name.ptr() + strlen(OB_INDEX_PREFIX),
+          static_cast<ObString::obstr_size_t>(pos) - strlen(OB_INDEX_PREFIX));
+      int ret = (common_string_unsigned_integer(
+                  0, ObVarcharType, CS_TYPE_UTF8MB4_GENERAL_CI, data_table_id_str, false, data_table_id));
+      if (OB_FAIL(ret)) {
+        data_table_id = OB_INVALID_ID;
+        LOG_WARN("convert string to uint failed", KR(ret), K(data_table_id_str), K(index_name));
+      }
+    }
+  }
+  return data_table_id;
+}
+
+
 int ObSimpleTableSchemaV2::generate_origin_index_name()
 {
   int ret = OB_SUCCESS;
@@ -6083,6 +6205,14 @@ OB_DEF_SERIALIZE(ObTableSchema)
                 external_file_pattern_);
   }
   }();
+
+  if (OB_SUCC(ret)) {
+    OB_UNIS_ENCODE(ttl_definition_);
+  }
+
+  if (OB_SUCC(ret)) {
+    OB_UNIS_ENCODE(kv_attributes_);
+  }
   return ret;
 }
 
@@ -6194,6 +6324,8 @@ OB_DEF_DESERIALIZE(ObTableSchema)
   ObString create_host;
   ObString table_name;
   ObString expire_info;
+  ObString ttl_definition;
+  ObString kv_attributes;
 
   LST_DO_CODE(OB_UNIS_DECODE,
               tenant_id_,
@@ -6432,6 +6564,20 @@ OB_DEF_DESERIALIZE(ObTableSchema)
     }
   }
   }();
+
+  if (OB_SUCC(ret)) {
+    OB_UNIS_DECODE(ttl_definition);
+    if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(ttl_definition, ttl_definition_))) {
+      LOG_WARN("deep_copy_str failed", K(ret), K(ttl_definition));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    OB_UNIS_DECODE(kv_attributes);
+    if (OB_SUCC(ret) && OB_FAIL(deep_copy_str(kv_attributes, kv_attributes_))) {
+      LOG_WARN("deep_copy_str failed", K(ret), K(kv_attributes));
+    }
+  }
   return ret;
 }
 
@@ -6569,6 +6715,8 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
   OB_UNIS_ADD_LEN(external_file_location_access_info_);
   OB_UNIS_ADD_LEN(external_file_format_);
   OB_UNIS_ADD_LEN(external_file_pattern_);
+  OB_UNIS_ADD_LEN(ttl_definition_);
+  OB_UNIS_ADD_LEN(kv_attributes_);
   return len;
 }
 
@@ -7102,6 +7250,68 @@ int ObTableSchema::add_foreign_key_info(const ObForeignKeyInfo &foreign_key_info
   return ret;
 }
 
+int ObTableSchema::get_fk_check_index_tid(ObSchemaGetterGuard &schema_guard, const common::ObIArray<uint64_t> &parent_column_ids, uint64_t &scan_index_tid) const
+{
+  int ret = OB_SUCCESS;
+  scan_index_tid = OB_INVALID_ID;
+  bool is_rowkey_column = false;
+  if (0 >= parent_column_ids.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("column number in parent key is zero", K(ret), K(parent_column_ids.count()));
+  } else if (OB_FAIL(check_rowkey_column(parent_column_ids, is_rowkey_column))) {
+    LOG_WARN("failed to check if parent key is rowkey", K(ret));
+  } else if (is_rowkey_column) {
+    scan_index_tid = table_id_;
+  } else {
+    bool find = false;
+    for (int i = 0; OB_SUCC(ret) && i < simple_index_infos_.count() && !find; ++i) {
+      const ObAuxTableMetaInfo &index_info = simple_index_infos_.at(i);
+      const uint64_t index_tid = index_info.table_id_;
+      const ObTableSchema *index_schema = NULL;
+      if (!is_unique_index(index_info.index_type_)) {
+        // do nothing
+      } else if (OB_FAIL(schema_guard.get_table_schema(get_tenant_id(),
+                                                index_tid,
+                                                index_schema))) {
+        LOG_WARN("fail to get table schema", K(ret));
+      } else if (OB_ISNULL(index_schema)) {
+        ret = OB_TABLE_NOT_EXIST;
+        LOG_WARN("index schema from schema guard is NULL", K(ret), K(index_schema));
+      } else if (parent_column_ids.count() == index_schema->get_index_column_num()) {
+        const ObIndexInfo &index_info = index_schema->get_index_info();
+        bool is_rowkey = true;
+        int j = 0;
+        for (; OB_SUCC(ret) && j < parent_column_ids.count() && is_rowkey; ++j) {
+          if (OB_FAIL(index_info.is_rowkey_column(parent_column_ids.at(j), is_rowkey))) {
+            LOG_WARN("failed to check parent column is unique index column", K(ret));
+          }
+        }
+        if (OB_SUCC(ret) && is_rowkey) {
+          find = true;
+          scan_index_tid = index_tid;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTableSchema::check_rowkey_column(const common::ObIArray<uint64_t> &parent_column_ids, bool &is_rowkey) const
+{
+  int ret = OB_SUCCESS;
+  is_rowkey = true;
+  if (parent_column_ids.count() != rowkey_column_num_) {
+    is_rowkey = false;
+  } else {
+    for (int i = 0; OB_SUCC(ret) && i < parent_column_ids.count() && is_rowkey; ++i) {
+      const uint64_t parent_column_id = parent_column_ids.at(i);
+      ret = rowkey_info_.is_rowkey_column(parent_column_id, is_rowkey);
+    }
+  }
+  return ret;
+}
+
+
 int ObTableSchema::add_simple_index_info(const ObAuxTableMetaInfo &simple_index_info)
 {
   int ret = OB_SUCCESS;
@@ -7598,6 +7808,26 @@ int ObTableSchema::convert_column_udt_set_ids(const ObHashMap<uint64_t, uint64_t
           }
         }
       }
+    }
+  }
+  return ret;
+}
+
+int ObTableSchema::check_is_stored_generated_column_base_column(uint64_t column_id, bool &is_stored_base_col) const
+{
+  int ret = OB_SUCCESS;
+  const ObColumnSchemaV2 *column = NULL;
+  is_stored_base_col = false;
+  for (ObTableSchema::const_column_iterator iter = column_begin();
+       OB_SUCC(ret) && iter != column_end() && !is_stored_base_col;
+       ++iter) {
+    const ObColumnSchemaV2 *column_schema = *iter;
+    if (OB_ISNULL(column_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("Column schema is NULL", K(ret));
+    } else if (column_schema->is_stored_generated_column()
+               && column_schema->has_cascaded_column_id(column_id)) {
+      is_stored_base_col = true;
     }
   }
   return ret;

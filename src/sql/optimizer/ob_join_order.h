@@ -399,6 +399,7 @@ struct EstimateCostInfo {
     bool is_access_path() const;
     bool is_join_path() const;
     bool is_subquery_path() const;
+    bool is_values_table_path() const;
     int check_is_base_table(bool &is_base_table);
     inline const common::ObIArray<OrderItem> &get_ordering() const { return ordering_; }
     inline common::ObIArray<OrderItem> &get_ordering() { return ordering_; }
@@ -1175,6 +1176,29 @@ struct EstimateCostInfo {
       DISALLOW_COPY_AND_ASSIGN(CteTablePath);
   };
 
+  class ValuesTablePath : public Path
+  {
+  public:
+    ValuesTablePath()
+      : Path(NULL),
+        table_id_(OB_INVALID_ID) {}
+    virtual ~ValuesTablePath() { }
+    int assign(const ValuesTablePath &other, common::ObIAllocator *allocator);
+    virtual int estimate_cost() override;
+    virtual int get_name_internal(char *buf, const int64_t buf_len, int64_t &pos) const
+    {
+      int ret = OB_SUCCESS;
+      if (OB_FAIL(BUF_PRINTF("@values_"))) {
+      } else if (OB_FAIL(BUF_PRINTF("%lu", table_id_))) {
+      }
+      return ret;
+    }
+  public:
+    uint64_t table_id_;
+  private:
+      DISALLOW_COPY_AND_ASSIGN(ValuesTablePath);
+  };
+
   struct ObRowCountEstTask
   {
     ObRowCountEstTask() : est_arg_(NULL)
@@ -1379,6 +1403,10 @@ struct NullAwareAntiJoinInfo {
     int param_funct_table_expr(ObRawExpr* &function_table_expr,
                                ObIArray<ObExecParamRawExpr *> &nl_params,
                                ObIArray<ObRawExpr*> &subquery_exprs);
+
+    int param_values_table_expr(ObIArray<ObRawExpr*> &values_vector,
+                                ObIArray<ObExecParamRawExpr *> &nl_params,
+                                ObIArray<ObRawExpr*> &subquery_exprs);
 
     int param_json_table_expr(ObRawExpr* &json_table_expr,
                               ObExecParamRawExpr*& nl_params,
@@ -1702,6 +1730,10 @@ struct NullAwareAntiJoinInfo {
     int compute_base_table_property(uint64_t table_id,
                                     uint64_t ref_table_id);
 
+    int extract_necessary_pushdown_quals(ObIArray<ObRawExpr *> &candi_quals,
+                                         ObIArray<ObRawExpr *> &necessary_pushdown_quals,
+                                         ObIArray<ObRawExpr *> &unnecessary_pushdown_quals);
+
     /**
      * @brief generate_subquery_path
      * 生成子查询路径
@@ -1731,10 +1763,7 @@ struct NullAwareAntiJoinInfo {
     int generate_cte_table_paths();
     int generate_function_table_paths();
     int generate_json_table_paths();
-
-    int generate_subquery_for_function_table(ObRawExpr *function_table_expr,
-                                             ObLogicalOperator *&function_table_root);
-
+    int generate_values_table_paths();
     int generate_temp_table_paths();
 
     int compute_sharding_info_for_base_paths(ObIArray<AccessPath *> &access_paths);
@@ -2494,6 +2523,7 @@ struct NullAwareAntiJoinInfo {
     int is_valid_range_expr_for_oracle_agent_table(const ObRawExpr *range_expr, bool &is_valid);
     int extract_valid_range_expr_for_oracle_agent_table(const common::ObIArray<ObRawExpr *> &filters,
                                                         common::ObIArray<ObRawExpr *> &new_filters);
+    bool virtual_table_index_can_range_scan(uint64_t table_id);
     friend class ::test::TestJoinOrder_ob_join_order_param_check_Test;
     friend class ::test::TestJoinOrder_ob_join_order_src_Test;
   private:

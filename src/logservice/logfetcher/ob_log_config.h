@@ -98,6 +98,7 @@ public:
   T_DEF_INT_INFT(io_thread_num, OB_CLUSTER_PARAMETER, 4, 1, "io thread number");
   T_DEF_INT(idle_pool_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "idle pool thread num");
   T_DEF_INT(dead_pool_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "dead pool thread num");
+  T_DEF_INT(cdc_read_archive_log_concurrency, OB_CLUSTER_PARAMETER, 4, 1, 64, "log external storage handler thread num");
   T_DEF_INT(stream_worker_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 64, "stream worker thread num");
   T_DEF_INT(start_lsn_locator_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "start lsn locator thread num");
   T_DEF_INT_INFT(start_lsn_locator_locate_count, OB_CLUSTER_PARAMETER, 1, 1, "start lsn locator locate count");
@@ -181,7 +182,7 @@ public:
   T_DEF_INT_INFT(blacklist_survival_time_sec, OB_CLUSTER_PARAMETER, 30, 1, "blacklist-server surival time in seconds");
 
   // The maximum time the server can be blacklisted, in minutes
-  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 4, 1, "blacklist-server survival time upper limit in minute");
+  T_DEF_INT_INFT(blacklist_survival_time_upper_limit_min, OB_CLUSTER_PARAMETER, 1, 1, "blacklist-server survival time upper limit in minute");
 
   // The server is blacklisted in the logstream, based on the time of the current server service logstream - to decide whether to penalize the survival time
   // When the service time is less than a certain interval, a doubling-live-time policy is adopted

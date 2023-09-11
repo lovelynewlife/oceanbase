@@ -22,6 +22,9 @@
 #include "lib/thread/thread_mgr.h"
 #include "lib/allocator/ob_malloc.h"
 #include "share/ob_tenant_role.h"//ObTenantRole
+#ifdef OB_BUILD_DBLINK
+#include "lib/oracleclient/ob_oci_environment.h"
+#endif
 #include "lib/mysqlclient/ob_tenant_oci_envs.h"
 namespace oceanbase
 {
@@ -30,10 +33,13 @@ namespace common {
   class ObTenantIOManager;
   template<typename T> class ObServerObjectPool;
   class ObDetectManager;
+  class ObOptStatMonitorManager;
 }
 namespace omt {
  class ObPxPools;
  class ObTenant;
+ class ObSharedTimer;
+ class ObTenantSrs;
 }
 namespace obmysql {
   class ObMySQLRequestManager;
@@ -99,7 +105,10 @@ namespace transaction {
 namespace concurrency_control {
   class ObMultiVersionGarbageCollector; // MVCC GC
 }
-
+namespace table
+{
+  class ObHTableLockMgr;
+}
 namespace logservice
 {
   class ObLogService;
@@ -171,6 +180,11 @@ namespace storage {
   class MockTenantModuleEnv;
 }
 
+namespace table
+{
+  class ObTTLService;
+}
+
 namespace share
 {
 class ObCgroupCtrl;
@@ -179,6 +193,8 @@ class ObTenantDagScheduler;
 class ObTenantModuleInitCtx;
 class ObGlobalAutoIncService;
 class ObDagWarningHistoryManager;
+class ObTenantErrsimModuleMgr;
+class ObTenantErrsimEventMgr;
 namespace schema
 {
   class ObTenantSchemaService;
@@ -188,7 +204,19 @@ namespace detector
   class ObDeadLockDetectorMgr;
 }
 
+#ifndef OB_BUILD_ARBITRATION
 #define ArbMTLMember
+#else
+#define ArbMTLMember rootserver::ObArbitrationService*,
+#endif
+
+#ifdef ERRSIM
+#define TenantErrsimModule share::ObTenantErrsimModuleMgr*,
+#define TenantErrsimEvent share::ObTenantErrsimEventMgr*,
+#else
+#define TenantErrsimModule
+#define TenantErrsimEvent
+#endif
 
 // 在这里列举需要添加的租户局部变量的类型，租户会为每种类型创建一个实例。
 // 实例的初始化和销毁逻辑由MTL_BIND接口指定。
@@ -197,6 +225,7 @@ using ObPartTransCtxObjPool = common::ObServerObjectPool<transaction::ObPartTran
 using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage::ObTableScanIterator>;
 #define MTL_MEMBERS                                  \
   MTL_LIST(                                          \
+      omt::ObSharedTimer*,                           \
       storage::ObTenantMetaMemMgr*,                  \
       ObPartTransCtxObjPool*,                        \
       ObTableScanIteratorObjPool*,                   \
@@ -283,7 +312,13 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       oceanbase::common::sqlclient::ObTenantOciEnvs*, \
       rootserver::ObHeartbeatService*,              \
       oceanbase::common::ObDetectManager*,          \
-      oceanbase::sql::ObTenantSQLSessionMgr*        \
+      TenantErrsimModule                            \
+      TenantErrsimEvent                             \
+      oceanbase::sql::ObTenantSQLSessionMgr*,       \
+      oceanbase::common::ObOptStatMonitorManager*,  \
+      omt::ObTenantSrs*,                            \
+      table::ObHTableLockMgr*,                      \
+      table::ObTTLService*      \
   )
 
 
@@ -311,6 +346,7 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
   share::ObTenantEnv::get_tenant() == nullptr ? OB_ERR_UNEXPECTED : share::ObTenantEnv::get_tenant()->unregister_module_thread_dynamic(th)
 #define MTL_IS_MINI_MODE() share::ObTenantEnv::get_tenant()->is_mini_mode()
 #define MTL_CPU_COUNT() share::ObTenantEnv::get_tenant()->unit_max_cpu()
+#define MTL_MEM_SIZE() share::ObTenantEnv::get_tenant()->unit_memory_size()
 
 // 注意MTL_BIND调用需要在租户创建之前，否则会导致租户创建时无法调用到绑定的函数。
 #define MTL_BIND(INIT, DESTROY) \
@@ -399,6 +435,21 @@ friend class ObTenantSpaceFetcher;
 friend class omt::ObTenant;
 friend class ObTenantEnv;
 
+struct TGSetDumpFunc
+{
+  static const int64_t BUF_LEN = 128;
+  TGSetDumpFunc() : pos_(0)
+  {
+    MEMSET(buf_, '\0', BUF_LEN);
+  }
+  virtual ~TGSetDumpFunc() = default;
+  int operator()(common::hash::HashSetTypes<int64_t>::pair_type &kv)
+  {
+    return databuff_printf(buf_, BUF_LEN, pos_, " %ld", kv.first);
+  }
+  int64_t pos_;
+  char buf_[BUF_LEN];
+};
 template<class T> struct Identity {};
 
 public:

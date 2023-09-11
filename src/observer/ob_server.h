@@ -69,8 +69,13 @@
 #include "storage/ob_disk_usage_reporter.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_job_rpc_proxy.h"
 #include "logservice/ob_server_log_block_mgr.h"
+#ifdef OB_BUILD_ARBITRATION
+#include "logservice/arbserver/ob_arb_srv_garbage_collect_service.h"
+#include "logservice/arbserver/ob_arb_server_timer.h"
+#endif
 
 #include "share/table/ob_table_rpc_proxy.h"
+#include "share/wr/ob_wr_service.h"
 
 #include "sql/engine/table/ob_external_table_access_service.h"
 #include "share/external_table/ob_external_table_file_rpc_proxy.h"
@@ -80,7 +85,6 @@ namespace oceanbase
 namespace omt
 {
 class ObTenantTimezoneMgr;
-class ObTenantSrsMgr;
 }
 namespace share
 {
@@ -276,7 +280,6 @@ private:
   int init_table_lock_rpc_client();
   int start_log_mgr();
   int stop_log_mgr();
-  int init_srs_mgr();
   int reload_bandwidth_throttle_limit(int64_t network_speed);
   int get_network_speed_from_sysfs(int64_t &network_speed);
   int get_network_speed_from_config_file(int64_t &network_speed);
@@ -356,8 +359,6 @@ private:
   common::ObConfigManager config_mgr_;
   omt::ObTenantConfigMgr &tenant_config_mgr_;
   omt::ObTenantTimezoneMgr &tenant_timezone_mgr_;
-  // gis: srs mgr
-  omt::ObTenantSrsMgr &tenant_srs_mgr_;
 
   // The Oceanbase schema relating to.
   share::schema::ObMultiVersionSchemaService &schema_service_;
@@ -446,6 +447,11 @@ private:
   ObDiskUsageReportTask disk_usage_report_task_;
 
   logservice::ObServerLogBlockMgr log_block_mgr_;
+#ifdef OB_BUILD_ARBITRATION
+  arbserver::ObArbGarbageCollectService arb_gcs_;
+  arbserver::ObArbServerTimer arb_timer_;
+#endif
+  share::ObWorkloadRepositoryService wr_service_;
 }; // end of class ObServer
 
 inline ObServer &ObServer::get_instance()

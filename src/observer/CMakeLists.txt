@@ -118,7 +118,6 @@ ob_set_subtarget(ob_server omt
   omt/ob_th_worker.cpp
   omt/ob_worker_processor.cpp
   omt/ob_multi_tenant_operator.cpp
-  omt/ob_tenant_srs_mgr.cpp
   omt/ob_tenant_srs.cpp
 )
 
@@ -138,6 +137,7 @@ ob_set_subtarget(ob_server table
   table/ob_table_rpc_processor.cpp
   table/ob_table_query_sync_processor.cpp
   table/ob_table_service.cpp
+  table/ob_htable_lock_mgr.cpp
   table/ob_table_context.cpp
   table/ob_table_executor.cpp
   table/ob_table_delete_executor.cpp
@@ -155,6 +155,12 @@ ob_set_subtarget(ob_server table
   table/ob_table_op_wrapper.cpp
   table/ob_table_query_common.cpp
   table/ob_table_direct_load_processor.cpp
+  table/ob_table_aggregation.cpp
+  table/ttl/ob_ttl_service.cpp
+  table/ttl/ob_tenant_ttl_manager.cpp
+  table/ttl/ob_tenant_tablet_ttl_mgr.cpp
+  table/ttl/ob_table_ttl_task.cpp
+  table/ttl/ob_table_ttl_executor.cpp
 )
 
 ob_set_subtarget(ob_server table_load
@@ -354,6 +360,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_table_columns.cpp
   virtual_table/ob_table_index.cpp
   virtual_table/ob_tenant_all_tables.cpp
+  virtual_table/ob_tenant_show_restore_preview.cpp
   virtual_table/ob_tenant_show_tables.cpp
   virtual_table/ob_tenant_virtual_charset.cpp
   virtual_table/ob_tenant_virtual_privilege.cpp
@@ -384,6 +391,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_sql_plan.cpp
   virtual_table/ob_all_virtual_opt_stat_gather_monitor.cpp
   virtual_table/ob_all_virtual_thread.cpp
+  virtual_table/ob_virtual_flt_config.cpp
 )
 
 ob_server_add_target(ob_server)
@@ -396,7 +404,7 @@ add_library(oceanbase_static
   ${CMAKE_CURRENT_BINARY_DIR}/ob_version.cpp)
 
 target_link_libraries(oceanbase_static
-  PUBLIC ob_base "${ob_objects}" ob_sql_static ob_storage_static ob_share_static oblib objit)
+  PUBLIC ob_base "${ob_objects}" ob_sql_static ob_storage_static ob_share_static ${ob_close_modules_static_name} oblib objit)
 
 if (OB_GPERF_MODE)
   target_link_libraries(oceanbase_static
@@ -422,6 +430,7 @@ else()
     ob_sql_static
     ob_storage_static
     ob_share_static
+    ${ob_close_modules_static_name}
     -Wl,--no-whole-archive
     -static-libgcc -static-libstdc++
     objit)
@@ -444,6 +453,7 @@ target_link_libraries(observer
   ob_sql_static
   ob_storage_static
   ob_share_static
+  ${ob_close_modules_static_name}
   -Wl,--end-group
   -static-libgcc
   -static-libstdc++

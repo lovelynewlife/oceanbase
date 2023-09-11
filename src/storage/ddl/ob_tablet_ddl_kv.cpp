@@ -429,6 +429,18 @@ ObDDLKV::~ObDDLKV()
   reset();
 }
 
+void ObDDLKV::inc_ref()
+{
+  ATOMIC_AAF(&ref_cnt_, 1);
+  // FLOG_INFO("DDLKV inc_ref", K(ref_cnt_), KP(this), K(tablet_id_));
+}
+
+int64_t ObDDLKV::dec_ref()
+{
+  // FLOG_INFO("DDLKV dec_ref", K(ref_cnt_), KP(this), K(tablet_id_));
+  return ATOMIC_SAF(&ref_cnt_, 1 /* just sub 1 */);
+}
+
 int ObDDLKV::init(ObTablet &tablet,
                   const SCN &ddl_start_scn,
                   const int64_t snapshot_version,
@@ -676,8 +688,11 @@ int ObDDLKV::close(ObTablet &tablet)
     ddl_param.start_scn_ = ddl_start_scn_;
     ddl_param.snapshot_version_ = snapshot_version_;
     ddl_param.data_format_version_ = data_format_version_;
-    if (OB_FAIL(ObTabletDDLUtil::create_ddl_sstable(tablet, ddl_param, meta_array, nullptr/*first_ddl_sstable*/, allocator, sstable))) {
-      LOG_WARN("create ddl sstable failed", K(ret), K(ddl_param));
+    ObSSTable *first_sstable = nullptr;
+    if (OB_FAIL(ObTabletDDLUtil::try_get_first_ddl_sstable(tablet, first_sstable))) {
+      LOG_WARN("fail to get first sstable", K(ret), K(tablet));
+    } else if (OB_FAIL(ObTabletDDLUtil::create_ddl_sstable(tablet, ddl_param, meta_array, first_sstable, allocator, sstable))) {
+      LOG_WARN("create ddl sstable failed", K(ret), K(ddl_param), KP(first_sstable));
     } else if (OB_FAIL(ObTabletDDLUtil::update_ddl_table_store(tablet, ddl_param, allocator, sstable))) {
       LOG_WARN("update ddl table store failed", K(ret), K(ddl_param), K(sstable));
     } else {

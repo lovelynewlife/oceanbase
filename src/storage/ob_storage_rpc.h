@@ -299,6 +299,34 @@ public:
   common::ObMemberList member_list_;
 };
 
+struct ObFetchLSMemberAndLearnerListArg
+{
+  OB_UNIS_VERSION(2);
+public:
+  ObFetchLSMemberAndLearnerListArg();
+  virtual ~ObFetchLSMemberAndLearnerListArg() {}
+  bool is_valid() const;
+  void reset();
+
+  TO_STRING_KV(K_(tenant_id), K_(ls_id));
+  uint64_t tenant_id_;
+  share::ObLSID ls_id_;
+};
+
+struct ObFetchLSMemberAndLearnerListInfo
+{
+  OB_UNIS_VERSION(2);
+public:
+  ObFetchLSMemberAndLearnerListInfo();
+  virtual ~ObFetchLSMemberAndLearnerListInfo() {}
+  bool is_valid() const;
+  void reset();
+
+  TO_STRING_KV(K_(member_list), K_(learner_list));
+  common::ObMemberList member_list_;
+  common::GlobalLearnerList learner_list_;
+};
+
 struct ObCopySSTableMacroRangeInfoArg final
 {
   OB_UNIS_VERSION(2);
@@ -630,42 +658,12 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObCheckStartTransferTabletsRes);
 };
 
-struct ObStorageBlockTxArg final
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObStorageBlockTxArg();
-  ~ObStorageBlockTxArg() {}
-  bool is_valid() const;
-  void reset();
-
-  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(gts));
-  uint64_t tenant_id_;
-  share::ObLSID ls_id_;
-  share::SCN gts_;
-};
-
 struct ObStorageKillTxArg final
 {
   OB_UNIS_VERSION(1);
 public:
   ObStorageKillTxArg();
   ~ObStorageKillTxArg() {}
-  bool is_valid() const;
-  void reset();
-
-  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(gts));
-  uint64_t tenant_id_;
-  share::ObLSID ls_id_;
-  share::SCN gts_;
-};
-
-struct ObStorageUnBlockTxArg final
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObStorageUnBlockTxArg();
-  ~ObStorageUnBlockTxArg() {}
   bool is_valid() const;
   void reset();
 
@@ -741,9 +739,7 @@ public:
   RPC_SS(PR5 fetch_tablet_sstable_info, OB_HA_FETCH_SSTABLE_INFO, (ObCopyTabletsSSTableInfoArg), common::ObDataBuffer);
   RPC_SS(PR5 fetch_sstable_macro_info, OB_HA_FETCH_SSTABLE_MACRO_INFO, (ObCopySSTableMacroRangeInfoArg), common::ObDataBuffer);
   RPC_SS(PR5 lob_query, OB_LOB_QUERY, (ObLobQueryArg), common::ObDataBuffer);
-  RPC_SS(PR5 fetch_transfer_tablet_info, OB_FETCH_TRANSFER_TABLET_INFO, (ObTransferTabletInfoArg), common::ObDataBuffer);
   RPC_SS(PR5 fetch_ls_view, OB_HA_FETCH_LS_VIEW, (ObCopyLSViewArg), common::ObDataBuffer);
-
   RPC_S(PR5 fetch_ls_member_list, OB_HA_FETCH_LS_MEMBER_LIST, (ObFetchLSMemberListArg), ObFetchLSMemberListInfo);
   RPC_S(PR5 fetch_ls_meta_info, OB_HA_FETCH_LS_META_INFO, (ObFetchLSMetaInfoArg), ObFetchLSMetaInfoResp);
   RPC_S(PR5 fetch_ls_info, OB_HA_FETCH_LS_INFO, (ObCopyLSInfoArg), ObCopyLSInfo);
@@ -756,13 +752,11 @@ public:
   RPC_S(PR5 fetch_ls_replay_scn, OB_HA_FETCH_LS_REPLAY_SCN, (ObFetchLSReplayScnArg), ObFetchLSReplayScnRes);
   RPC_S(PR5 check_transfer_tablet_backfill_completed, OB_HA_CHECK_TRANSFER_TABLET_BACKFILL, (ObCheckTransferTabletBackfillArg), ObCheckTransferTabletBackfillRes);
   RPC_S(PR5 get_config_version_and_transfer_scn, OB_HA_CHANGE_MEMBER_SERVICE, (ObStorageChangeMemberArg), ObStorageChangeMemberRes);
-  RPC_S(PR5 block_tx, OB_HA_BLOCK_TX, (ObStorageBlockTxArg));
-  RPC_S(PR5 kill_tx, OB_HA_KILL_TX, (ObStorageKillTxArg));
-  RPC_S(PR5 unblock_tx, OB_HA_UNBLOCK_TX, (ObStorageUnBlockTxArg));
   RPC_S(PR5 lock_config_change, OB_HA_LOCK_CONFIG_CHANGE, (ObStorageConfigChangeOpArg), ObStorageConfigChangeOpRes);
   RPC_S(PR5 unlock_config_change, OB_HA_UNLOCK_CONFIG_CHANGE, (ObStorageConfigChangeOpArg), ObStorageConfigChangeOpRes);
   RPC_S(PR5 get_config_change_lock_stat, OB_HA_GET_CONFIG_CHANGE_LOCK_STAT, (ObStorageConfigChangeOpArg), ObStorageConfigChangeOpRes);
   RPC_S(PR5 wakeup_transfer_service, OB_HA_WAKEUP_TRANSFER_SERVICE, (ObStorageWakeupTransferServiceArg));
+  RPC_S(PR5 fetch_ls_member_and_learner_list, OB_HA_FETCH_LS_MEMBER_AND_LEARNER_LIST, (ObFetchLSMemberAndLearnerListArg), ObFetchLSMemberAndLearnerListInfo);
 };
 
 template <ObRpcPacketCode RPC_CODE>
@@ -858,6 +852,16 @@ protected:
   int process();
 };
 
+class ObFetchLSMemberAndLearnerListP:
+    public ObStorageRpcProxy::Processor<OB_HA_FETCH_LS_MEMBER_AND_LEARNER_LIST>
+{
+public:
+  explicit ObFetchLSMemberAndLearnerListP();
+  virtual ~ObFetchLSMemberAndLearnerListP() { }
+protected:
+  int process();
+};
+
 class ObFetchSSTableMacroInfoP :
     public ObStorageStreamRpcP<OB_HA_FETCH_SSTABLE_MACRO_INFO>
 {
@@ -934,17 +938,6 @@ protected:
   int process();
 };
 
-class ObFetchTransferTabletsInfoP :
-    public ObStorageStreamRpcP<OB_FETCH_TRANSFER_TABLET_INFO>
-{
-public:
-  explicit ObFetchTransferTabletsInfoP(
-      common::ObInOutBandwidthThrottle *bandwidth_throttle);
-  virtual ~ObFetchTransferTabletsInfoP() {}
-protected:
-  int process();
-};
-
 class ObFetchLSReplayScnP:
     public ObStorageStreamRpcP<OB_HA_FETCH_LS_REPLAY_SCN>
 {
@@ -1000,38 +993,8 @@ public:
 
 protected:
   int process();
-};
-
-class ObStorageBlockTxP:
-    public ObStorageStreamRpcP<OB_HA_BLOCK_TX>
-{
-public:
-  explicit ObStorageBlockTxP(common::ObInOutBandwidthThrottle *bandwidth_throttle);
-  virtual ~ObStorageBlockTxP() {}
 protected:
-  int process();
-private:
-  int check_before_kill_(storage::ObLS *ls, const share::ObLSID &ls_id, const int64_t timeout);
-};
-
-class ObStorageKillTxP:
-    public ObStorageStreamRpcP<OB_HA_KILL_TX>
-{
-public:
-  explicit ObStorageKillTxP(common::ObInOutBandwidthThrottle *bandwidth_throttle);
-  virtual ~ObStorageKillTxP() {}
-protected:
-  int process();
-};
-
-class ObStorageUnBlockTxP:
-    public ObStorageStreamRpcP<OB_HA_UNBLOCK_TX>
-{
-public:
-  explicit ObStorageUnBlockTxP(common::ObInOutBandwidthThrottle *bandwidth_throttle);
-  virtual ~ObStorageUnBlockTxP() {}
-protected:
-  int process();
+  int64_t max_tablet_num_;
 };
 
 class ObStorageLockConfigChangeP:
@@ -1170,21 +1133,6 @@ public:
       const bool need_get_config_version,
       palf::LogConfigVersion &config_version,
       share::SCN &transfer_scn) = 0;
-  virtual int block_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts) = 0;
-  virtual int kill_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts) = 0;
-  virtual int unblock_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts) = 0;
   virtual int lock_config_change(
       const uint64_t tenant_id,
       const ObStorageHASrcInfo &src_info,
@@ -1296,21 +1244,6 @@ public:
       const bool need_get_config_version,
       palf::LogConfigVersion &config_version,
       share::SCN &transfer_scn);
-  virtual int block_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts);
-  virtual int kill_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts);
-  virtual int unblock_tx(
-      const uint64_t tenant_id,
-      const ObStorageHASrcInfo &src_info,
-      const share::ObLSID &ls_id,
-      const share::SCN &gts);
   virtual int lock_config_change(
       const uint64_t tenant_id,
       const ObStorageHASrcInfo &src_info,
@@ -1332,6 +1265,11 @@ public:
   virtual int wakeup_transfer_service(
       const uint64_t tenant_id,
       const ObStorageHASrcInfo &src_info);
+  virtual int fetch_ls_member_and_learner_list(
+      const uint64_t tenant_id,
+      const share::ObLSID &ls_id,
+      const ObStorageHASrcInfo &src_info,
+      obrpc::ObFetchLSMemberAndLearnerListInfo &member_info);
 
 private:
   bool is_inited_;

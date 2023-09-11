@@ -216,6 +216,7 @@ int ObAccessService::table_scan(
     ObVTableScanParam &vparam,
     ObNewRowIterator *&result)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_read);
   int ret = OB_SUCCESS;
   const share::ObLSID &ls_id = vparam.ls_id_;
   const common::ObTabletID &data_tablet_id = vparam.tablet_id_;
@@ -223,10 +224,6 @@ int ObAccessService::table_scan(
   ObLS *ls = nullptr;
   ObLSTabletService *tablet_service = nullptr;
   ObTableScanParam &param = static_cast<ObTableScanParam &>(vparam);
-  // TODO(yichang): maybe we need to move this scan_flag_ setting to sql layer?
-  if (param.is_for_foreign_check_) {
-    param.scan_flag_.set_iter_uncommitted_row();
-  }
   ObStoreAccessType access_type = param.scan_flag_.is_read_latest() ?
     ObStoreAccessType::READ_LATEST : ObStoreAccessType::READ;
   SCN user_specified_snapshot_scn;
@@ -278,6 +275,7 @@ int ObAccessService::table_rescan(
     ObVTableScanParam &vparam,
     ObNewRowIterator *result)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_read);
   int ret = OB_SUCCESS;
   ObTableScanParam &param = static_cast<ObTableScanParam &>(vparam);
   if (IS_NOT_INIT) {
@@ -338,7 +336,8 @@ int ObAccessService::get_write_store_ctx_guard_(
     transaction::ObTxDesc &tx_desc,
     const transaction::ObTxReadSnapshot &snapshot,
     const concurrent_control::ObWriteFlag write_flag,
-    ObStoreCtxGuard &ctx_guard)
+    ObStoreCtxGuard &ctx_guard,
+    const transaction::ObTxSEQ &spec_seq_no)
 {
   int ret = OB_SUCCESS;
   ObLS *ls = nullptr;
@@ -354,7 +353,7 @@ int ObAccessService::get_write_store_ctx_guard_(
     auto &ctx = ctx_guard.get_store_ctx();
     ctx.ls_ = ls;
     ctx.timeout_ = timeout;
-    if (OB_FAIL(ls->get_write_store_ctx(tx_desc, snapshot, write_flag, ctx))) {
+    if (OB_FAIL(ls->get_write_store_ctx(tx_desc, snapshot, write_flag, ctx, spec_seq_no))) {
       LOG_WARN("can not get write store ctx", K(ret), K(ls_id), K(snapshot), K(tx_desc));
     }
   }
@@ -565,7 +564,8 @@ int ObAccessService::check_write_allowed_(
                                                 tx_desc,
                                                 dml_param.snapshot_,
                                                 dml_param.write_flag_,
-                                                ctx_guard))) {
+                                                ctx_guard,
+                                                dml_param.spec_seq_no_))) {
     LOG_WARN("get write store ctx failed", K(ret), K(ls_id), K(dml_param), K(tx_desc));
   } else if (FALSE_IT(ctx_guard.get_store_ctx().tablet_id_ = tablet_id)) {
   } else if (OB_ISNULL(ls = ctx_guard.get_ls_handle().get_ls())) {
@@ -591,8 +591,6 @@ int ObAccessService::check_write_allowed_(
     } else if (!dml_param.is_direct_insert()
         && OB_FAIL(ls->lock(ctx_guard.get_store_ctx(), lock_param))) {
       LOG_WARN("lock tablet failed", K(ret), K(lock_param));
-    } else if (dml_param.spec_seq_no_ != -1) {
-      ctx_guard.get_store_ctx().mvcc_acc_ctx_.tx_scn_ = dml_param.spec_seq_no_;
     } else {
       // do nothing
     }
@@ -612,6 +610,7 @@ int ObAccessService::delete_rows(
     common::ObNewRowIterator *row_iter,
     int64_t &affected_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -667,6 +666,7 @@ int ObAccessService::put_rows(
     common::ObNewRowIterator *row_iter,
     int64_t &affected_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -722,6 +722,7 @@ int ObAccessService::insert_rows(
     common::ObNewRowIterator *row_iter,
     int64_t &affected_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -780,6 +781,7 @@ int ObAccessService::insert_row(
     int64_t &affected_rows,
     common::ObNewRowIterator *&duplicated_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -832,6 +834,7 @@ int ObAccessService::insert_row(
 
 int ObAccessService::revert_insert_iter(common::ObNewRowIterator *iter)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   if (OB_LIKELY(nullptr != iter)) {
     ObQueryIteratorFactory::free_insert_dup_iter(iter);
@@ -849,6 +852,7 @@ int ObAccessService::update_rows(
     common::ObNewRowIterator *row_iter,
     int64_t &affected_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -906,6 +910,7 @@ int ObAccessService::lock_rows(
     common::ObNewRowIterator *row_iter,
     int64_t &affected_rows)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -956,6 +961,7 @@ int ObAccessService::lock_row(
     const common::ObNewRow &row,
     const ObLockFlag lock_flag)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_write);
   int ret = OB_SUCCESS;
   ObStoreCtxGuard ctx_guard;
   ObLS *ls = nullptr;
@@ -1025,11 +1031,13 @@ int ObAccessService::estimate_row_count(
   return ret;
 }
 
-int ObAccessService::estimate_block_count(
+int ObAccessService::estimate_block_count_and_row_count(
     const share::ObLSID &ls_id,
     const common::ObTabletID &tablet_id,
     int64_t &macro_block_count,
-    int64_t &micro_block_count) const
+    int64_t &micro_block_count,
+    int64_t &sstable_row_count,
+    int64_t &memtable_row_count) const
 {
   int ret = OB_SUCCESS;
   ObLSHandle ls_handle;
@@ -1045,9 +1053,9 @@ int ObAccessService::estimate_block_count(
   } else if (nullptr == (ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls is unexpected null", K(ret));
-  } else if (OB_FAIL(ls->get_tablet_svr()->estimate_block_count(
-              tablet_id, macro_block_count, micro_block_count))) {
-    LOG_WARN("failed to estimate block count", K(ret), K(ls_id), K(tablet_id));
+  } else if (OB_FAIL(ls->get_tablet_svr()->estimate_block_count_and_row_count(
+              tablet_id, macro_block_count, micro_block_count, sstable_row_count, memtable_row_count))) {
+    LOG_WARN("failed to estimate block count and row count", K(ret), K(ls_id), K(tablet_id));
   }
   return ret;
 }
@@ -1086,6 +1094,7 @@ int ObAccessService::get_multi_ranges_cost(
 
 int ObAccessService::reuse_scan_iter(const bool switch_param, ObNewRowIterator *iter)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_read);
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -1108,6 +1117,7 @@ int ObAccessService::reuse_scan_iter(const bool switch_param, ObNewRowIterator *
 
 int ObAccessService::revert_scan_iter(ObNewRowIterator *iter)
 {
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_storage_read);
   int ret = OB_SUCCESS;
   NG_TRACE(S_revert_iter_begin);
   if (IS_NOT_INIT) {
@@ -1233,10 +1243,12 @@ int ObAccessService::audit_tablet_opt_dml_stat(
     } else {
       dml_stat.delete_row_count_ = affected_rows;
     }
-    if (OB_FAIL(ObOptStatMonitorManager::get_instance().update_local_cache(tenant_id_, dml_stat))) {
-      LOG_WARN("failed to update dml stat local cache", K(ret));
-    } else {
-      LOG_TRACE("succeed to update dml stat local cache", K(dml_stat));
+    if (MTL(ObOptStatMonitorManager*) != NULL) {
+      if (OB_FAIL(MTL(ObOptStatMonitorManager*)->update_local_cache(dml_stat))) {
+        LOG_WARN("failed to update local cache", K(ret));
+      } else {
+        LOG_TRACE("succeed to update dml stat local cache", K(dml_stat));
+      }
     }
     //last_access_ts = ObClockGenerator::getClock();
   }

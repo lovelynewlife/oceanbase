@@ -28,7 +28,7 @@ public:
                             ObEvalCtx &eval_ctx,
                             int64_t row_num,
                             const ColContentIArray &column_infos,
-                            bool is_ignore,
+                            const ObDASDMLBaseCtDef &das_ctdef,
                             bool is_single_value,
                             ObTableModifyOp &dml_op);
   static int check_column_type(const ExprFixedArray &dml_row,
@@ -152,7 +152,8 @@ public:
   static int init_ins_rtdef(ObDMLRtCtx &dml_rtctx,
                             ObInsRtDef &ins_rtdef,
                             const ObInsCtDef &ins_ctdef,
-                            ObIArray<ObExpr*> &clear_exprs);
+                            ObIArray<ObExpr*> &clear_exprs,
+                            ObIArray<ObForeignKeyChecker*> &fk_checkers);
   static int init_trigger_for_insert(ObDMLRtCtx &dml_rtctx,
                                      const ObInsCtDef &ins_ctdef,
                                      ObInsRtDef &ins_rtdef,
@@ -162,7 +163,8 @@ public:
   static int init_upd_rtdef(ObDMLRtCtx &dml_rtctx,
                             ObUpdRtDef &upd_rtdef,
                             const ObUpdCtDef &upd_ctdef,
-                            ObIArray<ObExpr*> &clear_exprs);
+                            ObIArray<ObExpr*> &clear_exprs,
+                            ObIArray<ObForeignKeyChecker*> &fk_checkers);
   static int init_das_ins_rtdef_for_update(ObDMLRtCtx &dml_rtctx,
                                            const ObUpdCtDef &upd_ctdef,
                                            ObUpdRtDef &upd_rtdef);
@@ -186,7 +188,7 @@ public:
                                          const ObExprPtrIArray &exprs,
                                          ObChunkDatumStore::StoredRow *&new_row);
   static int catch_violate_error(int err_ret,
-                                 int64_t savepoint_no,
+                                 transaction::ObTxSEQ savepoint_no,
                                  ObDMLRtCtx &dml_rtctx,
                                  ObErrLogRtDef &err_log_rt_def,
                                  ObErrLogCtDef &error_logging_ctdef,
@@ -209,9 +211,9 @@ public:
   static int set_heap_table_hidden_pk(const ObInsCtDef &ins_ctdef,
                                       const common::ObTabletID &tablet_id,
                                       ObEvalCtx &eval_ctx);
-  static int create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, int64_t &savepoint);
+  static int create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, transaction::ObTxSEQ &savepoint);
   static int rollback_local_savepoint(transaction::ObTxDesc &tx_desc,
-                                      int64_t savepoint,
+                                      const transaction::ObTxSEQ savepoint,
                                       int64_t expire_ts);
   static int check_local_index_affected_rows(int64_t table_affected_rows,
                                              int64_t index_affected_rows,
@@ -228,13 +230,22 @@ public:
   static int get_nested_dup_table_ctx(const uint64_t table_id,
                                       DASDelCtxList& del_ctx_list,
                                       SeRowkeyDistCtx *&rowkey_dist_ctx);
-  static int handle_after_row_processing_single(ObDMLModifyRowsList *dml_modify_rows);
-  static int handle_after_row_processing_batch(ObDMLModifyRowsList *dml_modify_rows);
-  static int handle_after_row_processing(bool execute_single_row, ObDMLModifyRowsList *dml_modify_rows);
+  static int handle_after_processing_single_row(ObDMLModifyRowsList *dml_modify_rows);
+  static int handle_after_processing_multi_row(ObDMLModifyRowsList *dml_modify_rows, ObTableModifyOp *op);
+  // static int handle_after_processing_batch(const ObTableModifyOp *op,
+  //                                           ObDMLModifyRowsList *dml_modify_rows);
+  static int handle_after_row_processing(ObTableModifyOp *op, ObDMLModifyRowsList *dml_modify_rows);
   static int init_ob_rowkey( ObIAllocator &allocator, const int64_t rowkey_cnt, ObRowkey &table_rowkey);
   static int add_trans_info_datum(ObExpr *trans_info_expr,
                                   ObEvalCtx &eval_ctx,
                                   ObChunkDatumStore::StoredRow *stored_row);
+  static int init_fk_checker_array(ObDMLRtCtx &dml_rtctx,
+                                   const ObDMLBaseCtDef &dml_ctdef,
+                                   FkCheckerArray &fk_checker_array);
+  static int log_user_error_inner(int ret,
+                                  int64_t row_num,
+                                  common::ObString &column_name,
+                                  ObExecContext &ctx);
 
 private:
   template <int N>
@@ -256,6 +267,8 @@ private:
                                   ObEvalCtx &eval_ctx,
                                   ObDMLBaseRtDef &dml_rtdef,
                                   common::ObIAllocator &allocator);
+  static int build_batch_fk_check_tasks(const ObDMLBaseCtDef &dml_ctdef,
+                                        ObDMLBaseRtDef &dml_rtdef);
 };
 
 template <int N, typename DMLIterator>
@@ -364,7 +377,7 @@ int ObDASIndexDMLAdaptor<N, DMLIterator>::write_tablet_with_ignore(DMLIterator &
     LOG_WARN("begin write iterator failed", K(ret));
   }
   while (OB_SUCC(ret) && OB_SUCC(write_iter.get_next_row(dml_row))) {
-    int64_t savepoint_no = 0;
+    transaction::ObTxSEQ savepoint_no;
     int64_t table_affected_rows = 0;
     ObDASWriteBuffer single_row_buffer;
     ObDASWriteBuffer::DmlShadowRow dsr;

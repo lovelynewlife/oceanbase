@@ -21,13 +21,14 @@
 #include "lib/profile/ob_perf_event.h"
 #include "lib/geo/ob_s2adapter.h"
 #include "lib/geo/ob_geo_utils.h"
+#include "share/ob_ddl_common.h"
 #include "share/ob_ddl_checksum.h"
 #include "storage/access/ob_table_scan_iterator.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_server.h"
 #include "observer/virtual_table/ob_virtual_data_access_service.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "observer/omt/ob_tenant_srs_mgr.h"
+#include "observer/omt/ob_tenant_srs.h"
 #include "share/external_table/ob_external_table_file_mgr.h"
 #include "share/external_table/ob_external_table_utils.h"
 #include "lib/container/ob_array_wrap.h"
@@ -889,6 +890,7 @@ OB_INLINE int ObTableScanOp::init_das_scan_rtdef(const ObDASScanCtDef &das_ctdef
   das_rtdef.scan_flag_.is_show_seed_ = plan_ctx->get_show_seed();
   if(is_foreign_check_nested_session()) {
     das_rtdef.is_for_foreign_check_ = true;
+    das_rtdef.scan_flag_.set_for_foreign_key_check();
   }
   if (MY_SPEC.batch_scan_flag_ || is_lookup) {
     das_rtdef.scan_flag_.scan_order_ = ObQueryFlag::KeepOrder;
@@ -1594,6 +1596,9 @@ int ObTableScanOp::local_iter_rescan()
         }
       }
       if (OB_SUCC(ret)) {
+        if (MY_SPEC.gi_above_) {
+          scan_op->set_gi_above_and_rescan(true);
+        }
         if (OB_FAIL(cherry_pick_range_by_tablet_id(scan_op))) {
           LOG_WARN("prune query range by partition id failed", K(ret));
         } else if (OB_FAIL(init_das_group_range(0, group_size_))) {
@@ -2592,7 +2597,7 @@ int ObTableScanOp::add_ddl_column_checksum()
       // } else if (OB_FAIL(corrupt_obj(store_datum))) {
       //   LOG_WARN("failed to corrupt obj", K(ret));
 #endif
-      } else if (col_need_reshape_[i] && OB_FAIL(reshape_ddl_column_obj(store_datum, e->obj_meta_))) {
+      } else if (col_need_reshape_[i] && OB_FAIL(ObDDLUtil::reshape_ddl_column_obj(store_datum, e->obj_meta_))) {
         LOG_WARN("reshape ddl column obj failed", K(ret));
       } else {
         column_checksum_[i] += store_datum.checksum(0);
@@ -2638,7 +2643,7 @@ int ObTableScanOp::add_ddl_column_checksum_batch(const int64_t row_count)
           // } else if (OB_FAIL(corrupt_obj(store_datum))) {
           //   LOG_WARN("failed to corrupt obj", K(ret));
 #endif
-          } else if (col_need_reshape_[i] && OB_FAIL(reshape_ddl_column_obj(store_datum, e->obj_meta_))) {
+          } else if (col_need_reshape_[i] && OB_FAIL(ObDDLUtil::reshape_ddl_column_obj(store_datum, e->obj_meta_))) {
             LOG_WARN("reshape ddl column obj failed", K(ret));
           } else {
             column_checksum_[i] += store_datum.checksum(0);
@@ -2653,39 +2658,6 @@ int ObTableScanOp::add_ddl_column_checksum_batch(const int64_t row_count)
                 K(MY_SPEC.output_));
     }
     clear_evaluated_flag();
-  }
-  return ret;
-}
-
-int ObTableScanOp::reshape_ddl_column_obj(ObDatum &datum, const ObObjMeta &obj_meta)
-{
-  int ret = OB_SUCCESS;
-  if (datum.is_null()) {
-    // do not need to reshape
-  } else if (obj_meta.is_lob_storage()) {
-    ObLobLocatorV2 lob(datum.get_string(), obj_meta.has_lob_header());
-    ObString disk_loc;
-    if (!lob.is_valid()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid lob locator", K(ret));
-    } else if (!lob.is_lob_disk_locator() && !lob.is_persist_lob()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid lob locator, should be persist lob", K(ret), K(lob));
-    } else if (OB_FAIL(lob.get_disk_locator(disk_loc))) {
-      LOG_WARN("get disk locator failed", K(ret), K(lob));
-    }
-    if (OB_SUCC(ret)) {
-      datum.set_string(disk_loc);
-    }
-  } else if (OB_UNLIKELY(!obj_meta.is_fixed_len_char_type())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("no need to reshape non-char", K(ret));
-  } else {
-    const char *ptr = datum.ptr_;
-    int32_t len = datum.len_;
-    int32_t trunc_len_byte = static_cast<int32_t>(ObCharset::strlen_byte_no_sp(
-        obj_meta.get_collation_type(), ptr, len));
-    datum.set_string(ObString(trunc_len_byte, ptr));
   }
   return ret;
 }
@@ -2943,13 +2915,13 @@ int ObTableScanOp::inner_get_next_spatial_index_row()
           } else if (OB_FAIL(ObGeoTypeUtil::get_srid_from_wkb(geo_wkb, srid))) {
             LOG_WARN("failed to get srid", K(ret), K(geo_wkb));
           } else if (srid != 0 &&
-              OB_FAIL(OTSRS_MGR.get_tenant_srs_guard(tenant_id, srs_guard))) {
+              OB_FAIL(OTSRS_MGR->get_tenant_srs_guard(srs_guard))) {
             LOG_WARN("failed to get srs guard", K(ret), K(tenant_id), K(srid));
           } else if (srid != 0 &&
               OB_FAIL(srs_guard.get_srs_item(srid, srs_item))) {
             LOG_WARN("failed to get srs item", K(ret), K(tenant_id), K(srid));
           } else if (((srid == 0) || !(srs_item->is_geographical_srs())) &&
-                      OB_FAIL(OTSRS_MGR.get_srs_bounds(srid, srs_item, srs_bound))) {
+                      OB_FAIL(OTSRS_MGR->get_srs_bounds(srid, srs_item, srs_bound))) {
             LOG_WARN("failed to get srs bound", K(ret), K(srid));
           } else if (OB_FAIL(ObGeoTypeUtil::get_cellid_mbr_from_geom(geo_wkb, srs_item, srs_bound,
                                                                      cellids, mbr_val))) {

@@ -84,7 +84,7 @@ int ObRedoLogGenerator::fill_redo_log(char *buf,
     TableLockRedoDataNode table_lock_redo;
     // record the number of serialized trans node in the filling process
     int64_t data_node_count = 0;
-    int64_t max_seq_no = 0;
+    transaction::ObTxSEQ max_seq_no;
     // TODO by fengshuo.fs : fix this usage
     ObTransCallbackMgr::RDLockGuard guard(callback_mgr_->get_rwlock());
     ObCallbackScope callbacks;
@@ -133,7 +133,7 @@ int ObRedoLogGenerator::fill_redo_log(char *buf,
         if (OB_UNLIKELY(OB_ERR_TOO_BIG_ROWSIZE == ret)) {
           callbacks.start_ = callbacks.end_ = cursor;
           data_size += iter->get_data_size();
-          max_seq_no = max(max_seq_no, iter->get_seq_no());
+          max_seq_no = MAX(max_seq_no, iter->get_seq_no());
         } else if (OB_SUCC(ret)) {
           if (nullptr == *callbacks.start_) {
             callbacks.start_ = cursor;
@@ -144,7 +144,7 @@ int ObRedoLogGenerator::fill_redo_log(char *buf,
             data_node_count++;
           }
           data_size += iter->get_data_size();
-          max_seq_no = max(max_seq_no, iter->get_seq_no());
+          max_seq_no = MAX(max_seq_no, iter->get_seq_no());
         }
       }
     }
@@ -159,6 +159,11 @@ int ObRedoLogGenerator::fill_redo_log(char *buf,
       if (OB_LIKELY(OB_ERR_TOO_BIG_ROWSIZE != ret)) {
         int64_t res_len = 0;
         uint8_t row_flag = ObTransRowFlag::NORMAL_ROW;
+#ifdef OB_BUILD_TDE_SECURITY
+        if (encrypt_info.has_encrypt_meta()) {
+          row_flag |= ObTransRowFlag::ENCRYPT;
+        }
+#endif
         if (OB_SUCCESS != (tmp_ret = mmw.serialize(row_flag, res_len, encrypt_info))) {
           if (OB_ENTRY_NOT_EXIST != tmp_ret) {
             TRANS_LOG(ERROR, "mmw.serialize fail", K(ret), K(tmp_ret));
@@ -303,6 +308,10 @@ int ObRedoLogGenerator::fill_row_redo(ObITransCallbackIterator &cursor,
     if (OB_ISNULL(memtable)) {
       TRANS_LOG(ERROR, "memtable is null", K(riter));
       ret = OB_ERR_UNEXPECTED;
+#ifdef OB_BUILD_TDE_SECURITY
+    } else if (OB_FAIL(memtable->get_encrypt_meta(clog_encrypt_meta_))) {
+      TRANS_LOG(ERROR, "get encrypt meta failed", K(memtable), K(ret));
+#endif
     } else if (OB_FAIL(mmw.append_row_kv(mem_ctx_->get_max_table_version(),
                                          redo,
                                          clog_encrypt_meta_,

@@ -635,6 +635,7 @@ class EventTable
       EN_PX_JOIN_FILTER_NOT_MERGE_MSG = 610,
       EN_PX_P2P_MSG_REG_DM_FAILED= 611,
       EN_PX_JOIN_FILTER_HOLD_MSG = 612,
+      EN_PX_DTL_TRACE_LOG_ENABLE = 613,
       // please add new trace point after 700 or before 600
 
       // Compaction Related 700-750
@@ -703,6 +704,8 @@ class EventTable
       EN_BACKUP_READ_MACRO_BLOCK_FAILED = 1111,
       EN_FETCH_TABLE_INFO_RPC = 1112,
       EN_RESTORE_TABLET_TASK_FAILED = 1113,
+      EN_INSERT_USER_RECOVER_JOB_FAILED = 1114,
+      EN_INSERT_AUX_TENANT_RESTORE_JOB_FAILED = 1115,
       // END OF STORAGE HA - 1101 - 2000
 
       // sql parameterization 1170-1180
@@ -719,6 +722,8 @@ class EventTable
       EN_SESS_INFO_VERI_CONTROL_INFO_ERROR = 1184,
       EN_SESS_INFO_VERI_TXN_EXTRA_INFO_ERROR = 1185,
       EN_SESS_POOL_MGR_CTRL = 1186,
+      // session info diagnosis control
+      // EN_SESS_INFO_DIAGNOSIS_CONTROL = 1187,
       EN_ENABLE_NEWSORT_FORCE = 1200,
 
       // Transaction // 2001 - 2100
@@ -732,6 +737,9 @@ class EventTable
 
       EN_ENABLE_SET_TRACE_CONTROL_INFO = 2100,
       EN_CHEN = 2101,
+
+      // WR && ASH
+      EN_CLOSE_ASH = 2201,
 
       EVENT_TABLE_MAX = SIZE_OF_EVENT_TABLE
     };

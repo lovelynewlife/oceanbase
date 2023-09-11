@@ -33,6 +33,7 @@ ob_set_subtarget(ob_rootserver common
   ob_disaster_recovery_task_executor.cpp
   ob_migrate_unit_finish_checker.cpp
   ob_rootservice_util_checker.cpp
+  ob_alter_primary_zone_checker.cpp
   ob_all_server_checker.cpp
   ob_all_server_task.cpp
   ob_balance_info.cpp
@@ -94,7 +95,7 @@ ob_set_subtarget(ob_rootserver common
   ob_lob_piece_builder.cpp
   ob_lob_meta_builder.cpp
   ob_ls_recovery_stat_handler.cpp
-  ob_shrink_resource_pool_checker.cpp
+  ob_shrink_expand_resource_pool_checker.cpp
 )
 
 ob_set_subtarget(ob_rootserver balance
@@ -119,6 +120,14 @@ ob_set_subtarget(ob_rootserver ddl_task
   ddl_task/ob_index_build_task.cpp
   ddl_task/ob_modify_autoinc_task.cpp
   ddl_task/ob_table_redefinition_task.cpp
+  ddl_task/ob_recover_restore_table_task.cpp
+)
+
+ob_set_subtarget(ob_rootserver parallel_ddl
+  parallel_ddl/ob_ddl_helper.cpp
+  parallel_ddl/ob_create_table_helper.cpp
+  parallel_ddl/ob_create_view_helper.cpp
+  parallel_ddl/ob_index_name_checker.cpp
 )
 
 ob_set_subtarget(ob_rootserver freeze
@@ -140,6 +149,11 @@ ob_set_subtarget(ob_rootserver freeze
 )
 
 ob_set_subtarget(ob_rootserver restore
+  restore/ob_import_table_job_scheduler.cpp
+  restore/ob_recover_table_initiator.cpp
+  restore/ob_import_table_task_generator.cpp
+  restore/ob_recover_table_job_scheduler.cpp
+  restore/ob_restore_service.cpp
   restore/ob_restore_scheduler.cpp
   restore/ob_restore_util.cpp
 )

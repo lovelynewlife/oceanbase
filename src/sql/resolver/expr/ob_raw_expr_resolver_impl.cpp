@@ -28,6 +28,9 @@
 #include "pl/ob_pl_resolver.h"
 #include "common/ob_smart_call.h"
 #include "share/schema/ob_udt_info.h"
+#ifdef OB_BUILD_ORACLE_PL
+#include "pl/ob_pl_udt_object_manager.h"
+#endif
 #include "sql/resolver/ob_stmt.h"
 #include "sql/resolver/dml/ob_del_upd_stmt.h"
 #include "deps/oblib/src/lib/json_type/ob_json_path.h"
@@ -1139,6 +1142,12 @@ int ObRawExprResolverImpl::do_recursive_resolve(const ParseNode *node, ObRawExpr
         }
         break;
       }
+      case T_REMOTE_SEQUENCE: {
+        if (OB_FAIL(process_remote_sequence_node(node, expr))) {
+          LOG_WARN("failed to process remote sequence node", K(ret));
+        }
+        break;
+      }
       default:
         ret = OB_ERR_PARSER_SYNTAX;
         LOG_WARN("Wrong type in expression", K(get_type_name(node->type_)));
@@ -1314,6 +1323,65 @@ int ObRawExprResolverImpl::process_xml_attributes_values_node(const ParseNode *n
     }
   }
   OX(expr = func_expr);
+  return ret;
+}
+
+int ObRawExprResolverImpl::process_remote_sequence_node(const ParseNode *node, ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+  ObQualifiedName column_ref;
+  if (OB_ISNULL(node) || OB_ISNULL(ctx_.columns_) || OB_ISNULL(ctx_.session_info_) ||
+      OB_ISNULL(ctx_.schema_checker_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(node), K_(ctx_.columns), KPC(ctx_.session_info_), K(ret));
+  } else if(OB_SUCC(ret) && T_REMOTE_SEQUENCE != node->type_) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("node->type_ error", K(node->type_));
+  } else if (OB_SUCC(ret) && (4 != node->num_child_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("num_child_ error", K(node->num_child_));
+  } else if (OB_FAIL(ObResolverUtils::resolve_column_ref(
+            node, ctx_.case_mode_, column_ref))) {
+    LOG_WARN("fail to resolve column ref", K(ret));
+  } else if (OB_UNLIKELY(column_ref.is_star_)) {
+    ret = OB_ERR_PARSER_SYNTAX;
+    LOG_WARN("all star should be replaced");
+  } else {
+    ParseNode* dblink_node = node->children_[3];
+    if (dblink_node != NULL) {
+      column_ref.dblink_name_.assign_ptr(const_cast<char*>(dblink_node->str_value_),
+                                           static_cast<int32_t>(dblink_node->str_len_));
+    }
+    column_ref.parents_expr_info_ = ctx_.parents_expr_info_;
+    ObColumnRefRawExpr *b_expr = NULL;
+    uint64_t tenant_id = ctx_.session_info_->get_effective_tenant_id();
+    const ObDbLinkSchema *dblink_schema = NULL;
+    if (OB_FAIL(ctx_.schema_checker_->get_dblink_schema(tenant_id,
+                                                        column_ref.dblink_name_,
+                                                        dblink_schema))) {
+      LOG_WARN("failed to get dblink schema", K(ret));
+    } else if (OB_ISNULL(dblink_schema)) {
+      ret = OB_DBLINK_NOT_EXIST_TO_ACCESS;
+      LOG_WARN("cat not find dblink", K(column_ref.dblink_name_), K(ret));
+    } else if (OB_FAIL(ctx_.expr_factory_.create_raw_expr(T_REF_COLUMN, b_expr))) {
+      LOG_WARN("fail to create raw expr", K(ret));
+    } else if (OB_ISNULL(b_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("column ref expr is null");
+    } else {
+      column_ref.ref_expr_ = b_expr;
+      if (lib::is_mysql_mode()) {
+        column_ref.database_name_ = dblink_schema->get_database_name();
+      } else {
+        column_ref.database_name_ = dblink_schema->get_user_name();
+      }
+      if (OB_FAIL(ctx_.columns_->push_back(column_ref))) {
+        LOG_WARN("Add column failed", K(ret));
+      } else {
+        expr = b_expr;
+      }
+    }
+  }
   return ret;
 }
 
@@ -2517,13 +2585,34 @@ int ObRawExprResolverImpl::process_datatype_or_questionmark(const ParseNode &nod
           const ObObjParam &param = ctx_.param_list_->at(val.get_unknown());
           c_expr->set_is_literal_bool(param.is_boolean());
           if (param.is_ext()) {
+#ifdef OB_BUILD_ORACLE_PL
+            if (OB_NOT_NULL(ctx_.session_info_->get_pl_implicit_cursor())
+                && ctx_.session_info_->get_pl_implicit_cursor()->get_in_forall()
+                && param.is_ext_sql_array()) {
+              ObSqlArrayObj *param_array = reinterpret_cast<ObSqlArrayObj*>(param.get_ext());
+              CK (OB_NOT_NULL(param_array));
+              OX (c_expr->set_meta_type(param_array->element_.get_meta_type()));
+              OX (c_expr->set_expr_obj_meta(param_array->element_.get_meta_type()));
+              OX (c_expr->set_accuracy(param_array->element_.get_accuracy()));
+              OX (c_expr->set_param(param));
+            } else {
+#endif
               c_expr->set_meta_type(param.get_meta());
               c_expr->set_expr_obj_meta(param.get_param_meta());
               c_expr->set_udt_id(param.get_udt_id());
               c_expr->set_param(param);
+#ifdef OB_BUILD_ORACLE_PL
+            }
+#endif
           } else {
-            c_expr->set_meta_type(ObSQLUtils::is_oracle_empty_string(param)
+            if (ObNullType == param.get_type() &&
+                T_QUESTIONMARK == c_expr->get_expr_type() &&
+                ObDateTimeType == param.get_null_meta().get_type()) {
+              c_expr->set_meta_type(param.get_null_meta());
+            } else {
+              c_expr->set_meta_type(ObSQLUtils::is_oracle_empty_string(param)
                                   ? param.get_param_meta() : param.get_meta());
+            }
             c_expr->set_expr_obj_meta(param.get_param_meta());
             c_expr->set_accuracy(param.get_accuracy());
             c_expr->set_result_flag(param.get_result_flag()); // not_null etc
@@ -2544,19 +2633,61 @@ int ObRawExprResolverImpl::process_datatype_or_questionmark(const ParseNode &nod
 //          LOG_DEBUG("prepare stmt add new param", K(ctx_.prepare_param_count_));
         }
       } else {
+        int64_t param_idx = val.get_unknown();
         if (OB_ISNULL(ctx_.param_list_)) {
           ret = OB_NOT_INIT;
           LOG_WARN("context param list is null", K(ret));
-        } else if (val.get_unknown() >= ctx_.param_list_->count()) {
+        } else if (param_idx >= ctx_.param_list_->count()) {
           ret = OB_ERR_BIND_VARIABLE_NOT_EXIST;
           LOG_WARN("bind variable does not exist",
-                   K(ret), K(val.get_unknown()), K(ctx_.param_list_->count()));
+                   K(ret), K(param_idx), K(ctx_.param_list_->count()));
         } else {
-          const ObObjParam &param = ctx_.param_list_->at(val.get_unknown());
+          const ObObjParam &param = ctx_.param_list_->at(param_idx);
           c_expr->set_is_literal_bool(param.is_boolean());
           if (param.is_ext()) {
-            ret = OB_NOT_SUPPORTED;
-            LOG_WARN("not support array binding", K(ret));
+            // values statement
+            if (param.is_ext_sql_array()) {
+              ObSqlArrayObj *param_array = reinterpret_cast<ObSqlArrayObj*>(param.get_ext());
+              const ObExecContext *exec_ctx = NULL;
+              const ObPhysicalPlanCtx *phy_ctx = NULL;
+              if (OB_ISNULL(param_array) || OB_ISNULL(ctx_.session_info_) ||
+                  OB_ISNULL(exec_ctx = ctx_.session_info_->get_cur_exec_ctx()) ||
+                  OB_ISNULL(phy_ctx = ctx_.session_info_->get_cur_exec_ctx()->get_physical_plan_ctx())) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("param array is invalid", K(ret), KPC(param_array));
+              } else {
+                c_expr->set_meta_type(param_array->element_.get_meta_type());
+                c_expr->set_expr_obj_meta(param_array->element_.get_meta_type());
+                c_expr->set_accuracy(param_array->element_.get_accuracy());
+                c_expr->set_param(param);
+                const ObIArray<ObArrayParamGroup> &array_param_groups = phy_ctx->get_array_param_groups();
+                for (int64_t i = 0; i < array_param_groups.count(); i++) {
+                  const ObArrayParamGroup &group = array_param_groups.at(i);
+                  if (param_idx >= group.start_param_idx_ &&
+                      param_idx < group.start_param_idx_ + group.column_count_) {
+                    c_expr->set_array_param_group_id(i);
+                    break;
+                  }
+                }
+              }
+            } else {
+#ifndef OB_BUILD_ORACLE_PL
+              ret = OB_NOT_SUPPORTED;
+              LOG_WARN("not support array binding", K(ret));
+            }
+#else
+              pl::ObPLNestedTable *param_array = reinterpret_cast<pl::ObPLNestedTable*>(param.get_ext());
+              if (OB_ISNULL(param_array)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("param array is invalid", K(ret), KPC(param_array));
+              } else {
+                c_expr->set_meta_type(param_array->get_element_type().get_meta_type());
+                c_expr->set_expr_obj_meta(param_array->get_element_type().get_meta_type());
+                c_expr->set_accuracy(param_array->get_element_type().get_accuracy());
+                c_expr->set_param(param);
+              }
+            }
+#endif
           } else {
             //questionmark won't set meta_type again
             if (param.get_param_meta().get_type() != param.get_type()) {
@@ -2582,6 +2713,9 @@ int ObRawExprResolverImpl::process_system_variable_node(const ParseNode *node, O
   if (OB_ISNULL(node) || OB_ISNULL(ctx_.sys_vars_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(node), K_(ctx_.sys_vars));
+  } else if (!ctx_.is_variable_allowed_) {
+    ret = OB_ERR_VIEW_SELECT_CONTAIN_QUESTIONMARK;
+    LOG_WARN("View's SELECT contains a variable or parameter", K(ret));
   } else {
     ObString str;
     str.assign_ptr(const_cast<char *>(node->str_value_), static_cast<int32_t>(node->str_len_));
@@ -2919,6 +3053,9 @@ int ObRawExprResolverImpl::process_user_var_node(const ParseNode *node, ObRawExp
              OB_ISNULL(node->children_[0])) {
     ret = OB_ERR_PARSER_SYNTAX;
     LOG_WARN("invalid node children for get user_val", K(ret), K(node->num_child_));
+  } else if (!ctx_.is_variable_allowed_) {
+    ret = OB_ERR_VIEW_SELECT_CONTAIN_QUESTIONMARK;
+    LOG_WARN("View's SELECT contains a variable or parameter", K(ret));
   } else if (OB_FAIL(ObRawExprUtils::build_get_user_var(
       ctx_.expr_factory_,
       ObString(static_cast<int32_t>(node->children_[0]->str_len_), node->children_[0]->str_value_),
@@ -5507,7 +5644,7 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
   CK(OB_NOT_NULL(node))
   CK(T_FUN_SYS_JSON_VALUE == node->type_);
   // node child_num is nine,
-  CK(9 == node->num_child_);
+  CK(10 == node->num_child_);
   bool mismatch_vec = false;
   int32_t num = 0;
   ObSysFunRawExpr *func_expr = NULL;
@@ -5519,9 +5656,9 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
   }
   // pl mode check whether has mismatch
   if (lib::is_oracle_mode() && ctx_.current_scope_ == T_PL_SCOPE) {
-    if (node->children_[8]->num_child_ != 2
-        || node->children_[8]->children_[0]->value_ != 3
-        || node->children_[8]->children_[1]->value_ != 7) {
+    if (node->children_[9]->num_child_ != 2
+        || node->children_[9]->children_[0]->value_ != 3
+        || node->children_[9]->children_[1]->value_ != 7) {
       ret = OB_ERR_PARSE_PLSQL;
       LOG_USER_ERROR(OB_ERR_PARSE_PLSQL, "\"MISMATCH\"", "error empty");
     }
@@ -5553,16 +5690,16 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
   ParseNode *empty_default_value = NULL;
   ParseNode *error_type = NULL;
   ParseNode *error_default_value = NULL;
-  if (node->children_[4]->is_input_quoted_ == 1) {
-    empty_type = node->children_[6];
-    empty_default_value = node->children_[7];
-    error_type = node->children_[4];
-    error_default_value = node->children_[5];
+  if (node->children_[5]->is_input_quoted_ == 1) {
+    empty_type = node->children_[7];
+    empty_default_value = node->children_[8];
+    error_type = node->children_[5];
+    error_default_value = node->children_[6];
   } else {
-    empty_type = node->children_[4];
-    empty_default_value = node->children_[5];
-    error_type = node->children_[6];
-    error_default_value = node->children_[7];
+    empty_type = node->children_[5];
+    empty_default_value = node->children_[6];
+    error_type = node->children_[7];
+    error_default_value = node->children_[8];
   }
   // if use defualt, value should not be null , support
   if (OB_SUCC(ret)) {
@@ -5591,7 +5728,7 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
   // judge input TODO object type can use ignore and match type
   ObVector<const ParseNode*> mismatch_arr;
   if (OB_SUCC(ret)) {
-    const ParseNode *on_mismatch = node->children_[8];
+    const ParseNode *on_mismatch = node->children_[9];
     if (OB_ISNULL(on_mismatch)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("mismatch node is null", K(ret));
@@ -5603,13 +5740,13 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
         ParseNode *cur_node = NULL;
         for (int32_t i = 0; OB_SUCC(ret) && i < num; i++) {
           cur_node = node->children_[i];
-          if (i == 4) {
+          if (i == 5) {
             cur_node = empty_type;
-          } else if (i == 5) {
-            cur_node = empty_default_value;
           } else if (i == 6) {
-            cur_node = error_type;
+            cur_node = empty_default_value;
           } else if (i == 7) {
+            cur_node = error_type;
+          } else if (i == 8) {
             cur_node = error_default_value;
           }
           if (node->children_[i]->type_ == T_LINK_NODE || node->children_[i]->type_ == T_VALUE_VECTOR) {
@@ -5620,7 +5757,7 @@ int ObRawExprResolverImpl::process_json_value_node(const ParseNode *node, ObRawE
             CK(OB_NOT_NULL(para_expr));
             OZ(func_expr->add_param_expr(para_expr));
           }
-          if (OB_SUCC(ret) && (i == 5 || i == 7)) {
+          if (OB_SUCC(ret) && (i == 6 || i == 8)) {
             ObRawExpr *para_expr = NULL;
             CK(OB_NOT_NULL(cur_node));
             OZ(SMART_CALL(recursive_resolve(cur_node, para_expr)));
@@ -6413,6 +6550,12 @@ int ObRawExprResolverImpl::process_window_function_node(const ParseNode *node, O
         LOG_WARN("fail to add param expr", K(ret));
       } else if (OB_FAIL(func_params.push_back(n_expr))) {
         LOG_WARN("fail to add param expr", K(ret));
+      } else if (OB_FAIL(n_expr->extract_info())) {
+        LOG_WARN("faield to extract info", K(ret));
+      } else if (OB_UNLIKELY(lib::is_mysql_mode() && !n_expr->is_const_expr())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid arguments to nth_value", K(ret));
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "nth_value");
       } else {
         win_func->set_is_from_first(NULL == func_node->children_[2] || T_FIRST == func_node->children_[2]->type_);
         win_func->set_is_ignore_null(!(NULL == func_node->children_[3] || T_RESPECT == func_node->children_[3]->type_));
@@ -6529,10 +6672,16 @@ int ObRawExprResolverImpl::process_window_function_node(const ParseNode *node, O
             break;
           }
         }
-        if(OB_SUCC(ret) && NULL == named_win)  {
+        if (OB_SUCC(ret) && NULL == named_win)  {
           ret = OB_ERR_WINDOW_NAME_IS_NOT_DEFINE;
           LOG_WARN("name win not exist", K(name), K(ret), K(named_windows));
           LOG_USER_ERROR(OB_ERR_WINDOW_NAME_IS_NOT_DEFINE, name.length(), name.ptr());
+        } else if (OB_UNLIKELY(ctx_.current_scope_ == T_NAMED_WINDOWS_SCOPE &&
+                               named_win->has_frame_orig())) {
+          ret = OB_EER_WINDOW_NO_INHERIT_FRAME;
+          LOG_WARN("Named window cann't be modified by another framing property", K(ret));
+          ObString tmp_name = named_win->get_win_name().empty() ? ObString("<unnamed window>") : named_win->get_win_name();
+          LOG_USER_ERROR(OB_EER_WINDOW_NO_INHERIT_FRAME, tmp_name.length(), tmp_name.ptr());
         }
       }
     }
@@ -6670,6 +6819,13 @@ int ObRawExprResolverImpl::process_window_function_node(const ParseNode *node, O
       if (OB_SUCC(ret) && NULL != frame_node) {
         if (OB_FAIL(process_frame_node(frame_node, frame))) {
           LOG_WARN("process window node failed", K(ret));
+        } else if (lib::is_mysql_mode() &&
+                   OB_UNLIKELY((frame.get_upper().interval_expr_ != NULL && !frame.get_upper().interval_expr_->is_const_expr()) ||
+                               (frame.get_lower().interval_expr_ != NULL && !frame.get_lower().interval_expr_->is_const_expr()))) {
+          ret = OB_ERR_WINDOW_RANGE_BOUND_NOT_CONSTANT;
+          LOG_WARN("Window has a non-constant frame bound.", K(ret), KPC(frame.get_upper().interval_expr_), KPC(frame.get_lower().interval_expr_));
+          ObString tmp_name = named_win == NULL ? ObString("<unnamed window>") : named_win->get_win_name();
+          LOG_USER_ERROR(OB_ERR_WINDOW_RANGE_BOUND_NOT_CONSTANT, tmp_name.length(), tmp_name.ptr());
         }
       }
       if (OB_SUCC(ret)) {
@@ -6908,6 +7064,8 @@ int ObRawExprResolverImpl::process_interval_node(const ParseNode *node,
     } else if (OB_ISNULL(interval_expr)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("NULL ptr", K(ret), K(interval_expr));
+    } else if (OB_FAIL(interval_expr->extract_info())) {
+      LOG_WARN("fail to extract info", K(interval_expr), K(ret));
     } else if (!is_nmb_literal) {
       // date type
       ParseNode *date_unit_node = node->children_[1];
@@ -6916,8 +7074,10 @@ int ObRawExprResolverImpl::process_interval_node(const ParseNode *node,
       } else if (OB_ISNULL(date_unit_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("NULL ptr", K(ret), K(date_unit_expr));
+      } else if (OB_FAIL(date_unit_expr->extract_info())) {
+        LOG_WARN("fail to extract info", K(interval_expr), K(ret));
       } else if (!date_unit_expr->is_const_raw_expr()) {
-        ret = OB_ERR_UNEXPECTED;
+        ret = OB_INVALID_ARGUMENT;
         LOG_WARN("not const expr error", K(ret), K(date_unit_expr->get_expr_type()));
       } else {/*do nothing*/}
     }

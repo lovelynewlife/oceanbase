@@ -478,26 +478,21 @@ int ObStmtComparer::check_stmt_containment(const ObDMLStmt *first,
     // check group by exprs
     if (OB_SUCC(ret) && QueryRelation::QUERY_UNCOMPARABLE != relation) {
       bool is_consistent = false;
-      common::ObSEArray<ObRawExpr*, 4> first_groupby_rollup_exprs;
-      common::ObSEArray<ObRawExpr*, 4> second_groupby_rollup_exprs;
-      if (OB_FAIL(append(first_groupby_rollup_exprs, first_sel->get_group_exprs()))) {
-        LOG_WARN("failed to append group by rollup exprs.", K(ret));
-      } else if (OB_FAIL(append(first_groupby_rollup_exprs, first_sel->get_rollup_exprs()))) {
-        LOG_WARN("failed to append group by rollup exprs.", K(ret));
-      } else if (OB_FAIL(append(second_groupby_rollup_exprs, second_sel->get_group_exprs()))) {
-        LOG_WARN("failed to append group by rollup exprs.", K(ret));
-      } else if (OB_FAIL(append(second_groupby_rollup_exprs, second_sel->get_rollup_exprs()))) {
-        LOG_WARN("failed to append group by rollup exprs.", K(ret));
-      } else { /*do nothing.*/ }
-      first_count = first_groupby_rollup_exprs.count();
-      second_count = second_groupby_rollup_exprs.count();
-      if (OB_FAIL(ret)) {
-      } else if ((first_sel->get_aggr_item_size() > 0 ||
+      first_count = first_sel->get_group_exprs().count();
+      second_count = second_sel->get_group_exprs().count();
+      int64_t first_rollup_count = first_sel->get_rollup_exprs().count();
+      int64_t second_rollup_count = second_sel->get_rollup_exprs().count();
+      if ((first_sel->get_aggr_item_size() > 0 ||
            second_sel->get_aggr_item_size() > 0)
            && relation != QueryRelation::QUERY_EQUAL) {
         relation = QueryRelation::QUERY_UNCOMPARABLE;
         LOG_TRACE("succeed to check group by map", K(relation), K(map_info));
-      } else if (0 == first_count && 0 == second_count) {
+      } else if (first_rollup_count != second_rollup_count ||
+                 first_count != second_count) {
+        relation = QueryRelation::QUERY_UNCOMPARABLE;
+        LOG_TRACE("succeed to check group by map", K(relation), K(map_info));
+      } else if (0 == first_count && 0 == second_count &&
+                 0 == first_rollup_count && 0 == second_rollup_count) {
         map_info.is_group_equal_ = true;
       } else if (OB_FAIL(ObTransformUtils::check_group_by_consistent(first_sel,
                                                                      is_consistent))) {
@@ -513,14 +508,27 @@ int ObStmtComparer::check_stmt_containment(const ObDMLStmt *first,
         LOG_WARN("failed to allcoate group by map", K(ret));
       } else if (OB_FAIL(compute_conditions_map(first_sel,
                                                 second_sel,
-                                                first_groupby_rollup_exprs,
-                                                second_groupby_rollup_exprs,
+                                                first_sel->get_group_exprs(),
+                                                second_sel->get_group_exprs(),
                                                 map_info,
                                                 map_info.group_map_,
                                                 match_count))) {
         LOG_WARN("failed to compute group by expr map", K(ret));
       } else if (match_count != first_count || match_count != second_count) {
         relation = QueryRelation::QUERY_UNCOMPARABLE;
+        LOG_TRACE("succeed to check group by map", K(relation), K(map_info));
+      } else if (first_rollup_count != 0) {
+        ObStmtCompareContext context(first_sel, second_sel, map_info, &first_sel->get_query_ctx()->calculable_items_);
+        bool rollup_match = true;
+        for (int64_t i = 0; OB_SUCC(ret) && rollup_match && i < first_rollup_count; i++) {
+          if (OB_FAIL(is_same_condition(first_sel->get_rollup_exprs().at(i),
+                                        second_sel->get_rollup_exprs().at(i),
+                                        context,
+                                        rollup_match))) {
+            LOG_WARN("failed to check is condition equal", K(ret));
+          }
+        }
+        map_info.is_group_equal_ = rollup_match;
         LOG_TRACE("succeed to check group by map", K(relation), K(map_info));
       } else {
         // todo @guoping.wgp we can do better to check containment relationship for group by clause
@@ -1209,6 +1217,24 @@ int ObStmtComparer::compare_table_item(const ObDMLStmt *first,
                                           relation))) {
       LOG_WARN("failed to compare joined table item", K(ret));
     }
+  } else if (first_table->is_values_table() && second_table->is_values_table()) {
+    if (OB_FAIL(compare_values_table_item(first,
+                                          first_table,
+                                          second,
+                                          second_table,
+                                          map_info,
+                                          relation))) {
+      LOG_WARN("compare values table failed",K(ret), K(first_table), K(second_table));
+    } else if (QueryRelation::QUERY_UNCOMPARABLE != relation) {
+      const int32_t first_table_index = first->get_table_bit_index(first_table->table_id_);
+      const int32_t second_table_index = second->get_table_bit_index(second_table->table_id_);
+      if (first_table_index < 1 || first_table_index > first->get_table_size()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpect table bit index", K(ret), K(first_table_index), K(first->get_table_size()));
+      } else {
+        map_info.table_map_.at(first_table_index - 1) = second_table_index - 1;
+      }
+    }
   }
   return ret;
 }
@@ -1334,6 +1360,61 @@ int ObStmtComparer::compare_set_stmt(const ObSelectStmt *first,
         LOG_TRACE("succeed to check limit expr", K(relation), K(map_info));
       }
     }
+  }
+  return ret;
+}
+
+int ObStmtComparer::compare_values_table_item(const ObDMLStmt *first,
+                                              const TableItem *first_table,
+                                              const ObDMLStmt *second,
+                                              const TableItem *second_table,
+                                              ObStmtMapInfo &map_info,
+                                              QueryRelation &relation)
+{
+  int ret = OB_SUCCESS;
+  ObStmtCompareContext context(first, second, map_info, &first->get_query_ctx()->calculable_items_);
+  relation = QueryRelation::QUERY_UNCOMPARABLE;
+  if (OB_ISNULL(first) || OB_ISNULL(first_table)
+     || OB_ISNULL(second) || OB_ISNULL(second_table)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("param has null", K(first), K(first_table), K(second), K(second_table));
+  } else if (first_table->is_values_table() &&
+             second_table->is_values_table() &&
+             first->get_column_size(first_table->table_id_) == second->get_column_size(second_table->table_id_) &&
+             first_table->table_values_.count() % first->get_column_size(first_table->table_id_) == 0 &&
+             second_table->table_values_.count() % second->get_column_size(second_table->table_id_) == 0) {
+    //Perhaps in the future, the comparison of different row orders can be considered
+    int64_t match_count = 0;
+    bool is_match = true;
+    for (int64_t i = 0; OB_SUCC(ret) && !is_match && i < first_table->table_values_.count(); ++i) {
+      bool is_match = false;
+      if (i >= second_table->table_values_.count()) {
+        break;
+      } else if (OB_FAIL(is_same_condition(first_table->table_values_.at(i),
+                                           second_table->table_values_.at(i),
+                                           context,
+                                           is_match))) {
+        LOG_WARN("failed to check is condition equal", K(ret));
+      } else if (!is_match) {
+        // do nothing
+      } else if (OB_FAIL(append(map_info.equal_param_map_, context.equal_param_info_))) {
+        LOG_WARN("failed to append exprs", K(ret));
+      } else {
+        ++match_count;
+      }
+    }
+    if (OB_SUCC(ret) && is_match) {
+      if (match_count == first_table->table_values_.count() &&
+          match_count == second_table->table_values_.count()) {//first table is equal second table
+        relation = QueryRelation::QUERY_EQUAL;
+      } else if (match_count == first_table->table_values_.count()) {//first table is subset second table
+        relation = QueryRelation::QUERY_LEFT_SUBSET;
+      } else if (match_count == second_table->table_values_.count()) {////second table is subset first table
+        relation = QueryRelation::QUERY_RIGHT_SUBSET;
+      }
+    }
+  } else {
+    /*do nothing*/
   }
   return ret;
 }

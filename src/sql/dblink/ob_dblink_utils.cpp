@@ -19,11 +19,37 @@
 #include "sql/session/ob_sql_session_info.h"
 #include "common/ob_smart_call.h"
 #include "common/object/ob_object.h"
+#ifdef OB_BUILD_DBLINK
+#include "observer/omt/ob_multi_tenant.h"
+#include "share/rc/ob_tenant_base.h"
+#include "common/sql_mode/ob_sql_mode_utils.h"
+#endif
 
 using namespace oceanbase;
 using namespace oceanbase::sql;
 using namespace oceanbase::share;
 
+#ifdef OB_BUILD_DBLINK
+uint64_t ObDblinkService::get_current_tenant_id()
+{
+  return MTL_ID();
+}
+
+oceanbase::common::sqlclient::ObTenantOciEnvs * ObDblinkService::get_tenant_oci_envs()
+{
+  return MTL(oceanbase::common::sqlclient::ObTenantOciEnvs*);
+}
+
+int ObDblinkService::init_oci_envs_func_ptr()
+{
+  int ret = common::OB_SUCCESS;
+  OciEnvironment::get_tenant_id_ = get_current_tenant_id;
+  OciEnvironment::get_tenant_oci_envs_ = get_tenant_oci_envs;
+  return ret;
+}
+
+bool g_dblink_oci_func_ptr_inited = ObDblinkService::init_oci_envs_func_ptr();
+#endif
 int ObDblinkService::check_lob_in_result(common::sqlclient::ObMySQLResult *result, bool &have_lob)
 {
   int ret = OB_SUCCESS;
@@ -395,12 +421,31 @@ int ObReverseLink::close()
   return ret;
 }
 
-int ObDblinkUtils::has_reverse_link_or_any_dblink(const ObDMLStmt *stmt, bool &has, bool has_any_dblink) {
+int ObDblinkUtils::has_reverse_link_or_any_dblink(const ObDMLStmt *stmt, bool &has, bool has_any_dblink)
+{
   int ret = OB_SUCCESS;
-  const common::ObIArray<TableItem*> &table_items = stmt->get_table_items();
   ObArray<ObSelectStmt*> child_stmts;
-  for (int64_t i = 0; OB_SUCC(ret) && i < table_items.count(); ++i) {
-    const TableItem *table_item = table_items.at(i);
+  ObSEArray<ObRawExpr*, 2> seq_exprs;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpect null stmt", K(ret));
+  } else if (OB_FAIL(stmt->get_sequence_exprs(seq_exprs))) {
+    LOG_WARN("failed to get sequence exprs", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !has && i < seq_exprs.count(); ++i) {
+    ObRawExpr *expr = seq_exprs.at(i);
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpect null expr", K(ret));
+    } else {
+      ObSequenceRawExpr *seq_expr = static_cast<ObSequenceRawExpr*>(expr);
+      if (OB_INVALID_ID != seq_expr->get_dblink_id()) {
+        has = true;
+      }
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_table_items().count(); ++i) {
+    const TableItem *table_item = stmt->get_table_items().at(i);
     if (OB_ISNULL(table_item)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get null ptr", K(ret));

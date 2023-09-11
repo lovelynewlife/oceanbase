@@ -46,6 +46,9 @@
 #include "logservice/rcservice/ob_role_change_handler.h"
 #include "logservice/restoreservice/ob_log_restore_handler.h"     // ObLogRestoreHandler
 #include "logservice/ob_log_handler.h"
+#ifdef OB_BUILD_ARBITRATION
+#include "logservice/ob_arbitration_service.h"
+#endif
 #include "logservice/restoreservice/ob_log_restore_handler.h"     // ObLogRestoreHandler
 #include "storage/ls/ob_ls_meta_package.h"
 #include "storage/ls/ob_ls_get_mod.h"
@@ -63,6 +66,7 @@
 #include "storage/high_availability/ob_ls_member_list_service.h"
 #include "storage/high_availability/ob_ls_block_tx_service.h"
 #include "storage/high_availability/ob_ls_transfer_info.h"
+#include "observer/table/ttl/ob_tenant_tablet_ttl_mgr.h"
 
 namespace oceanbase
 {
@@ -129,6 +133,9 @@ struct DiagnoseInfo
   logservice::GCDiagnoseInfo gc_diagnose_info_;
   checkpoint::CheckpointDiagnoseInfo checkpoint_diagnose_info_;
   logservice::RestoreDiagnoseInfo restore_diagnose_info_;
+#ifdef OB_BUILD_ARBITRATION
+  logservice::LogArbSrvDiagnoseInfo arb_srv_diagnose_info_;
+#endif
   TO_STRING_KV(K(ls_id_),
                K(log_handler_diagnose_info_),
                K(palf_diagnose_info_),
@@ -138,6 +145,9 @@ struct DiagnoseInfo
                K(gc_diagnose_info_),
                K(checkpoint_diagnose_info_),
                K(restore_diagnose_info_)
+#ifdef OB_BUILD_ARBITRATION
+               ,K(arb_srv_diagnose_info_)
+#endif
                );
   void reset() {
     ls_id_ = -1;
@@ -149,6 +159,9 @@ struct DiagnoseInfo
     gc_diagnose_info_.reset();
     checkpoint_diagnose_info_.reset();
     restore_diagnose_info_.reset();
+#ifdef OB_BUILD_ARBITRATION
+    arb_srv_diagnose_info_.reset();
+#endif
   }
 };
 
@@ -161,6 +174,7 @@ public:
   friend ObLSLockGuard;
   friend class ObFreezer;
   friend class checkpoint::ObDataCheckpoint;
+  friend class ObLSSwitchChecker;
 public:
   static constexpr int64_t TOTAL_INNER_TABLET_NUM = 3;
   static const uint64_t INNER_TABLET_ID_LIST[TOTAL_INNER_TABLET_NUM];
@@ -324,6 +338,7 @@ public:
   // get tablet while replaying clog
   int replay_get_tablet(const common::ObTabletID &tablet_id,
                         const share::SCN &scn,
+                        const bool is_update_mds_table,
                         ObTabletHandle &handle) const;
   // get tablet but don't check user_data while replaying clog, because user_data may not exist.
   int replay_get_tablet_no_check(
@@ -336,7 +351,7 @@ public:
   bool is_stopped() const { return is_stopped_; }
   int check_can_replay_clog(bool &can_replay);
 
-  TO_STRING_KV(K_(ls_meta), K_(log_handler), K_(restore_handler), K_(is_inited), K_(tablet_gc_handler), K_(startup_transfer_info));
+  TO_STRING_KV(K_(ls_meta), K_(switch_epoch), K_(log_handler), K_(restore_handler), K_(is_inited), K_(tablet_gc_handler), K_(startup_transfer_info));
 private:
   int ls_init_for_dup_table_();
   int ls_destory_for_dup_table_();
@@ -349,6 +364,8 @@ private:
   int online_compaction_();
   int offline_tx_(const int64_t start_ts);
   int online_tx_();
+  int offline_advance_epoch_();
+  int online_advance_epoch_();
 public:
   // ObLSMeta interface:
   int update_ls_meta(const bool update_restore_status,
@@ -509,7 +526,6 @@ public:
   DELEGATE_WITH_RET(ls_tablet_svr_, flush_mds_table, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, enable_to_read, void);
   DELEGATE_WITH_RET(ls_tablet_svr_, disable_to_read, void);
-  DELEGATE_WITH_RET(ls_tablet_svr_, get_max_tablet_transfer_scn, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, get_tablet_with_timeout, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, get_mds_table_mgr, int);
 
@@ -643,6 +659,10 @@ public:
   DELEGATE_WITH_RET(log_handler_, disable_vote, int);
   DELEGATE_WITH_RET(log_handler_, remove_member, int);
   DELEGATE_WITH_RET(log_handler_, remove_learner, int);
+#ifdef OB_BUILD_ARBITRATION
+  DELEGATE_WITH_RET(log_handler_, add_arbitration_member, int);
+  DELEGATE_WITH_RET(log_handler_, remove_arbitration_member, int);
+#endif
   DELEGATE_WITH_RET(log_handler_, is_in_sync, int);
   DELEGATE_WITH_RET(log_handler_, get_end_scn, int);
   DELEGATE_WITH_RET(log_handler_, disable_sync, int);
@@ -657,6 +677,7 @@ public:
   DELEGATE_WITH_RET(member_list_service_, replace_member, int);
   DELEGATE_WITH_RET(member_list_service_, replace_member_with_learner, int);
   DELEGATE_WITH_RET(member_list_service_, get_config_version_and_transfer_scn, int);
+  DELEGATE_WITH_RET(member_list_service_, get_max_tablet_transfer_scn, int);
   DELEGATE_WITH_RET(log_handler_, add_learner, int);
   DELEGATE_WITH_RET(log_handler_, replace_learners, int);
   DELEGATE_WITH_RET(block_tx_service_, ha_block_tx, int);
@@ -814,6 +835,7 @@ public:
   int build_new_tablet_from_mds_table(
       const int64_t ls_rebuild_seq,
       const common::ObTabletID &tablet_id,
+      const int64_t mds_construct_sequence,
       const share::SCN &flush_scn);
   int try_update_uppder_trans_version();
   int diagnose(DiagnoseInfo &info) const;
@@ -888,12 +910,14 @@ private:
   rootserver::ObLSRecoveryStatHandler ls_recovery_stat_handler_;
   ObLSMemberListService member_list_service_;
   ObLSBlockTxService block_tx_service_;
+  table::ObTenantTabletTTLMgr tablet_ttl_mgr_;
 private:
   bool is_inited_;
   uint64_t tenant_id_;
   bool is_stopped_;
   bool is_offlined_;
   bool is_remove_;
+  uint64_t switch_epoch_;// started from 0, odd means online, even means offline
   ObLSMeta ls_meta_;
   observer::ObIMetaReport *rs_reporter_;
   ObLSLock lock_;

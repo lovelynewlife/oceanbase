@@ -124,7 +124,7 @@ void ObPxTaskProcess::run()
 
 int ObPxTaskProcess::process()
 {
-  ObActiveSessionGuard::get_stat().in_px_execution_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_px_execution);
   int ret = OB_SUCCESS;
   common::ob_setup_default_tsi_warning_buffer();
   common::ob_reset_tsi_warning_buffer();
@@ -230,7 +230,6 @@ int ObPxTaskProcess::process()
     ObSQLUtils::handle_audit_record(false, EXECUTE_DIST, *session);
   }
   release();
-  ObActiveSessionGuard::get_stat().in_px_execution_ = false;
   return ret;
 }
 
@@ -456,9 +455,6 @@ int ObPxTaskProcess::do_process()
       }
     }
   }
-  if (OB_NOT_NULL(arg_.exec_ctx_)) {
-    DAS_CTX(*arg_.exec_ctx_).get_location_router().refresh_location_cache(true, ret);
-  }
 
   // for forward warning msg and user error msg
   (void)record_user_error_msg(ret);
@@ -474,6 +470,10 @@ int ObPxTaskProcess::do_process()
   // Task 和 Sqc 在两个不同线程中时，task 需要和 sqc 通信
   if (NULL != arg_.sqc_task_ptr_) {
     arg_.sqc_task_ptr_->set_result(ret);
+    if (OB_NOT_NULL(arg_.exec_ctx_)) {
+      int das_retry_rc = DAS_CTX(*arg_.exec_ctx_).get_location_router().get_last_errno();
+      arg_.sqc_task_ptr_->set_das_retry_rc(das_retry_rc);
+    }
     if (OB_SUCC(ret)) {
       // nop
     } else if (IS_INTERRUPTED()) {
@@ -613,13 +613,18 @@ int ObPxTaskProcess::OpPreparation::apply(ObExecContext &ctx,
       } else {
         input->set_worker_id(task_id_);
         input->set_px_sequence_id(task_->px_int_id_.px_interrupt_id_.first_);
+        if (OB_NOT_NULL(ctx.get_my_session())) {
+          input->set_rf_max_wait_time(ctx.get_my_session()->get_runtime_filter_wait_time_ms());
+        }
         if (ObGranuleUtil::pwj_gi(gi->gi_attri_flag_)) {
           pw_gi_spec_ = gi;
           on_set_tscs_ = true;
         }
       }
     }
-  } else if (PHY_TABLE_SCAN == op.type_ && on_set_tscs_) {
+  } else if ((PHY_TABLE_SCAN == op.type_ ||
+              PHY_ROW_SAMPLE_SCAN == op.type_ ||
+              PHY_BLOCK_SAMPLE_SCAN == op.type_) && on_set_tscs_) {
     if (OB_ISNULL(pw_gi_spec_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("gi is null", K(ret));

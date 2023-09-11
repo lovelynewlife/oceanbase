@@ -18,6 +18,7 @@
 #include "ob_archive_fetcher.h"
 #include "lib/ob_define.h"
 #include "lib/ob_errno.h"
+#include "lib/stat/ob_session_stat.h"
 #include "lib/thread/ob_thread_name.h"        // lib::set_thread_name
 #include "logservice/ob_log_service.h"        // ObLogService
 #include "logservice/palf/log_group_entry.h"  // LogGroupEntry
@@ -453,7 +454,6 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
     bool &need_delay)
 {
   int ret = OB_SUCCESS;
-  bool data_enough = false;
   bool data_full = false;
   const ObLSID &id = task.get_ls_id();
   const ArchiveWorkStation &station = task.get_station();
@@ -477,9 +477,6 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
     ARCHIVE_LOG(WARN, "get ls failed", K(id));
   } else if (OB_FAIL(handle.get_ls()->get_offline_scn(offline_scn))) {
     ARCHIVE_LOG(WARN, "get offline_scn failed", K(id));
-  } else if (OB_UNLIKELY(offline_scn.is_valid())) {
-    // if ls is offline, it should be archived as soon as possible
-    need_delay = false;
   } else {
     GET_LS_TASK_CTX(ls_mgr_, id) {
       if (OB_FAIL(ls_archive_task->get_fetcher_progress(station, offset, fetch_scn, last_fetch_timestamp))) {
@@ -500,20 +497,22 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
           ARCHIVE_LOG(TRACE, "archive_sender_ task status count more than ls archive task count, just wait",
               K(ls_archive_task_count), K(send_task_status_count), K(need_delay));
         } else {
-          check_capacity_enough_(commit_lsn, cur_lsn, end_lsn, data_enough, data_full);
+          check_capacity_enough_(commit_lsn, cur_lsn, end_lsn, data_full);
           if (data_full) {
             // although data buffer not enough, but data reaches the end of the block, do archive
             ARCHIVE_LOG(TRACE, "data buffer reach clog block end, do archive",
                 K(id), K(station), K(end_lsn), K(commit_lsn));
+          } else if (OB_UNLIKELY(offline_scn.is_valid())) {
+            if (fetch_scn.is_valid() && fetch_scn >= offline_scn) {
+              // if ls is offline and does not archive all, it should be archived as soon as possible
+              need_delay = true;
+            } else {
+              need_delay = false;
+            }
           } else if (! check_scn_enough_(id, new_block, cur_lsn, max_no_limit_lsn, base_scn, fetch_scn, last_fetch_timestamp)) {
             need_delay = true;
             ARCHIVE_LOG(TRACE, "scn not enough, need delay", K(id), K(station), K(new_block), K(cur_lsn),
                 K(max_no_limit_lsn), K(base_scn), K(fetch_scn));
-          } else if (! data_enough) {
-            // data not enough to fill unit, just wait
-            need_delay = true;
-            ARCHIVE_LOG(TRACE, "data not enough, need delay", K(id), K(station), K(commit_lsn),
-                K(cur_lsn), K(end_lsn), K(data_enough));
           }
         }
       }
@@ -525,12 +524,10 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
 void ObArchiveFetcher::check_capacity_enough_(const LSN &commit_lsn,
     const LSN &cur_lsn,
     const LSN &end_lsn,
-    bool &data_enough,
     bool &data_full)
 {
   // 已有足够大用以压缩加密单元或者到达归档文件尾(也是ob日志文件尾)
   data_full = end_lsn <= commit_lsn;
-  data_enough = data_full || commit_lsn >= cur_lsn + unit_size_;
 }
 
 bool ObArchiveFetcher::check_scn_enough_(const share::ObLSID &id,
@@ -994,10 +991,16 @@ int ObArchiveFetcher::submit_residual_log_fetch_task_(ObArchiveLogFetchTask &tas
 int ObArchiveFetcher::submit_send_task_(ObArchiveSendTask *send_task)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(archive_sender_->submit_send_task(send_task))) {
+  int64_t buf_size;
+  if (OB_ISNULL(send_task)) {
+    ret = OB_INVALID_ARGUMENT;
+    ARCHIVE_LOG(WARN, "invalid argument", K(ret), KP(send_task));
+  } else if (FALSE_IT(buf_size = send_task->get_buf_size())) {
+  } else if (OB_FAIL(archive_sender_->submit_send_task(send_task))) {
     ARCHIVE_LOG(WARN, "submit send task failed", K(ret), KPC(send_task));
   } else {
     ARCHIVE_LOG(INFO, "submit send task succ", KP(send_task));
+    EVENT_TENANT_ADD(ObStatEventIds::ARCHIVE_WRITE_LOG_SIZE, buf_size, tenant_id_);
   }
   return ret;
 }
@@ -1067,6 +1070,7 @@ void ObArchiveFetcher::statistic(const int64_t log_size, const int64_t ts)
     READ_COST_TS = 0;
     READ_TASK_COUNT = 0;
   }
+  EVENT_TENANT_ADD(ObStatEventIds::ARCHIVE_READ_LOG_SIZE, log_size, tenant_id_);
 }
 
 // TmpMemoryHelper

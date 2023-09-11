@@ -38,6 +38,12 @@ CTX_ITEM_DEF(UNEXPECTED_IN_500)
 CTX_ITEM_DEF(MAX_CTX_ID)
 #endif
 
+#ifdef SUB_CTX_ITEM_DEF
+SUB_CTX_ITEM_DEF(TEST1)
+SUB_CTX_ITEM_DEF(TEST2)
+SUB_CTX_ITEM_DEF(MAX_SUB_CTX_ID)
+#endif
+
 // Label does not need to be defined here, just pass char * directly in alloc,
 // It is reserved here to be compatible with the existing code of the upper layer
 #ifdef LABEL_ITEM_DEF
@@ -53,7 +59,6 @@ LABEL_ITEM_DEF(OB_FIFO_ALLOC, FifoAlloc)
 //commonmodules
 LABEL_ITEM_DEF(OB_OBJ_FREELISTS, ObjFreelists)
 LABEL_ITEM_DEF(OB_COMMON_NETWORK, CommonNetwork)
-LABEL_ITEM_DEF(OB_RDMA_MYSQL, MysqlRdmaNet)
 LABEL_ITEM_DEF(OB_THREAD_BUFFER, ThreadBuffer)
 LABEL_ITEM_DEF(OB_KVSTORE_CACHE, KvstoreCache)
 LABEL_ITEM_DEF(OB_KVSTORE_CACHE_ITERATOR, KvstorCacheIter)
@@ -660,6 +665,16 @@ private:
   const char *ctx_names_[CTX_COUNT_LIMIT];
 };
 
+struct ObSubCtxIds
+{
+  enum ObSubCtxIdEnum
+  {
+#define SUB_CTX_ITEM_DEF(name) name,
+#include "lib/allocator/ob_mod_define.h"
+#undef SUB_CTX_ITEM_DEF
+  };
+};
+
 struct ObModIds
 {
 #define LABEL_ITEM_DEF(name, real_name) static constexpr const char name[] = #real_name;
@@ -677,7 +692,7 @@ struct InnerModIds
   #undef LABEL_ITEM_DEF
   };
   enum { LABEL_COUNT_LIMIT = InnerModIds::OB_MOD_END };
-  STATIC_ASSERT(LABEL_COUNT_LIMIT == 453, "forbidden to add new label!!!");
+  STATIC_ASSERT(LABEL_COUNT_LIMIT == 452, "forbidden to add new label!!!");
 };
 
 #define ObNewModIds ObModIds

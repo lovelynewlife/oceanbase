@@ -1102,37 +1102,9 @@ int ObLogArchiveBackupInfo::get_backup_dest(ObBackupDest &backup_dest) const
 }
 
 //***********************ObBackupStorageInfo***************************
-ObBackupStorageInfo::ObBackupStorageInfo()
-  : device_type_(ObStorageType::OB_STORAGE_MAX_TYPE)
-{
-  endpoint_[0] = '\0';
-  access_id_[0] = '\0';
-  access_key_[0] = '\0';
-  extension_[0] = '\0';
-}
-
 ObBackupStorageInfo::~ObBackupStorageInfo()
 {
   reset();
-}
-
-void ObBackupStorageInfo::reset()
-{
-  device_type_ = ObStorageType::OB_STORAGE_MAX_TYPE;
-  endpoint_[0] = '\0';
-  access_id_[0] = '\0';
-  access_key_[0] = '\0';
-  extension_[0] = '\0';
-}
-
-bool ObBackupStorageInfo::is_valid() const
-{
-  return device_type_ >= 0 && device_type_ < ObStorageType::OB_STORAGE_MAX_TYPE;
-}
-
-const char *ObBackupStorageInfo::get_type_str() const
-{
-  return get_storage_type_str(device_type_);
 }
 
 int ObBackupStorageInfo::set(
@@ -1142,89 +1114,77 @@ int ObBackupStorageInfo::set(
     const char *extension)
 {
   int ret = OB_SUCCESS;
+  char storage_info[OB_MAX_BACKUP_STORAGE_INFO_LENGTH] = { 0 };
   if (is_valid()) {
     ret = OB_INIT_TWICE;
     LOG_WARN("storage info init twice", K(ret));
-  } else if (OB_ISNULL(endpoint) || OB_ISNULL(authorization) || OB_ISNULL(extension) || OB_STORAGE_MAX_TYPE == device_type) {
+  } else if (OB_ISNULL(endpoint)
+      || OB_ISNULL(authorization) || OB_ISNULL(extension) || OB_STORAGE_MAX_TYPE == device_type) {
     ret = OB_INVALID_BACKUP_DEST;
     LOG_WARN("invalid args", K(ret), KP(endpoint), KP(authorization), KP(extension), K(device_type));
-  } else if (FALSE_IT(device_type_ = device_type)) {
-  } else if (0 != strlen(endpoint) && OB_FAIL(databuff_printf(endpoint_, sizeof(endpoint_), "%s", endpoint))) {
-    LOG_WARN("failed to set endpoint", K(ret));
-  } else if (0 != strlen(authorization) && OB_FAIL(parse_authorization_(authorization))) {
-    LOG_WARN("failed to parse authorization", K(ret));
-  } else if (0 != strlen(extension) && OB_FAIL(databuff_printf(extension_, sizeof(extension_), "%s", extension))) {
-    LOG_WARN("failed to set extension", K(ret));
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (ObStorageType::OB_STORAGE_FILE != device_type_ && (0 == strlen(endpoint_) || 0 == strlen(access_id_) || 0 == strlen(access_key_))) {
-    ret = OB_INVALID_BACKUP_DEST;
-    LOG_WARN("backup device is not nfs, endpoint/access_id/access_key do not allow to be empty", K(ret), K_(device_type), K_(endpoint), K_(access_id));
-  } else if (ObStorageType::OB_STORAGE_FILE == device_type_ && (0 != strlen(endpoint_) || 0 != strlen(access_id_) || 0 != strlen(access_key_))) {
-    ret = OB_INVALID_BACKUP_DEST;
-    LOG_WARN("backup device is nfs, endpoint/access_id/access_key not be empty", K(ret), K_(device_type), K_(endpoint), K_(access_id));
+  } else if (0 != strlen(endpoint)
+      && OB_FAIL(set_storage_info_field_(endpoint, storage_info, sizeof(storage_info)))) {
+    LOG_WARN("failed to set storage info", K(ret));
+  } else if (0 != strlen(authorization)
+      && OB_FAIL(set_storage_info_field_(authorization, storage_info, sizeof(storage_info)))) {
+    LOG_WARN("failed to set storage info", K(ret));
+  } else if (0 != strlen(extension)
+      && OB_FAIL(set_storage_info_field_(extension, storage_info, sizeof(storage_info)))) {
+    LOG_WARN("failed to set storage info", K(ret));
+  } else if (OB_FAIL(set(device_type, storage_info))) {
+    LOG_WARN("failed to set storage info", K(ret), KPC(this));
   }
   return ret;
 }
 
-int ObBackupStorageInfo::set_access_key_(const char *buf, const bool need_decrypt)
+int ObBackupStorageInfo::get_authorization_info(char *authorization, const int64_t length) const
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(buf)) {
+  const int64_t key_len = MAX(OB_MAX_BACKUP_SERIALIZEKEY_LENGTH, OB_MAX_BACKUP_ACCESSKEY_LENGTH);
+  char access_key_buf[key_len] = { 0 };
+  STATIC_ASSERT(OB_MAX_BACKUP_AUTHORIZATION_LENGTH > (OB_MAX_BACKUP_ACCESSID_LENGTH + key_len), "array length overflow");
+  if (!is_valid()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("buf is null", K(ret), K(need_decrypt));
-  } else if (0 != strlen(access_key_)) {
+    LOG_WARN("storage info not init", K(ret));
+  } else if (OB_ISNULL(authorization) || length <= 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("access_key has been set value", K(ret), K_(access_key));
-  } else if (OB_FAIL(set_storage_info_field_(buf, access_key_, sizeof(access_key_)))) {
-    LOG_WARN("failed to set endpoint",K(ret), K(buf));
+    LOG_WARN("invalid args", K(ret), KP(authorization), K(length));
+  } else if (OB_STORAGE_FILE == device_type_) {
+    // do nothing
+  } else if (OB_FAIL(get_access_key_(access_key_buf, sizeof(access_key_buf)))) {
+    LOG_WARN("failed to get access key", K(ret));
+  } else if (OB_FAIL(databuff_printf(authorization, length, "%s&%s",  access_id_, access_key_buf))) {
+    LOG_WARN("failed to set authorization", K(ret), K(length), K_(access_id), K(strlen(access_key_buf)));
+  }
+
+  return ret;
+}
+
+#ifdef OB_BUILD_TDE_SECURITY
+int ObBackupStorageInfo::get_access_key_(char *key_buf, const int64_t key_buf_len) const
+{
+  int ret = OB_SUCCESS;
+  // encrypt_access_key_ will check args' validity
+  if (OB_FAIL(encrypt_access_key_(key_buf, key_buf_len))) {
+    LOG_WARN("failed to encrypt access key", K(ret));
   }
   return ret;
 }
 
-int ObBackupStorageInfo::check_delete_mode_(const char *delete_mode)
+int ObBackupStorageInfo::parse_storage_info_(const char *storage_info, bool &has_appid)
 {
   int ret = OB_SUCCESS;
-  if (NULL == delete_mode) {
-    ret = OB_INVALID_ARGUMENT;
-    OB_LOG(WARN, "invalid args", K(ret), KP(delete_mode));
-  } else if (0 != strcmp(delete_mode, "delete")
-      && 0 != strcmp(delete_mode, "tagging")) {
-    ret = OB_INVALID_ARGUMENT;
-    OB_LOG(WARN, "delete mode is invalid", K(ret), K(delete_mode));
-  }
-  return ret;
-}
-
-// oss:host=xxxx&access_id=xxx&access_key=xxx
-// cos:host=xxxx&access_id=xxx&access_key=xxxappid=xxx
-int ObBackupStorageInfo::set(
-    const common::ObStorageType device_type,
-    const char *storage_info)
-{
-  int ret = OB_SUCCESS;
-  if (is_valid()) {
-    ret = OB_INIT_TWICE;
-    LOG_WARN("storage info init twice", K(ret));
-  } else if (OB_ISNULL(storage_info) || strlen(storage_info) >= OB_MAX_BACKUP_STORAGE_INFO_LENGTH) {
+  if (OB_ISNULL(storage_info) || strlen(storage_info) >= OB_MAX_BACKUP_STORAGE_INFO_LENGTH) {
     ret = OB_INVALID_BACKUP_DEST;
-    LOG_WARN("storage info is too long", K(ret), K(storage_info), K(strlen(storage_info)));
-  } else if (FALSE_IT(device_type_ = device_type)) {
-  } else if (0 == strlen(storage_info)) {
-    if (OB_STORAGE_FILE != device_type_) {
-      ret = OB_INVALID_BACKUP_DEST;
-      LOG_WARN("backup dest is valid", K(ret), K_(device_type));
-    }
+    LOG_WARN("storage info is invalid", K(ret), K(storage_info), K(strlen(storage_info)));
+  } else if (OB_FAIL(ObObjectStorageInfo::parse_storage_info_(storage_info, has_appid))) {
+    LOG_WARN("failed to parse storage info", K(ret), K(storage_info));
   } else {
-    int64_t info_len = strlen(storage_info);
     char tmp[OB_MAX_BACKUP_STORAGE_INFO_LENGTH] = { 0 };
+    char serialize_key[OB_MAX_BACKUP_SERIALIZEKEY_LENGTH] = { 0 };
     char *token = NULL;
     char *saved_ptr = NULL;
-    const char *HOST = "host=";
-    const char *APPID = "appid=";
-    const char *DELETE_MODE = "delete_mode=";
-    bool has_appid = false;
+    int64_t info_len = strlen(storage_info);
 
     MEMCPY(tmp, storage_info, info_len);
     tmp[info_len] = '\0';
@@ -1233,201 +1193,85 @@ int ObBackupStorageInfo::set(
       token = ::strtok_r(str, "&", &saved_ptr);
       if (NULL == token) {
         break;
-      } else if (0 == strncmp(HOST, token, strlen(HOST))) {
-        if (OB_FAIL(set_storage_info_field_(token, endpoint_, sizeof(endpoint_)))) {
-          LOG_WARN("failed to set endpoint",K(ret), K(token));
-        }
-      } else if (0 == strncmp(ACCESS_ID, token, strlen(ACCESS_ID))) {
-        if (OB_FAIL(set_storage_info_field_(token, access_id_, sizeof(access_id_)))) {
-          LOG_WARN("failed to set access id", K(ret), K(token));
-        }
-      } else if (0 == strncmp(ACCESS_KEY, token, strlen(ACCESS_KEY))) {
-        if (OB_FAIL(set_access_key_(token, false/*need decrypt*/))) {
-          LOG_WARN("failed to set oss extension", K(ret), K(token));
-        }
-      } else if (OB_STORAGE_COS == device_type && 0 == strncmp(APPID, token, strlen(APPID))) {
-        has_appid = true;
-        if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
-          LOG_WARN("failed to set cos extension", K(ret), K(token));
-        }
-      } else if (OB_STORAGE_OSS == device_type && 0 == strncmp(DELETE_MODE, token, strlen(DELETE_MODE))) {
-        if (OB_FAIL(check_delete_mode_(token + strlen(DELETE_MODE)))) {
-          OB_LOG(WARN, "failed to set delete mode", K(ret), K(token));
-        } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
-          LOG_WARN("failed to set cos extension", K(ret), K(token));
+      } else if (0 == strncmp(ENCRYPT_KEY, token, strlen(ENCRYPT_KEY))) {
+        if (0 != strlen(access_key_)) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("access_key has been set value", K(ret), K(strlen(access_key_)));
+        } else if (OB_FAIL(set_storage_info_field_(token, serialize_key, sizeof(serialize_key)))) {
+          LOG_WARN("failed to set encrypted_key", K(ret), K(token));
+        } else if (OB_FAIL(decrypt_access_key_(serialize_key))) {
+          LOG_WARN("failed to decrypt access key", K(ret), K(token));
         }
       } else {
-        LOG_DEBUG("unkown storage info", K(*token));
-      }
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (OB_STORAGE_OSS == device_type &&(0 == strlen(endpoint_) || 0 == strlen(access_id_) || 0 == strlen(access_key_))) {
-      ret = OB_INVALID_BACKUP_DEST;
-      LOG_WARN("failed to parse storage info", K(ret), K_(endpoint), K_(access_id), K_(access_key));
-    } else if (OB_STORAGE_COS == device_type && !has_appid) {
-      ret = OB_INVALID_BACKUP_DEST;
-      LOG_WARN("failed to parse  cos info", K(ret), K_(extension));
-    } else {
-      LOG_INFO("success to parse storage info", K(ret), K_(endpoint), K_(access_id), K_(extension));
-    }
-  }
-
-  return ret;
-}
-
-int ObBackupStorageInfo::set(
-    const char *uri,
-    const char *storage_info)
-{
-  int ret = OB_SUCCESS;
-  common::ObStorageType device_type;
-  if (OB_FAIL(get_storage_type_from_path(uri, device_type))) {
-    LOG_WARN("failed to get storage type from path", K(ret), KPC(this));
-  } else if (OB_FAIL(set(device_type, storage_info))) {
-    LOG_WARN("failed to set storage info", K(ret), KPC(this));
-  }
-  return ret;
-}
-
-int ObBackupStorageInfo::parse_authorization_(const char *authorization)
-{
-  int ret = OB_SUCCESS;
-  char tmp_authorization[OB_MAX_BACKUP_AUTHORIZATION_LENGTH] = { 0 };
-  char *token = NULL;
-  char *saved_ptr = NULL;
-  if (OB_ISNULL(authorization) || 0 == strlen(authorization)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("authorization is invalid", K(ret));
-  } else if (OB_FAIL(databuff_printf(tmp_authorization, sizeof(tmp_authorization), "%s", authorization))) {
-    LOG_WARN("failed to set token", K(ret));
-  } else {
-    token = tmp_authorization;
-    for (char *str = token; OB_SUCC(ret); str = NULL) {
-      token = ::strtok_r(str, "&", &saved_ptr);
-      if (NULL == token) {
-        break;
-      } else if (0 == strncmp(ACCESS_ID, token, strlen(ACCESS_ID))) {
-        if (OB_FAIL(set_storage_info_field_(token, access_id_, sizeof(access_id_)))) {
-          LOG_WARN("failed to set access id", K(ret), K(token));
-        }
-      } else if (0 == strncmp(ACCESS_KEY, token, strlen(ACCESS_KEY))) {
-        if (OB_FAIL(set_storage_info_field_(token, access_key_, sizeof(access_key_)))) {
-          LOG_WARN("failed to set access key", K(ret), K(token));
-        }
-      } else {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("invalid argument", K(ret), K(token));
       }
     }
   }
   return ret;
 }
 
-int ObBackupStorageInfo::get_authorization_info(char *authorization, int64_t length)
+int ObBackupStorageInfo::encrypt_access_key_(char *encrypt_key, int64_t length) const
 {
   int ret = OB_SUCCESS;
-  char encrypt_key[OB_MAX_BACKUP_SERIALIZEKEY_LENGTH] = { 0 };
-  STATIC_ASSERT(OB_MAX_BACKUP_AUTHORIZATION_LENGTH > (OB_MAX_BACKUP_ACCESSID_LENGTH + OB_MAX_BACKUP_SERIALIZEKEY_LENGTH), "array length overflow");
-  if (!is_valid()) {
+  char encrypted_key[OB_MAX_BACKUP_ENCRYPTKEY_LENGTH] = { 0 };
+  char serialize_buf[OB_MAX_BACKUP_SERIALIZEKEY_LENGTH] = { 0 };
+  int64_t serialize_pos = 0;
+  int64_t key_len = 0;
+  if (OB_ISNULL(encrypt_key) || length <= 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("storage info not init", K(ret));
-  } else if (OB_ISNULL(authorization) || length <= 0) {
+    LOG_WARN("invalid args", K(ret), KP(encrypt_key), K(length));
+  } else if (0 == strlen(access_key_)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("storage info is invalid", K(ret));
-  } else if (OB_STORAGE_FILE == device_type_) {
-    // do nothing
-  } else if (OB_FAIL(databuff_printf(authorization, length, "%s&%s",  access_id_, access_key_))) {
-    LOG_WARN("failed to set authorization", K(ret), K_(access_id), K(access_key_));
+    LOG_WARN("access_key is empty, shouldn't encrypt", K(ret));
+  } else if (0 != strncmp(ACCESS_KEY, access_key_, strlen(ACCESS_KEY))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("parameter is not access_key", K(ret));
+  } else if (OB_FAIL(ObEncryptionUtil::encrypt_sys_data(OB_SYS_TENANT_ID,
+      access_key_ + strlen(ACCESS_KEY), strlen(access_key_) - strlen(ACCESS_KEY),
+      encrypted_key, OB_MAX_BACKUP_ENCRYPTKEY_LENGTH, key_len))) {
+    LOG_WARN("failed to encrypt authorization key", K(ret));
+  } else if (OB_FAIL(hex_print(encrypted_key, key_len, serialize_buf, sizeof(serialize_buf), serialize_pos))) {
+    LOG_WARN("failed to serialize encrypted key", K(ret), K(encrypted_key));
+  } else if (serialize_pos >= sizeof(serialize_buf) || serialize_pos >= length) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("encode error", K(ret), K(serialize_pos), K(sizeof(serialize_buf)), K(length));
+  } else if (FALSE_IT(serialize_buf[serialize_pos] = '\0')) {
+  } else if (OB_FAIL(databuff_printf(encrypt_key, length, "%s%s", ENCRYPT_KEY, serialize_buf))) {
+    LOG_WARN("failed to get encrypted key", K(ret), K(serialize_buf));
   }
-  return ret;
-}
-
-int ObBackupStorageInfo::get_storage_info_str(char *storage_info, int64_t info_len, const bool need_encrypt) const
-{
-  int ret = OB_SUCCESS;
-  char encrypt_key[OB_MAX_BACKUP_SERIALIZEKEY_LENGTH] = { 0 };
-  const char *key = NULL;
-  if (!is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("storage info not init", K(ret));
-  } else if (OB_ISNULL(storage_info) || info_len <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("storage info is invalid", K(ret));
-  } else if (OB_STORAGE_FILE == device_type_) {
-    // do nothing
-  } else {
-    key = access_key_;
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_STORAGE_FILE != device_type_ && OB_FAIL(databuff_printf(storage_info, info_len, "%s&%s&%s",  endpoint_, access_id_, key))) {
-    LOG_WARN("failed to set storage info", K(ret));
-  } else if (0 != strlen(extension_) && info_len > strlen(storage_info)) {
-    const int64_t str_len = strlen(storage_info);
-    if (OB_FAIL(databuff_printf(storage_info + str_len, info_len - str_len, "&%s", extension_))) {
-      LOG_WARN("failed to add extension", K(ret), K_(extension));
-    }
-  }
-  return ret;
-}
-
-int ObBackupStorageInfo::assign(const ObBackupStorageInfo &storage_info)
-{
-  int ret = OB_SUCCESS;
-  device_type_ = storage_info.device_type_;
-  MEMCPY(endpoint_, storage_info.endpoint_, sizeof(endpoint_));
-  MEMCPY(access_id_, storage_info.access_id_, sizeof(access_id_));
-  MEMCPY(access_key_, storage_info.access_key_, sizeof(access_key_));
-  MEMCPY(extension_, storage_info.extension_, sizeof(extension_));
 
   return ret;
 }
 
-bool ObBackupStorageInfo::operator ==(const ObBackupStorageInfo &storage_info) const
-{
-  return device_type_ == storage_info.device_type_
-      && (0 == STRCMP(endpoint_, storage_info.endpoint_))
-      && (0 == STRCMP(access_id_, storage_info.access_id_))
-      && (0 == STRCMP(access_key_, storage_info.access_key_))
-      && (0 == STRCMP(extension_, storage_info.extension_));
-}
-
-bool ObBackupStorageInfo::operator !=(const ObBackupStorageInfo &storage_info) const
-{
-  return !(*this == storage_info);
-}
-
-int64_t ObBackupStorageInfo::hash() const
-{
-  int64_t hash_value = 0;
-  hash_value = murmurhash(&device_type_, static_cast<int32_t>(sizeof(device_type_)), hash_value);
-  hash_value = murmurhash(endpoint_, static_cast<int32_t>(strlen(endpoint_)), hash_value);
-  hash_value = murmurhash(access_id_, static_cast<int32_t>(strlen(access_id_)), hash_value);
-  hash_value = murmurhash(access_key_, static_cast<int32_t>(strlen(access_key_)), hash_value);
-  hash_value = murmurhash(extension_, static_cast<int32_t>(strlen(extension_)), hash_value);
-  return hash_value;
-}
-
-int ObBackupStorageInfo::set_storage_info_field_(const char *info, char *field, const int64_t length)
+int ObBackupStorageInfo::decrypt_access_key_(const char *buf)
 {
   int ret = OB_SUCCESS;
-  if (NULL == info || NULL == field) {
+  int64_t key_len = 0;
+  char deserialize_buf[OB_MAX_BACKUP_SERIALIZEKEY_LENGTH] = { 0 };
+  char decrypt_key[OB_MAX_BACKUP_ACCESSKEY_LENGTH] = { 0 };
+  int64_t buf_len = 0;
+  int64_t deserialize_size = 0;
+  if (OB_ISNULL(buf) || strlen(buf) == 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), KP(info), KP(field));
-  } else {
-    const int64_t info_len = strlen(info);
-    int64_t pos = strlen(field);
-    if (info_len >= length) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("info is too long ", K(ret), K(info), K(length));
-    } else if (OB_FAIL(databuff_printf(field, length, pos, "%s", info))){
-      LOG_WARN("failed to set storage info field", K(ret), K(info), K(field));
-    }
+    LOG_WARN("encrypted_key is empty", K(ret), KP(buf), K(strlen(buf)));
+  } else if (FALSE_IT(buf_len = strlen(buf))) {
+  } else if (OB_FAIL(hex_to_cstr(buf + strlen(ENCRYPT_KEY), buf_len - strlen(ENCRYPT_KEY),
+      deserialize_buf, sizeof(deserialize_buf), deserialize_size))) {
+    LOG_WARN("failed to get cstr from hex", KR(ret), K(buf_len), K(sizeof(deserialize_buf)));
+  } else if (OB_FAIL(ObEncryptionUtil::decrypt_sys_data(OB_SYS_TENANT_ID,
+      deserialize_buf, deserialize_size,
+      decrypt_key, sizeof(decrypt_key), key_len))) {
+    LOG_WARN("failed to decrypt authorization key", K(ret), K(deserialize_buf), K(deserialize_size));
+  } else if (key_len >= sizeof(decrypt_key) || (key_len + strlen(ACCESS_KEY)) >= sizeof(access_key_)) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("decrypt key size overflow", K(ret), K(key_len), K(sizeof(decrypt_key)));
+  } else if (FALSE_IT(decrypt_key[key_len] = '\0')) {
+  } else if (OB_FAIL(databuff_printf(access_key_, sizeof(access_key_), "%s%s", ACCESS_KEY, decrypt_key))) {
+    LOG_WARN("failed to set access key", K(ret));
   }
+
   return ret;
 }
-
+#endif
 
 ObBackupDest::ObBackupDest()
   : root_path_(NULL),
@@ -1762,7 +1606,7 @@ int ObBackupDest::get_backup_dest_str(char *buf, const int64_t buf_size) const
     LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_size));
   } else if (OB_FAIL(databuff_printf(buf, buf_size, "%s", root_path_))) {
     LOG_WARN("failed to get backup dest str", K(ret), K(root_path_), K(storage_info_));
-  } else if (OB_FAIL(storage_info_->get_storage_info_str(storage_info_str, sizeof(storage_info_str), true/*no need encrypt*/))) {
+  } else if (OB_FAIL(storage_info_->get_storage_info_str(storage_info_str, sizeof(storage_info_str)))) {
     OB_LOG(WARN, "fail to get storage info str!", K(ret), K(storage_info_));
   } else if (0 != strlen(storage_info_str) && OB_FAIL(databuff_printf(buf + strlen(buf), buf_size - strlen(buf), "?%s",storage_info_str))) {
     LOG_WARN("failed to get backup dest str", K(ret), K(root_path_), K(storage_info_));
@@ -1786,7 +1630,7 @@ int ObBackupDest::get_backup_dest_str_with_primary_attr(char *buf, const int64_t
     LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_size));
   } else if (OB_FAIL(databuff_printf(buf, buf_size, "%s", root_path_))) {
     LOG_WARN("failed to get backup dest str", K(ret), K(root_path_), K(storage_info_));
-  } else if (OB_FAIL(storage_info_->get_storage_info_str(storage_info_str, sizeof(storage_info_str), true/*no need encrypt*/))) {
+  } else if (OB_FAIL(storage_info_->get_storage_info_str(storage_info_str, sizeof(storage_info_str)))) {
     OB_LOG(WARN, "fail to get storage info str!", K(ret), K(storage_info_));
   } else if (0 != strlen(storage_info_str) && OB_FAIL(databuff_printf(buf + strlen(buf), buf_size - strlen(buf), "?%s",storage_info_str))) {
     LOG_WARN("failed to get backup dest str", K(ret), K(root_path_), K(storage_info_));
@@ -1882,7 +1726,7 @@ int ObBackupInfoStatus::set_info_backup_status(
 
 /* ObBackupSetDesc */
 
-ObBackupSetDesc::ObBackupSetDesc() : backup_set_id_(-1), backup_type_()
+ObBackupSetDesc::ObBackupSetDesc() : backup_set_id_(-1), backup_type_(), min_restore_scn_(), total_bytes_(0)
 {}
 
 bool ObBackupSetDesc::is_valid() const
@@ -1899,6 +1743,8 @@ int ObBackupSetDesc::assign(const ObBackupSetDesc &that)
   } else {
     backup_set_id_ = that.backup_set_id_;
     backup_type_.type_ = that.backup_type_.type_;
+    min_restore_scn_ = that.min_restore_scn_;
+    total_bytes_ = that.total_bytes_;
   }
   return ret;
 }
@@ -3260,7 +3106,8 @@ const char *ObHAResultInfo::get_failed_type_str() const
     "RESTORE_DATA",
     "RESTORE_CLOG",
     "BACKUP_DATA",
-    "BACKUP_CLEAN"
+    "BACKUP_CLEAN",
+    "RECOVER_TABLE"
   };
   if (type_ < ROOT_SERVICE || type_ >= MAX_FAILED_TYPE) {
     LOG_ERROR_RET(OB_ERR_UNEXPECTED, "invalid failed type", K(type_));
@@ -3275,13 +3122,35 @@ bool ObHAResultInfo::is_valid() const
   return !trace_id_.is_invalid() && addr_.is_valid() &&  MAX_FAILED_TYPE > type_ && ROOT_SERVICE <= type_;
 }
 
+const char *ObHAResultInfo::get_error_str_() const
+{
+  const char *str = NULL;
+  switch (result_) {
+    case OB_SUCCESS: {
+      str = "";
+      break;
+    }
+
+    case OB_TOO_MANY_PARTITIONS_ERROR: {
+      str = "unit config is too small";
+      break;
+    }
+
+    default: {
+      str = common::ob_strerror(result_);
+      break;
+    }
+  }
+  return str;
+}
+
 int ObHAResultInfo::get_comment_str(Comment &comment) const
 {
   int ret = OB_SUCCESS;
   const char *type = get_failed_type_str();
   char trace_id[OB_MAX_TRACE_ID_BUFFER_SIZE] = "";
   char addr_buf[OB_MAX_SERVER_ADDR_SIZE] = "";
-  const char *err_code_str = OB_SUCCESS == result_ ? "" : common::ob_strerror(result_);
+  const char *err_code_str = get_error_str_();
   if (!is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid result info", K(ret), KPC(this));
@@ -3961,6 +3830,24 @@ int ObBackupSetFileDesc::assign(const ObBackupSetFileDesc &other)
   return ret;
 }
 
+int64_t ObBackupSetFileDesc::to_string(char *min_restore_scn_str_buf, char *buf, int64_t buf_len) const {
+  int64_t pos = 0;
+  if (OB_ISNULL(min_restore_scn_str_buf) || OB_ISNULL(buf) || buf_len <= 0 || !is_valid()) {
+    // do nothing
+  } else {
+    J_OBJ_START();
+    ObQuoteSzString min_restore_scn_display(min_restore_scn_str_buf);
+    J_KV(K_(backup_set_id), K_(incarnation), K_(tenant_id), K_(dest_id), K_(backup_type), K_(plus_archivelog),
+      K_(date), K_(prev_full_backup_set_id), K_(prev_inc_backup_set_id), K_(stats), K_(start_time), K_(end_time),
+      K_(status), K_(result), K_(encryption_mode), K_(passwd), K_(file_status), K_(backup_path), K_(start_replay_scn),
+      K_(min_restore_scn), K(min_restore_scn_display), K_(tenant_compatible), K_(backup_compatible), K_(data_turn_id), K_(meta_turn_id),
+      K_(cluster_version), K_(consistent_scn));
+    J_OBJ_END();
+  }
+  return pos;
+}
+
+
 ObBackupSkipTabletAttr::ObBackupSkipTabletAttr()
   : tablet_id_(),
     skipped_type_()
@@ -4120,7 +4007,6 @@ ObLogArchiveDestAtrr::ObLogArchiveDestAtrr()
   binding_ = Binding::OPTIONAL;
   dest_id_ = 0;
   piece_switch_interval_ = OB_DEFAULT_PIECE_SWITCH_INTERVAL;
-  lag_target_ = OB_DEFAULT_LAG_TARGET;
   state_.set_enable();
 }
 
@@ -4136,22 +4022,6 @@ int ObLogArchiveDestAtrr::set_piece_switch_interval(const char *buf)
     ret = OB_INVALID_ARGUMENT;
     piece_switch_interval_ = 0;
     LOG_WARN("invalid piece_switch_interval str", K(ret), K(buf));
-  }
-  return ret;
-}
-
-int ObLogArchiveDestAtrr::set_lag_target(const char *buf)
-{
-  int ret = OB_SUCCESS;
-  bool is_valid = false;
-  if (OB_ISNULL(buf)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), KP(buf));
-  } else if (OB_FALSE_IT(lag_target_ = ObConfigTimeParser::get(buf, is_valid))) {
-  } else if (!is_valid || !is_lag_target_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    lag_target_ = 0;
-    LOG_WARN("invalid lag_target", K(ret), K(buf));
   }
   return ret;
 }
@@ -4200,7 +4070,6 @@ bool ObLogArchiveDestAtrr::is_valid() const
   return is_dest_valid()
       && dest_id_ > 0
       && is_piece_switch_interval_valid()
-      && is_lag_target_valid()
       && state_.is_valid();
 };
 
@@ -4212,12 +4081,6 @@ bool ObLogArchiveDestAtrr::is_dest_valid() const
 bool ObLogArchiveDestAtrr::is_piece_switch_interval_valid() const
 {
   return piece_switch_interval_ >= OB_MIN_LOG_ARCHIVE_PIECE_SWITH_INTERVAL;
-}
-
-bool ObLogArchiveDestAtrr::is_lag_target_valid() const
-{
-  return lag_target_ >= OB_MIN_LAG_TARGET
-      && lag_target_ <= OB_MAX_LAG_TARGET;
 }
 
 int ObLogArchiveDestAtrr::gen_config_items(common::ObIArray<BackupConfigItemPair> &items) const
@@ -4270,18 +4133,6 @@ int ObLogArchiveDestAtrr::gen_config_items(common::ObIArray<BackupConfigItemPair
     LOG_WARN("failed to assign key", K(ret));
   } else if (OB_FAIL(get_piece_switch_interval(tmp.ptr(), tmp.capacity()))) {
     LOG_WARN("failed to get piece switch interval", K(ret));
-  } else if (OB_FAIL(config.value_.assign(tmp.ptr()))) {
-    LOG_WARN("failed to assign value", K(ret));
-  } else if(OB_FAIL(items.push_back(config))) {
-     LOG_WARN("failed to push backup config", K(ret));
-  }
-
-  // gen lag_target config
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(config.key_.assign(OB_STR_LAG_TARGET))) {
-    LOG_WARN("failed to assign key", K(ret));
-  } else if (OB_FAIL(get_lag_target(tmp.ptr(), tmp.capacity()))) {
-    LOG_WARN("failed to get lag target", K(ret));
   } else if (OB_FAIL(config.value_.assign(tmp.ptr()))) {
     LOG_WARN("failed to assign value", K(ret));
   } else if(OB_FAIL(items.push_back(config))) {
@@ -4341,11 +4192,6 @@ int ObLogArchiveDestAtrr::get_piece_switch_interval(char *buf, int64_t len) cons
   return ObBackupUtils::convert_timestamp_to_timestr(piece_switch_interval_, buf, len);
 }
 
-int ObLogArchiveDestAtrr::get_lag_target(char *buf, int64_t len) const
-{
-  return ObBackupUtils::convert_timestamp_to_timestr(lag_target_, buf, len);
-}
-
 int ObLogArchiveDestAtrr::assign(const ObLogArchiveDestAtrr& that)
 {
   int ret = OB_SUCCESS;
@@ -4356,7 +4202,6 @@ int ObLogArchiveDestAtrr::assign(const ObLogArchiveDestAtrr& that)
     binding_ = that.binding_;
     dest_id_ = that.dest_id_;
     piece_switch_interval_ = that.piece_switch_interval_;
-    lag_target_ = that.lag_target_;
     if (OB_FAIL(dest_.deep_copy(that.dest_))) {
       LOG_WARN("fail to deep copy dest", K(ret));
     } else if (OB_FAIL(state_.assign(that.state_))) {
@@ -4419,6 +4264,44 @@ int share::backup_scn_to_time_tag(const SCN &scn, char *buf, const int64_t buf_l
   return ret;
 }
 
+int ObRestoreBackupSetBriefInfo::get_restore_backup_set_brief_info_str(
+    common::ObIAllocator &allocator, common::ObString &str) const
+{
+  int ret = OB_SUCCESS;
+  char *str_buf = NULL;
+  int64_t str_buf_len = 128;
+  if (str_buf_len > OB_MAX_LONGTEXT_LENGTH + 1) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("format str is too long", KR(ret), K(str_buf_len));
+  } else if (OB_ISNULL(str_buf = static_cast<char *>(allocator.alloc(str_buf_len)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to alloc buf", KR(ret), K(str_buf_len));
+  } else if (OB_FALSE_IT(MEMSET(str_buf, '\0', str_buf_len))) {
+  } else {
+    // type: FULL min_restore_scn: 2022-05-31 12:00:00 size: 22 G
+    // path: file:///test_backup_dest
+    int64_t pos = 0;
+    const char *type_str = backup_set_desc_.backup_type_.is_full_backup() ? OB_STR_FULL_BACKUP : OB_STR_INC_BACKUP;
+    char scn_display_buf[OB_MAX_TIME_STR_LENGTH] = "";
+    if (OB_FALSE_IT(pos = 0)) {
+    } else if (OB_FAIL(backup_scn_to_time_tag(backup_set_desc_.min_restore_scn_, scn_display_buf, OB_MAX_TIME_STR_LENGTH, pos))) {
+      LOG_WARN("failed to backup scn to time tag", K(ret));
+    } else if (OB_FAIL(databuff_printf(str_buf, str_buf_len, pos, "type: %s, min_restore_scn_display: %s, size: %s.",
+        type_str, scn_display_buf, to_cstring(ObSizeLiteralPrettyPrinter(backup_set_desc_.total_bytes_))))) {
+      LOG_WARN("failed to databuff print", K(ret), KPC(this));
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(str_buf) || str_buf_len <= 0) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
+  } else {
+    str.assign_ptr(str_buf, STRLEN(str_buf));
+    LOG_DEBUG("get log path list str", KR(ret), K(str));
+  }
+  return ret;
+}
+
 int ObRestoreBackupSetBriefInfo::assign(const ObRestoreBackupSetBriefInfo &that)
 {
   int ret = OB_SUCCESS;
@@ -4465,6 +4348,62 @@ int ObBackupSkippedType::parse_from_str(const ObString &str)
     type_ = MAX_TYPE;
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid backup skipped type str", KR(ret), K(str));
+  }
+  return ret;
+}
+
+int ObRestoreLogPieceBriefInfo::get_restore_log_piece_brief_info_str(
+    common::ObIAllocator &allocator, common::ObString &str) const
+{
+  int ret = OB_SUCCESS;
+  char *str_buf = NULL;
+  int64_t str_buf_len = 128;
+  if (str_buf_len > OB_MAX_LONGTEXT_LENGTH + 1) {
+    ret = OB_SIZE_OVERFLOW;
+    LOG_WARN("format str is too long", KR(ret), K(str_buf_len));
+  } else if (OB_ISNULL(str_buf = static_cast<char *>(allocator.alloc(str_buf_len)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to alloc buf", KR(ret), K(str_buf_len));
+  } else if (OB_FALSE_IT(MEMSET(str_buf, '\0', str_buf_len))) {
+  } else {
+    // start_scn_display: 2022-05-31 12:00:00 checkpoint_scn_display: 2022-05-32 12:00:00
+    // path: file:///test_archive_dest
+    int64_t pos = 0;
+    char buf1[OB_MAX_TIME_STR_LENGTH] = "";
+    char buf2[OB_MAX_TIME_STR_LENGTH] = "";
+    if (OB_FAIL(backup_scn_to_time_tag(start_scn_, buf1, sizeof(buf1), pos))) {
+      LOG_WARN("failed to backup scn to time", K(ret), K(start_scn_));
+    } else if (OB_FALSE_IT(pos = 0)) {
+    } else if (OB_FAIL(backup_scn_to_time_tag(checkpoint_scn_, buf2, sizeof(buf2), pos))) {
+      LOG_WARN("failed to backup scn to time", K(ret), K(checkpoint_scn_));
+    } else if (OB_FAIL(databuff_printf(str_buf, str_buf_len, "start_scn_display: %s, checkpoint_scn_display: %s.", buf1, buf2))) {
+      LOG_WARN("failed to databuff print", K(ret), KPC(this));
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(str_buf) || str_buf_len <= 0) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
+  } else {
+
+    str.assign_ptr(str_buf, STRLEN(str_buf));
+    LOG_DEBUG("get log path list str", KR(ret), K(str));
+  }
+  return ret;
+}
+
+int ObRestoreLogPieceBriefInfo::assign(const ObRestoreLogPieceBriefInfo &that)
+{
+  int ret = OB_SUCCESS;
+  if (!that.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(that));
+  } else if (OB_FAIL(piece_path_.assign(that.piece_path_))) {
+    LOG_WARN("fail to assign backup set path", K(ret), K(that));
+  } else {
+    piece_id_ = that.piece_id_;
+    start_scn_ = that.start_scn_;
+    checkpoint_scn_ = that.checkpoint_scn_;
   }
   return ret;
 }

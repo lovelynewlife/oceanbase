@@ -87,6 +87,7 @@ const int64_t OB_MAX_MOD_NAME_LENGTH = 48;
 const int64_t OB_MAX_ACT_NAME_LENGTH = 32;
 const int64_t OB_MAX_UUID_LENGTH = 16;
 const int64_t OB_MAX_UUID_STR_LENGTH = 36;
+const int64_t OB_MAX_CON_INFO_STR_LENGTH = 512;
 const int64_t MAX_ZONE_LENGTH = 128;
 const int64_t MAX_REGION_LENGTH = 128;
 const int64_t MAX_GTS_NAME_LENGTH = 128;
@@ -100,7 +101,7 @@ const int64_t MAX_LS_STATE_LENGTH = 16;
 const int64_t MAX_LOCK_ID_BUF_LENGTH = 64;
 const int64_t MAX_LOCK_ROWKEY_BUF_LENGTH = 512;
 const int64_t MAX_LOCK_MODE_BUF_LENGTH = 8;
-const int64_t MAX_LOCK_OBJ_TYPE_BUF_LENGTH = 8;
+const int64_t MAX_LOCK_OBJ_TYPE_BUF_LENGTH = 16;
 const int64_t MAX_LOCK_OP_TYPE_BUF_LENGTH = 32;
 const int64_t MAX_LOCK_OP_STATUS_BUF_LENGTH = 16;
 const int64_t MAX_LOCK_OP_EXTRA_INFO_LENGTH = 256;
@@ -507,6 +508,14 @@ enum ObCSProtocolType
   OB_2_0_CS_TYPE,             // oceanbase 2.0 protocol
 };
 
+enum ObClientType
+{
+  OB_CLIENT_INVALID_TYPE = 0,
+  OB_CLIENT_JDBC,             // JDBC client
+  OB_CLIENT_OCI,              // ob lib client
+  OB_CLIENT_NON_STANDARD      // non-standard client
+};
+
 inline const char *get_cs_protocol_type_name(const ObCSProtocolType type) {
   switch (type) {
     case OB_INVALID_CS_TYPE:
@@ -844,8 +853,8 @@ const double MONITOR_MEM_FACTOR = 0.01;
 const double KVCACHE_FACTOR = TENANT_RESERVE_MEM_RATIO;
 
 const double MIN_TENANT_QUOTA = .5;
-const double OB_DTL_CPU = (sysconf(_SC_NPROCESSORS_ONLN) <= 4) ? 1. : 5.;
-const double OB_DATA_CPU = (sysconf(_SC_NPROCESSORS_ONLN) <= 4) ? 1. : 2.5;
+const double OB_DTL_CPU = 5.;
+const double OB_DATA_CPU = 2.5;
 
 const uint64_t OB_INVALID_TENANT_ID = 0;
 const uint64_t OB_SYS_TENANT_ID = 1;
@@ -1304,6 +1313,8 @@ const uint64_t OB_MOCK_TRIGGER_PACKAGE_ID_MASK = 0x4000000000000000;
 const uint64_t OB_MOCK_OBJECT_PACAKGE_ID_MASK = 0x2000000000000000;
 // 64bit : use for mock package spec/body mask, 0 means spec, 1 means body
 const uint64_t OB_MOCK_PACKAGE_BODY_ID_MASK = 0x8000000000000000;
+// 61bit : use for mock dblink udt id
+const uint64_t OB_MOCK_DBLINK_UDT_ID_MASK = 0x1000000000000000;
 /* low 21bits used as package type id */
 #define OB_MOCK_MASK_SHIFT  40
 #define OB_PACKAGE_ID_SHIFT 24
@@ -1311,7 +1322,8 @@ OB_INLINE uint64_t extract_package_id(uint64_t global_type_id)
 {
   uint64_t mask = OB_MOCK_PACKAGE_BODY_ID_MASK |
                   OB_MOCK_TRIGGER_PACKAGE_ID_MASK |
-                  OB_MOCK_OBJECT_PACAKGE_ID_MASK;
+                  OB_MOCK_OBJECT_PACAKGE_ID_MASK |
+                  OB_MOCK_DBLINK_UDT_ID_MASK;
   uint64_t mock_val = global_type_id & (mask >> OB_MOCK_MASK_SHIFT);
   uint64_t package_id = ((int64_t)global_type_id >> OB_PACKAGE_ID_SHIFT) |
                         (mock_val << OB_MOCK_MASK_SHIFT);
@@ -1320,14 +1332,15 @@ OB_INLINE uint64_t extract_package_id(uint64_t global_type_id)
 
 OB_INLINE int64_t extract_type_id(uint64_t global_type_id)
 {
-  return global_type_id & (~(UINT64_MAX << (OB_PACKAGE_ID_SHIFT - 3)));
+  return global_type_id & (~(UINT64_MAX << (OB_PACKAGE_ID_SHIFT - 4)));
 }
 
 OB_INLINE uint64_t combine_pl_type_id(uint64_t package_id, int64_t type_idx)
 {
   uint64_t mask = OB_MOCK_PACKAGE_BODY_ID_MASK |
                   OB_MOCK_TRIGGER_PACKAGE_ID_MASK |
-                  OB_MOCK_OBJECT_PACAKGE_ID_MASK;
+                  OB_MOCK_OBJECT_PACAKGE_ID_MASK |
+                  OB_MOCK_DBLINK_UDT_ID_MASK;
   type_idx |= ((uint64_t)(package_id & mask) >> OB_MOCK_MASK_SHIFT);
   return (package_id << OB_PACKAGE_ID_SHIFT | type_idx);
 }
@@ -1347,6 +1360,13 @@ OB_INLINE bool is_inner_pl_object_id(const uint64_t object_id)
   return object_id > OB_MIN_SYS_PL_UDT_ID
          && object_id < OB_MAX_SYS_PL_OBJECT_ID;
 }
+
+OB_INLINE bool is_dblink_type_id(uint64_t type_id)
+{
+  return type_id != common::OB_INVALID_ID
+          && ((type_id <<  OB_MOCK_MASK_SHIFT) & OB_MOCK_DBLINK_UDT_ID_MASK) != 0;
+}
+
 
 /* ################################################################################ */
 
@@ -1419,6 +1439,11 @@ const char *const OB_MYSQL_PROXY_SESSION_VARS = "__proxy_session_vars";
 const char *const OB_MYSQL_SCRAMBLE = "__proxy_scramble";
 const char *const OB_MYSQL_PROXY_VEERSION = "__proxy_version";
 
+const char *const OB_MYSQL_CLIENT_VERSION = "__ob_client_version";
+const char *const OB_MYSQL_CLIENT_NAME = "__ob_client_name";
+
+const char *const OB_MYSQL_JDBC_CLIENT_NAME = "OceanBase Connector/J";
+const char *const OB_MYSQL_OCI_CLIENT_NAME = "OceanBase Connector/C";
 // for java client
 const char *const OB_MYSQL_JAVA_CLIENT_MODE_NAME = "__ob_java_client";
 const char *const OB_MYSQL_OCI_CLIENT_MODE_NAME = "__ob_libobclient";
@@ -1570,7 +1595,7 @@ OB_INLINE bool is_bootstrap_resource_pool(const uint64_t resource_pool_id)
 }
 
 // ob_malloc & ob_tc_malloc
-const int64_t OB_MALLOC_NORMAL_BLOCK_SIZE = (1LL << 13) - 128;                 // 8KB
+const int64_t OB_MALLOC_NORMAL_BLOCK_SIZE = (1LL << 13) - 256;                 // 8KB
 const int64_t OB_MALLOC_MIDDLE_BLOCK_SIZE = (1LL << 16) - 128;                 // 64KB
 const int64_t OB_MALLOC_BIG_BLOCK_SIZE = (1LL << 21) - ACHUNK_PRESERVE_SIZE;// 2MB (-17KB)
 
@@ -2386,6 +2411,8 @@ OB_INLINE const char*& ob_get_origin_thread_name()
   thread_local const char* tname = nullptr;
   return tname;
 }
+
+static const char* PARALLEL_DDL_THREAD_NAME = "DDLPQueueTh";
 
 // There are many clusters in arbitration server, we need a field identify the different clusters.
 OB_INLINE int64_t &ob_get_cluster_id()

@@ -82,11 +82,16 @@ private:
   int run_upgrade_all_(const common::ObIArray<uint64_t> &tenant_ids);
   /*-----upgrade all cmd----*/
 
-  int run_upgrade_begin_action_(const uint64_t tenant_id);
+  int run_upgrade_begin_action_(
+      const uint64_t tenant_id,
+      common::hash::ObHashMap<uint64_t, share::SCN> &tenants_sys_ls_target_scn);
   int upgrade_system_table_(const uint64_t tenant_id);
   int check_table_schema_(const uint64_t tenant_id,
                           const share::schema::ObTableSchema &hard_code_table);
   int upgrade_mysql_system_package_job_();
+#ifdef OB_BUILD_ORACLE_PL
+  int upgrade_oracle_system_package_job_();
+#endif
   int run_upgrade_all_post_action_(const uint64_t tenant_id);
   int run_upgrade_end_action_(const uint64_t tenant_id);
 

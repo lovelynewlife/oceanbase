@@ -20,13 +20,18 @@
 #include "lib/utility/ob_print_utils.h"// TO_STRING_KV
 #include "rootserver/ob_cluster_event.h"// CLUSTER_EVENT_ADD_CONTROL
 #include "rootserver/ob_rs_event_history_table_operator.h" // ROOTSERVICE_EVENT_ADD
+#include "rootserver/ob_ls_service_helper.h" // ObLSServiceHelper
 #include "share/ob_rpc_struct.h"//ObLSAccessModeInfo
 #include "observer/ob_server_struct.h"//GCTX
 #include "share/location_cache/ob_location_service.h"//get ls leader
+#include "share/ob_global_stat_proxy.h"//ObGlobalStatProxy
 #include "share/ob_schema_status_proxy.h"//set_schema_status
 #include "storage/tx/ob_timestamp_service.h"  // ObTimestampService
 #include "share/ob_primary_standby_service.h" // ObPrimaryStandbyService
 #include "share/balance/ob_balance_task_helper_operator.h"//ObBalanceTaskHelper
+#include "lib/utility/ob_macro_utils.h"
+#include "lib/ob_errno.h"
+#include "share/oracle_errno.h"//oracle error code
 
 namespace oceanbase
 {
@@ -35,56 +40,53 @@ using namespace palf;
 namespace rootserver
 {
 
+#define TENANT_ROLE_TRANS_USER_ERROR                                                                                                      \
+  int tmp_ret = OB_SUCCESS;                                                                                                               \
+  ObSqlString str;                                                                                                                        \
+  switch (ret) {                                                                                                                          \
+    case -ER_TABLEACCESS_DENIED_ERROR:                                                                                                    \
+    case OB_ERR_NO_TABLE_PRIVILEGE:                                                                                                       \
+    case -OER_TABLE_OR_VIEW_NOT_EXIST:                                                                                                    \
+    case -ER_DBACCESS_DENIED_ERROR:                                                                                                       \
+    case OB_ERR_NO_DB_PRIVILEGE:                                                                                                          \
+    case OB_ERR_NULL_VALUE:                                                                                                               \
+    case OB_ERR_WAIT_REMOTE_SCHEMA_REFRESH:                                                                                               \
+    case -ER_CONNECT_FAILED:                                                                                                              \
+    case OB_PASSWORD_WRONG:                                                                                                               \
+    case -ER_ACCESS_DENIED_ERROR:                                                                                                         \
+    case OB_ERR_NO_LOGIN_PRIVILEGE:                                                                                                       \
+    case -OER_INTERNAL_ERROR_CODE:                                                                                                        \
+      if (OB_TMP_FAIL(str.assign_fmt("query primary failed(original error code: %d), switch to primary", ret))) {                         \
+        LOG_WARN("tenant role trans user error str assign failed");                                                                       \
+      } else {                                                                                                                            \
+        ret = OB_OP_NOT_ALLOW;                                                                                                            \
+        LOG_USER_ERROR(OB_OP_NOT_ALLOW, str.ptr());                                                                                       \
+      }                                                                                                                                   \
+      break;                                                                                                                              \
+    case OB_ERR_TENANT_IS_LOCKED:                                                                                                         \
+      ret = OB_OP_NOT_ALLOW;                                                                                                              \
+      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "primary tenant is locked, role transition");                                                       \
+      break;                                                                                                                              \
+    case OB_SOURCE_TENANT_STATE_NOT_MATCH:                                                                                                \
+      LOG_USER_ERROR(OB_SOURCE_TENANT_STATE_NOT_MATCH);                                                                                   \
+      break;                                                                                                                              \
+    case OB_SOURCE_LS_STATE_NOT_MATCH:                                                                                                    \
+      LOG_USER_ERROR(OB_SOURCE_LS_STATE_NOT_MATCH);                                                                                       \
+      break;                                                                                                                              \
+    default:                                                                                                                              \
+      if (OB_TMP_FAIL(str.assign_fmt("wait tenant sync to latest failed(original error code: %d), switch to primary", ret))){             \
+        LOG_WARN("tenant role trans user error str assign failed");                                                                       \
+      } else {                                                                                                                            \
+        ret = OB_OP_NOT_ALLOW;                                                                                                            \
+        LOG_USER_ERROR(OB_OP_NOT_ALLOW, str.ptr());                                                                                       \
+      }                                                                                                                                   \
+  }                                                                                                                                       \
+
 const char* const ObTenantRoleTransitionConstants::SWITCH_TO_PRIMARY_LOG_MOD_STR = "SWITCH_TO_PRIMARY";
 const char* const ObTenantRoleTransitionConstants::SWITCH_TO_STANDBY_LOG_MOD_STR = "SWITCH_TO_STANDBY";
 const char* const ObTenantRoleTransitionConstants::RESTORE_TO_STANDBY_LOG_MOD_STR = "RESTORE_TO_STANDBY";
 
-////////////LSAccessModeInfo/////////////////
-int ObTenantRoleTransitionService::LSAccessModeInfo::init(
-    uint64_t tenant_id, const ObLSID &ls_id, const ObAddr &addr,
-    const int64_t mode_version,
-    const palf::AccessMode &access_mode)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id
-                  || !ls_id.is_valid() || !addr.is_valid()
-                  || palf::INVALID_PROPOSAL_ID == mode_version
-                  || palf::AccessMode::INVALID_ACCESS_MODE == access_mode)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_id), K(addr),
-    K(access_mode), K(mode_version));
-  } else {
-    tenant_id_ = tenant_id;
-    ls_id_ = ls_id;
-    leader_addr_ = addr;
-    mode_version_ = mode_version;
-    access_mode_ = access_mode;
-  }
-  return ret;
-}
 
-int ObTenantRoleTransitionService::LSAccessModeInfo::assign(const LSAccessModeInfo &other)
-{
-  int ret = OB_SUCCESS;
-  if (this != &other) {
-    reset();
-    tenant_id_ = other.tenant_id_;
-    ls_id_ = other.ls_id_;
-    leader_addr_ = other.leader_addr_;
-    mode_version_ = other.mode_version_; 
-    access_mode_ = other.access_mode_;
-  }
-  return ret;
-}
-
-void ObTenantRoleTransitionService::LSAccessModeInfo::reset()
-{
-  tenant_id_ = OB_INVALID_TENANT_ID;
-  ls_id_.reset();
-  leader_addr_.reset();
-  access_mode_ = palf::AccessMode::INVALID_ACCESS_MODE;
-  mode_version_ = palf::INVALID_PROPOSAL_ID; 
-} 
 ////////////ObTenantRoleTransitionService//////////////
 int ObTenantRoleTransitionService::check_inner_stat()
 {
@@ -105,6 +107,8 @@ int ObTenantRoleTransitionService::failover_to_primary()
   ObAllTenantInfo tenant_info;
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
+  } else if (OB_FAIL(check_tenant_server_online_())) {
+    LOG_WARN("fail to check whether the tenant's servers are online", KR(ret), K(tenant_id_));
   } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, sql_proxy_,
                                                     false, tenant_info))) {
     LOG_WARN("failed to load tenant info", KR(ret), K(tenant_id_));
@@ -157,7 +161,8 @@ int ObTenantRoleTransitionService::failover_to_primary()
   LOG_INFO("[ROLE_TRANSITION] finish failover to primary", KR(ret), K(tenant_info), K(cost));
   return ret;
 }
-  
+
+ERRSIM_POINT_DEF(ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR);
 int ObTenantRoleTransitionService::do_failover_to_primary_(const share::ObAllTenantInfo &tenant_info)
 {
   int ret = OB_SUCCESS;
@@ -177,6 +182,11 @@ int ObTenantRoleTransitionService::do_failover_to_primary_(const share::ObAllTen
   } else if (obrpc::ObSwitchTenantArg::OpType::SWITCH_TO_PRIMARY == switch_optype_
              && OB_FAIL(wait_tenant_sync_to_latest_until_timeout_(tenant_id_, tenant_info))) {
     LOG_WARN("fail to wait_tenant_sync_to_latest_until_timeout_", KR(ret), K_(tenant_id), K(tenant_info));
+    TENANT_ROLE_TRANS_USER_ERROR;
+  } else if (OB_SUCC(ret) && ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR) {
+    ret = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR;
+    TENANT_ROLE_TRANS_USER_ERROR;
+    LOG_WARN("errsim wait_tenant_sync_to_latest_until_timeout", K(ret));
   } else if (OB_FAIL(ObAllTenantInfoProxy::update_tenant_role(
                  tenant_id_, sql_proxy_, tenant_info.get_switchover_epoch(),
                  share::STANDBY_TENANT_ROLE, tenant_info.get_switchover_status(),
@@ -314,15 +324,17 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_flashback(
     const share::ObAllTenantInfo &tenant_info)
 {
   int ret = OB_SUCCESS;
-
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
   } else if (OB_UNLIKELY(!tenant_info.is_flashback_status()
         || switchover_epoch_ != tenant_info.get_switchover_epoch())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("tenant switchover status not valid", KR(ret), K(tenant_info), K(switchover_epoch_));
-  } else if (OB_FAIL(change_ls_access_mode_(palf::AccessMode::FLASHBACK, SCN::base_scn()))) {
-    LOG_WARN("failed to get access mode", KR(ret), K(tenant_info));
+  } else if (OB_FAIL(get_all_ls_status_and_change_access_mode_(
+      palf::AccessMode::FLASHBACK,
+      SCN::base_scn(),
+      SCN::min_scn()))) {
+    LOG_WARN("fail to execute get_all_ls_status_and_change_access_mode_", KR(ret), K(tenant_info));
   }
   return ret;
 }
@@ -400,8 +412,12 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_append(
   } else if (OB_FAIL(get_tenant_ref_scn_(tenant_info.get_sync_scn(), ref_scn))) {
     LOG_WARN("failed to get tenant ref_scn", KR(ret));
     //TODO(yaoying):xianming
-  } else if (OB_FAIL(change_ls_access_mode_(access_mode, ref_scn))) {
-    LOG_WARN("failed to get access mode", KR(ret), K(access_mode), K(ref_scn), K(tenant_info));
+  } else if (OB_FAIL(get_all_ls_status_and_change_access_mode_(
+      access_mode,
+      ref_scn,
+      share::SCN::min_scn()))) {
+    LOG_WARN("fail to execute get_all_ls_status_and_change_access_mode_", KR(ret),
+        K(tenant_info), K(access_mode), K(ref_scn));
   } else {
     common::ObMySQLTransaction trans;
     share::ObAllTenantInfo cur_tenant_info;
@@ -415,7 +431,7 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_append(
       ret = OB_OP_NOT_ALLOW;
       LOG_WARN("Tenant status changed by concurrent operation, switch to primary not allowed",
                KR(ret), K(tenant_info), K(cur_tenant_info));
-      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Tenant status changed by concurrent operation, switch to primary");
+      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "tenant status changed by concurrent operation, switch to primary");
     } else if (OB_FAIL(ObAllTenantInfoProxy::update_tenant_role(
             tenant_id_, &trans, tenant_info.get_switchover_epoch(),
             share::PRIMARY_TENANT_ROLE, tenant_info.get_switchover_status(),
@@ -485,26 +501,36 @@ int ObTenantRoleTransitionService::get_tenant_ref_scn_(const share::SCN &sync_sc
 int ObTenantRoleTransitionService::wait_ls_balance_task_finish_()
 {
   int ret = OB_SUCCESS;
+  uint64_t compat_version = 0;
+
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
   } else {
-    bool is_finish = false;
-    ObBalanceTaskHelper ls_balance_task;
-    while (!THIS_WORKER.is_timeout() && OB_SUCC(ret) && !is_finish) {
-      if (FALSE_IT(ret = ObBalanceTaskHelperTableOperator::pop_task(tenant_id_,
-              *sql_proxy_, ls_balance_task))) {
-      } else if (OB_ENTRY_NOT_EXIST == ret) {
-        ret = OB_SUCCESS;
-        is_finish = true;
-      } else if (OB_SUCC(ret)) {
-        usleep(100L * 1000L);
-        LOG_INFO("has balance task not finish", K(ls_balance_task));
+    ObGlobalStatProxy global_proxy(*sql_proxy_, gen_meta_tenant_id(tenant_id_));
+    if (OB_FAIL(global_proxy.get_current_data_version(compat_version))) {
+      LOG_WARN("failed to get current data version", KR(ret), K(tenant_id_));
+    } else if (compat_version < DATA_VERSION_4_2_0_0) {
+      //if tenant version is less than 4200, no need check
+      //Regardless of the data_version change and switchover concurrency scenario
+    } else {
+      bool is_finish = false;
+      ObBalanceTaskHelper ls_balance_task;
+      while (!THIS_WORKER.is_timeout() && OB_SUCC(ret) && !is_finish) {
+        if (FALSE_IT(ret = ObBalanceTaskHelperTableOperator::pop_task(tenant_id_,
+                *sql_proxy_, ls_balance_task))) {
+        } else if (OB_ENTRY_NOT_EXIST == ret) {
+          ret = OB_SUCCESS;
+          is_finish = true;
+        } else if (OB_SUCC(ret)) {
+          usleep(100L * 1000L);
+          LOG_INFO("has balance task not finish", K(ls_balance_task));
+        }
       }
-    }
-    if (OB_SUCC(ret)) {
-      if (THIS_WORKER.is_timeout() || !is_finish) {
-        ret = OB_TIMEOUT;
-        LOG_WARN("failed to wait ls balance task finish", KR(ret), K(is_finish));
+      if (OB_SUCC(ret)) {
+        if (THIS_WORKER.is_timeout() || !is_finish) {
+          ret = OB_TIMEOUT;
+          LOG_WARN("failed to wait ls balance task finish", KR(ret), K(is_finish));
+        }
       }
     }
   }
@@ -515,9 +541,12 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_raw_rw(
     const share::ObAllTenantInfo &tenant_info)
 {
   int ret = OB_SUCCESS;
-  palf::AccessMode access_mode = logservice::ObLogService::get_palf_access_mode(STANDBY_TENANT_ROLE);
+  palf::AccessMode target_access_mode = logservice::ObLogService::get_palf_access_mode(STANDBY_TENANT_ROLE);
   ObLSStatusOperator status_op;
-
+  share::ObLSStatusInfoArray sys_info_array;
+  ObLSStatusInfo sys_status_info;
+  share::SCN sys_ls_sync_scn = SCN::min_scn();
+  bool is_sys_ls_sync_to_latest = false;
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
   } else if (OB_UNLIKELY(!tenant_info.is_switching_to_standby_status()
@@ -530,14 +559,62 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_raw_rw(
                      tenant_id_, tenant_info.get_switchover_status(),
                      tenant_info.get_switchover_epoch(), *sql_proxy_))) {
     LOG_WARN("failed to create abort ls", KR(ret), K(tenant_info));
-  } else if (OB_FAIL(change_ls_access_mode_(access_mode, SCN::base_scn()))) {
-    LOG_WARN("failed to get access mode", KR(ret), K(access_mode), K(tenant_info));
+  } else if (OB_FAIL(status_op.get_ls_status_info(tenant_id_, SYS_LS, sys_status_info, *sql_proxy_))) {
+    LOG_WARN("fail to get sys ls status info", KR(ret), K_(tenant_id), KP(sql_proxy_));
+  } else if (OB_FAIL(sys_info_array.push_back(sys_status_info))) {
+    LOG_WARN("fail to push back", KR(ret), K(sys_status_info));
+  } else if (OB_FAIL(change_ls_access_mode_(sys_info_array, target_access_mode, SCN::base_scn(), share::SCN::min_scn()))) {
+    // step 1: change sys ls access mode
+    LOG_WARN("fail to execute change_ls_access_mode_", KR(ret), K(sys_info_array),
+        K(target_access_mode));
+  } else if (OB_FAIL(get_sys_ls_sync_scn_(
+      tenant_id_,
+      false /*need_check_sync_to_latest*/,
+      sys_ls_sync_scn,
+      is_sys_ls_sync_to_latest))) {
+    LOG_WARN("fail to get sys_ls_sync_scn", KR(ret), K(tenant_id_));
+  } else if (OB_FAIL(get_all_ls_status_and_change_access_mode_(
+      target_access_mode,
+      SCN::base_scn(),
+      sys_ls_sync_scn))) {
+    // step 2: let user ls wait some time until their end scn being is larger than sys ls's
+    //         then change user ls access mode
+    // note: there's no need to remove sys ls in arg status_info_array, it will be removed in change_ls_access_mode_
+    LOG_WARN("fail to execute get_all_ls_status_and_change_access_mode_", KR(ret), K(tenant_info),
+        K(target_access_mode), K(sys_ls_sync_scn));
   }
   return ret;
 }
 
-int ObTenantRoleTransitionService::change_ls_access_mode_(palf::AccessMode target_access_mode,
-                             const SCN &ref_scn)
+int ObTenantRoleTransitionService::get_all_ls_status_and_change_access_mode_(
+    const palf::AccessMode target_access_mode,
+    const share::SCN &ref_scn,
+    const share::SCN &sys_ls_sync_scn)
+{
+  int ret = OB_SUCCESS;
+  ObLSStatusOperator status_op;
+  share::ObLSStatusInfoArray status_info_array;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
+  } else if (OB_FAIL(status_op.get_all_ls_status_by_order_for_switch_tenant(
+      tenant_id_,
+      false/* ignore_need_create_abort */,
+      status_info_array,
+      *sql_proxy_))) {
+    LOG_WARN("fail to get_all_ls_status_by_order", KR(ret), K_(tenant_id), KP(sql_proxy_));
+  } else if (OB_FAIL(change_ls_access_mode_(status_info_array, target_access_mode, ref_scn, sys_ls_sync_scn))) {
+    // ref_scn and target_access_mode will be checked in this func
+    LOG_WARN("fail to execute change_ls_access_mode_", KR(ret), K(status_info_array),
+        K(target_access_mode), K(ref_scn), K(sys_ls_sync_scn));
+  }
+  return ret;
+}
+
+int ObTenantRoleTransitionService::change_ls_access_mode_(
+    const share::ObLSStatusInfoArray &status_info_array,
+    const palf::AccessMode target_access_mode,
+    const share::SCN &ref_scn,
+    const share::SCN &sys_ls_sync_scn)
 {
   int ret = OB_SUCCESS;
   ObTimeoutCtx ctx;
@@ -546,13 +623,14 @@ int ObTenantRoleTransitionService::change_ls_access_mode_(palf::AccessMode targe
   } else if (OB_UNLIKELY(palf::AccessMode::INVALID_ACCESS_MODE == target_access_mode 
                          || OB_INVALID_VERSION == switchover_epoch_
                          || !ref_scn.is_valid_and_not_min())) {
+    // no need to check sys_ls_sync_scn, since this is only valid when it's needed
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(target_access_mode), K(switchover_epoch_), K(ref_scn));
   } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.internal_sql_execute_timeout))) {
     LOG_WARN("failed to set default timeout", KR(ret));
   } else {
-    ObArray<LSAccessModeInfo> ls_mode_info;
-    ObArray<LSAccessModeInfo> need_change_info;
+    ObArray<ObLSAccessModeInfo> ls_mode_info;
+    ObArray<ObLSAccessModeInfo> need_change_info;
     //ignore error, try until success
     bool need_retry = true;
     do {
@@ -563,12 +641,12 @@ int ObTenantRoleTransitionService::change_ls_access_mode_(palf::AccessMode targe
         need_retry = false;
         ret = OB_TIMEOUT;
         LOG_WARN("already timeout", KR(ret));
-      } else if (OB_FAIL(get_ls_access_mode_(ls_mode_info))) {
+      } else if (OB_FAIL(get_ls_access_mode_(status_info_array, ls_mode_info))) {
         LOG_WARN("failed to get ls access mode", KR(ret));
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < ls_mode_info.count(); ++i) {
-          const LSAccessModeInfo &info = ls_mode_info.at(i);
-          if (info.access_mode_ == target_access_mode) {
+          const ObLSAccessModeInfo &info = ls_mode_info.at(i);
+          if (info.get_access_mode() == target_access_mode) {
             //nothing, no need change
           } else if (OB_FAIL(need_change_info.push_back(info))) {
             LOG_WARN("failed to assign", KR(ret), K(i), K(info));
@@ -592,9 +670,9 @@ int ObTenantRoleTransitionService::change_ls_access_mode_(palf::AccessMode targe
       //3. change access mode
       if (OB_SUCC(ret) && need_change_info.count() > 0) {
         if (OB_FAIL(do_change_ls_access_mode_(need_change_info,
-                target_access_mode, ref_scn))) {
+                target_access_mode, ref_scn, sys_ls_sync_scn))) {
           LOG_WARN("failed to change ls access mode", KR(ret), K(need_change_info),
-              K(target_access_mode), K(ref_scn));
+              K(target_access_mode), K(ref_scn), K(sys_ls_sync_scn));
         }
       }
       if (OB_SUCC(ret)) {
@@ -606,7 +684,6 @@ int ObTenantRoleTransitionService::change_ls_access_mode_(palf::AccessMode targe
   LOG_INFO("[ROLE_TRANSITION] finish change ls mode", KR(ret), K(tenant_id_),
       K(target_access_mode), K(ref_scn));
   return ret;
-
 }
 
 template <typename ARRAY_L, typename ARRAY_R>
@@ -644,7 +721,9 @@ int do_nonblock_renew(const ARRAY_L &array_l, const ARRAY_R &array_r, const uint
   return ret;
 }
 
-int ObTenantRoleTransitionService::get_ls_access_mode_(ObIArray<LSAccessModeInfo> &ls_access_info)
+int ObTenantRoleTransitionService::get_ls_access_mode_(
+    const share::ObLSStatusInfoArray &status_info_array,
+    ObIArray<obrpc::ObLSAccessModeInfo> &ls_access_info)
 {
   int ret = OB_SUCCESS;
   ls_access_info.reset();
@@ -655,14 +734,9 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(ObIArray<LSAccessModeInfo
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("location service is null", KR(ret));
   } else {
-    share::ObLSStatusInfoArray status_info_array;
-    ObLSStatusOperator status_op;
     ObTimeoutCtx ctx;
     if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.rpc_timeout))) {
       LOG_WARN("fail to set timeout ctx", KR(ret));
-    } else if (OB_FAIL(status_op.get_all_ls_status_by_order_for_switch_tenant(tenant_id_,
-                       false/* ignore_need_create_abort */, status_info_array, *sql_proxy_))) {
-      LOG_WARN("fail to get_all_ls_status_by_order", KR(ret), K_(tenant_id), KP(sql_proxy_));
     } else {
       ObAddr leader;
       ObGetLSAccessModeProxy proxy(
@@ -709,7 +783,6 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(ObIArray<LSAccessModeInfo
                  K(rpc_count), K(return_code_array), "arg count",
                  proxy.get_args().count());
       } else {
-        LSAccessModeInfo info;
         for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {
           ret = return_code_array.at(i);
           if (OB_FAIL(ret)) {
@@ -719,13 +792,10 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(ObIArray<LSAccessModeInfo
             if (OB_ISNULL(result)) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("result is null", KR(ret), K(i));
-            } else if (OB_FAIL(info.init(tenant_id_, result->get_ls_id(),
-            result->get_addr(), result->get_mode_version(), result->get_access_mode()))) {
-              LOG_WARN("failed to init info", KR(ret), KPC(result));
-            } else if (OB_FAIL(ls_access_info.push_back(info))) {
-              LOG_WARN("failed to push back info", KR(ret), K(info));
-            } else if (OB_TMP_FAIL(success_ls_ids.push_back(info.get_ls_id()))) {
-              LOG_WARN("fail to push back", KR(ret), KR(tmp_ret), K(success_ls_ids), K(info));
+            } else if (OB_FAIL(ls_access_info.push_back(*result))) {
+              LOG_WARN("failed to push back info", KR(ret), KPC(result));
+            } else if (OB_TMP_FAIL(success_ls_ids.push_back(result->get_ls_id()))) {
+              LOG_WARN("fail to push back", KR(ret), KR(tmp_ret), K(success_ls_ids), KPC(result));
             }
           }
           LOG_INFO("[ROLE_TRANSITION] get ls access mode", KR(ret), K(arg));
@@ -744,8 +814,11 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(ObIArray<LSAccessModeInfo
   return ret;
 }
 
-int ObTenantRoleTransitionService::do_change_ls_access_mode_(const ObIArray<LSAccessModeInfo> &ls_access_info,
-                                palf::AccessMode target_access_mode, const SCN &ref_scn)
+int ObTenantRoleTransitionService::do_change_ls_access_mode_(
+    const ObIArray<obrpc::ObLSAccessModeInfo> &ls_access_info,
+    const palf::AccessMode target_access_mode,
+    const SCN &ref_scn,
+    const share::SCN &sys_ls_sync_scn)
 {
   int ret = OB_SUCCESS;
   ObTimeoutCtx ctx;
@@ -753,8 +826,9 @@ int ObTenantRoleTransitionService::do_change_ls_access_mode_(const ObIArray<LSAc
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
   } else if (OB_UNLIKELY(0== ls_access_info.count()
-                         || palf::AccessMode::INVALID_ACCESS_MODE == target_access_mode 
+                         || palf::AccessMode::INVALID_ACCESS_MODE == target_access_mode
                          || !ref_scn.is_valid_and_not_min())) {
+    // no need to check sys_ls_sync_scn, since this is only valid when it's needed
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(target_access_mode), K(ls_access_info), K(ref_scn));
   } else if (OB_ISNULL(GCTX.location_service_)) {
@@ -765,16 +839,21 @@ int ObTenantRoleTransitionService::do_change_ls_access_mode_(const ObIArray<LSAc
     LOG_WARN("fail to set timeout ctx", KR(ret));
   } else {
     ObChangeLSAccessModeProxy proxy(*rpc_proxy_, &obrpc::ObSrvRpcProxy::change_ls_access_mode);
+    ObAddr leader;
     obrpc::ObLSAccessModeInfo arg;
     for (int64_t i = 0; OB_SUCC(ret) && i < ls_access_info.count(); ++i) {
-      const LSAccessModeInfo &info = ls_access_info.at(i);
+      const obrpc::ObLSAccessModeInfo &info = ls_access_info.at(i);
       const int64_t timeout = ctx.get_timeout();
-      if (OB_FAIL(arg.init(tenant_id_, info.ls_id_, info.mode_version_, target_access_mode, ref_scn, info.leader_addr_))) {
-        LOG_WARN("failed to init arg", KR(ret), K(info), K(target_access_mode), K(ref_scn));
+      if (OB_FAIL(GCTX.location_service_->get_leader(
+          GCONF.cluster_id, tenant_id_, info.get_ls_id(), false, leader))) {
+          LOG_WARN("failed to get leader", KR(ret), K(tenant_id_), K(info));
       // use meta rpc process thread
-      } else if (OB_FAIL(proxy.call(info.leader_addr_, timeout, GCONF.cluster_id, gen_meta_tenant_id(tenant_id_), arg))) {
+      } else if (OB_FAIL(arg.init(tenant_id_, info.get_ls_id(), info.get_mode_version(),
+              target_access_mode, ref_scn, sys_ls_sync_scn))) {
+        LOG_WARN("failed to init arg", KR(ret), K(info), K(target_access_mode), K(ref_scn), K(sys_ls_sync_scn));
+      } else if (OB_FAIL(proxy.call(leader, timeout, GCONF.cluster_id, gen_meta_tenant_id(tenant_id_), arg))) {
         //can not ignore of each ls
-        LOG_WARN("failed to send rpc", KR(ret), K(info), K(timeout), K(tenant_id_), K(arg));
+        LOG_WARN("failed to send rpc", KR(ret), K(arg), K(timeout), K(tenant_id_), K(info));
       }
     }//end for
     //result
@@ -794,6 +873,7 @@ int ObTenantRoleTransitionService::do_change_ls_access_mode_(const ObIArray<LSAc
       for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {
         ret = return_code_array.at(i);
         const auto *result = proxy.get_results().at(i);
+        const obrpc::ObLSAccessModeInfo &info = ls_access_info.at(i);
         if (OB_FAIL(ret)) {
           LOG_WARN("send rpc is failed", KR(ret), K(i));
         } else if (OB_ISNULL(result)) {
@@ -805,7 +885,7 @@ int ObTenantRoleTransitionService::do_change_ls_access_mode_(const ObIArray<LSAc
           LOG_WARN("fail to push back", KR(ret), KR(tmp_ret), K(success_ls_ids), K(result));
         }
 
-        LOG_INFO("[ROLE_TRANSITION] change ls access mode", KR(ret), K(arg), KPC(result), K(proxy.get_dests()));
+        LOG_INFO("[ROLE_TRANSITION] change ls access mode", KR(ret), K(info), KPC(result), K(proxy.get_dests()));
       }// end for
 
       if (OB_FAIL(ret)) {
@@ -1092,21 +1172,14 @@ int ObTenantRoleTransitionService::check_sync_to_latest_(const uint64_t tenant_i
     LOG_WARN("invalid argument", KR(ret), K(tenant_id));
   } else if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("inner stat error", KR(ret));
-  } else if (OB_FAIL(ls_status_op.get_ls_status_info(tenant_id, SYS_LS, ls_status, *sql_proxy_))) {
-    LOG_WARN("failed to get ls status", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(sys_ls_status_array.push_back(ls_status))) {
-    LOG_WARN("fail to push back", KR(ret), K(ls_status), K(sys_ls_status_array));
-  } else if (OB_FAIL(get_checkpoints_by_rpc(tenant_id, sys_ls_status_array, true/* check_sync_to_latest */,
-                                             switchover_checkpoints))) {
-    LOG_WARN("fail to get_checkpoints_by_rpc", KR(ret), K(tenant_id), K(sys_ls_status_array));
-  } else if (1 != switchover_checkpoints.count()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("checkpoints count is not 1", KR(ret), K(switchover_checkpoints), K(tenant_id),
-                                           K(tenant_info), K(sys_ls_status_array));
   } else if (OB_FAIL(ls_recovery_operator.get_ls_recovery_stat(tenant_id, SYS_LS,
         false/*for_update*/, sys_ls_recovery_stat, *sql_proxy_))) {
     LOG_WARN("failed to get ls recovery stat", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(get_sys_ls_sync_scn_(switchover_checkpoints, sys_ls_sync_scn, sys_ls_sync_to_latest))) {
+  } else if (OB_FAIL(get_sys_ls_sync_scn_(
+      tenant_id,
+      true /*need_check_sync_to_latest*/,
+      sys_ls_sync_scn,
+      sys_ls_sync_to_latest))) {
     LOG_WARN("failed to get_sys_ls_sync_scn_", KR(ret), K(switchover_checkpoints));
   } else if (!(sys_ls_sync_scn.is_valid_and_not_min() && sys_ls_sync_to_latest
              && sys_ls_recovery_stat.get_sync_scn() == sys_ls_sync_scn)) {
@@ -1252,6 +1325,39 @@ int ObTenantRoleTransitionService::get_max_checkpoint_scn_(
 }
 
 int ObTenantRoleTransitionService::get_sys_ls_sync_scn_(
+    const uint64_t tenant_id,
+    const bool need_check_sync_to_latest,
+    share::SCN &sys_ls_sync_scn,
+    bool &is_sync_to_latest)
+{
+  int ret = OB_SUCCESS;
+  share::ObLSStatusInfoArray sys_ls_status_array;
+  common::ObArray<obrpc::ObCheckpoint> switchover_checkpoints;
+  ObLSStatusOperator ls_status_op;
+  share::ObLSStatusInfo ls_status;
+  sys_ls_sync_scn = SCN::min_scn();
+  is_sync_to_latest = false;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
+  } else if (OB_FAIL(ls_status_op.get_ls_status_info(tenant_id, SYS_LS, ls_status, *sql_proxy_))) {
+    LOG_WARN("failed to get ls status", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(sys_ls_status_array.push_back(ls_status))) {
+    LOG_WARN("fail to push back", KR(ret), K(ls_status), K(sys_ls_status_array));
+  } else if (OB_FAIL(get_checkpoints_by_rpc(tenant_id, sys_ls_status_array, need_check_sync_to_latest,
+                                            switchover_checkpoints))) {
+    LOG_WARN("fail to get_checkpoints_by_rpc", KR(ret), K(tenant_id), K(sys_ls_status_array));
+  } else if (1 != switchover_checkpoints.count() || SYS_LS != switchover_checkpoints.at(0).get_ls_id()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("checkpoints count is not 1 or not sys ls", KR(ret), K(switchover_checkpoints),
+        K(tenant_id), K(sys_ls_status_array));
+  } else {
+    sys_ls_sync_scn = switchover_checkpoints.at(0).get_cur_sync_scn();
+    is_sync_to_latest = switchover_checkpoints.at(0).is_sync_to_latest();
+  }
+  return ret;
+}
+
+int ObTenantRoleTransitionService::get_sys_ls_sync_scn_(
   const ObIArray<obrpc::ObCheckpoint> &checkpoints,
   SCN &sys_ls_sync_scn,
   bool &is_sync_to_latest)
@@ -1293,7 +1399,6 @@ void ObTenantRoleTransitionService::broadcast_tenant_info(const char* const log_
   ObArray<int> return_code_array;
 
   if (OB_FAIL(check_inner_stat())) {
-    ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inner stat error", KR(ret));
   } else if (OB_ISNULL(GCTX.server_tracer_) || OB_ISNULL(GCTX.srv_rpc_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -1362,6 +1467,74 @@ void ObTenantRoleTransitionService::broadcast_tenant_info(const char* const log_
   LOG_INFO("broadcast_tenant_info finished", KR(ret), K(log_mode), K_(tenant_id), K(cost_time),
            K(units), K(return_code_array));
   return ;
+}
+
+int ObTenantRoleTransitionService::check_tenant_server_online_()
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  ObArray<ObAddr> inactive_servers;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("inner stat error", KR(ret));
+  } else if (OB_FAIL(sql.append_fmt("select distinct svr_ip, svr_port from %s "
+      "where (svr_ip, svr_port) in  (select u.svr_ip, u.svr_port from %s as u "
+      "join %s as r on r.resource_pool_id=u.resource_pool_id where tenant_id=%ld) and status != 'ACTIVE'",
+      OB_ALL_SERVER_TNAME, OB_ALL_UNIT_TNAME, OB_ALL_RESOURCE_POOL_TNAME, tenant_id_))) {
+    LOG_WARN("fail to append sql", KR(ret));
+  } else {
+    HEAP_VAR(ObMySQLProxy::ReadResult, res) {
+      ObMySQLResult *result = NULL;
+      if (OB_FAIL(sql_proxy_->read(res, OB_SYS_TENANT_ID, sql.ptr()))) {
+        LOG_WARN("fail to read the tenant's online servers", KR(ret), K(sql), K(tenant_id_));
+      } else if (NULL == (result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("sql result is null", KR(ret), K(tenant_id_));
+      } else if (OB_FAIL(construct_inactive_servers_(*result, inactive_servers))) {
+        LOG_WARN("fail to construct inactive_servers", KR(ret), K(tenant_id_));
+      }
+    }
+  }
+  int64_t cnt = inactive_servers.count();
+  if (OB_SUCC(ret) && inactive_servers.count() != 0) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_INFO("the tenant has inactive servers", KR(ret), K(inactive_servers));
+    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "the tenant has units on inactive servers, switch to primary");
+  }
+  return ret;
+}
+
+int ObTenantRoleTransitionService::construct_inactive_servers_(
+    common::sqlclient::ObMySQLResult &res,
+    ObArray<ObAddr> &inactive_servers)
+{
+  int ret = OB_SUCCESS;
+  ObAddr server;
+  inactive_servers.reset();
+  while (OB_SUCC(ret)) {
+    server.reset();
+    char svr_ip[OB_IP_STR_BUFF] = "";
+    int64_t svr_port = 0;
+    int64_t tmp_real_str_len = 0;
+    if (OB_FAIL(res.next())) {
+      if (OB_ITER_END != ret) {
+        LOG_WARN("result next failed", KR(ret));
+      } else {
+        ret = OB_SUCCESS;
+        break;
+      }
+    } else {
+      EXTRACT_STRBUF_FIELD_MYSQL(res, "svr_ip", svr_ip, OB_IP_STR_BUFF, tmp_real_str_len);
+      EXTRACT_INT_FIELD_MYSQL(res, "svr_port", svr_port, int64_t);
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(false == server.set_ip_addr(svr_ip, static_cast<int32_t>(svr_port)))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid server address", KR(ret), K(svr_ip), K(svr_port));
+    } else if (OB_FAIL(inactive_servers.push_back(server))) {
+      LOG_WARN("fail to push back server", KR(ret), K(server));
+    }
+  }
+  return ret;
 }
 
 }

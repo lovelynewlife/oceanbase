@@ -407,7 +407,7 @@ int ObTransformerImpl::choose_rewrite_rules(ObDMLStmt *stmt, uint64_t &need_type
       || OB_ISNULL(sql_ctx = ctx_->exec_ctx_->get_sql_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt is null", K(ret), K(stmt));
-  } else if (sql_ctx->multi_stmt_item_.is_batched_multi_stmt()) {
+  } else if (sql_ctx->is_batch_params_execute()) {
     need_types = 0; //如果是batch优化暂时不做改写
   } else if (OB_FAIL(check_stmt_functions(stmt, func))) {
     LOG_WARN("failed to check stmt functions", K(ret));
@@ -764,7 +764,16 @@ int ObTransformerImpl::add_trans_happended_hints(ObQueryCtx &query_ctx,
 {
   int ret = OB_SUCCESS;
   ObQueryHint &query_hint = query_ctx.get_query_hint_for_update();
+#ifndef OB_BUILD_SPM
   if (OB_FAIL(query_hint.outline_trans_hints_.assign(trans_ctx.outline_trans_hints_))) {
+#else
+  if (OB_UNLIKELY(query_ctx.is_spm_evolution_
+                  && query_hint.has_outline_data()
+                  && query_hint.trans_list_.count() != trans_ctx.outline_trans_hints_.count())) {
+    ret = OB_OUTLINE_NOT_REPRODUCIBLE;
+    LOG_WARN("failed to do transform for spm evolution plan", K(ret));
+  } else if (OB_FAIL(query_hint.outline_trans_hints_.assign(trans_ctx.outline_trans_hints_))) {
+#endif
     LOG_WARN("failed to assign trans hints", K(ret));
   } else if (OB_FAIL(query_hint.used_trans_hints_.assign(trans_ctx.used_trans_hints_))) {
     LOG_WARN("failed to assign trans hints", K(ret));

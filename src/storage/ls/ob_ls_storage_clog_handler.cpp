@@ -103,6 +103,7 @@ int ObMediumCompactionClogHandler::inner_replay(
   ObTabletID tablet_id;
   ObTabletHandle handle;
   int64_t new_pos = pos;
+  const bool is_update_mds_table = true;
 
   if (OB_UNLIKELY(pos < 0 || buffer_size <= 0 || pos > buffer_size)) {
     ret = OB_INVALID_ARGUMENT;
@@ -112,16 +113,20 @@ int ObMediumCompactionClogHandler::inner_replay(
     LOG_WARN("log header is not valid", K(ret), K(base_header));
   } else if (OB_FAIL(tablet_id.deserialize(buffer, buffer_size, new_pos))) {
     LOG_WARN("fail to deserialize tablet id", K(ret), K(buffer_size), K(pos), K(tablet_id));
-  } else if (OB_FAIL(ls_->replay_get_tablet(tablet_id, scn, handle))) {
+  } else if (OB_FAIL(ls_->replay_get_tablet(tablet_id, scn, is_update_mds_table, handle))) {
     if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
-      LOG_INFO("clog is obsolete, should skip replay", K(ret), K(tablet_id));
+      LOG_INFO("clog is obsolete, should skip replay", K(ret), K(tablet_id), K(scn));
       ret = OB_SUCCESS;
+    } else if (OB_TIMEOUT == ret) {
+      ret = OB_EAGAIN;
+      LOG_INFO("retry get tablet for timeout error", K(ret), K(tablet_id), K(scn));
     } else {
-      LOG_WARN("failed to get tablet", K(ret), K(tablet_id));
+      LOG_WARN("failed to get tablet", K(ret), K(tablet_id), K(scn));
     }
   } else if (OB_FAIL(handle.get_obj()->replay_medium_compaction_clog(scn, buffer, buffer_size, new_pos))) {
-    LOG_WARN("failed to replay medium compaction clog", K(ret), K(tablet_id), K(buffer_size), K(new_pos));
+    LOG_WARN("failed to replay medium compaction clog", K(ret), K(tablet_id), K(scn), K(buffer_size), K(new_pos));
   }
+
   return ret;
 }
 

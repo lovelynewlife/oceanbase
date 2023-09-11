@@ -25,6 +25,9 @@
 #include "observer/omt/ob_tenant_config_mgr.h"
 #include "share/client_feedback/ob_feedback_partition_struct.h"
 #include "sql/dblink/ob_dblink_utils.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_define.h"
+#endif
 
 namespace oceanbase
 {
@@ -161,7 +164,6 @@ public:
       seq_num_(0),
       sql_(),
       batched_queries_(NULL),
-      is_ins_multi_val_opt_(false),
       is_ps_mode_(false),
       ab_cnt_(0)
   {
@@ -171,7 +173,6 @@ public:
       seq_num_(seq_num),
       sql_(sql),
       batched_queries_(NULL),
-      is_ins_multi_val_opt_(false),
       is_ps_mode_(false),
       ab_cnt_(0)
   {
@@ -186,7 +187,6 @@ public:
       seq_num_(seq_num),
       sql_(sql),
       batched_queries_(queries),
-      is_ins_multi_val_opt_(is_multi_vas_opt),
       is_ps_mode_(false),
       ab_cnt_(0)
   {
@@ -199,7 +199,6 @@ public:
     seq_num_ = 0;
     sql_.reset();
     batched_queries_ = NULL;
-    is_ins_multi_val_opt_ = false;
   }
 
   inline bool is_part_of_multi_stmt() const { return is_part_of_multi_stmt_; }
@@ -228,15 +227,14 @@ public:
   inline const common::ObIArray<ObString> *get_queries() const { return batched_queries_; }
   inline void set_batched_queries(const common::ObIArray<ObString> *batched_queries)
   { batched_queries_ = batched_queries; }
-  inline bool is_ins_multi_val_opt() { return is_ins_multi_val_opt_; }
   inline bool is_ab_batch_opt() { return (is_ps_mode_ && ab_cnt_ > 0); }
   inline void set_ps_mode(bool ps) { is_ps_mode_ = ps; }
   inline bool is_ps_mode() { return is_ps_mode_; }
   inline void set_ab_cnt(int64_t cnt) { ab_cnt_ = cnt; }
   inline int64_t get_ab_cnt() { return ab_cnt_; }
 
-  TO_STRING_KV(K_(is_part_of_multi_stmt), K_(seq_num), K_(sql),
-               KPC_(batched_queries), K_(is_ins_multi_val_opt), K_(is_ps_mode), K_(ab_cnt));
+  TO_STRING_KV(K_(is_part_of_multi_stmt), K_(seq_num), K_(sql), KPC_(batched_queries),
+               K_(is_ps_mode), K_(ab_cnt));
 
 private:
   bool is_part_of_multi_stmt_; // 是否为multi stmt，非multi stmt也使用这个结构体，因此需要这个标记
@@ -244,10 +242,41 @@ private:
   common::ObString sql_;
   // is set only when doing multi-stmt optimization
   const common::ObIArray<ObString> *batched_queries_;
-  bool is_ins_multi_val_opt_;
   bool is_ps_mode_;
   int64_t ab_cnt_;
 };
+
+struct ObInsertRewriteOptCtx
+{
+  ObInsertRewriteOptCtx()
+    : can_do_opt_(false),
+      row_count_(0)
+  {}
+
+  void set_can_do_insert_batch_opt(int64_t row_count)
+  {
+    can_do_opt_ = true;
+    row_count_ = row_count;
+  }
+  bool is_do_insert_batch_opt() const
+  {
+    bool bret = false;
+    if (can_do_opt_ && row_count_ > 1) {
+      bret = true;
+    }
+    return bret;
+  }
+  inline void clear()
+  {
+    can_do_opt_ = false;
+    row_count_ = 0;
+  }
+  inline void reset() { clear(); }
+
+  bool can_do_opt_;
+  int64_t row_count_;
+};
+
 
 class ObQueryRetryInfo
 {
@@ -396,6 +425,7 @@ private:
   common::hash::ObHashMap<uint64_t, uint64_t> dblink_scn_;
 };
 
+#ifndef OB_BUILD_SPM
 struct ObBaselineKey
 {
   ObBaselineKey()
@@ -431,6 +461,7 @@ struct ObSpmCacheCtx
   inline void reset() { bl_key_.reset(); }
   ObBaselineKey bl_key_;
 };
+#endif
 
 struct ObSqlCtx
 {
@@ -462,6 +493,60 @@ public:
   }
   share::ObFeedbackRerouteInfo *get_reroute_info() {
     return reroute_info_;
+  }
+
+  bool is_batch_params_execute() const
+  {
+    return multi_stmt_item_.is_batched_multi_stmt() || is_do_insert_batch_opt();
+  }
+
+  int64_t get_batch_params_count() const
+  {
+    int64_t count = 0;
+    if (multi_stmt_item_.is_batched_multi_stmt()) {
+      count = multi_stmt_item_.get_batched_stmt_cnt();
+    } else if (is_do_insert_batch_opt()) {
+      count = get_insert_batch_row_cnt();
+    }
+    return count;
+  }
+
+  bool is_do_insert_batch_opt() const
+  {
+    return ins_opt_ctx_.is_do_insert_batch_opt();
+  }
+
+  inline int64_t get_insert_batch_row_cnt() const
+  {
+    return ins_opt_ctx_.row_count_;
+  }
+  void set_is_do_insert_batch_opt(int64_t row_count)
+  {
+    ins_opt_ctx_.set_can_do_insert_batch_opt(row_count);
+  }
+  void reset_do_insert_batch_opt()
+  {
+    ins_opt_ctx_.reset();
+  }
+
+  void set_enable_strict_defensive_check(bool v)
+  {
+    enable_strict_defensive_check_ = v;
+  }
+
+  bool get_enable_strict_defensive_check()
+  {
+    return enable_strict_defensive_check_;
+  }
+
+  void set_enable_user_defined_rewrite(bool v)
+  {
+    enable_user_defined_rewrite_ = v;
+  }
+
+  bool get_enable_user_defined_rewrite()
+  {
+    return enable_user_defined_rewrite_;
   }
   // release dynamic allocated memory
   //
@@ -539,10 +624,19 @@ public:
   int64_t res_map_rule_param_idx_;
   uint64_t res_map_rule_version_;
   bool is_text_ps_mode_;
-  bool is_strict_defensive_check_;
   uint64_t first_plan_hash_;
   common::ObString first_outline_data_;
   bool is_bulk_;
+  ObInsertRewriteOptCtx ins_opt_ctx_;
+  union
+  {
+    uint32_t flags_;
+    struct {
+      uint32_t enable_strict_defensive_check_: 1; //TRUE if the _enable_defensive_check is '2'
+      uint32_t enable_user_defined_rewrite_ : 1;//TRUE if enable_user_defined_rewrite_rules is open
+      uint32_t reserved_ : 30;
+    };
+  };
 private:
   share::ObFeedbackRerouteInfo *reroute_info_;
 };
@@ -573,6 +667,9 @@ public:
       reference_obj_tables_(),
       is_table_gen_col_with_udf_(false),
       query_hint_(),
+#ifdef OB_BUILD_SPM
+      is_spm_evolution_(false),
+#endif
       literal_stmt_type_(stmt::T_NONE),
       sql_stmt_(),
       sql_stmt_coll_type_(CS_TYPE_INVALID),
@@ -614,6 +711,9 @@ public:
     reference_obj_tables_.reset();
     is_table_gen_col_with_udf_ = false;
     query_hint_.reset();
+#ifdef OB_BUILD_SPM
+    is_spm_evolution_ = false;
+#endif
     literal_stmt_type_ = stmt::T_NONE;
     sql_stmt_.reset();
     sql_stmt_coll_type_ = CS_TYPE_INVALID;
@@ -691,6 +791,9 @@ public:
   share::schema::ObReferenceObjTable reference_obj_tables_;
   bool is_table_gen_col_with_udf_; // for data consistent check
   ObQueryHint query_hint_;
+#ifdef OB_BUILD_SPM
+  bool is_spm_evolution_;
+#endif
   stmt::StmtType  literal_stmt_type_;
   common::ObString sql_stmt_;
   common::ObCollationType sql_stmt_coll_type_;

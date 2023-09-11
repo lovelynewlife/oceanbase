@@ -31,6 +31,8 @@
 #include "storage/tx/ob_ts_mgr.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "rootserver/ob_tenant_info_loader.h"
+#include "src/observer/omt/ob_tenant_config.h"
+#include "common/errsim_module/ob_errsim_module_type.h"
 
 using namespace oceanbase::share;
 
@@ -332,88 +334,81 @@ bool ObTransferUtils::is_need_retry_error(const int err)
   return bool_ret;
 }
 
-int ObTransferUtils::block_tx(const uint64_t tenant_id, const share::ObLSID &ls_id)
+int ObTransferUtils::block_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts)
 {
   int ret = OB_SUCCESS;
   ObLSService *ls_svr = NULL;
-  common::ObAddr leader_addr;
-  ObStorageHASrcInfo src_info;
-  ObStorageRpc *storage_rpc = NULL;
-  share::SCN gts;
-  if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+
+  if (OB_INVALID_ID == tenant_id || !ls_id.is_valid() || !gts.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("block tx get invalid argument", K(ret), K(tenant_id), K(ls_id), K(gts));
+  } else if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls service should not be NULL", K(ret), KP(ls_svr));
-  } else if (OB_ISNULL(storage_rpc = ls_svr->get_storage_rpc())) {
+  } else if (OB_FAIL(ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("ls_srv->get_ls() fail", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage rpc should not be NULL", K(ret), KP(storage_rpc));
-  } else if (OB_FAIL(ObStorageHAUtils::get_ls_leader(tenant_id, ls_id, leader_addr))) {
-    LOG_WARN("failed to get ls leader", K(ret), K(tenant_id));
-  } else if (OB_FAIL(get_gts(tenant_id, gts))) {
-    LOG_WARN("failed to get gts", K(ret), K(tenant_id));
+    LOG_WARN("ls should not be NULL", KR(ret), K(ls_handle));
+  } else if (OB_FAIL(ls->ha_block_tx(gts))) {
+    LOG_WARN("failed to kill all tx", K(ret), KPC(ls));
   } else {
-    src_info.src_addr_ = leader_addr;
-    src_info.cluster_id_ = GCONF.cluster_id;
-    if (OB_FAIL(storage_rpc->block_tx(tenant_id, src_info, ls_id, gts))) {
-      LOG_WARN("failed to block tx", K(ret), K(tenant_id), K(src_info), K(ls_id), K(gts));
-    }
+    LOG_INFO("success to kill all tx", K(ret), K(gts));
   }
   return ret;
 }
 
 // TODO(yangyi.yyy): get gts before block and kill tx, unblock no need get gts
-int ObTransferUtils::kill_tx(const uint64_t tenant_id, const share::ObLSID &ls_id)
+int ObTransferUtils::kill_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts)
 {
   int ret = OB_SUCCESS;
   ObLSService *ls_svr = NULL;
-  common::ObAddr leader_addr;
-  ObStorageHASrcInfo src_info;
-  ObStorageRpc *storage_rpc = NULL;
-  share::SCN gts;
-  if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+  if (OB_INVALID_ID == tenant_id || !ls_id.is_valid() || !gts.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("block tx get invalid argument", K(ret), K(tenant_id), K(ls_id), K(gts));
+  } else if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls service should not be NULL", K(ret), KP(ls_svr));
-  } else if (OB_ISNULL(storage_rpc = ls_svr->get_storage_rpc())) {
+  } else if (OB_ISNULL(ls_svr = MTL(ObLSService*))) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage rpc should not be NULL", K(ret), KP(storage_rpc));
-  } else if (OB_FAIL(ObStorageHAUtils::get_ls_leader(tenant_id, ls_id, leader_addr))) {
-    LOG_WARN("failed to get ls leader", K(ret), K(tenant_id));
-  } else if (OB_FAIL(get_gts(tenant_id, gts))) {
-    LOG_WARN("failed to get gts", K(ret), K(tenant_id));
+    LOG_WARN("ls srv should not be NULL", K(ret), KP(ls_svr));
+  } else if (OB_FAIL(ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("ls_srv->get_ls() fail", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls should not be NULL", KR(ret), K(ls_handle));
+  } else if (OB_FAIL(ls->ha_kill_tx(gts))) {
+    LOG_WARN("failed to kill all tx", K(ret), KPC(ls));
   } else {
-    src_info.src_addr_ = leader_addr;
-    src_info.cluster_id_ = GCONF.cluster_id;
-    if (OB_FAIL(storage_rpc->kill_tx(tenant_id, src_info, ls_id, gts))) {
-      LOG_WARN("failed to block tx", K(ret), K(tenant_id), K(src_info), K(ls_id), K(gts));
-    }
+    LOG_INFO("success to kill all tx", K(ret), K(tenant_id), K(ls_id));
   }
   return ret;
 }
 
-int ObTransferUtils::unblock_tx(const uint64_t tenant_id, const share::ObLSID &ls_id)
+int ObTransferUtils::unblock_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts)
 {
   int ret = OB_SUCCESS;
-  ObLSService *ls_svr = NULL;
-  common::ObAddr leader_addr;
-  ObStorageHASrcInfo src_info;
-  ObStorageRpc *storage_rpc = NULL;
-  share::SCN gts;
+  ObLSHandle ls_handle;
+  ObLSService *ls_srv = NULL;
+  ObLS *ls = NULL;
 
-  if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
+  if (OB_INVALID_ID == tenant_id || !ls_id.is_valid() || !gts.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("block tx get invalid argument", K(ret), K(tenant_id), K(ls_id), K(gts));
+  } else if (OB_ISNULL(ls_srv = MTL(ObLSService*))) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls service should not be NULL", K(ret), KP(ls_svr));
-  } else if (OB_ISNULL(storage_rpc = ls_svr->get_storage_rpc())) {
+    LOG_WARN("ls srv should not be NULL", K(ret), KP(ls_srv));
+  } else if (OB_FAIL(ls_srv->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("ls_srv->get_ls() fail", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage rpc should not be NULL", K(ret), KP(storage_rpc));
-  } else if (OB_FAIL(ObStorageHAUtils::get_ls_leader(tenant_id, ls_id, leader_addr))) {
-    LOG_WARN("failed to get ls leader", K(ret), K(tenant_id));
-  } else if (OB_FAIL(get_gts(tenant_id, gts))) {
-    LOG_WARN("failed to get gts", K(ret), K(tenant_id));
-  } else {
-    src_info.src_addr_ = leader_addr;
-    src_info.cluster_id_ = GCONF.cluster_id;
-    if (OB_FAIL(storage_rpc->unblock_tx(tenant_id, src_info, ls_id, gts))) {
-      LOG_WARN("failed to block tx", K(ret), K(tenant_id), K(src_info), K(ls_id), K(gts));
-    }
+    LOG_WARN("ls should not be NULL", KR(ret), K(ls_handle));
+  } else if (OB_FAIL(ls->ha_unblock_tx(gts))) {
+    LOG_WARN("failed to unblock tx", K(ret), K(tenant_id), K(ls_id), K(gts));
   }
   return ret;
 }
@@ -446,6 +441,38 @@ int ObTransferUtils::get_gts(const uint64_t tenant_id, SCN &gts)
   }
   LOG_INFO("get tenant gts", KR(ret), K(tenant_id), K(gts));
   return ret;
+}
+
+int64_t ObStorageHAUtils::get_rpc_timeout()
+{
+  int64_t rpc_timeout = ObStorageRpcProxy::STREAM_RPC_TIMEOUT;
+  int64_t tmp_rpc_timeout = 0;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+  if (tenant_config.is_valid()) {
+    tmp_rpc_timeout = tenant_config->_ha_rpc_timeout;
+    rpc_timeout = std::max(rpc_timeout, tmp_rpc_timeout);
+  }
+  return rpc_timeout;
+}
+
+void ObTransferUtils::set_transfer_module()
+{
+#ifdef ERRSIM
+  if (ObErrsimModuleType::ERRSIM_MODULE_NONE == THIS_WORKER.get_module_type().type_) {
+    ObErrsimModuleType type(ObErrsimModuleType::ERRSIM_MODULE_TRANSFER);
+    THIS_WORKER.set_module_type(type);
+  }
+#endif
+}
+
+void ObTransferUtils::clear_transfer_module()
+{
+#ifdef ERRSIM
+  if (ObErrsimModuleType::ERRSIM_MODULE_TRANSFER == THIS_WORKER.get_module_type().type_) {
+    ObErrsimModuleType type(ObErrsimModuleType::ERRSIM_MODULE_NONE);
+    THIS_WORKER.set_module_type(type);
+  }
+#endif
 }
 
 } // end namespace storage

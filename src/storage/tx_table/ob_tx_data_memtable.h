@@ -34,6 +34,12 @@ class ObTxDataTable;
 class ObTxDataMemtable : public memtable::ObIMemtable
 {
 private:
+  // The MINI_MERGE of TxDataTable uses recycle_scn to recycle the pre-processed commit versions. But it no need be
+  // recycled very quickly, due to the algorithm choses one point each second. Theoretically, a single column in sstable
+  // can hold at least 65536(1MB/16) commit version pair, which means 65536 seconds. So we only iterate all tablets once
+  // an hour.
+  const static int64_t MINI_RECYCLE_COMMIT_VERSIONS_INTERVAL_US = 1L * 60L * 60L * 1000L * 1000L; // an hour
+
   static int64_t PERIODICAL_SELECT_INTERVAL_NS;
 
   struct ProcessCommitVersionData
@@ -142,6 +148,7 @@ public:  // ObTxDataMemtable
       is_iterating_(false),
       construct_list_done_(false),
       pre_process_done_(false),
+      do_recycle_(false),
       max_tx_scn_(),
       inserted_cnt_(0),
       deleted_cnt_(0),
@@ -307,6 +314,7 @@ public:  // checkpoint
   bool ready_for_flush();
 
 public:  // getter && setter
+  bool do_recycled() { return do_recycle_; }
   int64_t get_tx_data_count() { return tx_data_map_->count(); }
   int64_t size() { return get_tx_data_count(); }
   int64_t get_inserted_count() { return inserted_cnt_; }
@@ -424,6 +432,7 @@ private:  // ObTxDataMemtable
   bool is_iterating_;
   bool construct_list_done_;
   bool pre_process_done_;
+  bool do_recycle_;
 
   // the maximum scn in this tx data memtable
   share::SCN max_tx_scn_;
@@ -496,14 +505,14 @@ public:
             to_cstring(tx_data->commit_version_));
 
     // printf undo status list
-    fprintf(fd_, "Undo Actions : {");
+    fprintf(fd_, "Undo Actions [from, to): {");
     ObUndoStatusNode *cur_node = tx_data->undo_status_list_.head_;
     while (OB_NOT_NULL(cur_node))
     {
       for (int i = 0; i < cur_node->size_; i++) {
-        fprintf(fd_, "(from:%s,to:%s)",
-                to_cstring(cur_node->undo_actions_[i].undo_from_),
-                to_cstring(cur_node->undo_actions_[i].undo_to_));
+        fprintf(fd_, "[%ld, %ld)",
+                cur_node->undo_actions_[i].undo_from_.cast_to_int(),
+                cur_node->undo_actions_[i].undo_to_.cast_to_int());
       }
       cur_node = cur_node->next_;
     }

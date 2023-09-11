@@ -402,7 +402,7 @@ int TestCompactionPolicy::mock_tablet(
   } else if (OB_FAIL(ObTabletCreateDeleteHelper::create_tmp_tablet(key, allocator, tablet_handle))) {
     LOG_WARN("failed to acquire tablet", K(ret), K(key));
   } else if (FALSE_IT(tablet = tablet_handle.get_obj())) {
-  } else if (OB_FAIL(tablet->init(allocator, ls_id, tablet_id, tablet_id,
+  } else if (OB_FAIL(tablet->init_for_first_time_creation(allocator, ls_id, tablet_id, tablet_id,
       SCN::min_scn(), snapshot_version, table_schema, compat_mode, table_store_flag, nullptr, ls_handle.get_ls()->get_freezer()))) {
     LOG_WARN("failed to init tablet", K(ret), K(ls_id), K(tablet_id), K(snapshot_version),
               K(table_schema), K(compat_mode));
@@ -888,8 +888,7 @@ TEST_F(TestCompactionPolicy, check_mini_merge_basic)
   tablet_handle_.get_obj()->tablet_meta_.clog_checkpoint_scn_.convert_for_tx(300);
   tablet_handle_.get_obj()->tablet_meta_.snapshot_version_ = 300;
   ret = ObPartitionMergePolicy::get_mini_merge_tables(param, ls, *tablet_handle_.get_obj(), result);
-  ASSERT_EQ(OB_NO_NEED_MERGE, ret);
-  ASSERT_EQ(result.update_tablet_directly_, false);
+  ASSERT_EQ(result.update_tablet_directly_, true);
 }
 
 TEST_F(TestCompactionPolicy, check_minor_merge_basic)

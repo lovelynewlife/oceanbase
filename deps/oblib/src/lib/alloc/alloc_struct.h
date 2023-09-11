@@ -22,6 +22,7 @@
 #include "lib/utility/ob_macro_utils.h"
 #include "lib/alloc/alloc_assist.h"
 #include "lib/alloc/abit_set.h"
+#include "lib/allocator/ob_mod_define.h"
 
 #ifndef NDEBUG
 #define MEMCHK_LEVEL 1
@@ -52,7 +53,7 @@ static const int64_t ALLOC_ABLOCK_CONCURRENCY = 4;
 
 static ssize_t get_page_size()
 {
-  static ssize_t ps = sysconf(_SC_PAGESIZE);
+  static ssize_t ps = getpagesize();
   return ps;
 }
 
@@ -64,6 +65,7 @@ enum ObAllocPrio
   OB_NORMAL_ALLOC,
   OB_HIGH_ALLOC
 };
+
 
 struct ObLabel
 {
@@ -123,6 +125,7 @@ struct ObMemAttr
   uint64_t tenant_id_;
   ObLabel label_;
   uint64_t ctx_id_;
+  uint64_t sub_ctx_id_;
   ObAllocPrio prio_;
 
   explicit ObMemAttr(
@@ -133,6 +136,7 @@ struct ObMemAttr
       : tenant_id_(tenant_id),
         label_(label),
         ctx_id_(ctx_id),
+        sub_ctx_id_(ObSubCtxIds::MAX_SUB_CTX_ID),
         prio_(prio) {}
   int64_t to_string(char* buf, const int64_t buf_len) const;
   bool use_500() const { return use_500_; }
@@ -603,6 +607,14 @@ private:
   static thread_local ObMemAttr tl_mem_attr;
   ObMemAttr old_attr_;
 };
+
+extern void inc_divisive_mem_size(const int64_t size);
+extern void dec_divisive_mem_size(const int64_t size);
+extern int64_t get_divisive_mem_size();
+
+extern void set_ob_mem_mgr_path();
+extern void unset_ob_mem_mgr_path();
+extern bool is_ob_mem_mgr_path();
 
 #define FORCE_EXPLICT_500_MALLOC() \
   OB_UNLIKELY(oceanbase::lib::ObMallocAllocator::get_instance()->force_explict_500_malloc_)

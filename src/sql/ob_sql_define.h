@@ -19,6 +19,7 @@
 #include "share/ob_define.h"
 #include "deps/oblib/src/lib/container/ob_array.h"
 #include "src/share/rc/ob_tenant_base.h"
+#include "deps/oblib/src/lib/container/ob_2d_array.h"
 
 namespace oceanbase
 {
@@ -108,7 +109,8 @@ enum PathType
   FAKE_CTE_TABLE_ACCESS,
   FUNCTION_TABLE_ACCESS,
   TEMP_TABLE_ACCESS,
-  JSON_TABLE_ACCESS
+  JSON_TABLE_ACCESS,
+  VALUES_TABLE_ACCESS
 };
 
 enum JtColType {
@@ -478,25 +480,6 @@ enum class ObParamOption {
   MAX_VALUE
 };
 
-struct ObSqlArrayObj
-{
-  ObSqlArrayObj()
-    : data_(nullptr),
-      count_(0),
-      element_()
-  {
-  }
-  typedef common::ObArrayWrap<common::ObObjParam> DataArray;
-  static ObSqlArrayObj *alloc(common::ObIAllocator &allocator, int64_t count);
-  TO_STRING_KV("data", DataArray(data_, count_),
-               K_(count),
-               K_(element));
-  common::ObObjParam *data_;
-//  ObObjParam *data_1_;
-  int64_t count_;
-  common::ObDataType element_;
-};
-
 enum DominateRelation
 {
   OBJ_LEFT_DOMINATE = 0,
@@ -505,7 +488,7 @@ enum DominateRelation
   OBJ_UNCOMPARABLE
 };
 
-// for parallel precedence, refer to 
+// for parallel precedence, refer to
 // https://docs.oracle.com/cd/E11882_01/server.112/e41573/hintsref.htm#PFGRF94937
 enum PXParallelRule
 {
@@ -573,21 +556,6 @@ enum ObIDPAbortType
   IDP_NO_ABORT = 4
 };
 
-OB_INLINE ObSqlArrayObj *ObSqlArrayObj::alloc(common::ObIAllocator &allocator, int64_t count)
-{
-  ObSqlArrayObj *array_obj = nullptr;
-  void *array_buf = nullptr;
-  void *data_buf = nullptr;
-  int64_t array_size = sizeof(ObSqlArrayObj) + sizeof(common::ObObjParam) * count;
-  if (OB_NOT_NULL(array_buf = allocator.alloc(array_size))) {
-    array_obj = new (array_buf) ObSqlArrayObj();
-    data_buf = static_cast<char*>(array_buf) + sizeof(ObSqlArrayObj);
-    array_obj->data_ = new (data_buf) common::ObObjParam[count];
-    array_obj->count_ = count;
-  }
-  return array_obj;
-}
-
 struct ObSqlDatumArray
 {
   ObSqlDatumArray()
@@ -653,6 +621,30 @@ template<typename T, typename BlockAllocatorT, bool auto_free, typename CallBack
 ObTMArray<T, BlockAllocatorT, auto_free, CallBack, ItemEncode>::ObTMArray(int64_t block_size,
                                                            const BlockAllocatorT &alloc)
     : ObArrayImpl<T, BlockAllocatorT, auto_free, CallBack, ItemEncode>(block_size, alloc)
+{
+  this->set_tenant_id(MTL_ID());
+}
+
+template <typename T, int max_block_size = OB_MALLOC_BIG_BLOCK_SIZE,
+          typename BlockAllocatorT = ModulePageAllocator,
+          bool auto_free = false,
+          typename BlockPointerArrayT = ObSEArray<T *, OB_BLOCK_POINTER_ARRAY_SIZE,
+                                                  BlockAllocatorT, auto_free> >
+class ObTMSegmentArray final : public Ob2DArray<T, max_block_size, BlockAllocatorT, auto_free,
+          BlockPointerArrayT>
+{
+public:
+  ObTMSegmentArray(const BlockAllocatorT &alloc = BlockAllocatorT("TMSegmentArray"));
+  int assign(const ObTMSegmentArray &other) { return this->inner_assign(other); }
+};
+
+template <typename T, int max_block_size,
+          typename BlockAllocatorT, bool auto_free,
+          typename BlockPointerArrayT>
+ObTMSegmentArray<T, max_block_size, BlockAllocatorT, auto_free,
+          BlockPointerArrayT>::ObTMSegmentArray(const BlockAllocatorT &alloc)
+    : Ob2DArray<T, max_block_size, BlockAllocatorT, auto_free,
+          BlockPointerArrayT>(alloc)
 {
   this->set_tenant_id(MTL_ID());
 }

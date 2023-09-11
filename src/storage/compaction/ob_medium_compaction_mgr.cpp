@@ -24,6 +24,7 @@
 namespace oceanbase
 {
 using namespace storage;
+using namespace common;
 
 namespace compaction
 {
@@ -229,7 +230,6 @@ int ObTabletMediumCompactionInfoRecorder::inner_replay_clog(
   int ret = OB_SUCCESS;
   ObArenaAllocator tmp_allocator;
   ObMediumCompactionInfo replay_medium_info;
-  ObTabletHandle tmp_tablet_handle;
   if (OB_FAIL(replay_medium_info.deserialize(tmp_allocator, buf, size, pos))) {
     LOG_WARN("failed to deserialize medium compaction info", K(ret));
   } else if (!replay_medium_info.cluster_id_equal()
@@ -251,7 +251,6 @@ int ObTabletMediumCompactionInfoRecorder::inner_replay_clog(
     }
   }
 
-  tmp_tablet_handle.reset();
   return ret;
 }
 
@@ -390,8 +389,8 @@ int ObTabletMediumCompactionInfoRecorder::submit_log(
       LOG_ERROR("failed to dec ref on memtable", K(tmp_ret), K_(ls_id), K_(tablet_id));
     }
   } else {
-    LOG_INFO("success to submit medium log", K(ret), K_(tablet_id), K(medium_info_), K_(clog_scn),
-        "max_saved_version", get_max_saved_version());
+    LOG_INFO("success to submit medium log", K(ret), K_(ls_id), K_(tablet_id), K(medium_info_),
+      K_(clog_scn), "max_saved_version", get_max_saved_version());
   }
 
   return ret;
@@ -404,11 +403,8 @@ int ObTabletMediumCompactionInfoRecorder::submit_log(
 ObMediumCompactionInfoList::ObMediumCompactionInfoList()
   : is_inited_(false),
     allocator_(nullptr),
-    compat_(MEDIUM_LIST_VERSION),
-    last_compaction_type_(0),
-    wait_check_flag_(0),
-    reserved_(0),
-    last_medium_scn_(0)
+    extra_info_(),
+    medium_info_list_()
 {
 }
 
@@ -424,7 +420,6 @@ int ObMediumCompactionInfoList::init(common::ObIAllocator &allocator)
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret));
   } else {
-    compat_ = MEDIUM_LIST_VERSION;
     allocator_ = &allocator;
     is_inited_ = true;
   }
@@ -445,7 +440,6 @@ int ObMediumCompactionInfoList::init(
   } else {
     allocator_ = &allocator;
     set_basic_info(*input_list);
-    compat_ = MEDIUM_LIST_VERSION;
     is_inited_ = true;
   }
   return ret;
@@ -453,7 +447,7 @@ int ObMediumCompactionInfoList::init(
 
 int ObMediumCompactionInfoList::init(
     common::ObIAllocator &allocator,
-    const ObTaletExtraMediumInfo &extra_medium_info,
+    const ObExtraMediumInfo &extra_medium_info,
     const ObTabletDumpedMediumInfo &medium_info_list)
 {
   int ret = OB_SUCCESS;
@@ -497,17 +491,13 @@ int ObMediumCompactionInfoList::init(
     if (OB_FAIL(ret)) {
       reset();
     } else {
-      compat_ = MEDIUM_LIST_VERSION;
-      last_compaction_type_ = extra_medium_info.last_compaction_type_;
-      last_medium_scn_ = extra_medium_info.last_medium_scn_;
-      wait_check_flag_ = extra_medium_info.wait_check_flag_;
+      extra_info_ = extra_medium_info;
       is_inited_ = true;
     }
   }
 
   return ret;
 }
-
 void ObMediumCompactionInfoList::reset_list()
 {
   DLIST_REMOVE_ALL_NORET(info, medium_info_list_) {
@@ -522,10 +512,9 @@ void ObMediumCompactionInfoList::reset()
   if (OB_NOT_NULL(allocator_)) {
     reset_list();
   }
-  is_inited_ = false;
-  info_ = 0;
-  last_medium_scn_ = 0;
+  extra_info_.reset();
   allocator_ = nullptr;
+  is_inited_ = false;
 }
 
 int ObMediumCompactionInfoList::serialize(char *buf, const int64_t buf_len, int64_t &pos) const
@@ -539,12 +528,10 @@ int ObMediumCompactionInfoList::serialize(char *buf, const int64_t buf_len, int6
   } else if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("medium info list is invalid", K(ret), KPC(this));
-  } else if (OB_FAIL(serialization::encode_vi64(buf, buf_len, new_pos, info_))) {
-    STORAGE_LOG(WARN, "failed to serialize info", K(ret), K(buf_len), K(pos));
-  } else if (OB_FAIL(serialization::encode_vi64(buf, buf_len, new_pos, last_medium_scn_))) {
-    STORAGE_LOG(WARN, "failed to serialize wait_check_medium_scn", K(ret), K(buf_len), K(pos));
+  } else if (OB_FAIL(extra_info_.serialize(buf, buf_len, new_pos))) {
+    LOG_WARN("failed to serialize extra info", K(ret), K(buf_len), K(pos));
   } else if (OB_FAIL(serialization::encode_vi64(buf, buf_len, new_pos, medium_info_list_.get_size()))) {
-    LOG_WARN("failed to serialize medium status", K(ret), K(buf_len));
+    LOG_WARN("failed to serialize medium info list count", K(ret), K(buf_len));
   } else {
     DLIST_FOREACH_X(info, medium_info_list_, OB_SUCC(ret)) {
       if (OB_FAIL(static_cast<const ObMediumCompactionInfo *>(info)->serialize(buf, buf_len, new_pos))) {
@@ -569,6 +556,7 @@ int ObMediumCompactionInfoList::deserialize(
   int ret = OB_SUCCESS;
   int64_t new_pos = pos;
   int64_t deserialize_info = 0;
+  int64_t last_medium_scn = 0;
   int64_t list_count = 0;
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
@@ -577,7 +565,7 @@ int ObMediumCompactionInfoList::deserialize(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), K(buf), K(data_len), K(pos));
   } else if (OB_FAIL(serialization::decode_vi64(buf, data_len, new_pos, &deserialize_info))) {
-    LOG_WARN("failed to deserialize cur medium snapshot", K(ret), K(data_len));
+    LOG_WARN("failed to deserialize info", K(ret), K(data_len));
   } else if (0 == deserialize_info) {
     if (OB_FAIL(serialization::decode_vi64(buf, data_len, new_pos, &list_count))) {
       LOG_WARN("failed to deserialize list count", K(ret), K(data_len));
@@ -585,10 +573,11 @@ int ObMediumCompactionInfoList::deserialize(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("list count should be zero in old version medium list", K(ret), K(list_count));
     }
-  } else if (FALSE_IT(info_ = deserialize_info)) {
+  } else if (FALSE_IT(extra_info_.info_ = deserialize_info)) {
   } else if (FALSE_IT(allocator_ = &allocator)) { // set allocator to call reset() when deserialize failed
-  } else if (OB_FAIL(serialization::decode_vi64(buf, data_len, new_pos, &last_medium_scn_))) {
-    LOG_WARN("failed to deserialize wait_check_medium_scn", K(ret), K(data_len));
+  } else if (OB_FAIL(serialization::decode_vi64(buf, data_len, new_pos, &last_medium_scn))) {
+    LOG_WARN("failed to deserialize last medium scn", K(ret), K(data_len));
+  } else if (FALSE_IT(extra_info_.last_medium_scn_ = last_medium_scn)) {
   } else if (OB_FAIL(serialization::decode_vi64(buf, data_len, new_pos, &list_count))) {
     LOG_WARN("failed to deserialize list count", K(ret), K(data_len));
   } else if (OB_UNLIKELY(list_count < 0)) {
@@ -624,7 +613,7 @@ int ObMediumCompactionInfoList::deserialize(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("medium info list is invalid", K(ret), KPC(this));
   } else {
-    compat_ = MEDIUM_LIST_VERSION;
+    extra_info_.compat_ = ObExtraMediumInfo::MEDIUM_LIST_VERSION;
     is_inited_ = true;
     pos = new_pos;
   }
@@ -634,8 +623,7 @@ int ObMediumCompactionInfoList::deserialize(
 int64_t ObMediumCompactionInfoList::get_serialize_size() const
 {
   int64_t len = 0;
-  len += serialization::encoded_length_vi64(info_);
-  len += serialization::encoded_length_vi64(last_medium_scn_);
+  len += extra_info_.get_serialize_size();
   len += serialization::encoded_length_vi64(medium_info_list_.get_size());
   DLIST_FOREACH_NORET(info, medium_info_list_){
     len += static_cast<const ObMediumCompactionInfo *>(info)->get_serialize_size();
@@ -650,7 +638,7 @@ void ObMediumCompactionInfoList::gene_info(
     // do nothing
   } else {
     J_OBJ_START();
-    J_KV("size", size(), K_(last_compaction_type), K_(wait_check_flag), K_(last_medium_scn));
+    J_KV(K_(extra_info), "size", size());
     J_COMMA();
     BUF_PRINTF("info_list");
     J_COLON();
@@ -670,65 +658,6 @@ void ObMediumCompactionInfoList::gene_info(
     J_OBJ_END();
     J_OBJ_END();
   }
-}
-
-int ObMediumCompactionInfoList::check_medium_info_and_last_major(
-    const ObMediumCompactionInfo &medium_info,
-    const ObITable *last_major_sstable,
-    const bool force_check)
-{
-  int ret = OB_SUCCESS;
-  if (nullptr != last_major_sstable
-      && ObMediumCompactionInfo::MEDIUM_COMPAT_VERSION_V2 == medium_info.medium_compat_version_
-      && medium_info.medium_snapshot_ > last_major_sstable->get_snapshot_version()) {
-    if (medium_info.from_cur_cluster()) { // same cluster_id & same tenant_id
-      if (OB_UNLIKELY(medium_info.last_medium_snapshot_ != last_major_sstable->get_snapshot_version())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_ERROR("last medium snapshot in medium info is not equal to last "
-                 "major sstable, medium info may lost",
-                 KR(ret), K(medium_info), KPC(last_major_sstable));
-      }
-    } else if (medium_info.is_major_compaction()) { // check next freeze info in inner_table & medium_info
-      const int64_t last_major_sstable_snapshot = last_major_sstable->get_snapshot_version();
-      ObTenantFreezeInfoMgr::FreezeInfo freeze_info;
-      if (OB_FAIL(MTL_CALL_FREEZE_INFO_MGR(
-              get_freeze_info_behind_snapshot_version,
-              last_major_sstable_snapshot, freeze_info))) {
-        if (OB_ENTRY_NOT_EXIST != ret) {
-          LOG_WARN("failed to get freeze info", K(ret), K(last_major_sstable_snapshot));
-        } else if (force_check) {
-          ret = OB_EAGAIN;
-          LOG_WARN("next freeze info is not exist yet, need to check after refresh freeze info",
-                   KR(ret), K(medium_info), KPC(last_major_sstable));
-        } else { // if force_check = false, not return errno; check next time
-          ret = OB_SUCCESS;
-        }
-      } else if (OB_UNLIKELY(freeze_info.freeze_version < medium_info.medium_snapshot_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_ERROR("next major medium info may lost",
-          KR(ret), "freeze_version", freeze_info.freeze_version, K(medium_info), KPC(last_major_sstable));
-      }
-    } else {
-      // medium info from same cluster_id, can't make sure all medium info exists, so not check medium & last_major
-      // like primary-standby relations: cluster1(A) -> cluster2(B) -> cluster1(C), medium info is dropped by B for different cluster_id
-    }
-  }
-  return ret;
-}
-
-const ObMediumCompactionInfo * ObMediumCompactionInfoList::get_next_schedule_medium_info(const int64_t last_major_snapshot) const
-{
-  const ObMediumCompactionInfo *ret_val = nullptr;
-  const ObMediumCompactionInfo *info = medium_info_list_.get_first();
-  while (nullptr != info && info != medium_info_list_.get_header()) {
-    // get next schedule medium info
-    if (info->medium_snapshot_ > last_major_snapshot) {
-      ret_val = info;
-      break;
-    }
-    info = info->get_next();
-  }
-  return ret_val;
 }
 
 } //namespace compaction

@@ -27,6 +27,8 @@
 #include "sql/optimizer/ob_log_join_filter.h"
 #include "share/ob_encryption_util.h"
 #include "share/ob_resource_limit.h"
+#include "share/table/ob_ttl_util.h"
+#include "src/observer/ob_server.h"
 
 namespace oceanbase
 {
@@ -340,7 +342,7 @@ bool ObConfigLogArchiveOptionsChecker::check(const ObConfigItem &t) const
             }
             key_idx = -1;
           } else if (LOG_ARCHIVE_ENCRYPTION_ALGORITHM_IDX == key_idx) {
-            share::ObAesOpMode encryption_algorithm;
+            share::ObCipherOpMode encryption_algorithm;
             if (OB_FAIL(ObEncryptionUtil::parse_encryption_algorithm(s, encryption_algorithm))) {
               bret = false;
               OB_LOG(WARN, "invalid encrytion algorithm", K(s));
@@ -371,12 +373,20 @@ bool ObConfigRpcChecksumChecker::check(const ObConfigItem &t) const
   return obrpc::get_rpc_checksum_check_level_from_string(tmp_string) != obrpc::ObRpcCheckSumCheckLevel::INVALID ;
 }
 
+bool ObTTLDutyDurationChecker::check(const ObConfigItem& t) const
+{
+  common::ObTTLDutyDuration duty_duration;
+  return OB_SUCCESS == common::ObTTLUtil::parse(t.str(), duty_duration) && duty_duration.is_valid();
+}
+
 bool ObConfigMemoryLimitChecker::check(const ObConfigItem &t) const
 {
   bool is_valid = false;
   int64_t value = ObConfigCapacityParser::get(t.str(), is_valid, false);
   if (is_valid) {
-    is_valid = 0 == value || value >= lib::ObRunningModeConfig::instance().MIN_MEM;
+    int64_t min_memory_size = OBSERVER.is_arbitration_mode() ? lib::ObRunningModeConfig::instance().MIN_MEM :
+                                                               lib::ObRunningModeConfig::instance().MINI_MEM_LOWER;
+    is_valid = 0 == value || value >= min_memory_size;
   }
   return is_valid;
 }
@@ -854,5 +864,16 @@ bool ObConfigRuntimeFilterChecker::check(const ObConfigItem &t) const
   int64_t rf_type = get_runtime_filter_type(t.str(), len);
   return rf_type >= 0;
 }
+
+bool ObConfigSQLTlsVersionChecker::check(const ObConfigItem &t) const
+{
+  const ObString tmp_str(t.str());
+  return 0 == tmp_str.case_compare("NONE")    ||
+         0 == tmp_str.case_compare("TLSV1")   ||
+         0 == tmp_str.case_compare("TLSV1.1") ||
+         0 == tmp_str.case_compare("TLSV1.2") ||
+         0 == tmp_str.case_compare("TLSV1.3");
+}
+
 } // end of namepace common
 } // end of namespace oceanbase

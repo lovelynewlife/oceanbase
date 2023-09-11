@@ -43,6 +43,7 @@ public:
   virtual int on_root_data_channel_setup() = 0;
 };
 
+
 struct ObExprExtraSerializeInfo
 {
   OB_UNIS_VERSION(1);
@@ -664,6 +665,14 @@ static int get_location_addrs(const T &locations,
   (void)addr_set.destroy();
   return ret;
 }
+
+class LowestCommonAncestorFinder
+{
+public:
+  static int find_op_common_ancestor(
+      const ObOpSpec *left, const ObOpSpec *right, const ObOpSpec *&ancestor);
+  static int get_op_dfo(const ObOpSpec *op, ObDfo *root_dfo, ObDfo *&op_dfo);
+};
 
 }
 }

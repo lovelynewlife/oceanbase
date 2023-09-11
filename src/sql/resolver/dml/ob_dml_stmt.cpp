@@ -196,11 +196,11 @@ int ColumnItem::deep_copy(ObIRawExprCopier &expr_copier,
   if (OB_FAIL(ret)) {
   } else {
     col_idx_= other.col_idx_;
-    if (OB_NOT_NULL(default_value_expr_)
+    if (OB_NOT_NULL(other.default_value_expr_)
         && OB_FAIL(expr_copier.copy(other.default_value_expr_, default_value_expr_))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to copy default value expr", K(ret));
-    } else if (OB_NOT_NULL(default_empty_expr_)
+    } else if (OB_NOT_NULL(other.default_empty_expr_)
                && OB_FAIL(expr_copier.copy(other.default_empty_expr_, default_empty_expr_))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to copy default empty expr", K(ret));
@@ -282,6 +282,8 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
     LOG_WARN("failed to assign part ids", K(ret));
   } else if (OB_FAIL(part_names_.assign(other.part_names_))) {
     LOG_WARN("failed to assign part names", K(ret));
+  } else if (OB_FAIL(expr_copier.copy(other.table_values_, table_values_))) {
+    LOG_WARN("failed to deep copy table values", K(ret));
   }
   return ret;
 }
@@ -450,7 +452,7 @@ int ObDMLStmt::assign(const ObDMLStmt &other)
     LOG_WARN("failed to copy stmt", K(ret));
   } else if (OB_FAIL(table_items_.assign(other.table_items_))) {
     LOG_WARN("assign table items failed", K(ret));
-  } else if (OB_FAIL(tables_hash_.assign(other.tables_hash_))) {
+  } else if (OB_FAIL(assign_tables_hash(other.tables_hash_))) {
     LOG_WARN("assign table hash desc failed", K(ret));
   } else if (OB_FAIL(column_items_.assign(other.column_items_))) {
     LOG_WARN("assign column items failed", K(ret));
@@ -596,7 +598,7 @@ int ObDMLStmt::deep_copy_stmt_struct(ObIAllocator &allocator,
                                               other.table_items_,
                                               table_items_))) {
     LOG_WARN("failed to deep copy table items", K(ret));
-  } else if (OB_FAIL(tables_hash_.assign(other.tables_hash_))) {
+  } else if (OB_FAIL(assign_tables_hash(other.tables_hash_))) {
     LOG_WARN("assign table hash desc failed", K(ret));
   } else if (OB_FAIL(deep_copy_join_tables(allocator, expr_copier, other))) {
     LOG_WARN("failed to copy joined tables", K(ret));
@@ -854,6 +856,9 @@ int ObDMLStmt::iterate_stmt_expr(ObStmtExprVisitor &visitor)
                OB_FAIL(visitor.visit(table_items_.at(i)->json_table_def_->doc_expr_,
                                      SCOPE_FROM))) {
       LOG_WARN("failed to add json table doc expr", K(ret));
+     } else if (OB_FAIL(visitor.visit(table_items_.at(i)->table_values_,
+                                      SCOPE_FROM))) {
+      LOG_WARN("failed to visit table values", K(ret));
     } else { /*do nothing*/ }
   }
 
@@ -1089,10 +1094,7 @@ int ObDMLStmt::update_stmt_table_id(const ObDMLStmt &other)
   }
   // reset tables hash
   if (OB_SUCC(ret)) {
-    tables_hash_.reset();
-    if (OB_FAIL(set_table_bit_index(common::OB_INVALID_ID))) {
-      LOG_WARN("failed to set table bit index", K(ret));
-    } else { /*do nothing*/ }
+    tables_hash_.reuse();
   }
   // reset table id from column items
   if (OB_SUCC(ret) && &other != this) {
@@ -1764,6 +1766,36 @@ int ObDMLStmt::formalize_child_stmt_expr_reference()
   return ret;
 }
 
+int ObDMLStmt::get_table_pseudo_column_like_exprs(uint64_t table_id,
+                                                  ObIArray<ObRawExpr *> &pseudo_columns)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < pseudo_column_like_exprs_.count(); i++) {
+    if (OB_ISNULL(pseudo_column_like_exprs_.at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("pseudo column like expr is null", K(ret));
+    } else if (pseudo_column_like_exprs_.at(i)->is_pseudo_column_expr() &&
+               static_cast<ObPseudoColumnRawExpr *>(pseudo_column_like_exprs_.at(i))->get_table_id() == table_id) {
+      if (OB_FAIL(pseudo_columns.push_back(pseudo_column_like_exprs_.at(i)))) {
+        LOG_WARN("push back failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLStmt::get_table_pseudo_column_like_exprs(ObIArray<uint64_t> &table_ids,
+                                                  ObIArray<ObRawExpr *> &pseudo_columns)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < table_ids.count(); i++) {
+    if (OB_FAIL(get_table_pseudo_column_like_exprs(table_ids.at(i), pseudo_columns))) {
+      LOG_WARN("get table pseduo column like expr failed", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObDMLStmt::check_pseudo_column_valid()
 {
   int ret = OB_SUCCESS;
@@ -2314,7 +2346,7 @@ int ObDMLStmt::add_table_item(const ObSQLSessionInfo *session_info, TableItem *t
       }
     }
   }
-  LOG_DEBUG("finish to add table item", K(*table_item), K(tables_hash_), KPC(table_item->ref_query_),
+  LOG_DEBUG("finish to add table item", K(*table_item), KPC(table_item->ref_query_),
                                         K(common::lbt()));
   return ret;
 }
@@ -2352,7 +2384,7 @@ int ObDMLStmt::add_table_item(const ObSQLSessionInfo *session_info, TableItem *t
       }
     }
   }
-  LOG_DEBUG("finish to add table item", K(*table_item), K(tables_hash_), K(common::lbt()));
+  LOG_DEBUG("finish to add table item", K(*table_item), K(common::lbt()));
   return ret;
 }
 
@@ -2404,6 +2436,27 @@ int ObDMLStmt::generate_json_table_name(ObIAllocator &allocator, ObString &table
   int64_t pos = 0;
   const uint64_t OB_MAX_SUBQUERY_NAME_LENGTH = 64;
   const char *SUBQUERY_VIEW = "JSON_TABLE";
+  char buf[OB_MAX_SUBQUERY_NAME_LENGTH];
+  int64_t buf_len = OB_MAX_SUBQUERY_NAME_LENGTH;
+  if (OB_FAIL(BUF_PRINTF("%s", SUBQUERY_VIEW))) {
+    LOG_WARN("append name to buf error", K(ret));
+  } else if (OB_FAIL(append_id_to_view_name(buf, OB_MAX_SUBQUERY_NAME_LENGTH, pos, false))) {
+    LOG_WARN("append name to buf error", K(ret));
+  } else {
+    ObString generate_name(pos, buf);
+    if (OB_FAIL(ob_write_string(allocator, generate_name, table_name))) {
+      LOG_WARN("failed to write string", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObDMLStmt::generate_values_table_name(ObIAllocator &allocator, ObString &table_name)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  const uint64_t OB_MAX_SUBQUERY_NAME_LENGTH = 64;
+  const char *SUBQUERY_VIEW = "VALUES_TABLE";
   char buf[OB_MAX_SUBQUERY_NAME_LENGTH];
   int64_t buf_len = OB_MAX_SUBQUERY_NAME_LENGTH;
   if (OB_FAIL(BUF_PRINTF("%s", SUBQUERY_VIEW))) {
@@ -2684,13 +2737,45 @@ int ObDMLStmt::get_ddl_view_output(const TableItem &table,
 
 int32_t ObDMLStmt::get_table_bit_index(uint64_t table_id) const
 {
-  int64_t idx = tables_hash_.get_idx(table_id, OB_INVALID_ID);
+  int64_t idx = OB_INVALID_INDEX;
+  if (OB_UNLIKELY(OB_SUCCESS != tables_hash_.get_refactored(table_id, idx))) {
+    idx = OB_INVALID_INDEX;
+  }
   return static_cast<int32_t>(idx);
 }
 
 int ObDMLStmt::set_table_bit_index(uint64_t table_id)
 {
-  return tables_hash_.add_column_desc(table_id, OB_INVALID_ID);
+  int ret = OB_SUCCESS;
+  int64_t idx = tables_hash_.size() + 1;  // bit index is start from 1
+  if (OB_FAIL(tables_hash_.set_refactored(table_id, idx))) {
+    LOG_WARN("failed to set refactored", K(ret));
+  }
+  return ret;
+}
+
+int ObDMLStmt::assign_tables_hash(const ObDMLStmtTableHash &tables_hash)
+{
+  int ret = OB_SUCCESS;
+  tables_hash_.reuse();
+  ObDMLStmtTableHash::const_iterator it = tables_hash.begin();
+  ObDMLStmtTableHash::const_iterator it_end = tables_hash.end();
+  for (; OB_SUCC(ret) && it != it_end; ++it) {
+    if (OB_FAIL(tables_hash_.set_refactored(it->first, it->second))) {
+      LOG_WARN("failed to set refactored", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObDMLStmt::init_stmt(TableHashAllocator &table_hash_alloc, ObWrapperAllocator &wrapper_alloc)
+{
+  int ret = OB_SUCCESS;
+  if (!tables_hash_.created() &&
+      OB_FAIL(tables_hash_.create(64, &table_hash_alloc, &wrapper_alloc))) {
+    LOG_WARN("failed to create qb name map", K(ret));
+  }
+  return ret;
 }
 
 int ObDMLStmt::relids_to_table_ids(const ObSqlBitSet<> &table_set,
@@ -3422,34 +3507,13 @@ int ObDMLStmt::rebuild_tables_hash()
 {
   int ret = OB_SUCCESS;
   TableItem *ti = NULL;
-  ObSEArray<uint64_t, 4> table_id_list;
-  ObSEArray<int64_t, 4> bit_index_map;
-  // dump old table id - rel id map
-  for (int64_t i = 0; OB_SUCC(ret) && i < tables_hash_.get_column_num(); ++i) {
-    uint64_t tid = OB_INVALID_ID;
-    uint64_t cid = OB_INVALID_ID;
-    if (OB_FAIL(tables_hash_.get_tid_cid(i, tid, cid))) {
-      LOG_WARN("failed to get tid cid", K(ret));
-    } else if (OB_FAIL(table_id_list.push_back(tid))) {
-      LOG_WARN("failed to push back table id", K(ret));
-    }
-  }
-  tables_hash_.reset();
-  if (OB_FAIL(set_table_bit_index(OB_INVALID_ID))) {
-    LOG_WARN("fail to add table_id to hash table", K(ret));
-  }
+  tables_hash_.reuse();
   for (int64_t i = 0; OB_SUCC(ret) && i < table_items_.count(); i++) {
     if (OB_ISNULL(ti = table_items_.at(i))) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid argument", K(table_items_), K(ret));
     } else if (OB_FAIL(set_table_bit_index(ti->table_id_))) {
       LOG_WARN("fail to add table_id to hash table", K(ret), K(ti), K(table_items_));
-    }
-  }
-  // create old rel id - new rel id map
-  for (int64_t i = 0; OB_SUCC(ret) && i < table_id_list.count(); ++i) {
-    if (OB_FAIL(bit_index_map.push_back(get_table_bit_index(table_id_list.at(i))))) {
-      LOG_WARN("failed to push back new bit index", K(ret));
     }
   }
   return ret;
@@ -4406,8 +4470,10 @@ int ObDMLStmt::do_formalize_query_ref_exprs_pre()
   ObQueryRefRawExpr *ref_query = NULL;
   ObExecParamRawExpr *exec_param = NULL;
   ObSEArray<ObRawExpr*, 8> ref_exprs;
+  ObSEArray<int64_t, 8> ref_exec_idxs;
   for (int64_t j = 0; OB_SUCC(ret) && j < subquery_exprs_.count(); ++j) {
     ref_exprs.reuse();
+    ref_exec_idxs.reuse();
     if (OB_ISNULL(ref_query = subquery_exprs_.at(j))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null", K(ret));
@@ -4422,9 +4488,11 @@ int ObDMLStmt::do_formalize_query_ref_exprs_pre()
       } else if (ObOptimizerUtil::find_item(ref_exprs,
                                             exec_param->get_ref_expr(),
                                             &idx)) {
-        exec_param->set_ref_expr(ref_exprs.at(idx));
+        exec_param->set_ref_expr(ref_query->get_exec_param(ref_exec_idxs.at(idx)));
       } else if (OB_FAIL(ref_exprs.push_back(exec_param->get_ref_expr()))) {
         LOG_WARN("failed to push back ref exprs");
+      } else if (OB_FAIL(ref_exec_idxs.push_back(i))) {
+        LOG_WARN("failed to push back ref exec idxs", K(ret));
       }
     }
   }
@@ -4510,6 +4578,14 @@ int ObDMLStmt::check_has_cursor_expression(bool &has_cursor_expr) const
     }
   }
   return ret;
+}
+
+bool ObDMLStmt::is_values_table_query() const
+{
+  return is_select_stmt() &&
+         table_items_.count() == 1 &&
+         table_items_.at(0) != NULL &&
+         table_items_.at(0)->is_values_table();
 }
 
 ObJtColBaseInfo::ObJtColBaseInfo()

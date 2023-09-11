@@ -35,6 +35,10 @@ CREATE OR REPLACE PACKAGE BODY dbms_ash_internal AS
               '       a.in_sql_execution, ' ||
               '       a.in_px_execution, ' ||
               '       a.in_sequence_load, ' ||
+              '       a.in_committing, ' ||
+              '       a.in_storage_read, ' ||
+              '       a.in_storage_write, ' ||
+              '       a.in_remote_das_execution, ' ||
               '       a.module, a.action, a.client_id ' ||
               'FROM GV$ACTIVE_SESSION_HISTORY a ' ||
               'WHERE  1=1 ';

@@ -22,13 +22,18 @@ namespace oceanbase
 {
 namespace sql
 {
+enum FreezeAllUserOrMeta {
+  FREEZE_ALL_USER = 0x01,
+  FREEZE_ALL_META = 0x02
+};
+
 class ObFreezeStmt : public ObSystemCmdStmt
 {
 public:
   ObFreezeStmt()
     : ObSystemCmdStmt(stmt::T_FREEZE),
       major_freeze_(false),
-      freeze_all_(false),
+      freeze_all_flag_(0),
       opt_server_list_(),
       opt_tenant_ids_(),
       opt_tablet_id_(),
@@ -36,6 +41,7 @@ public:
   ObFreezeStmt(common::ObIAllocator *name_pool)
     : ObSystemCmdStmt(name_pool, stmt::T_FREEZE),
       major_freeze_(false),
+      freeze_all_flag_(0),
       opt_server_list_(),
       opt_tenant_ids_(),
       opt_tablet_id_(),
@@ -44,8 +50,10 @@ public:
 
   bool is_major_freeze() const { return major_freeze_; }
   void set_major_freeze(bool major_freeze) { major_freeze_ = major_freeze; }
-  bool is_freeze_all() const { return freeze_all_; }
-  void set_freeze_all(bool freeze_all) { freeze_all_ = freeze_all; }
+  bool is_freeze_all_user() const { return 0 != (freeze_all_flag_ & FREEZE_ALL_USER); }
+  void set_freeze_all_user() { freeze_all_flag_ |= FREEZE_ALL_USER; }
+  bool is_freeze_all_meta() const { return 0 != (freeze_all_flag_ & FREEZE_ALL_META); }
+  void set_freeze_all_meta() { freeze_all_flag_ |= FREEZE_ALL_META; }
   inline obrpc::ObServerList &get_ignore_server_list() { return opt_server_list_; }
   inline obrpc::ObServerList &get_server_list() { return opt_server_list_; }
   inline common::ObSArray<uint64_t> &get_tenant_ids() { return opt_tenant_ids_; }
@@ -56,13 +64,13 @@ public:
     return opt_server_list_.push_back(server);
   }
 
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(major_freeze),
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(major_freeze), K(freeze_all_flag_),
                K(opt_server_list_), K(opt_tenant_ids_), K(opt_tablet_id_), K(opt_ls_id_));
 private:
   bool major_freeze_;
   // for major_freeze, it is ignore server list
   // for minor_freeze, it is candidate server list
-  bool freeze_all_;
+  int freeze_all_flag_;
   // for major_freeze only
   obrpc::ObServerList opt_server_list_;
   // for minor_freeze only,
@@ -389,7 +397,14 @@ class ObAddArbitrationServiceStmt : public ObSystemCmdStmt
 public:
   ObAddArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_ADD_ARBITRATION_SERVICE) {}
   virtual ~ObAddArbitrationServiceStmt() {}
+#ifndef OB_BUILD_ARBITRATION
   TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
+#else
+  obrpc::ObAdminAddArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
+private:
+  obrpc::ObAdminAddArbitrationServiceArg rpc_arg_;
+#endif
 };
 
 class ObRemoveArbitrationServiceStmt : public ObSystemCmdStmt
@@ -397,7 +412,14 @@ class ObRemoveArbitrationServiceStmt : public ObSystemCmdStmt
 public:
   ObRemoveArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_REMOVE_ARBITRATION_SERVICE) {}
   virtual ~ObRemoveArbitrationServiceStmt() {}
+#ifndef OB_BUILD_ARBITRATION
   TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
+#else
+  obrpc::ObAdminRemoveArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
+private:
+  obrpc::ObAdminRemoveArbitrationServiceArg rpc_arg_;
+#endif
 };
 
 class ObReplaceArbitrationServiceStmt : public ObSystemCmdStmt
@@ -405,7 +427,14 @@ class ObReplaceArbitrationServiceStmt : public ObSystemCmdStmt
 public:
   ObReplaceArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_REPLACE_ARBITRATION_SERVICE) {}
   virtual ~ObReplaceArbitrationServiceStmt() {}
+#ifndef OB_BUILD_ARBITRATION
   TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
+#else
+  obrpc::ObAdminReplaceArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
+private:
+  obrpc::ObAdminReplaceArbitrationServiceArg rpc_arg_;
+#endif
 };
 
 class ObClearLocationCacheStmt : public ObSystemCmdStmt
@@ -1144,6 +1173,47 @@ private:
   share::ObBackupPathString backup_dest_;
   ObString encrypt_key_;
 };
+class ObTableTTLStmt : public ObSystemCmdStmt {
+public:
+  ObTableTTLStmt()
+    : ObSystemCmdStmt(stmt::T_TABLE_TTL),
+      type_(obrpc::ObTTLRequestArg::TTL_INVALID_TYPE),
+      opt_tenant_ids_(),
+      ttl_all_(false)
+  {}
+  virtual ~ObTableTTLStmt()
+  {}
+
+  obrpc::ObTTLRequestArg::TTLRequestType get_type() const
+  {
+    return type_;
+  }
+  int set_type(const int64_t type)
+  {
+    int ret = common::OB_SUCCESS;
+
+    if (type < 0 || type >= obrpc::ObTTLRequestArg::TTL_MOVE_TYPE) {
+      ret = OB_INVALID_ARGUMENT;
+      COMMON_LOG(WARN, "invalid args", K(type));
+    } else {
+      type_ = static_cast<obrpc::ObTTLRequestArg::TTLRequestType>(type);
+    }
+
+    return ret;
+  }
+  inline common::ObSArray<uint64_t> &get_tenant_ids() { return opt_tenant_ids_; }
+  bool is_ttl_all() const { return ttl_all_; }
+  void set_ttl_all(bool ttl_all) { ttl_all_ = ttl_all; }
+
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(tenant_id), K_(type),
+               K_(opt_tenant_ids), K_(ttl_all));
+
+private:
+  uint64_t tenant_id_;
+  obrpc::ObTTLRequestArg::TTLRequestType type_;
+  common::ObSArray<uint64_t> opt_tenant_ids_;
+  bool ttl_all_;
+};
 
 class ObBackupSetEncryptionStmt : public ObSystemCmdStmt
 {
@@ -1249,6 +1319,18 @@ public:
 private:
   obrpc::ObRecoverTenantArg rpc_arg_;
 };
+
+class ObRecoverTableStmt : public ObSystemCmdStmt
+{
+public:
+  ObRecoverTableStmt()
+    : ObSystemCmdStmt(stmt::T_RECOVER_TABLE), rpc_arg_() {}
+  virtual ~ObRecoverTableStmt() {}
+  obrpc::ObRecoverTableArg &get_rpc_arg() { return rpc_arg_; }
+private:
+  obrpc::ObRecoverTableArg rpc_arg_;
+};
+
 
 } // end namespace sql
 } // end namespace oceanbase

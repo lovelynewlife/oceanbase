@@ -91,6 +91,22 @@ int lock_mode_to_string(const ObTableLockMode lock_mode,
 }
 
 static inline
+ObTableLockMode get_lock_mode_from_oracle_mode(const int64_t oracle_lock_mode)
+{
+  ObTableLockMode ob_lock_mode = MAX_LOCK_MODE;
+  switch (oracle_lock_mode) {
+  case 1: { ob_lock_mode = NO_LOCK; break; }
+  case 2: { ob_lock_mode = ROW_SHARE; break; }
+  case 3: { ob_lock_mode = ROW_EXCLUSIVE; break; }
+  case 4: { ob_lock_mode = SHARE; break; }
+  case 5: { ob_lock_mode = SHARE_ROW_EXCLUSIVE; break; }
+  case 6: { ob_lock_mode = EXCLUSIVE; break; }
+  default: { ob_lock_mode = MAX_LOCK_MODE; }
+  }
+  return ob_lock_mode;
+}
+
+static inline
 bool is_lock_mode_valid(const ObTableLockMode lock_mode)
 {
   return lock_mode < MAX_LOCK_MODE;
@@ -223,6 +239,9 @@ enum class ObLockOBJType : char
   OBJ_TYPE_EXTERNAL_TABLE_REFRESH = 6, // for external table
   OBJ_TYPE_ONLINE_DDL_TABLE = 7, // online ddl table
   OBJ_TYPE_ONLINE_DDL_TABLET = 8, // online ddl tablets
+  OBJ_TYPE_DATABASE_NAME = 9,   // for database related ddl
+  OBJ_TYPE_OBJECT_NAME = 10,     // for obj related ddl
+  OBJ_TYPE_DBMS_LOCK = 11,  // for dbms lock
   OBJ_TYPE_MAX
 };
 
@@ -253,9 +272,32 @@ int lock_obj_type_to_string(const ObLockOBJType obj_type,
     strncpy(str, "TENANT", str_len);
     break;
   }
+  case ObLockOBJType::OBJ_TYPE_EXTERNAL_TABLE_REFRESH: {
+    strncpy(str, "EXTERNAL_TABLE_REFRES", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_ONLINE_DDL_TABLE: {
+    strncpy(str, "ONLINE_DDL_TABLE", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_ONLINE_DDL_TABLET: {
+    strncpy(str, "ONLINE_DDL_TABLET", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_DATABASE_NAME: {
+    strncpy(str, "DATABASE_NAME", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_OBJECT_NAME: {
+    strncpy(str, "OBJECT_NAME", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_DBMS_LOCK: {
+    strncpy(str, "DBMS_LOCK", str_len);
+    break;
+  }
   default: {
     strncpy(str, "UNKNOWN", str_len);
-    break;
   }
   }
   return ret;
@@ -355,7 +397,7 @@ public:
       create_trans_id_(),
       op_type_(UNKNOWN_TYPE),
       lock_op_status_(UNKNOWN_STATUS),
-      lock_seq_no_(0),
+      lock_seq_no_(),
       commit_version_(),
       commit_scn_(),
       create_timestamp_(0),
@@ -368,7 +410,7 @@ public:
       const ObTransID &trans_id,
       const ObTableLockOpType op_type,
       const ObTableLockOpStatus lock_op_status,
-      const int64_t seq_no,
+      const ObTxSEQ seq_no,
       const int64_t create_timestamp,
       const int64_t create_schema_version) :
       lock_id_(),
@@ -377,7 +419,7 @@ public:
       create_trans_id_(),
       op_type_(UNKNOWN_TYPE),
       lock_op_status_(UNKNOWN_STATUS),
-      lock_seq_no_(0),
+      lock_seq_no_(),
       commit_version_(),
       commit_scn_(),
       create_timestamp_(0),
@@ -400,7 +442,7 @@ public:
       const ObTransID &trans_id,
       const ObTableLockOpType op_type,
       const ObTableLockOpStatus lock_op_status,
-      const int64_t seq_no,
+      const ObTxSEQ seq_no,
       const int64_t create_timestamp,
       const int64_t create_schema_version);
   bool is_valid() const;
@@ -445,7 +487,7 @@ public:
   ObTransID create_trans_id_;
   ObTableLockOpType op_type_;
   ObTableLockOpStatus lock_op_status_;
-  int64_t lock_seq_no_;
+  ObTxSEQ lock_seq_no_;
   share::SCN commit_version_;
   share::SCN commit_scn_;
   // used to check whether a trans modify before a schema_version or timestamp.

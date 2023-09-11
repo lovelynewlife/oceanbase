@@ -26,7 +26,7 @@ namespace oceanbase
 namespace common
 {
 static const int16_t SESSION_WAIT_HISTORY_CNT = 10;
-typedef ObStatArray<ObWaitEventStat, ObWaitEventIds::WAIT_EVENT_END> ObWaitEventStatArray;
+typedef ObStatArray<ObWaitEventStat, WAIT_EVENTS_TOTAL> ObWaitEventStatArray;
 typedef ObStatArray<ObStatEventAddStat, ObStatEventIds::STAT_EVENT_ADD_END> ObStatEventAddStatArray;
 typedef ObStatArray<ObStatEventSetStat, ObStatEventIds::STAT_EVENT_SET_END - ObStatEventIds::STAT_EVENT_ADD_END -1> ObStatEventSetStatArray;
 
@@ -50,10 +50,28 @@ struct ObLatchStat
 
 struct ObLatchStatArray
 {
-  ObLatchStatArray();
+public:
+  ObLatchStatArray(ObIAllocator *allocator = NULL);
+  ~ObLatchStatArray();
   int add(const ObLatchStatArray &other);
   void reset();
-  ObLatchStat items_[ObLatchIds::LATCH_END];
+  ObLatchStat *get_item(int32_t idx) const
+  {
+    return items_[idx];
+  }
+  ObLatchStat *get_or_create_item(int32_t idx)
+  {
+    if (OB_ISNULL(items_[idx])) {
+      items_[idx] = create_item();
+    }
+    return items_[idx];
+  }
+private:
+  ObLatchStat *create_item();
+  void free_item(ObLatchStat *stat);
+private:
+  ObIAllocator *allocator_;
+  ObLatchStat *items_[ObLatchIds::LATCH_END] = {NULL};
 };
 
 class ObWaitEventHistoryIter
@@ -140,7 +158,7 @@ private:
 class ObDiagnoseTenantInfo final
 {
 public:
-  ObDiagnoseTenantInfo();
+  ObDiagnoseTenantInfo(ObIAllocator *allocator = NULL);
   ~ObDiagnoseTenantInfo();
   void add(const ObDiagnoseTenantInfo &other);
   void add_wait_event(const ObDiagnoseTenantInfo &other);
@@ -253,7 +271,14 @@ private:
     }                              \
   } while(0)
 
+#define EVENT_TENANT_ADD(stat_no, value, tenant_id)    \
+  oceanbase::common::ObTenantStatEstGuard tenant_guard(tenant_id); \
+  EVENT_ADD(stat_no, value);
+
 #define EVENT_INC(stat_no) EVENT_ADD(stat_no, 1)
+
+#define EVENT_TENANT_INC(stat_no, tenant_id) EVENT_TENANT_ADD(stat_no, 1, tenant_id)
+
 #define EVENT_DEC(stat_no) EVENT_ADD(stat_no, -1)
 
 #define EVENT_SET(stat_no, value)                               \

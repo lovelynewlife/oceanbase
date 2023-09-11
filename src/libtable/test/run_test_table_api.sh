@@ -62,6 +62,7 @@ mysql -h $HOST -P $PORT -u $user -e "drop table if exists query_sync_multi_task_
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists query_with_filter; create table if not exists query_with_filter (C1 bigint primary key, C2 bigint, C3 varchar(100), C4 double default 0);" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists query_and_mutate; create table if not exists query_and_mutate (C1 bigint primary key, C2 bigint, C3 varchar(100), C4 double default 0);" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists atomic_batch_ops; create table if not exists atomic_batch_ops (C1 bigint, C2 varchar(128), C3 varbinary(1024) default null, C4 bigint not null default -1, primary key(C1), UNIQUE KEY idx_c2c4 (C2, C4));" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists auto_increment_defensive_test; create table if not exists auto_increment_defensive_test (C1 bigint AUTO_INCREMENT primary key) PARTITION BY KEY(C1) PARTITIONS 16;" $db
 
 # INDEX idx1(C1, C2)
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists execute_query_test; create table if not exists execute_query_test (PK1 bigint, PK2 bigint, C1 bigint, C2 varchar(100), C3 bigint, PRIMARY KEY(PK1, PK2));" $db
@@ -69,7 +70,7 @@ mysql -h $HOST -P $PORT -u $user -e "drop table if exists secondary_index_test; 
 # hbase api
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1; create table if not exists htable1_cf1 (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), K_PREFIX varbinary(1024) GENERATED ALWAYS AS (substr(K,1,32)) STORED, primary key(K, Q, T));" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_reverse; create table if not exists htable1_cf1_reverse like htable1_cf1" $db
-mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_ttl; create table if not exists htable1_cf1_ttl (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T)) comment='{\"HColumnDescriptor\": {\"TimeToLive\": 5}}'" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_ttl; create table if not exists htable1_cf1_ttl (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T)) kv_attributes='{\"Hbase\": {\"TimeToLive\": 5}}'" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_filter; create table if not exists htable1_cf1_filter like htable1_cf1" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_delete; create table if not exists htable1_cf1_delete like htable1_cf1" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_put; create table if not exists htable1_cf1_put like htable1_cf1" $db
@@ -80,6 +81,8 @@ mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_increment_
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_append; create table if not exists htable1_cf1_append like htable1_cf1" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_empty_cq; create table if not exists htable1_cf1_empty_cq (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T));" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_query_sync; create table if not exists htable1_query_sync (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T));" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_check_and_put; create table if not exists htable1_cf1_check_and_put like htable1_cf1" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_check_and_put_put; create table if not exists htable1_cf1_check_and_put_put like htable1_cf1" $db
 
 # run
 ./test_table_api "$HOST" "$PORT" "$tenant_name" "$user_name" "$passwd" "$db" "$table_name" $RPCPORT #--gtest_filter=TestBatchExecute.
@@ -137,9 +140,11 @@ mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_increment;
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_increment_empty; create table if not exists htable1_cf1_increment_empty like htable1_cf1" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_append; create table if not exists htable1_cf1_append like htable1_cf1" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_reverse; create table if not exists htable1_cf1_reverse like htable1_cf1" $db
-mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_ttl; create table if not exists htable1_cf1_ttl (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T)) comment='{\"HColumnDescriptor\": {\"TimeToLive\": 5}}'" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_ttl; create table if not exists htable1_cf1_ttl (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T)) kv_attributes='{\"Hbase\": {\"TimeToLive\": 5}}'" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_empty_cq; create table if not exists htable1_cf1_empty_cq (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T));" $db
 mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_query_sync; create table if not exists htable1_query_sync (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T));" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_check_and_put; create table if not exists htable1_cf1_check_and_put like htable1_cf1" $db
+mysql -h $HOST -P $PORT -u $user -e "drop table if exists htable1_cf1_check_and_put_put; create table if not exists htable1_cf1_check_and_put_put like htable1_cf1" $db
 
 # run
 ./test_table_api "$HOST" "$PORT" "$tenant_name" "$user_name" "$passwd" "$db" "$table_name" $RPCPORT

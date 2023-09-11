@@ -1450,6 +1450,12 @@ int ObPXServerAddrUtil::build_tablet_idx_map(
   } else if (OB_FAIL(idx_map.create(table_schema->get_all_part_num(), "TabletOrderIdx"))) {
     LOG_WARN("fail create index map", K(ret), "cnt", table_schema->get_all_part_num());
   } else if (is_virtual_table(table_schema->get_table_id())) {
+    // In observer 4.2, the table schema of a distributed virtual table will show all_part_num as 1,
+    // whereas in lower versions it would display as 65536.
+    // For a distrubuted virtual table, we may encounter a situation where part_id is 1 in sqc1,
+    // part_id is 2 in sqc2 and so on, but the idx_map only contains one item with key=1.
+    // Hence, if we seek with part_id=2, the idx_map will return -4201 (OB_HASH_NOT_EXIST)
+    // will return -4201(OB_HASH_NOT_EXIST). In such cases, we can directly obtain the value that equals part_id + 1.
     for (int i = 0; OB_SUCC(ret) && i < table_schema->get_all_part_num(); ++i) {
       if (OB_FAIL(idx_map.set_refactored(i + 1, tablet_idx++))) {
         LOG_WARN("fail set value to hashmap", K(ret));
@@ -3829,4 +3835,80 @@ bool ObPxCheckAlive::is_in_blacklist(const common::ObAddr &addr, int64_t server_
     LOG_WARN("server in blacklist", K(addr), K(server_start_time), K(alive_data.start_service_time_));
   }
   return in_blacklist;
+}
+
+int LowestCommonAncestorFinder::find_op_common_ancestor(
+    const ObOpSpec *left, const ObOpSpec *right, const ObOpSpec *&ancestor)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<const ObOpSpec *, 32> ancestors;
+
+  const ObOpSpec *parent = left;
+  while (OB_NOT_NULL(parent) && OB_SUCC(ret)) {
+    if (OB_FAIL(ancestors.push_back(parent))) {
+      LOG_WARN("failed to push back");
+    } else {
+      parent = parent->get_parent();
+    }
+  }
+
+  parent = right;
+  bool find = false;
+  while (OB_NOT_NULL(parent) && OB_SUCC(ret) && !find) {
+    for (int64_t i = 0; i < ancestors.count() && OB_SUCC(ret); ++i) {
+      if (parent == ancestors.at(i)) {
+        find = true;
+        ancestor = parent;
+        break;
+      }
+    }
+    parent = parent->get_parent();
+  }
+  return ret;
+}
+
+int LowestCommonAncestorFinder::get_op_dfo(const ObOpSpec *op, ObDfo *root_dfo, ObDfo *&op_dfo)
+{
+  int ret = OB_SUCCESS;
+  const ObOpSpec *parent = op;
+  const ObOpSpec *dfo_root_op = nullptr;
+  while (OB_NOT_NULL(parent) && OB_SUCC(ret)) {
+    if (IS_PX_COORD(parent->type_) || IS_PX_TRANSMIT(parent->type_)) {
+      dfo_root_op = parent;
+      break;
+    } else {
+      parent = parent->get_parent();
+    }
+  }
+  ObDfo *dfo = nullptr;
+  bool find = false;
+
+  ObSEArray<ObDfo *, 16> dfo_queue;
+  int64_t cur_que_front = 0;
+  if (OB_FAIL(dfo_queue.push_back(root_dfo))) {
+    LOG_WARN("failed to push back");
+  }
+
+  while (cur_que_front < dfo_queue.count() && !find && OB_SUCC(ret)) {
+    int64_t cur_que_size = dfo_queue.count() - cur_que_front;
+    for (int64_t i = 0; i < cur_que_size && OB_SUCC(ret); ++i) {
+      dfo = dfo_queue.at(cur_que_front);
+      if (dfo->get_root_op_spec() == dfo_root_op) {
+        op_dfo = dfo;
+        find = true;
+        break;
+      } else {
+        // push child into the queue
+        for (int64_t child_idx = 0; OB_SUCC(ret) && child_idx < dfo->get_child_count(); ++child_idx) {
+          if (OB_FAIL(dfo_queue.push_back(dfo->get_child_dfos().at(child_idx)))) {
+            LOG_WARN("failed to push back child dfo");
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        cur_que_front++;
+      }
+    }
+  }
+  return ret;
 }

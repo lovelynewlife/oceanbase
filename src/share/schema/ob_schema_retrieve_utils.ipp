@@ -914,6 +914,7 @@ int ObSchemaRetrieveUtils::retrieve_constraint_column_info(const uint64_t tenant
   return ret;
 }
 
+// when tenant_id is sys, recycle_objs's tenant_id is invalid, can not use it
 template<typename T>
 int ObSchemaRetrieveUtils::retrieve_recycle_object(
     const uint64_t tenant_id,
@@ -1315,6 +1316,10 @@ int ObSchemaRetrieveUtils::fill_table_schema(
       result, external_file_format, table_schema, true/*skip null*/, true/*ignore column error*/, external_file_format);
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(
       result, external_file_pattern, table_schema, true/*skip null*/, true/*ignore column error*/, external_file_pattern);
+    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(
+      result, ttl_definition, table_schema, true, ignore_column_error, "");
+    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(
+      result, kv_attributes, table_schema, true, ignore_column_error, "");
   }
   if (OB_SUCC(ret) && OB_FAIL(fill_sys_table_lob_tid(table_schema))) {
     SHARE_SCHEMA_LOG(WARN, "fail to fill lob table id for inner table", K(ret), K(table_schema.get_table_id()));
@@ -2042,9 +2047,9 @@ int ObSchemaRetrieveUtils::fill_dblink_schema(
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, reverse_password, dblink_schema, true, skip_column_error, default_val);
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, database_name, dblink_schema, true, skip_column_error, default_val);
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(dblink_schema.do_decrypt_password())) {
+    } else if (!ObSchemaService::g_liboblog_mode_ && OB_FAIL(dblink_schema.do_decrypt_password())) {
       LOG_WARN("failed to decrypt password", K(ret));
-    } else if (OB_FAIL(dblink_schema.do_decrypt_reverse_password())) {
+    } else if (!ObSchemaService::g_liboblog_mode_ && OB_FAIL(dblink_schema.do_decrypt_reverse_password())) {
       LOG_WARN("failed to decrypt reverse_password", K(ret));
     } else if (OB_FAIL(ObCompatModeGetter::check_is_oracle_mode_with_tenant_id(
                 tenant_id, is_oracle_mode))) {
@@ -2467,11 +2472,7 @@ int ObSchemaRetrieveUtils::fill_recycle_object(
   EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, original_name, recycle_obj);
   EXTRACT_INT_FIELD_TO_CLASS_MYSQL(result, type, recycle_obj, ObRecycleObject::RecycleObjType);
   if (OB_SUCC(ret)) {
-    if (tenant_id == OB_SYS_TENANT_ID) {
-      EXTRACT_INT_FIELD_TO_CLASS_MYSQL(result, tenant_id, recycle_obj, uint64_t);
-    } else {
-      recycle_obj.set_tenant_id(tenant_id);
-    }
+    recycle_obj.set_tenant_id(tenant_id);
   }
   return ret;
 }

@@ -38,11 +38,6 @@ class ObTablet;
 class ObITable;
 class ObTabletDDLKvMgr;
 class ObLSTabletService;
-enum ProhibitMediumTask
-{
-  TRANSFER = 0,
-  MEDIUM = 1
-};
 class ObFastFreezeChecker
 {
 public:
@@ -120,6 +115,7 @@ private:
   static const int64_t LS_ID_ARRAY_CNT = 10;
   static const int64_t TABLET_ID_ARRAY_CNT = 2000;
   static const int64_t SCHEDULE_TABLET_BATCH_CNT = 50 * 1000L; // 5w
+  static const int64_t CHECK_REPORT_SCN_INTERVAL = 5 * 60 * 1000 * 1000L; // 600s
 
   ObLSGetMod mod_;
   bool is_major_;
@@ -135,6 +131,34 @@ private:
   storage::ObLSTabletService *ls_tablet_svr_;
   common::ObSEArray<share::ObLSID, LS_ID_ARRAY_CNT> ls_ids_;
   common::ObSEArray<ObTabletID, TABLET_ID_ARRAY_CNT> tablet_ids_;
+};
+
+struct ObProhibitScheduleMediumMap
+{
+public:
+  enum ProhibitFlag
+  {
+    TRANSFER = 0,
+    MEDIUM = 1,
+    FLAG_MAX
+  };
+  static const char *ProhibitFlagStr[];
+  static bool is_valid_flag(const ProhibitFlag flag)
+  {
+    return flag >= TRANSFER && flag < FLAG_MAX;
+  }
+  ObProhibitScheduleMediumMap();
+  ~ObProhibitScheduleMediumMap() { destroy(); }
+  int init();
+  void destroy();
+  int clear_flag(const share::ObLSID &ls_id, const ProhibitFlag &input_flag);
+  int add_flag(const share::ObLSID &ls_id, const ProhibitFlag &input_flag);
+  int64_t to_string(char *buf, const int64_t buf_len) const;
+  int64_t get_transfer_flag_cnt() const;
+private:
+  int64_t transfer_flag_cnt_;
+  mutable obsys::ObRWLock lock_;
+  common::hash::ObHashMap<share::ObLSID, ProhibitFlag> ls_id_map_;
 };
 
 class ObTenantTabletScheduler
@@ -203,10 +227,16 @@ public:
   void resume_major_merge();
   OB_INLINE bool could_major_merge_start() const { return major_merge_status_; }
   int check_tablet_could_schedule_by_status(const ObTablet &tablet, bool &could_schedule_merge);
-  int stop_ls_schedule_medium(const share::ObLSID &ls_id); // may block for waiting lock
-  int clear_prohibit_medium_flag(const share::ObLSID &ls_id, const ProhibitMediumTask &task);
+  // The transfer task sets the flag that prohibits the scheduling of medium when the log stream is src_ls of transfer
+  int stop_ls_schedule_medium(const share::ObLSID &ls_id);
+  int clear_prohibit_medium_flag(const share::ObLSID &ls_id, const ObProhibitScheduleMediumMap::ProhibitFlag &input_flag)
+  {
+    return prohibit_medium_map_.clear_flag(ls_id, input_flag);
+  }
   int ls_start_schedule_medium(const share::ObLSID &ls_id, bool &ls_could_schedule_medium);
-  void print_prohibit_medium_ls_info(char *buf, const int64_t buf_len);
+  const ObProhibitScheduleMediumMap& get_prohibit_medium_ls_map() const {
+    return prohibit_medium_map_;
+  }
   int64_t get_frozen_version() const;
   int64_t get_merged_version() const { return merged_version_; }
   int64_t get_inner_table_merged_scn() const { return ATOMIC_LOAD(&inner_table_merged_scn_); }
@@ -229,7 +259,6 @@ public:
       const uint64_t table_id,
       const blocksstable::MacroBlockId &macro_id,
       const int64_t prefix_len);
-  int schedule_load_bloomfilter(const blocksstable::MacroBlockId &macro_id);
   static bool check_tx_table_ready(ObLS &ls, const share::SCN &check_scn);
   static int check_ls_state(ObLS &ls, bool &need_merge);
   static int check_ls_state_in_major(ObLS &ls, bool &need_merge);
@@ -299,7 +328,7 @@ private:
   class SSTableGCTask : public common::ObTimerTask
   {
   public:
-    SSTableGCTask() = default;
+    SSTableGCTask() { disable_timeout_check(); }
     virtual ~SSTableGCTask() = default;
     virtual void runTimerTask() override;
   };
@@ -336,7 +365,6 @@ private:
   static const int64_t SSTABLE_GC_INTERVAL = 30 * 1000 * 1000L; // 30s
   static const int64_t INFO_POOL_RESIZE_INTERVAL = 30 * 1000 * 1000L; // 30s
   static const int64_t DEFAULT_COMPACTION_SCHEDULE_INTERVAL = 30 * 1000 * 1000L; // 30s
-  static const int64_t CHECK_REPORT_SCN_INTERVAL = 5 * 60 * 1000 * 1000L; // 600s
   static const int64_t ADD_LOOP_EVENT_INTERVAL = 120 * 1000 * 1000L; // 120s
   static const int64_t WAIT_MEDIUM_CHECK_THRESHOLD = 10 * 60 * 1000 * 1000 * 1000L; // 10m // ns
   static const int64_t PRINT_LOG_INVERVAL = 2 * 60 * 1000 * 1000L; // 2m
@@ -367,8 +395,7 @@ private:
   ObCompactionScheduleIterator minor_ls_tablet_iter_;
   ObCompactionScheduleIterator medium_ls_tablet_iter_;
   int64_t error_tablet_cnt_; // for diagnose
-  mutable obsys::ObRWLock allow_schedule_medium_lock_;
-  common::hash::ObHashMap<share::ObLSID, ProhibitMediumTask> prohibit_medium_ls_id_map_;
+  ObProhibitScheduleMediumMap prohibit_medium_map_;
   compaction::ObStorageLocalityCache ls_locality_cache_;
 };
 

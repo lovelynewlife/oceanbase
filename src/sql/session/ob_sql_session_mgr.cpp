@@ -377,6 +377,14 @@ int ObSQLSessionMgr::create_session(ObSMConnection *conn, ObSQLSessionInfo *&ses
                                     conn->sess_create_time_,
                                     sess_info))) {
     LOG_WARN("create session failed", K(ret));
+  } else if (OB_ISNULL(sess_info)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sess_info is null", K(ret));
+  } else {
+    sess_info->set_vid(conn->vid_);
+    sess_info->set_vip(conn->vip_buf_);
+    sess_info->set_vport(conn->vport_);
+    sess_info->inc_in_bytes(conn->connect_in_bytes_);
   }
   return ret;
 }
@@ -437,8 +445,13 @@ int ObSQLSessionMgr::create_session(const uint64_t tenant_id,
     } else if (mgr.is_valid_tenant_config()) {
       tmp_sess->set_flt_control_info(mgr.get_control_info());
     }
-    tmp_sess->update_last_active_time();
-    session_info = tmp_sess;
+
+    if (OB_FAIL(ret)) {
+      // do nothing
+    } else {
+      tmp_sess->update_last_active_time();
+      session_info = tmp_sess;
+    }
   }
   return ret;
 }
@@ -453,6 +466,20 @@ int ObSQLSessionMgr::free_session(const ObFreeSessionCtx &ctx)
   ObSQLSessionInfo *sess_info = NULL;
   sessinfo_map_.get(Key(sessid), sess_info);
   if (NULL != sess_info) {
+#ifdef OB_BUILD_AUDIT_SECURITY
+    if (!sess_info->get_is_deserialized()) {
+      ObString empty_comment_text;
+      sess_info->update_alive_time_stat();
+      int64_t cur_timeout_backup = THIS_WORKER.get_timeout_ts();
+      THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + OB_MAX_USER_SPECIFIED_TIMEOUT);
+      ObSecurityAuditUtils::handle_security_audit(*sess_info,
+                                                  stmt::T_LOGOFF,
+                                                  ObString::make_string("DISCONNECT"),
+                                                  empty_comment_text,
+                                                  ret);
+      THIS_WORKER.set_timeout_ts(cur_timeout_backup);
+    }
+#endif
     if (OB_UNLIKELY(OB_SUCCESS != sess_info->on_user_disconnect())) {
       LOG_WARN("user disconnect failed", K(ret), K(sess_info->get_user_id()));
     }

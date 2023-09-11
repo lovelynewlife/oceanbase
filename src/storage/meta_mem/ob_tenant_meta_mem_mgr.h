@@ -120,8 +120,8 @@ class ObTenantMetaMemMgr final
 public:
   typedef ObMetaPointerHandle<ObTabletMapKey, ObTablet> ObTabletPointerHandle;
   static const int64_t THE_SIZE_OF_HEADERS = sizeof(ObFIFOAllocator::NormalPageHeader) + sizeof(ObMetaObjBufferNode);
-  static const int64_t NORMAL_TABLET_POOL_SIZE = 4 * 1024L - THE_SIZE_OF_HEADERS; // 4KB
-  static const int64_t LARGE_TABLET_POOL_SIZE = 64 * 1024L - THE_SIZE_OF_HEADERS; // 64KB
+  static const int64_t NORMAL_TABLET_POOL_SIZE = (ABLOCK_SIZE - ABLOCK_HEADER_SIZE) / 2 - AOBJECT_META_SIZE - THE_SIZE_OF_HEADERS; // 3952B
+  static const int64_t LARGE_TABLET_POOL_SIZE = 64 * 1024L - THE_SIZE_OF_HEADERS; // 65,480B
 
   static const int64_t MIN_MODE_MAX_TABLET_CNT_IN_OBJ_POOL = 10000;
   static const int64_t MIN_MODE_MAX_MEMTABLE_CNT_IN_OBJ_POOL = 2 * MIN_MODE_MAX_TABLET_CNT_IN_OBJ_POOL;
@@ -136,7 +136,8 @@ public:
 
   static int64_t get_default_tablet_pool_count()
   {
-    return lib::is_mini_mode() ? MIN_MODE_MAX_TABLET_CNT_IN_OBJ_POOL : MAX_TABLET_CNT_IN_OBJ_POOL;
+    const bool is_small_tenant = MTL_CTX() != nullptr && MTL_MEM_SIZE() <= 2 * 1024 * 1024; // memory is less than 2GB;
+    return lib::is_mini_mode() || is_small_tenant ? MIN_MODE_MAX_TABLET_CNT_IN_OBJ_POOL : MAX_TABLET_CNT_IN_OBJ_POOL;
   }
   static int64_t get_default_normal_tablet_pool_count()
   {
@@ -186,6 +187,7 @@ public:
   //  - only for tx data table to find min log ts.
   int get_min_end_scn_for_ls(
       const ObTabletMapKey &key,
+      const SCN &ls_checkpoint,
       share::SCN &min_end_scn_from_latest,
       share::SCN &min_end_scn_from_old);
   int get_min_mds_ckpt_scn(const ObTabletMapKey &key, share::SCN &scn);
@@ -268,6 +270,7 @@ public:
   int get_tablet_pointer_initial_state(const ObTabletMapKey &key, bool &initial_state);
   int get_tablet_ddl_kv_mgr(const ObTabletMapKey &key, ObDDLKvMgrHandle &ddl_kv_mgr_handle);
   ObFullTabletCreator &get_mstx_tablet_creator() { return full_tablet_creator_; }
+  common::ObIAllocator &get_meta_cache_io_allocator() { return meta_cache_io_allocator_; }
   OB_INLINE int64_t get_total_tablet_cnt() const { return tablet_map_.count(); }
 
   int has_meta_wait_gc(bool &is_wait);
@@ -282,8 +285,11 @@ private:
   int64_t cal_adaptive_bucket_num();
   int push_tablet_into_gc_queue(ObTablet *tablet);
   void push_tablet_list_into_gc_queue(ObTablet *tablet);
-  int get_min_end_scn_from_single_tablet(
-      ObTablet *tablet, const bool is_old, share::SCN &min_end_scn);
+  int get_min_end_scn_from_single_tablet(ObTablet *tablet,
+                                         const bool is_old,
+                                         const SCN &ls_checkpoint,
+                                         share::SCN &min_end_scn);
+
 private:
   typedef ObResourceValueStore<ObMetaPointer<ObTablet>> TabletValueStore;
   typedef ObMetaObjBuffer<ObTablet, NORMAL_TABLET_POOL_SIZE> ObNormalTabletBuffer;
@@ -472,8 +478,6 @@ private:
   void batch_gc_memtable_();
 
 private:
-  int cmp_ret_;
-  HeapCompare compare_;
   common::SpinRWLock wash_lock_;
   TryWashTabletFunc wash_func_;
   const uint64_t tenant_id_;
@@ -506,6 +510,8 @@ private:
   // for washing
   TabletBufferList normal_tablet_header_;
   TabletBufferList large_tablet_header_;
+
+  common::ObConcurrentFIFOAllocator meta_cache_io_allocator_;
 
   bool is_inited_;
 };

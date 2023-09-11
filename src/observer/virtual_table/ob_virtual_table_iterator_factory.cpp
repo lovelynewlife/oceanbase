@@ -209,6 +209,7 @@
 #include "observer/virtual_table/ob_all_virtual_px_p2p_datahub.h"
 #include "observer/virtual_table/ob_all_virtual_ls_log_restore_status.h"
 #include "observer/virtual_table/ob_all_virtual_tablet_buffer_info.h"
+#include "observer/virtual_table/ob_virtual_flt_config.h"
 
 namespace oceanbase
 {
@@ -1142,6 +1143,18 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             }
             break;
           }
+          case OB_TENANT_VIRTUAL_SHOW_RESTORE_PREVIEW_TID:
+          {
+            ObTenantShowRestorePreview *restore_preview = NULL;
+            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObTenantShowRestorePreview, restore_preview))) {
+              if (OB_FAIL(restore_preview->init())) {
+                SERVER_LOG(WARN, "failed to init restore preview", K(ret));
+              } else {
+                vt_iter = static_cast<ObVirtualTableIterator *>(restore_preview);
+              }
+            }
+            break;
+          }
           case OB_TENANT_VIRTUAL_OBJECT_DEFINITION_TID:
           {
             ObGetObjectDefinition *get_object_def = NULL;
@@ -1404,6 +1417,17 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             } else {
               show_trace->set_addr(addr_);
               vt_iter = static_cast<ObVirtualTableIterator *>(show_trace);
+            }
+            break;
+          }
+          case OB_ALL_VIRTUAL_FLT_CONFIG_TID:
+          {
+            ObVirtualFLTConfig *flt_conf = NULL;
+            if (OB_FAIL(NEW_VIRTUAL_TABLE(ObVirtualFLTConfig,
+                                          flt_conf))) {
+              SERVER_LOG(WARN, "fail to create virtual table", K(ret));
+            } else {
+              vt_iter = static_cast<ObVirtualTableIterator *>(flt_conf);
             }
             break;
           }
@@ -1793,7 +1817,20 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
           }
           case OB_ALL_VIRTUAL_ASH_TID: {
             ObVirtualASH *ash = NULL;
-            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObVirtualASH, ash))) {
+            bool is_index = false;
+            if (OB_FAIL(check_is_index(*index_schema, "i1", is_index))) {
+              LOG_WARN("check is index failed", K(ret));
+            } else if (is_index) {
+              SERVER_LOG(DEBUG,
+                          "scan __all_virtual_ash table using index",
+                          K(pure_tid));
+              if (OB_FAIL(NEW_VIRTUAL_TABLE(ObVirtualASHI1, ash))) {
+                LOG_WARN("new ash index virtual table failed", K(ret));
+              }
+            } else {
+              OZ(NEW_VIRTUAL_TABLE(ObVirtualASH, ash));
+            }
+            if (OB_SUCC(ret)) {
               ash->set_allocator(&allocator);
               ash->set_addr(addr_);
               if (OB_SUCC(ret)) {

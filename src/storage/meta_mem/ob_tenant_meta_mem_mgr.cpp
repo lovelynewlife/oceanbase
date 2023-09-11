@@ -127,9 +127,7 @@ void ObTenantMetaMemMgr::TabletPersistTask::runTimerTask()
 }
 
 ObTenantMetaMemMgr::ObTenantMetaMemMgr(const uint64_t tenant_id)
-  : cmp_ret_(OB_SUCCESS),
-    compare_(cmp_ret_),
-    wash_lock_(common::ObLatchIds::TENANT_META_MEM_MGR_LOCK),
+  : wash_lock_(common::ObLatchIds::TENANT_META_MEM_MGR_LOCK),
     wash_func_(*this),
     tenant_id_(tenant_id),
     bucket_lock_(),
@@ -154,6 +152,7 @@ ObTenantMetaMemMgr::ObTenantMetaMemMgr(const uint64_t tenant_id)
     tx_data_memtable_pool_(tenant_id, MAX_TX_DATA_MEMTABLE_CNT_IN_OBJ_POOL, "TxDataMemObj", ObCtxIds::DEFAULT_CTX_ID),
     tx_ctx_memtable_pool_(tenant_id, MAX_TX_CTX_MEMTABLE_CNT_IN_OBJ_POOL, "TxCtxMemObj", ObCtxIds::DEFAULT_CTX_ID),
     lock_memtable_pool_(tenant_id, MAX_LOCK_MEMTABLE_CNT_IN_OBJ_POOL, "LockMemObj", ObCtxIds::DEFAULT_CTX_ID),
+    meta_cache_io_allocator_(),
     is_inited_(false)
 {
   for (int64_t i = 0; i < ObITable::TableType::MAX_TABLE_TYPE; i++) {
@@ -185,6 +184,7 @@ int ObTenantMetaMemMgr::init()
   lib::ObMemAttr mem_attr(tenant_id_, "MetaAllocator", ObCtxIds::META_OBJ_CTX_ID);
   lib::ObMemAttr map_attr(tenant_id_, "TabletMap");
   lib::ObMemAttr other_attr(tenant_id_, "T3MOtherMem");
+  const int64_t mem_limit = 4 * 1024 * 1024 * 1024LL;
   const int64_t bucket_num = cal_adaptive_bucket_num();
   const int64_t pin_set_bucket_num = common::hash::cal_next_prime(DEFAULT_BUCKET_NUM);
   if (OB_UNLIKELY(is_inited_)) {
@@ -204,6 +204,8 @@ int ObTenantMetaMemMgr::init()
     LOG_WARN("fail to create thread for t3m", K(ret));
   } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::TenantMetaMemMgr, persist_tg_id_))) {
     LOG_WARN("fail to create thread for t3m", K(ret));
+  } else if (OB_FAIL(meta_cache_io_allocator_.init(OB_MALLOC_MIDDLE_BLOCK_SIZE, "StorMetaCacheIO", tenant_id_, mem_limit))) {
+    LOG_WARN("fail to init storage meta cache io allocator", K(ret), K_(tenant_id), K(mem_limit));
   } else {
     init_pool_arr();
     is_inited_ = true;
@@ -319,6 +321,7 @@ void ObTenantMetaMemMgr::destroy()
   for (int64_t i = 0; i <= ObITable::TableType::REMOTE_LOGICAL_MINOR_SSTABLE; i++) {
     pool_arr_[i] = nullptr;
   }
+  meta_cache_io_allocator_.destroy();
   is_inited_ = false;
 }
 
@@ -377,6 +380,19 @@ int ObTenantMetaMemMgr::push_table_into_gc_queue(ObITable *table, const ObITable
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("fail to allocate memory for TableGCItem", K(ret), K(size));
   } else {
+    if (ObITable::TableType::DATA_MEMTABLE == table_type) {
+      ObMemtable *memtable = static_cast<ObMemtable *>(table);
+      memtable::ObMtStat& mt_stat = memtable->get_mt_stat();
+      if (0 == mt_stat.push_table_into_gc_queue_time_) {
+        mt_stat.push_table_into_gc_queue_time_ = ObTimeUtility::current_time();
+        if (0 != mt_stat.release_time_
+            && mt_stat.push_table_into_gc_queue_time_ -
+               mt_stat.release_time_ >= 10 * 1000 * 1000 /*10s*/) {
+          LOG_WARN("It cost too much time to dec ref cnt", K(ret), KPC(memtable), K(lbt()));
+        }
+      }
+    }
+
     item->table_ = table;
     item->table_type_ = table_type;
     if (OB_FAIL(free_tables_queue_.push((ObLink *)item))) {
@@ -794,11 +810,12 @@ void *ObTenantMetaMemMgr::recycle_tablet(ObTablet *tablet, TabletBufferList *hea
 
 int ObTenantMetaMemMgr::get_min_end_scn_for_ls(
     const ObTabletMapKey &key,
+    const SCN &ls_checkpoint,
     SCN &min_end_scn_from_latest,
     SCN &min_end_scn_from_old)
 {
   int ret = OB_SUCCESS;
-  ObArenaAllocator allocator;
+  ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "GetMinScn"));
   ObTabletHandle handle;
   min_end_scn_from_latest.set_max();
   min_end_scn_from_old.set_max();
@@ -814,7 +831,7 @@ int ObTenantMetaMemMgr::get_min_end_scn_for_ls(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected invalid tablet handle", K(ret), K(key), K(handle));
   } else if (OB_FAIL(get_min_end_scn_from_single_tablet(
-      handle.get_obj(), false/*is_old*/, min_end_scn_from_latest))) {
+      handle.get_obj(), false/*is_old*/, ls_checkpoint, min_end_scn_from_latest))) {
     LOG_WARN("fail to get min end scn from latest tablet", K(ret), K(key), K(handle));
   } else {
     // get_ls_min_end_scn_in_latest_tablets must before get_ls_min_end_scn_in_old_tablets
@@ -829,7 +846,7 @@ int ObTenantMetaMemMgr::get_min_end_scn_for_ls(
     } else {
       // since the last tablet may not be the oldest, we traverse the wholo chain
       while (OB_SUCC(ret) && OB_NOT_NULL(tablet)) {
-        if (OB_FAIL(get_min_end_scn_from_single_tablet(tablet, true/*is_old*/, min_end_scn_from_old))) {
+        if (OB_FAIL(get_min_end_scn_from_single_tablet(tablet, true/*is_old*/, ls_checkpoint, min_end_scn_from_old))) {
           LOG_WARN("fail to get min end scn from old tablet", K(ret), KP(tablet));
         } else {
           tablet = tablet->get_next_tablet();
@@ -840,8 +857,10 @@ int ObTenantMetaMemMgr::get_min_end_scn_for_ls(
   return ret;
 }
 
-int ObTenantMetaMemMgr::get_min_end_scn_from_single_tablet(
-    ObTablet *tablet, const bool is_old, SCN &min_end_scn)
+int ObTenantMetaMemMgr::get_min_end_scn_from_single_tablet(ObTablet *tablet,
+                                                           const bool is_old,
+                                                           const SCN &ls_checkpoint,
+                                                           SCN &min_end_scn)
 {
   int ret = OB_SUCCESS;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
@@ -853,25 +872,26 @@ int ObTenantMetaMemMgr::get_min_end_scn_from_single_tablet(
   } else {
     ObITable *first_minor_mini_sstable =
         table_store_wrapper.get_member()->get_minor_sstables().get_boundary_table(false /*is_last*/);
-    ObITable *last_major_sstable = nullptr;
 
     SCN end_scn = SCN::max_scn();
     if (OB_NOT_NULL(first_minor_mini_sstable)) {
       // step 1 : get end_scn if minor/mini sstable exist
       end_scn = first_minor_mini_sstable->get_end_scn();
     } else if (is_old) {
+      // step 2 :
       /* If an old tablet has no minor sstable, it means that all the data inside it has been assigned version numbers,
          and therefore it does not depend on trx data.
          Thus, it's only necessary to focus on the recycle scn provided by the latest tablet. */
-    } else if (OB_NOT_NULL(last_major_sstable =
-        table_store_wrapper.get_member()->get_major_sstables().get_boundary_table(true /*is_last*/))) {
-      // step 2 : if minor/mini sstable do not exist, get end_scn from major sstable
-      end_scn = last_major_sstable->get_end_scn();
     } else {
-      // step 3 : if minor/major sstable do not exist, get end_scn from tablet clog_checkpoint
-      end_scn = tablet->get_tablet_meta().clog_checkpoint_scn_;
+      // step 3 : if minor sstable do not exist, us max{tablet_clog_checkpoint, ls_clog_checkpoint} as end_scn
+      end_scn = SCN::max(tablet->get_tablet_meta().clog_checkpoint_scn_, ls_checkpoint);
+      // the clog with scn of checkpoint scn may depend on the tx data with a commit scn of checkpoint scn
+      end_scn = SCN::max(SCN::scn_dec(end_scn), SCN::min_scn());
     }
-    min_end_scn = MIN(end_scn, min_end_scn);
+
+    if (end_scn < min_end_scn) {
+      min_end_scn = end_scn;
+    }
   }
   return ret;
 }
@@ -881,7 +901,7 @@ int ObTenantMetaMemMgr::get_min_mds_ckpt_scn(const ObTabletMapKey &key, share::S
   int ret = OB_SUCCESS;
   SCN min_scn_from_old_tablets = SCN::max_scn();
   SCN min_scn_from_cur_tablet = SCN::max_scn();
-  ObArenaAllocator allocator;
+  ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "GetMinMdsScn"));
   ObTabletHandle handle;
 
   if (OB_UNLIKELY(!is_inited_)) {
@@ -1169,7 +1189,11 @@ void ObTenantMetaMemMgr::mark_mds_table_deleted_(const ObTabletMapKey &key)
   int ret = OB_SUCCESS;
   ObTabletPointerHandle ptr_handle(tablet_map_);
   if (OB_FAIL(tablet_map_.get(key, ptr_handle))) {
-    LOG_WARN_RET(OB_ERR_UNEXPECTED, "fail to get pointer from map", KR(ret), KPC(ptr_handle.get_resource_ptr()));
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      // do nothing
+    } else {
+      LOG_WARN_RET(OB_ERR_UNEXPECTED, "fail to get pointer from map", KR(ret), "resource_ptr", ptr_handle.get_resource_ptr());
+    }
   } else {
     if (OB_ISNULL(ptr_handle.get_resource_ptr())) {
       LOG_ERROR_RET(OB_ERR_UNEXPECTED, "ptr_handle is null", KPC(ptr_handle.get_resource_ptr()));
@@ -1777,11 +1801,16 @@ int ObTenantMetaMemMgr::compare_and_swap_tablet(
     const ObTabletHandle &old_handle,
     ObTabletHandle &new_handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   const ObMetaDiskAddr &new_addr = new_handle.get_obj()->get_tablet_addr();
   const ObTablet *old_tablet = old_handle.get_obj();
   const ObTablet *new_tablet = new_handle.get_obj();
+
+#ifdef ERRSIM
+  ErrsimModuleGuard guard(ObErrsimModuleType::ERRSIM_MODULE_NONE);
+#endif
+
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObTenantMetaMemMgr hasn't been initialized", K(ret));
@@ -1824,12 +1853,9 @@ int ObTenantMetaMemMgr::compare_and_swap_tablet(
     // read the newest initial state.
     // Maybe we should let the two steps, CAS opereation and set initial state, be an atomic operation.
     // The same issue exists on all 4.x version, and should be solved in future.
-    do {
-      // TODO(@bowen.gbw): delete the infinite retry later
-      if (OB_FAIL(new_handle.get_obj()->check_and_set_initial_state())) {
-        LOG_WARN("failed to check and set initial state", K(ret), K(key));
-      }
-    } while (OB_TIMEOUT == ret || OB_ALLOCATE_MEMORY_FAILED == ret || OB_DISK_HUNG == ret);
+    if (OB_FAIL(new_handle.get_obj()->check_and_set_initial_state())) {
+      LOG_WARN("failed to check and set initial state", K(ret), K(key));
+    }
   }
 
   LOG_DEBUG("compare and swap object", K(ret), KPC(new_handle.get_obj()), K(lbt()));
@@ -1889,7 +1915,7 @@ void ObTenantMetaMemMgr::release_tablet(ObTablet *tablet)
     ObMetaObjBufferNode &linked_node = ObMetaObjBufferHelper::get_linked_node(reinterpret_cast<char *>(tablet));
     ObMetaObjBufferHeader &buf_header = ObMetaObjBufferHelper::get_buffer_header(reinterpret_cast<char *>(tablet));
     void *buf = ObMetaObjBufferHelper::get_meta_obj_buffer_ptr(reinterpret_cast<char *>(tablet));
-    LOG_DEBUG("release tablet", K(buf_header), KP(buf));
+    LOG_DEBUG("release tablet", K(buf_header), KP(buf), KP(tablet));
     SpinWLockGuard guard(wash_lock_);
     if (0 != tablet->get_ref()) {
       LOG_ERROR_RET(OB_ERR_UNEXPECTED, "ObTablet reference count may be leak", KP(tablet));
@@ -1900,7 +1926,6 @@ void ObTenantMetaMemMgr::release_tablet(ObTablet *tablet)
       large_tablet_header_.remove(&linked_node);
       large_tablet_buffer_pool_.free_obj(buf);
     }
-    LOG_DEBUG("release tablet", K(buf_header.buf_len_), KP(tablet));
   }
 }
 
@@ -2170,7 +2195,7 @@ int ObTenantMetaMemMgr::try_wash_tablet(const std::type_info &type_info, void *&
     LOG_WARN("fail to acquire tablet", K(ret));
   } else {
     tablet_handle.set_wash_priority(WashTabletPriority::WTP_LOW);
-    ObArenaAllocator allocator("WashTablet");
+    ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "WashTablet"));
     CandidateTabletInfo info;
     time_guard.click("prepare");
     SpinWLockGuard guard(wash_lock_);

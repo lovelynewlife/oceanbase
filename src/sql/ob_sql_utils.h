@@ -330,7 +330,9 @@ public:
                                           const stmt::StmtType stmt_type = stmt::T_NONE,
                                           const bool is_index_table = false);
   static int check_index_name(const common::ObCollationType cs_type, common::ObString &name);
-  static int check_column_name(const common::ObCollationType cs_type, common::ObString &name);
+  static int check_column_name(const common::ObCollationType cs_type,
+                               common::ObString &name,
+                               bool is_from_view = false);
   static int check_and_copy_column_alias_name(const common::ObCollationType cs_type, const bool is_auto_gen,
                                               common::ObIAllocator *allocator, common::ObString &name);
   static int check_and_convert_context_namespace(const common::ObCollationType cs_type,
@@ -568,7 +570,6 @@ public:
   static bool is_fk_nested_sql(ObExecContext *cur_ctx);
   static bool is_nested_sql(ObExecContext *cur_ctx);
   static bool is_select_from_dual(ObExecContext &ctx);
-  static bool is_batch_execute(ObSqlCtx &sql_ctx);
 
   static int get_obj_from_ext_obj(const ObObjParam &ext_obj, int64_t pos, ObObj *&obj);
   static int get_result_from_ctx(ObExecContext &exec_ctx,
@@ -603,6 +604,12 @@ public:
   static bool is_external_files_on_local_disk(const common::ObString &url);
   static int check_location_access_priv(const common::ObString &location, ObSQLSessionInfo *session);
 
+#ifdef OB_BUILD_SPM
+  static int handle_plan_baseline(const ObAuditRecordData &audit_record,
+                                  ObPhysicalPlan *plan,
+                                  const int ret_code,
+                                  ObSqlCtx &sql_ctx);
+#endif
   static int async_recompile_view(const share::schema::ObTableSchema &old_view_schema,
                                   ObSelectStmt *select_stmt,
                                   bool reset_column_infos,
@@ -1039,7 +1046,8 @@ enum PreCalcExprExpectResult {
   PRE_CALC_ERROR,
   PRE_CALC_PRECISE,
   PRE_CALC_NOT_PRECISE,
-  PRE_CALC_ROWID
+  PRE_CALC_ROWID,
+  PRE_CALC_LOSSLESS_CAST, // only used in rewrite, will be converted to cast(expr, type) = expr
 };
 
 struct ObExprConstraint

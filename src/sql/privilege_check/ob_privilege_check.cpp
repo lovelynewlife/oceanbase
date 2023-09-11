@@ -487,7 +487,7 @@ int get_proc_db_name(
 
 int get_seq_db_name(
     uint64_t tenant_id,
-    ObSchemaGetterGuard &schema_guard,
+    const ObSqlCtx &ctx,
     uint64_t obj_id,
     ObString &db_name)
 {
@@ -495,10 +495,15 @@ int get_seq_db_name(
   uint64_t db_id = OB_INVALID_ID;
   const ObSequenceSchema *seq_schema = NULL;
   const ObDatabaseSchema *db_schema = NULL;
-  OZ (schema_guard.get_sequence_schema(tenant_id, obj_id, seq_schema));
-  CK (seq_schema != NULL);
+  CK(ctx.schema_guard_);
+  CK(ctx.session_info_);
+  OZ(ctx.session_info_->get_dblink_sequence_schema(obj_id, seq_schema));
+  if (OB_SUCC(ret) && NULL == seq_schema) {
+    OZ (ctx.schema_guard_->get_sequence_schema(tenant_id, obj_id, seq_schema));
+    CK (seq_schema != NULL);
+  }
   OX (db_id = seq_schema->get_database_id());
-  OZ (schema_guard.get_database_schema(tenant_id,
+  OZ (ctx.schema_guard_->get_database_schema(tenant_id,
                                        db_id,
                                        db_schema));
   CK (db_schema != NULL);
@@ -629,7 +634,7 @@ int add_seqs_priv_in_dml_inner(
     need_priv.obj_type_ = static_cast<uint64_t>(ObObjectType::SEQUENCE);
     need_priv.check_flag_ = check_flag;
     OZ (get_seq_db_name(ctx.session_info_->get_login_tenant_id(),
-                          *ctx.schema_guard_,
+                          ctx,
                           obj_id, db_name));
     OX (need_priv.db_name_ = db_name);
     OZ (set_need_priv_owner_id(ctx, need_priv));
@@ -1755,7 +1760,8 @@ int get_sys_tenant_alter_system_priv(
              stmt::T_BACKUP_CLEAN != basic_stmt->get_stmt_type() &&
              stmt::T_DELETE_POLICY != basic_stmt->get_stmt_type() &&
              stmt::T_BACKUP_KEY != basic_stmt->get_stmt_type() &&
-             stmt::T_RECOVER != basic_stmt->get_stmt_type()) {
+             stmt::T_RECOVER != basic_stmt->get_stmt_type() &&
+             stmt::T_TABLE_TTL != basic_stmt->get_stmt_type()) {
     ret = OB_ERR_NO_PRIVILEGE;
     LOG_WARN("Only sys tenant can do this operation",
              K(ret), "stmt type", basic_stmt->get_stmt_type());
@@ -3054,7 +3060,8 @@ int ObPrivilegeCheck::can_do_grant_on_db_table(
       || 0 == db_name.case_compare(OB_RECYCLEBIN_SCHEMA_NAME)
       || 0 == db_name.case_compare(OB_PUBLIC_SCHEMA_NAME)
       || 0 == db_name.case_compare(OB_SYS_DATABASE_NAME)) {
-      if (OB_PRIV_HAS_OTHER(priv_set, OB_PRIV_SELECT)) {
+      if (0 == db_name.case_compare(OB_INFORMATION_SCHEMA_NAME)
+        || OB_PRIV_HAS_OTHER(priv_set, OB_PRIV_SELECT)) {
         ret = OB_ERR_NO_DB_PRIVILEGE;
         LOG_USER_ERROR(OB_ERR_NO_DB_PRIVILEGE, session_priv.user_name_.length(), session_priv.user_name_.ptr(),
                        session_priv.host_name_.length(),session_priv.host_name_.ptr(),
@@ -3070,6 +3077,13 @@ int ObPrivilegeCheck::can_do_grant_on_db_table(
                        table_name.length(), table_name.ptr());
       }
     } else { }//do nothing
+  } else {
+    if (0 == db_name.case_compare(OB_INFORMATION_SCHEMA_NAME)) {
+      ret = OB_ERR_NO_DB_PRIVILEGE;
+      LOG_USER_ERROR(OB_ERR_NO_DB_PRIVILEGE, session_priv.user_name_.length(), session_priv.user_name_.ptr(),
+                     session_priv.host_name_.length(),session_priv.host_name_.ptr(),
+                     db_name.length(), db_name.ptr());
+    }
   }
   return ret;
 }

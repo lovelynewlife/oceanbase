@@ -27,6 +27,11 @@ namespace oceanbase
 {
 namespace rootserver
 {
+bool is_parallel_ddl(const obrpc::ObRpcPacketCode pcode)
+{
+  return obrpc::OB_TRUNCATE_TABLE_V2 == pcode
+         || obrpc::OB_PARALLEL_CREATE_TABLE == pcode;
+}
 
 // precondition: enable_ddl = false
 bool is_allow_when_disable_ddl(const obrpc::ObRpcPacketCode pcode, const obrpc::ObDDLArg *ddl_arg)
@@ -129,10 +134,16 @@ protected:
             RS_LOG(WARN, "ddl operation not allow in standby", KR(ret), KPC(ddl_arg_));
           } else {
             auto *tsi_value = GET_TSI(share::schema::TSIDDLVar);
+            // used for parallel ddl
+            auto *tsi_generator = GET_TSI(share::schema::TSISchemaVersionGenerator);
             if (OB_ISNULL(tsi_value)) {
               ret = OB_ERR_UNEXPECTED;
               RS_LOG(WARN, "Failed to get TSIDDLVar", K(ret), K(pcode));
+            } else if (OB_ISNULL(tsi_generator)) {
+              ret = OB_ERR_UNEXPECTED;
+              RS_LOG(WARN, "Failed to get TSISchemaVersionGenerator", KR(ret), K(pcode));
             } else {
+              tsi_generator->reset();
               tsi_value->exec_tenant_id_ = ddl_arg_->exec_tenant_id_;
               tsi_value->ddl_id_str_ = NULL;
               const common::ObString &ddl_id_str = ddl_arg_->ddl_id_str_;
@@ -183,7 +194,7 @@ protected:
           int64_t start_ts = ObTimeUtility::current_time();
           bool with_ddl_lock = false;
           if (is_ddl_like_) {
-            if (obrpc::OB_TRUNCATE_TABLE_V2 == pcode) {
+            if (is_parallel_ddl(pcode)) {
               if (OB_FAIL(root_service_.get_ddl_service().ddl_rlock())) {
                 RS_LOG(WARN, "root service ddl lock fail", K(ret), K(ddl_arg_));
               }
@@ -329,6 +340,8 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_TABLEGROUP, ObRpcCreateTablegroupP,
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_TABLEGROUP, ObRpcDropTablegroupP, drop_tablegroup(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ALTER_TABLEGROUP, ObRpcAlterTablegroupP, alter_tablegroup(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_TABLE, ObRpcCreateTableP, create_table(arg_, result_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_RECOVER_RESTORE_TABLE_DDL, ObRpcRecoverRestoreTableDDLP, recover_restore_table_ddl(arg_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_PARALLEL_CREATE_TABLE, ObRpcParallelCreateTableP, parallel_create_table(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ALTER_TABLE, ObRpcAlterTableP, alter_table(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_TABLE, ObRpcDropTableP, drop_table(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_RENAME_TABLE, ObRpcRenameTableP, rename_table(arg_));
@@ -455,6 +468,12 @@ DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_RELOAD_SERVER, ObRpcAdminReloadServerP, 
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_RELOAD_ZONE, ObRpcAdminReloadZoneP, admin_reload_zone());
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_CLEAR_MERGE_ERROR, ObRpcAdminClearMergeErrorP, admin_clear_merge_error(arg_));
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_MIGRATE_UNIT, ObRpcAdminMigrateUnitP, admin_migrate_unit(arg_));
+#ifdef OB_BUILD_ARBITRATION
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_ADD_ARBITRATION_SERVICE, ObRpcAdminAddArbitrationServiceP, admin_add_arbitration_service(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_REMOVE_ARBITRATION_SERVICE, ObRpcAdminRemoveArbitrationServiceP, admin_remove_arbitration_service(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_REPLACE_ARBITRATION_SERVICE, ObRpcAdminReplaceArbitrationServiceP, admin_replace_arbitration_service(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_REMOVE_CLUSTER_INFO_FROM_ARB_SERVER, ObRpcRemoveClusterInfoFromArbServerP, remove_cluster_info_from_arb_server(arg_));
+#endif
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_UPGRADE_VIRTUAL_SCHEMA, ObRpcAdminUpgradeVirtualSchemaP, admin_upgrade_virtual_schema());
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RUN_JOB, ObRpcRunJobP, run_job(arg_));
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RUN_UPGRADE_JOB, ObRpcRunUpgradeJobP, run_upgrade_job(arg_));
@@ -506,6 +525,7 @@ DEFINE_RS_RPC_PROCESSOR(obrpc::OB_BACKUP_MANAGE, ObBackupManageP, handle_backup_
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_BACKUP_CLEAN, ObBackupCleanP, handle_backup_delete(arg_));
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_DELETE_POLICY, ObDeletePolicyP, handle_delete_policy(arg_));
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_PHYSICAL_RESTORE_RES, ObRpcPhysicalRestoreResultP, send_physical_restore_result(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RECOVER_TABLE, ObRecoverTableP, handle_recover_table(arg_));
 
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RS_FLUSH_OPT_STAT_MONITORING_INFO, ObRpcFlushOptStatMonitoringInfoP, flush_opt_stat_monitoring_info(arg_));
 
@@ -517,12 +537,23 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_DIRECTORY, ObRpcDropDirectoryP, drop_
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DO_CONTEXT_DDL, ObRpcDoContextDDLP, do_context_ddl(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_RECOMPILE_ALL_VIEWS_BATCH, ObRpcRecompileAllViewsBatchP, recompile_all_views_batch(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_TRY_ADD_DEP_INFOS_FOR_SYNONYM_BATCH, ObRpcTryAddDepInfosForSynonymBatchP,try_add_dep_infos_for_synonym_batch(arg_));
+#ifdef OB_BUILD_SPM
+// sql plan baseline
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RS_ACCEPT_PLAN_BASELINE, ObRpcAcceptPlanBaselineP, accept_plan_baseline(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_RS_CANCEL_EVOLVE_TASK, ObRpcCancelEvolveTaskP, cancel_evolve_task(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_LOAD_BASELINE, ObRpcAdminLoadBaselineP, admin_load_baseline(arg_));
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_LOAD_BASELINE_V2, ObRpcAdminLoadBaselineV2P, admin_load_baseline_v2(arg_, result_));
+
+#endif
 
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_ADMIN_SYNC_REWRITE_RULES, ObRpcAdminSyncRewriteRulesP, admin_sync_rewrite_rules(arg_));
 // row level security ddl
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_HANDLE_RLS_POLICY_DDL, ObRpcHandleRlsPolicyDDLP, handle_rls_policy_ddl(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_HANDLE_RLS_GROUP_DDL, ObRpcHandleRlsGroupDDLP, handle_rls_group_ddl(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_HANDLE_RLS_CONTEXT_DDL, ObRpcHandleRlsContextDDLP, handle_rls_context_ddl(arg_));
+#ifdef OB_BUILD_TDE_SECURITY
+DEFINE_RS_RPC_PROCESSOR(obrpc::OB_GET_ROOT_KEY, ObGetRootKeyP, handle_get_root_key(arg_, result_));
+#endif
 
 #undef DEFINE_RS_RPC_PROCESSOR_
 #undef DEFINE_RS_RPC_PROCESSOR

@@ -51,7 +51,7 @@ int ObFullTabletCreator::init(const uint64_t tenant_id)
   } else {
     ContextParam param;
     param.set_mem_attr(tenant_id, "MSTXCTX", common::ObCtxIds::DEFAULT_CTX_ID)
-      .set_ablock_size(64L << 10)
+      .set_ablock_size(lib::INTACT_MIDDLE_AOBJECT_SIZE)
       .set_properties(ALLOC_THREAD_SAFE);
     if (OB_FAIL(ROOT_CONTEXT->CREATE_CONTEXT(mstx_mem_ctx_, param))) {
       LOG_WARN("fail to create entity", K(ret));
@@ -221,7 +221,7 @@ int ObFullTabletCreator::persist_tablet()
         LOG_INFO("memory addr changed, push back to queue", K(ret), K(key), K(old_addr), K(addr));
       }
     } else if (OB_FAIL(old_tablet->ObITabletMdsInterface::get_tablet_status(share::SCN::max_scn(), mds_data, 0))) {
-      if (OB_EMPTY_RESULT != ret && OB_ERR_SHARED_LOCK_CONFLICT != ret) {
+      if (OB_EMPTY_RESULT != ret && OB_ERR_SHARED_LOCK_CONFLICT != ret && OB_VERSION_NOT_MATCH != ret) {
         LOG_ERROR("fail to get tablet status", K(ret), K(key), K(addr), K(old_handle), K(old_tablet->is_empty_shell()));
       } else {
         tmp_fail = true;

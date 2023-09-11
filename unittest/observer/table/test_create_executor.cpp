@@ -109,20 +109,6 @@ void create_table_schema(ObTableSchema *table_schema, ObColumnSchemaV2 *columns)
   ASSERT_EQ(1, table_schema->get_partition_key_column_num());
 }
 
-ObTableApiSessNodeVal g_sess_node_val(1, NULL);
-void fake_ctx_init_common(ObTableCtx &fake_ctx, ObTableSchema *table_schema)
-{
-  fake_ctx.table_schema_ = table_schema;
-  fake_ctx.tenant_id_ = table_schema->get_tenant_id();
-  fake_ctx.database_id_ = table_schema->get_database_id();
-  fake_ctx.table_name_ = table_schema->get_table_name();
-  fake_ctx.ref_table_id_ = table_schema->get_table_id();
-  fake_ctx.index_tablet_id_ = table_schema->get_table_id();
-  fake_ctx.sess_guard_.sess_node_val_ = &g_sess_node_val;
-  g_sess_node_val.is_inited_ = true;
-  g_sess_node_val.sess_info_.test_init(0, 0, 0, NULL);
-}
-
 class TestCreateExecutor: public ::testing::Test
 {
 public:
@@ -130,6 +116,7 @@ public:
   virtual ~TestCreateExecutor() {}
   virtual void SetUp();
   virtual void TearDown();
+  void fake_ctx_init_common(ObTableCtx &fake_ctx, ObTableSchema *table_schema);
 public:
   ObArenaAllocator allocator_;
   MockSchemaService schema_service_;
@@ -152,6 +139,7 @@ void TestCreateExecutor::SetUp()
   schema_service_.init();
   create_table_schema(&table_schema_, columns_);
   schema_service_.add_table_schema(table_schema_, 1);
+  schema_service_.get_schema_guard(schema_guard_, 1);
   // init MTL
   ObTenantBase tbase(1);
   static ObDataAccessService instance;
@@ -162,6 +150,23 @@ void TestCreateExecutor::SetUp()
 
 void TestCreateExecutor::TearDown()
 {
+}
+
+ObTableApiSessNodeVal g_sess_node_val(1, NULL);
+void TestCreateExecutor::fake_ctx_init_common(ObTableCtx &fake_ctx, ObTableSchema *table_schema)
+{
+  fake_ctx.table_schema_ = table_schema;
+  fake_ctx.tenant_id_ = table_schema->get_tenant_id();
+  fake_ctx.database_id_ = table_schema->get_database_id();
+  fake_ctx.table_name_ = table_schema->get_table_name();
+  fake_ctx.ref_table_id_ = table_schema->get_table_id();
+  fake_ctx.index_table_id_ = fake_ctx.ref_table_id_;
+  fake_ctx.index_tablet_id_ = table_schema->get_table_id();
+  fake_ctx.sess_guard_.sess_node_val_ = &g_sess_node_val;
+  g_sess_node_val.is_inited_ = true;
+  g_sess_node_val.sess_info_.test_init(0, 0, 0, NULL);
+  g_sess_node_val.sess_info_.load_all_sys_vars(schema_guard_);
+  fake_ctx.init_phy_plan_ctx();
 }
 
 TEST_F(TestCreateExecutor, scan)
@@ -527,7 +532,12 @@ TEST_F(TestCreateExecutor, test_cache)
   // get lib cache
   ObPlanCache *lib_cache = &plan_cache;
   // construct cache key
-  ObTableApiCacheKey cache_key(1001, 1001, 1, ObTableOperationType::Type::INSERT);
+  ObTableApiCacheKey cache_key;
+  cache_key.table_id_ = 1001;
+  cache_key.index_table_id_ = 1001;
+  cache_key.schema_version_ = 1;
+  cache_key.operation_type_ = ObTableOperationType::Type::INSERT;
+  cache_key.is_ttl_table_ = false;
   // construct ctx
   ObILibCacheCtx ctx;
   // construct cache obj

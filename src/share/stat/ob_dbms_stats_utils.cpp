@@ -236,6 +236,9 @@ int ObDbmsStatsUtils::check_is_sys_table(share::schema::ObSchemaGetterGuard &sch
       table_id == share::OB_ALL_HISTOGRAM_STAT_HISTORY_TID ||
       table_id == share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TID ||//circular dependency
       table_id == share::OB_ALL_OPTSTAT_USER_PREFS_TID ||
+//bug:
+      table_id == share::OB_ALL_SYS_VARIABLE_TID ||//circular dependency
+      table_id == share::OB_ALL_SYS_VARIABLE_HISTORY_TID ||//circular dependency
       table_id == share::OB_ALL_MONITOR_MODIFIED_TID) {
     is_valid = false;
   } else if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant))) {
@@ -317,7 +320,9 @@ bool ObDbmsStatsUtils::is_virtual_index_table(const int64_t table_id)
          table_id == share::OB_ALL_VIRTUAL_SESSTAT_ORA_ALL_VIRTUAL_SESSTAT_I1_TID ||
          table_id == share::OB_ALL_VIRTUAL_SYSSTAT_ORA_ALL_VIRTUAL_SYSSTAT_I1_TID ||
          table_id == share::OB_ALL_VIRTUAL_SYSTEM_EVENT_ORA_ALL_VIRTUAL_SYSTEM_EVENT_I1_TID ||
-         table_id == share::OB_ALL_VIRTUAL_SQL_PLAN_MONITOR_ORA_ALL_VIRTUAL_SQL_PLAN_MONITOR_I1_TID;
+         table_id == share::OB_ALL_VIRTUAL_SQL_PLAN_MONITOR_ORA_ALL_VIRTUAL_SQL_PLAN_MONITOR_I1_TID ||
+         table_id == share::OB_ALL_VIRTUAL_ASH_ALL_VIRTUAL_ASH_I1_TID ||
+         table_id == share::OB_ALL_VIRTUAL_ASH_ORA_ALL_VIRTUAL_ASH_I1_TID;
 }
 
 int ObDbmsStatsUtils::parse_granularity(const ObString &granularity, ObGranularityType &granu_type)

@@ -487,7 +487,8 @@ int ObDataBackupDestConfigParser::update_inner_config_table(common::ObISQLClient
   ObBackupDestMgr dest_mgr;
   share::ObBackupPathString backup_dest;
   ObBackupDestType::TYPE dest_type = ObBackupDestType::TYPE::DEST_TYPE_BACKUP_DATA;
-  // TODO: handle trans failed after write format file.
+
+  // TODO(wangxiaohui.wxh):4.3, handle trans failed after write format file in 4.1.
   if (!type_.is_valid() || 1 != config_items_.count() ) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid parser", K(ret), KPC(this));
@@ -592,7 +593,8 @@ int ObLogArchiveDestConfigParser::update_archive_dest_config_(common::ObISQLClie
       LOG_WARN("fail to gen archive config items", K(ret)); 
     }
 
-  // TODO: handle trans failed after write format file.
+
+    // TODO(wangxiaohui.wxh):4.3, handle trans failed after write format file in 4.1.
     ARRAY_FOREACH_X(config_items_, i, cnt, OB_SUCC(ret)) {
       const BackupConfigItemPair &config_item = config_items_.at(i);
       if (OB_FAIL(helper.set_kv_item(trans, dest_no_, config_item.key_, config_item.value_))) {
@@ -685,10 +687,6 @@ int ObLogArchiveDestConfigParser::do_parse_sub_config_(const common::ObString &c
       if (OB_FAIL(do_parse_piece_switch_interval_(token, saveptr))) {
         LOG_WARN("fail to do parse piece switch interval", K(ret), K(token), K(saveptr));
       }
-    } else if (0 == STRCASECMP(token, OB_STR_LAG_TARGET)) {
-      if (OB_FAIL(do_parse_lag_target_(token, saveptr))) {
-        LOG_WARN("fail to do parse lag target", K(ret), K(token), K(saveptr));
-      }
     } else if (0 == STRCASECMP(token, OB_STR_COMPRESSION)) {
       if (OB_FAIL(do_parse_compression_(token, saveptr))) {
         LOG_WARN("fail to do parse compression", K(ret), K(token), K(saveptr));
@@ -751,21 +749,6 @@ int ObLogArchiveDestConfigParser::do_parse_piece_switch_interval_(const common::
   return ret;
 }
 
-int ObLogArchiveDestConfigParser::do_parse_lag_target_(const common::ObString &name, const common::ObString &value)
-{
-  int ret = OB_SUCCESS;
-  if (name.empty() || value.empty()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid log archve dest config", K(ret), K(name), K(value));
-  } else if (OB_FAIL(archive_dest_.set_lag_target(value.ptr()))) {
-    LOG_WARN("fail to set piece switch interval", K(ret), K(value));
-  } else if (!archive_dest_.is_lag_target_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("piece switch interval is not valid", K(ret), K(value));
-  }
-  return ret;
-}
-
 int ObLogArchiveDestConfigParser::do_parse_compression_(const common::ObString &name, const common::ObString &value)
 {
   int ret = OB_SUCCESS;
@@ -783,7 +766,7 @@ int ObLogArchiveDestConfigParser::do_parse_compression_(const common::ObString &
       LOG_WARN("fail to push back pair", K(ret), K(pair));
     }
   } else {
-  // TODO:  when log archive support compression, remove this.
+  // TODO(chongrong.th): when log archive support compression, remove this in 4.3
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("compression not support value", K(ret), K(value));
   }

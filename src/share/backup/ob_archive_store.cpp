@@ -1236,7 +1236,7 @@ int ObArchiveStore::get_whole_piece_info(const int64_t dest_id, const int64_t ro
 
 
 // Get pieces needed in the specific interval indicated by 'start_scn' and 'end_scn'.
-int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &end_scn, ObIArray<share::ObBackupPath> &pieces)
+int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &end_scn, ObIArray<share::ObRestoreLogPieceBriefInfo> &pieces)
 {
   int ret = OB_SUCCESS;
   ObArray<ObPieceKey> piece_keys;
@@ -1295,7 +1295,7 @@ int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &en
         ++i;
         continue;
       }
-
+      ObRestoreLogPieceBriefInfo piece_brief_info;
       if (cur.start_scn_ >= end_scn) {
         // this piece may be required for restore, consider the following case.
         // Piece#1 : <2022-06-01 06:00:00, 2022-06-02 05:00:00, 2022-06-02 06:00:00>
@@ -1308,8 +1308,13 @@ int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &en
           if (prev.end_scn_ == cur.start_scn_ && prev.checkpoint_scn_ < end_scn) {
             if (OB_FAIL(ObArchivePathUtil::get_piece_dir_path(dest, cur.key_.dest_id_, cur.key_.round_id_, cur.key_.piece_id_, piece_path))) {
               LOG_WARN("failed to get piece path", K(ret), K(dest), K(cur));
-            } else if (OB_FAIL(pieces.push_back(piece_path))) {
-              LOG_WARN("fail to push back path", K(ret), K(piece_path));
+            } else if (OB_FAIL(piece_brief_info.piece_path_.assign(piece_path.get_obstr()))) {
+              LOG_WARN("failed to assign piece path", K(ret));
+            } else if (OB_FALSE_IT(piece_brief_info.piece_id_ = cur.key_.piece_id_)) {
+            } else if (OB_FALSE_IT(piece_brief_info.start_scn_ = cur.start_scn_)) {
+            } else if (OB_FALSE_IT(piece_brief_info.checkpoint_scn_ = cur.checkpoint_scn_)) {
+            } else if (OB_FAIL(pieces.push_back(piece_brief_info))) {
+              LOG_WARN("fail to push back path", K(ret), K(piece_brief_info));
             } else {
               last_piece_idx = i;
             }
@@ -1317,14 +1322,18 @@ int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &en
         }
         break;
       }
-
       if (pieces.empty()) {
         // this piece may be used to restore.
         if (cur.start_scn_ <= start_scn) {
           if (OB_FAIL(ObArchivePathUtil::get_piece_dir_path(dest, cur.key_.dest_id_, cur.key_.round_id_, cur.key_.piece_id_, piece_path))) {
             LOG_WARN("failed to get piece path", K(ret), K(dest), K(cur));
-          } else if (OB_FAIL(pieces.push_back(piece_path))) {
-            LOG_WARN("fail to push back path", K(ret), K(piece_path));
+          } else if (OB_FAIL(piece_brief_info.piece_path_.assign(piece_path.get_obstr()))) {
+            LOG_WARN("failed to assign piece path", K(ret));
+          } else if (OB_FALSE_IT(piece_brief_info.piece_id_ = cur.key_.piece_id_)) {
+          } else if (OB_FALSE_IT(piece_brief_info.start_scn_ = cur.start_scn_)) {
+          } else if (OB_FALSE_IT(piece_brief_info.checkpoint_scn_ = cur.checkpoint_scn_)) {
+          } else if (OB_FAIL(pieces.push_back(piece_brief_info))) {
+            LOG_WARN("fail to push back path", K(ret), K(piece_brief_info));
           } else {
             last_piece_idx = i;
             ++i;
@@ -1353,7 +1362,12 @@ int ObArchiveStore::get_piece_paths_in_range(const SCN &start_scn, const SCN &en
           LOG_INFO("pieces are not continous", K(prev), K(cur), K(start_scn), K(end_scn));
         } else if (OB_FAIL(ObArchivePathUtil::get_piece_dir_path(dest, cur.key_.dest_id_, cur.key_.round_id_, cur.key_.piece_id_, piece_path))) {
           LOG_WARN("failed to get piece path", K(ret), K(dest), K(cur));
-        } else if (OB_FAIL(pieces.push_back(piece_path))) {
+        } else if (OB_FAIL(piece_brief_info.piece_path_.assign(piece_path.get_obstr()))) {
+          LOG_WARN("failed to assign piece path", K(ret));
+        } else if (OB_FALSE_IT(piece_brief_info.piece_id_ = cur.key_.piece_id_)) {
+        } else if (OB_FALSE_IT(piece_brief_info.start_scn_ = cur.start_scn_)) {
+        } else if (OB_FALSE_IT(piece_brief_info.checkpoint_scn_ = cur.checkpoint_scn_)) {
+        } else if (OB_FAIL(pieces.push_back(piece_brief_info))) {
           LOG_WARN("fail to push back path", K(ret), K(piece_path));
         } else {
           last_piece_idx = i;
@@ -1461,9 +1475,24 @@ int ObArchiveStore::get_round_max_checkpoint_scn(const int64_t dest_id, const in
     LOG_WARN("ObArchiveStore not init", K(ret));
   } else if (OB_FAIL(get_piece_range(dest_id, round_id, min_piece_id, max_piece_id))) {
     LOG_WARN("failed to get piece range", K(ret), K(dest_id), K(round_id));
-  } else if (OB_FALSE_IT(piece_id = max_piece_id)) {
-  } else if (OB_FAIL(get_piece_max_checkpoint_scn(dest_id, round_id, piece_id, max_checkpoint_scn))) {
-    LOG_WARN("failed to get piece max checkpoint scn", K(ret), K(dest_id), K(round_id), K(min_piece_id), K(max_checkpoint_scn));
+  } else {
+    piece_id = max_piece_id;
+    // filter empty piece
+    while (OB_SUCC(ret)) {
+      if (piece_id < min_piece_id) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no valid piece exist", K(ret), K(dest_id), K(round_id), K(min_piece_id), K(max_piece_id), K(piece_id), K(max_checkpoint_scn));
+      } else if (OB_FAIL(get_piece_max_checkpoint_scn(dest_id, round_id, piece_id, max_checkpoint_scn))) {
+        LOG_WARN("failed to get piece max checkpoint scn", K(ret), K(dest_id), K(round_id), K(min_piece_id), K(max_checkpoint_scn));
+      } else if (max_checkpoint_scn.is_min()) {
+        // empty piece
+        LOG_INFO("ignore empty piece", K(dest_id), K(round_id), K(min_piece_id), K(max_piece_id), K(piece_id));
+        --piece_id;
+      } else {
+        LOG_INFO("get max checkpoint scn", K(dest_id), K(round_id), K(min_piece_id), K(max_piece_id), K(piece_id), K(max_checkpoint_scn));
+        break;
+      }
+    }
   }
 
   return ret;

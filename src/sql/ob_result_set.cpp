@@ -250,12 +250,32 @@ int ObResultSet::on_cmd_execute()
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("invalid inner state", K(cmd_));
   } else if (cmd_->cause_implicit_commit()) {
-    // not allow implicit commit in xa trans
-    if (my_session_.associated_xa()) {
-      ret = OB_TRANS_XA_ERR_COMMIT;
+    if (my_session_.is_in_transaction() && my_session_.associated_xa()) {
+      int tmp_ret = OB_SUCCESS;
+      transaction::ObTxDesc *tx_desc = my_session_.get_tx_desc();
+      const transaction::ObXATransID xid = my_session_.get_xid();
+      const transaction::ObGlobalTxType global_tx_type = tx_desc->get_global_tx_type(xid);
+      if (transaction::ObGlobalTxType::XA_TRANS == global_tx_type) {
+        // commit is not allowed in xa trans
+        ret = OB_TRANS_XA_ERR_COMMIT;
+        LOG_WARN("COMMIT is not allowed in a xa trans", K(ret), K(xid), K(global_tx_type),
+            KPC(tx_desc));
+      } else if (transaction::ObGlobalTxType::DBLINK_TRANS == global_tx_type) {
+        transaction::ObTransID tx_id;
+        if (OB_FAIL(ObTMService::tm_commit(get_exec_context(), tx_id))) {
+          LOG_WARN("fail to do commit for dblink trans", K(ret), K(tx_id), K(xid),
+              K(global_tx_type));
+        }
+        my_session_.restore_auto_commit();
+        const bool force_disconnect = false;
+        if (OB_UNLIKELY(OB_SUCCESS != (tmp_ret = my_session_.get_dblink_context().clean_dblink_conn(force_disconnect)))) {
+          LOG_WARN("dblink transaction failed to release dblink connections", K(tmp_ret), K(tx_id), K(xid));
+        }
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected global trans type", K(ret), K(xid), K(global_tx_type), KPC(tx_desc));
+      }
       get_exec_context().set_need_disconnect(false);
-      const transaction::ObTxDesc *tx_desc = my_session_.get_tx_desc();
-      LOG_WARN("COMMIT is not allowed in a xa trans", K(ret), KPC(tx_desc));
     } else {
       // commit current open transaction, synchronously
       if (OB_FAIL(ObSqlTransControl::implicit_end_trans(get_exec_context(), false))) {
@@ -290,6 +310,12 @@ int ObResultSet::start_stmt()
   } else {
     if (-1 != phy_plan->tx_id_) {
       const transaction::ObTransID tx_id(phy_plan->tx_id_);
+      if (OB_FAIL(sql::ObTMService::recover_tx_for_callback(tx_id, get_exec_context()))) {
+        LOG_WARN("failed to recover dblink xa transaction", K(ret), K(tx_id));
+      } else {
+        need_revert_tx_ = true;
+        LOG_DEBUG("succ to recover dblink xa transaction", K(tx_id));
+      }
     } else {
       LOG_DEBUG("recover dblink xa skip", K(phy_plan->tx_id_));
     }
@@ -346,6 +372,9 @@ int ObResultSet::end_stmt(const bool is_rollback)
     // do nothing
   }
   if (need_revert_tx_) { // ignore ret
+    int tmp_ret = sql::ObTMService::revert_tx_for_callback(get_exec_context());
+    need_revert_tx_ = false;
+    LOG_DEBUG("revert tx for callback", K(tmp_ret));
   }
   NG_TRACE(end_stmt);
   return ret;
@@ -418,7 +447,7 @@ bool ObResultSet::transaction_set_violation_and_retry(int &err, int64_t &retry_t
   ObSqlCtx *sql_ctx = get_exec_context().get_sql_ctx();
   bool is_batched_stmt = false;
   if (sql_ctx != nullptr) {
-    is_batched_stmt = sql_ctx->multi_stmt_item_.is_batched_multi_stmt();
+    is_batched_stmt = sql_ctx->is_batch_params_execute();
   }
   if ((OB_SNAPSHOT_DISCARDED == err
        || OB_TRANSACTION_SET_VIOLATION == err)
@@ -557,7 +586,10 @@ OB_INLINE void ObResultSet::store_affected_rows(ObPhysicalPlanCtx &plan_ctx)
       && (lib::is_oracle_mode() || !is_pl_stmt(get_stmt_type()))) {
     affected_row = 0;
   } else if (stmt::T_SELECT == get_stmt_type()) {
-    affected_row = lib::is_oracle_mode() ? plan_ctx.get_affected_rows() : -1;
+    affected_row = plan_ctx.get_affected_rows();
+    if (lib::is_mysql_mode() && 0 == affected_row) {
+      affected_row = -1;
+    }
   } else {
     affected_row = get_affected_rows();
   }
@@ -953,6 +985,23 @@ OB_INLINE int ObResultSet::auto_end_plan_trans(ObPhysicalPlan& plan,
         async = false;
       } else {
         // 外部SQL请求，走异步接口
+#ifdef OB_BUILD_AUDIT_SECURITY
+        {
+          // do security audit before async end trans to avoid deadlock of query_lock.
+          //
+          // don't need to set ret
+          ObSqlCtx *sql_ctx = get_exec_context().get_sql_ctx();
+          if (OB_ISNULL(sql_ctx)) {
+            LOG_WARN("sql_ctx is null when handle security audit");
+          } else {
+            ObSecurityAuditUtils::handle_security_audit(*this,
+                                                        sql_ctx->schema_guard_,
+                                                        sql_ctx->cur_stmt_,
+                                                        ObString::make_empty_string(),
+                                                        ret);
+          }
+        }
+#endif
         int save_ret = ret;
         my_session_.get_end_trans_cb().set_last_error(ret);
         ret = ObSqlTransControl::implicit_end_trans(get_exec_context(),
@@ -1086,11 +1135,6 @@ int ObResultSet::init_cmd_exec_context(ObExecContext &exec_ctx)
     ret = OB_NOT_INIT;
     LOG_WARN("cmd or ctx is NULL", K(ret), K(cmd_), K(plan_ctx));
     ret = OB_ERR_UNEXPECTED;
-  } else if ((ObStmt::is_ddl_stmt(stmt_type_, true) || ObStmt::is_dcl_stmt(stmt_type_))
-      && stmt::T_VARIABLE_SET != stmt_type_ && my_session_.associated_xa()) {
-    ret = OB_TRANS_XA_ERR_COMMIT;
-    const transaction::ObTxDesc *tx_desc = my_session_.get_tx_desc();
-    LOG_WARN("COMMIT is not allowed in a xa trans", K(ret), KPC(tx_desc));
   } else if (OB_ISNULL(buf = get_mem_pool().alloc(sizeof(ObNewRow)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to alloc memory", K(sizeof(ObNewRow)), K(ret));
@@ -1110,9 +1154,14 @@ int ObResultSet::init_cmd_exec_context(ObExecContext &exec_ctx)
 }
 
 // obmp_query中重试整个SQL之前，可能需要调用本接口来刷新Location，以避免总是发给了错误的服务器
-void ObResultSet::refresh_location_cache(bool is_nonblock, int err)
+void ObResultSet::refresh_location_cache_by_errno(bool is_nonblock, int err)
 {
-  DAS_CTX(get_exec_context()).get_location_router().refresh_location_cache(is_nonblock, err);
+  DAS_CTX(get_exec_context()).get_location_router().refresh_location_cache_by_errno(is_nonblock, err);
+}
+
+void ObResultSet::force_refresh_location_cache(bool is_nonblock, int err)
+{
+  DAS_CTX(get_exec_context()).get_location_router().force_refresh_location_cache(is_nonblock, err);
 }
 
 // 告诉mysql是否要传入一个EndTransCallback
@@ -1632,6 +1681,15 @@ void ObResultSet::replace_lob_type(const ObSQLSessionInfo &session,
       }
     }
     LOG_TRACE("init field", K(is_use_lob_locator), K(field), K(mfield.type_));
+  } else {
+    if (mfield.type_ == obmysql::EMySQLFieldType::MYSQL_TYPE_TINY_BLOB ||
+        mfield.type_ == obmysql::EMySQLFieldType::MYSQL_TYPE_MEDIUM_BLOB ||
+        mfield.type_ == obmysql::EMySQLFieldType::MYSQL_TYPE_LONG_BLOB) {
+      // compat mysql-jdbc
+      // for 5.x, always return MYSQL_TYPE_BLOB
+      // for 8.x always return MYSQL_TYPE_BLOB, and do text type judge in mysql-jdbc by length
+      mfield.type_ = obmysql::EMySQLFieldType::MYSQL_TYPE_BLOB;
+    }
   }
 }
 
@@ -1678,9 +1736,10 @@ bool ObResultSet::has_implicit_cursor() const
   return bret;
 }
 
-int ObResultSet::switch_implicit_cursor()
+int ObResultSet::switch_implicit_cursor(int64_t &affected_rows)
 {
   int ret = OB_SUCCESS;
+  affected_rows = 0;
   ObPhysicalPlanCtx *plan_ctx = get_exec_context().get_physical_plan_ctx();
   if (OB_ISNULL(plan_ctx)) {
     ret = OB_ERR_UNEXPECTED;
@@ -1690,7 +1749,7 @@ int ObResultSet::switch_implicit_cursor()
       LOG_WARN("cursor_idx is invalid", K(ret));
     }
   } else {
-    set_affected_rows(plan_ctx->get_affected_rows());
+    affected_rows = plan_ctx->get_affected_rows();
     memset(message_, 0, sizeof(message_));
     if (OB_FAIL(set_mysql_info())) {
       LOG_WARN("set mysql info failed", K(ret));

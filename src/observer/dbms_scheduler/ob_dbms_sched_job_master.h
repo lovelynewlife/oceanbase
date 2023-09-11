@@ -24,12 +24,12 @@
 #include "lib/lock/ob_spin_lock.h"
 #include "lib/thread/ob_simple_thread_pool.h"
 #include "lib/task/ob_timer.h"
-#include "lib/queue/ob_lighty_queue.h"
 #include "lib/container/ob_iarray.h"
 
 #include "share/schema/ob_schema_service.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 
+#include "observer/dbms_job/ob_dbms_job_utils.h"
 #include "rootserver/ob_ddl_service.h"
 
 
@@ -47,7 +47,7 @@ private:
   virtual void handle(void *task);
 };
 
-class ObDBMSSchedJobKey
+class ObDBMSSchedJobKey : public common::ObLink
 {
 public:
   ObDBMSSchedJobKey(
@@ -57,7 +57,7 @@ public:
   : tenant_id_(tenant_id),
     is_oracle_tenant_(is_oracle_tenant),
     job_id_(job_id),
-    execute_at_(execute_at), 
+    execute_at_(execute_at),
     delay_(delay),
     check_job_(check_job),
     check_new_(check_new),
@@ -74,6 +74,7 @@ public:
   OB_INLINE bool is_check() { return check_job_ || check_new_ || check_new_tenant_; }
   OB_INLINE bool is_check_new() { return check_new_; }
   OB_INLINE bool is_check_new_tenant() { return check_new_tenant_; }
+  OB_INLINE bool is_purge_run_detail() { return purge_run_detail_; }
 
   OB_INLINE void set_tenant_id(uint64_t tenant_id) { tenant_id_ = tenant_id; }
   OB_INLINE void set_job_id(uint64_t job_id) { job_id_ = job_id; }
@@ -84,6 +85,8 @@ public:
   OB_INLINE void set_check_job(bool check_job) { check_job_ = check_job; }
   OB_INLINE void set_check_new(bool check_new) { check_new_ = check_new; }
   OB_INLINE void set_check_new_tenant(bool check_new) { check_new_tenant_ = check_new; }
+  OB_INLINE void set_purge_run_detail(bool purge_run_detail) { purge_run_detail_ = purge_run_detail; }
+
 
   OB_INLINE uint64_t get_adjust_delay() const
   {
@@ -112,6 +115,7 @@ private:
   bool check_job_; // for check job update ...
   bool check_new_; // for check new job coming ...
   bool check_new_tenant_; // for check new tenant ...
+  bool purge_run_detail_; // for purge run detail
 };
 
 class ObDBMSSchedJobTask : public ObTimerTask
@@ -130,7 +134,7 @@ public:
   virtual ~ObDBMSSchedJobTask() {}
 
   int init();
-  int start(common::ObLightyQueue *ready_queue);
+  int start(dbms_job::ObDBMSJobQueue *ready_queue);
   int stop();
   int destroy();
 
@@ -148,7 +152,7 @@ public:
 private:
   bool inited_;
   ObDBMSSchedJobKey *job_key_;
-  common::ObLightyQueue *ready_queue_;
+  dbms_job::ObDBMSJobQueue *ready_queue_;
   WaitVector wait_vector_;
 
   ObSpinLock lock_;
@@ -198,6 +202,7 @@ public:
   int get_execute_addr(ObDBMSSchedJobInfo &job_info, common::ObAddr &execute_addr);
 
   int register_check_tenant_job();
+  int register_purge_run_detail_job(int64_t tenant_id, bool is_oracle_tenant, ObDBMSSchedJobKey *job_key = NULL);
   int load_and_register_all_jobs(ObDBMSSchedJobKey *job_key = NULL);
   int load_and_register_new_jobs(uint64_t tenant_id,
                                  bool is_oracle_tenant,
@@ -226,7 +231,7 @@ private:
   obrpc::ObDBMSSchedJobRpcProxy *job_rpc_proxy_;
 
   common::ObAddr self_addr_;
-  common::ObLightyQueue ready_queue_;
+  dbms_job::ObDBMSJobQueue ready_queue_;
   ObDBMSSchedJobTask scheduler_task_;
   ObDBMSSchedJobThread scheduler_thread_;
   ObDBMSSchedTableOperator table_operator_;

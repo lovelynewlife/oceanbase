@@ -187,12 +187,14 @@ ob_set_subtarget(ob_storage backup
 )
 
 ob_set_subtarget(ob_storage tablet
+  tablet/ob_batch_create_tablet_pretty_arg.cpp
   tablet/ob_full_tablet_creator.cpp
   tablet/ob_tablet_binding_helper.cpp
   tablet/ob_tablet_binding_replay_executor.cpp
   tablet/ob_tablet_common.cpp
   tablet/ob_tablet_complex_addr.cpp
   tablet/ob_tablet_create_delete_helper.cpp
+  tablet/ob_tablet_create_replay_executor.cpp
   tablet/ob_tablet_create_sstable_param.cpp
   tablet/ob_tablet_ddl_info.cpp
   tablet/ob_tablet_id_set.cpp
@@ -324,6 +326,7 @@ ob_set_subtarget(ob_storage tx
   tx/ob_xa_rpc.cpp
   tx/ob_xa_service.cpp
   tx/ob_xa_trans_heartbeat_worker.cpp
+  tx/ob_tx_ctx_mds.cpp
   tx/ob_multi_data_source.cpp
   tx/ob_tx_free_route.cpp
   tx/ob_tx_free_route_state.cpp
@@ -373,6 +376,7 @@ ob_set_subtarget(ob_storage ls
   ls/ob_ls_meta_package.cpp
   ls/ob_ls_role_handler.cpp
   ls/ob_ls_sync_tablet_seq_handler.cpp
+  ls/ob_ls_switch_checker.cpp
   ls/ob_ls_tablet_service.cpp
   ls/ob_ls_tx_service.cpp
   ls/ob_ls_saved_info.cpp
@@ -410,11 +414,12 @@ ob_set_subtarget(ob_storage access
   access/ob_i_sample_iterator.cpp
   access/ob_block_sample_iterator.cpp
   access/ob_row_sample_iterator.cpp
+  access/ob_rows_info.cpp
+  access/ob_sample_iter_helper.cpp
   access/ob_table_read_info.cpp
   access/ob_table_scan_range.cpp
   access/ob_table_access_param.cpp
   access/ob_table_access_context.cpp
-  access/ob_rows_info.cpp
   access/ob_fuse_row_cache_fetcher.cpp
   access/ob_dml_param.cpp
 )
@@ -504,6 +509,7 @@ ob_set_subtarget(ob_storage compaction
   compaction/ob_tenant_freeze_info_mgr.cpp
   compaction/ob_tenant_tablet_scheduler.cpp
   compaction/ob_schedule_dag_func.cpp
+  compaction/ob_extra_medium_info.cpp
   compaction/ob_medium_compaction_func.cpp
   compaction/ob_medium_compaction_mgr.cpp
   compaction/ob_medium_compaction_info.cpp
@@ -516,6 +522,7 @@ ob_set_subtarget(ob_storage compaction
   compaction/ob_compaction_util.cpp
   compaction/ob_partition_rows_merger.cpp
   compaction/ob_storage_locality_cache.cpp
+  compaction/ob_medium_list_checker.cpp
 )
 
 ob_set_subtarget(ob_storage concurrency_control
@@ -563,6 +570,7 @@ ob_set_subtarget(ob_storage multi_data_source
   multi_data_source/ob_mds_table_merge_dag.cpp
   multi_data_source/ob_mds_table_merge_dag_param.cpp
   multi_data_source/ob_mds_table_merge_task.cpp
+  multi_data_source/test/example_user_helper_define.cpp
 )
 
 ob_set_subtarget(ob_storage tablelock

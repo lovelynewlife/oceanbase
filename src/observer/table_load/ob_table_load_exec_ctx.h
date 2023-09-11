@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yuya.yu <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #pragma once
 
@@ -48,7 +56,14 @@ public:
 class ObTableLoadClientExecCtx : public ObTableLoadExecCtx
 {
 public:
-  ObTableLoadClientExecCtx() : allocator_(nullptr), session_info_(nullptr), timeout_ts_(0) {}
+  ObTableLoadClientExecCtx()
+    : allocator_(nullptr),
+      session_info_(nullptr),
+      timeout_ts_(0),
+      heartbeat_timeout_us_(0),
+      last_heartbeat_time_(0)
+  {
+  }
   virtual ~ObTableLoadClientExecCtx() = default;
   common::ObIAllocator *get_allocator() override { return allocator_; }
   sql::ObSQLSessionInfo *get_session_info() override { return session_info_; }
@@ -60,6 +75,8 @@ public:
   common::ObIAllocator *allocator_;
   sql::ObSQLSessionInfo *session_info_;
   int64_t timeout_ts_;
+  int64_t heartbeat_timeout_us_;
+  int64_t last_heartbeat_time_;
 };
 
 } // namespace observer

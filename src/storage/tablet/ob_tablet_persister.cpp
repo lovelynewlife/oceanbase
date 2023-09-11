@@ -73,7 +73,7 @@ void ObTabletTransformArg::reset()
 
 bool ObTabletTransformArg::is_valid() const
 {
-  return nullptr != auto_inc_seq_ptr_
+  return auto_inc_seq_addr_.is_none() ^ (nullptr != auto_inc_seq_ptr_)
       && table_store_addr_.is_none() ^ (nullptr != rowkey_read_info_ptr_)
       && tablet_meta_.is_valid()
       && table_store_addr_.is_valid()
@@ -90,9 +90,9 @@ int ObTabletPersister::persist_and_transform_tablet(
     const ObTablet &old_tablet,
     ObTabletHandle &new_handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
-  common::ObArenaAllocator allocator;
+  common::ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "PesistTranf"));
   common::ObSEArray<ObSharedBlocksWriteCtx, 16> tablet_meta_write_ctxs;
   common::ObSEArray<ObSharedBlocksWriteCtx, 16> sstable_meta_write_ctxs;
 
@@ -119,7 +119,7 @@ int ObTabletPersister::recursively_persist(
     common::ObIArray<ObSharedBlocksWriteCtx> &sstable_meta_write_ctxs,
     ObTabletHandle &new_handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   if (CLICK_FAIL(persist_and_fill_tablet(
       old_tablet, allocator, tablet_meta_write_ctxs, sstable_meta_write_ctxs, new_handle))) {
@@ -143,7 +143,7 @@ int ObTabletPersister::convert_tablet_to_mem_arg(
       ObTabletMemberWrapper<share::ObTabletAutoincSeq> &auto_inc_seq,
       ObTabletTransformArg &arg)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   arg.reset();
   if (OB_UNLIKELY(!tablet.is_valid())) {
@@ -158,7 +158,8 @@ int ObTabletPersister::convert_tablet_to_mem_arg(
   } else if (CLICK_FAIL(tablet.fetch_autoinc_seq(auto_inc_seq))) {
     LOG_WARN("fail to fetch autoinc seq", K(ret), K(tablet));
   } else {
-    arg.auto_inc_seq_ptr_ = auto_inc_seq.get_member();
+    arg.auto_inc_seq_addr_ = tablet.mds_data_.auto_inc_seq_.addr_;
+    arg.auto_inc_seq_ptr_ = arg.auto_inc_seq_addr_.is_none() ? nullptr : auto_inc_seq.get_member();
     arg.rowkey_read_info_ptr_ = tablet.rowkey_read_info_;
     arg.table_store_addr_ = tablet.table_store_addr_.addr_;
     arg.storage_schema_addr_ = tablet.storage_schema_addr_.addr_;
@@ -168,7 +169,6 @@ int ObTabletPersister::convert_tablet_to_mem_arg(
     arg.aux_tablet_info_committed_kv_addr_ = tablet.mds_data_.aux_tablet_info_.committed_kv_.addr_;
     arg.extra_medium_info_ = tablet.mds_data_.extra_medium_info_;
     arg.medium_info_list_addr_ = tablet.mds_data_.medium_info_list_.addr_;
-    arg.auto_inc_seq_addr_ = tablet.mds_data_.auto_inc_seq_.addr_;
     arg.ddl_kvs_ = tablet.ddl_kvs_;
     arg.ddl_kv_count_ = tablet.ddl_kv_count_;
     MEMCPY(arg.memtables_, tablet.memtables_, sizeof(memtable::ObIMemtable*) * MAX_MEMSTORE_CNT);
@@ -185,7 +185,7 @@ int ObTabletPersister::convert_tablet_to_disk_arg(
       ObTabletMemberWrapper<share::ObTabletAutoincSeq> &auto_inc_seq,
       ObTabletTransformArg &arg)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   arg.reset();
 
@@ -264,7 +264,7 @@ int ObTabletPersister::persist_and_fill_tablet(
     common::ObIArray<ObSharedBlocksWriteCtx> &sstable_meta_write_ctxs,
     ObTabletHandle &new_handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   common::ObSEArray<ObSharedBlockWriteInfo, 8> write_infos;
   ObTabletTransformArg arg;
@@ -272,7 +272,7 @@ int ObTabletPersister::persist_and_fill_tablet(
   const ObTabletMeta &tablet_meta = old_tablet.get_tablet_meta();
   const ObTabletMapKey key(tablet_meta.ls_id_, tablet_meta.tablet_id_);
   ObTabletPoolType type = ObTabletPoolType::TP_NORMAL;
-  ObTabletMemberWrapper<share::ObTabletAutoincSeq> auto_inc_seq;
+  ObTabletMemberWrapper<share::ObTabletAutoincSeq> auto_inc_seq; // define here to keep auto_inc_seq_ptr safe
   bool try_smaller_pool = true;
 
   if (old_tablet.is_empty_shell()) {
@@ -299,7 +299,7 @@ int ObTabletPersister::check_tablet_meta_ids(
     const common::ObIArray<ObSharedBlocksWriteCtx> &tablet_meta_write_ctxs,
     const ObTablet &tablet)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   ObSArray<MacroBlockId> meta_ids;
   ObSArray<MacroBlockId> ctx_ids;
@@ -363,7 +363,7 @@ int ObTabletPersister::acquire_tablet(
 
 int ObTabletPersister::persist_4k_tablet(common::ObArenaAllocator &allocator, ObTabletHandle &new_handle)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   ObTablet *new_tablet = new_handle.get_obj();
   ObTenantCheckpointSlogHandler *ckpt_slog_hanlder = MTL(ObTenantCheckpointSlogHandler*);
@@ -424,10 +424,10 @@ int ObTabletPersister::transform(
     char *buf,
     const int64_t len)
 {
-  TIMEGUARD_INIT(STORAGE, 10_ms, 5_s);
+  TIMEGUARD_INIT(STORAGE, 10_ms);
   int ret = OB_SUCCESS;
   ObTablet *tiny_tablet = reinterpret_cast<ObTablet *>(buf);
-  ObArenaAllocator allocator("TmpPullMemTbl");
+  ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "TmpPullMemTbl"));
   if (len <= sizeof(ObTablet) || OB_ISNULL(buf)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(buf), K(len));
@@ -437,7 +437,7 @@ int ObTabletPersister::transform(
     // buf related
     int64_t start_pos = sizeof(ObTablet);
     int64_t remain = len - start_pos;
-    common::ObArenaAllocator allocator("Transform");
+    common::ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "Transform"));
 
     LOG_DEBUG("TINY TABLET: tablet", KP(buf), K(start_pos), K(remain));
     // rowkey read info related
@@ -524,20 +524,24 @@ int ObTabletPersister::transform(
 
     // auto_inc_seq related
     if (OB_SUCC(ret)) {
-      LOG_DEBUG("TINY TABLET: tablet + rowkey_read_info + tablet store", KP(buf), K(start_pos), K(remain));
-      ObIStorageMetaObj *auto_inc_obj = nullptr;
-      const int auto_inc_seq_size = arg.auto_inc_seq_ptr_->get_deep_copy_size();
-      if (OB_LIKELY((remain - auto_inc_seq_size) > 0)) {
-        if(CLICK_FAIL(arg.auto_inc_seq_ptr_->deep_copy(buf + start_pos, remain, auto_inc_obj))) {
-          LOG_WARN("fail to deep copy auto inc seq", K(ret), K(arg.auto_inc_seq_ptr_));
-        } else {
-          tiny_tablet->mds_data_.auto_inc_seq_.ptr_ = static_cast<share::ObTabletAutoincSeq *>(auto_inc_obj);
-          remain -= auto_inc_seq_size;
-          start_pos += auto_inc_seq_size;
-        }
+      if (OB_ISNULL(arg.auto_inc_seq_ptr_)) {
+        tiny_tablet->mds_data_.auto_inc_seq_.ptr_ = nullptr;
       } else {
-        LOG_DEBUG("TINY TABLET: no enough memory for auto inc seq", K(rowkey_read_info_size), K(remain),
-            K(auto_inc_seq_size));
+        LOG_DEBUG("TINY TABLET: tablet + rowkey_read_info + tablet store", KP(buf), K(start_pos), K(remain));
+        ObIStorageMetaObj *auto_inc_obj = nullptr;
+        const int auto_inc_seq_size = arg.auto_inc_seq_ptr_->get_deep_copy_size();
+        if (OB_LIKELY((remain - auto_inc_seq_size) > 0)) {
+          if(CLICK_FAIL(arg.auto_inc_seq_ptr_->deep_copy(buf + start_pos, remain, auto_inc_obj))) {
+            LOG_WARN("fail to deep copy auto inc seq", K(ret), K(arg.auto_inc_seq_ptr_));
+          } else {
+            tiny_tablet->mds_data_.auto_inc_seq_.ptr_ = static_cast<share::ObTabletAutoincSeq *>(auto_inc_obj);
+            remain -= auto_inc_seq_size;
+            start_pos += auto_inc_seq_size;
+          }
+        } else {
+          LOG_DEBUG("TINY TABLET: no enough memory for auto inc seq", K(rowkey_read_info_size), K(remain),
+              K(auto_inc_seq_size));
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -567,7 +571,7 @@ int ObTabletPersister::fetch_and_persist_sstable(
     } else {
       ObMetaDiskAddr addr;
       ObSSTable *sstable = nullptr;
-      ObArenaAllocator tmp_allocator("PersistSSTable");
+      ObArenaAllocator tmp_allocator(common::ObMemAttr(MTL_ID(), "PersistSSTable"));
       // The sstable by cache in table store, the address is also valid. But, here we hope that all
       // members of the sstable are serialized. So, we deep copy the sstable and set mem address.
       addr.set_mem_addr(0, sizeof(ObSSTable));
@@ -717,7 +721,7 @@ int ObTabletPersister::link_write_medium_info_list(
   int ret = OB_SUCCESS;
   ObTenantCheckpointSlogHandler *ckpt_slog_hanlder = MTL(ObTenantCheckpointSlogHandler*);
   ObSharedBlockReaderWriter &reader_writer = ckpt_slog_hanlder->get_shared_block_reader_writer();
-  common::ObArenaAllocator arena_allocator("serializer");
+  common::ObArenaAllocator arena_allocator(common::ObMemAttr(MTL_ID(), "serializer"));
   ObSharedBlockWriteInfo write_info;
   ObSharedBlockLinkHandle write_handle;
 
@@ -786,7 +790,7 @@ int ObTabletPersister::load_table_store(
 {
   int ret = OB_SUCCESS;
   void *ptr = nullptr;
-  ObArenaAllocator io_allocator("PersisterTmpIO");
+  ObArenaAllocator io_allocator(common::ObMemAttr(MTL_ID(), "PersisterTmpIO"));
   if (OB_UNLIKELY(!addr.is_block())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("address type isn't disk", K(ret), K(addr));

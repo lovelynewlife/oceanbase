@@ -30,7 +30,7 @@ class ObBatchP;
 namespace common
 {
 class ObString;
-
+static constexpr char UNIX_SOCKET_CLIENT_IP[] = "unix:";
 class ObAddr
 {
   OB_UNIS_VERSION(1);
@@ -73,6 +73,8 @@ public:
   }
 
   explicit ObAddr(const easy_addr_t& addr);
+
+  explicit ObAddr(const sockaddr &addr);
 
   void reset()
   {

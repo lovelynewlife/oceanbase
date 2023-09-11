@@ -55,6 +55,10 @@ public:
   static int refresh_replace_exprs_frame(ObTableCtx &ctx,
                                          const common::ObIArray<sql::ObExpr *> &exprs,
                                          const ObTableEntity &entity);
+  static int refresh_ttl_exprs_frame(ObTableCtx &ctx,
+                                     const common::ObIArray<sql::ObExpr *> &ins_new_row,
+                                     const common::ObIArray<sql::ObExpr *> &delta_exprs,
+                                     const ObTableEntity &entity);
   static int refresh_update_exprs_frame(ObTableCtx &ctx,
                                         const common::ObIArray<sql::ObExpr *> &old_row,
                                         const common::ObIArray<sql::ObExpr *> &new_row,
@@ -95,6 +99,7 @@ private:
                                        const common::ObIArray<sql::ObExpr *> &delta_exprs,
                                        const ObTableEntity &entity);
   static int generate_full_assign_raw_exprs(ObTableCtx &ctx);
+  static int genreate_filter_exprs(ObTableCtx &ctx);
 private:
   // 通过column_name在表达式数组获取列引用表达式
   static ObRawExpr* get_ref_raw_expr(const common::ObIArray<sql::ObRawExpr *> &all_exprs,
@@ -109,8 +114,15 @@ private:
   // 构造列引用原生表达式
   static int generate_column_ref_raw_expr(ObTableCtx &ctx,
                                           const ObColumnSchemaV2 &col_schema,
-                                          sql::ObColumnRefRawExpr *&col_ref_expr);
-  static int write_datum(common::ObIAllocator &allocator,
+                                          sql::ObRawExpr *&expr);
+  // 构建列自增表达式
+  static int generate_autoinc_nextval_expr(ObTableCtx &ctx,
+                                           ObRawExpr *&expr,
+                                           const ObColumnSchemaV2 &col_schema);
+
+  static int build_expire_expr(ObTableCtx &ctx, sql::ObRawExpr *&expire_expr);
+  static int write_datum(ObTableCtx &ctx,
+                         common::ObIAllocator &allocator,
                          const sql::ObExpr &expr,
                          sql::ObEvalCtx &eval_ctx,
                          const ObObj &obj);
@@ -150,6 +162,9 @@ public:
                                       ObTableInsUpdCtDef &ins_up_ctdef);
   static int generate_lock_ctdef(ObTableCtx &ctx,
                                  ObTableLockCtDef &lock_ctdef);
+  static int generate_ttl_ctdef(ObTableCtx &ctx,
+                                ObIAllocator &allocator,
+                                ObTableTTLCtDef &ttl_ctdef);
   static int generate_conflict_checker_ctdef(ObTableCtx &ctx,
                                              ObIAllocator &allocator,
                                              sql::ObConflictCheckerCtdef &conflict_checker_ctdef);
@@ -158,7 +173,8 @@ private:
                                  ObTableDmlBaseCtDef &base_ctdef,
                                  common::ObIArray<sql::ObRawExpr*> &old_row,
                                  common::ObIArray<sql::ObRawExpr*> &new_row);
-  static int generate_column_ids(const common::ObIArray<sql::ObRawExpr*> &exprs,
+  static int generate_column_ids(ObTableCtx &ctx,
+                                 const common::ObIArray<sql::ObRawExpr*> &exprs,
                                  common::ObIArray<uint64_t> &column_ids);
   static int generate_das_ins_ctdef(ObTableCtx &ctx,
                                     uint64_t index_tid,
@@ -179,7 +195,8 @@ private:
                                      uint64_t index_tid,
                                      sql::ObDASLockCtDef &das_lock_ctdef,
                                      const common::ObIArray<sql::ObRawExpr*> &old_row);
-  static int generate_updated_column_ids(const common::ObIArray<sql::ObRawExpr *> &assign_exprs,
+  static int generate_updated_column_ids(ObTableCtx &ctx,
+                                         const common::ObIArray<sql::ObRawExpr *> &assign_exprs,
                                          const common::ObIArray<uint64_t> &column_ids,
                                          common::ObIArray<uint64_t> &updated_column_ids);
   static int generate_upd_assign_infos(ObTableCtx &ctx,
@@ -260,9 +277,9 @@ public:
       ret = ObTableSpecCgService::generate_with_child
           <TABLE_API_EXEC_LOCK, TABLE_API_EXEC_SCAN>(alloc, ctx, root_spec);
     } else if (OB_FAIL(ObTableExecutorFactory::generate_spec(alloc,
-                                                            static_cast<ObTableExecutorType>(TYPE),
-                                                            ctx,
-                                                            spec))) {
+                                                             static_cast<ObTableExecutorType>(TYPE),
+                                                             ctx,
+                                                             spec))) {
       SERVER_LOG(WARN, "fail to generate spec", K(ret));
     } else {
       root_spec = spec;
@@ -298,6 +315,10 @@ public:
   static int generate_spec(common::ObIAllocator &alloc,
                            ObTableCtx &ctx,
                            ObTableApiLockSpec &spec);
+
+  static int generate_spec(common::ObIAllocator &alloc,
+                           ObTableCtx &ctx,
+                           ObTableApiTTLSpec &spec);
 
 private:
   template<int FATHER_TYPE, int CHILD_TYPE>

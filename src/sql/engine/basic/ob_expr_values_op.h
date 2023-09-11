@@ -31,13 +31,15 @@ public:
   ObExprValuesSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
     : ObOpSpec(alloc, type),
       values_(alloc),
+      column_names_(alloc),
       is_strict_json_desc_(alloc),
       str_values_array_(alloc),
       err_log_ct_def_(alloc),
       contain_ab_param_(0),
-      ins_values_batch_opt_(false)
+      ins_values_batch_opt_(false),
+      array_group_idx_(-1)
   { }
-
+  INHERIT_TO_STRING_KV("op_spec", ObOpSpec, K(array_group_idx_));
   int64_t get_value_count() const { return values_.count(); }
   int64_t get_is_strict_json_desc_count() const { return is_strict_json_desc_.count(); }
   virtual int serialize(char *buf,
@@ -50,11 +52,13 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObExprValuesSpec);
 public:
   common::ObFixedArray<ObExpr *, common::ObIAllocator> values_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
   common::ObFixedArray<bool, common::ObIAllocator> is_strict_json_desc_;
   common::ObFixedArray<ObStrValues, common::ObIAllocator> str_values_array_;
   ObErrLogCtDef err_log_ct_def_;
   int64_t contain_ab_param_;
   bool ins_values_batch_opt_;
+  int64_t array_group_idx_;
 };
 
 class ObExprValuesOp : public ObOperator
@@ -92,6 +96,9 @@ private:
   ObErrLogService err_log_service_;
   ObErrLogRtDef err_log_rt_def_;
   bool has_sequence_;
+  int64_t real_value_cnt_;
+  int64_t param_idx_;
+  int64_t param_cnt_;
 };
 
 } // end namespace sql

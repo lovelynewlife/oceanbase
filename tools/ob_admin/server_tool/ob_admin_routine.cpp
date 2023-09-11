@@ -643,7 +643,7 @@ DEF_COMMAND(TRANS, remove_lock, 1, "tenant_id ls_id obj_type obj_id lock_mode ow
   int64_t create_tx_id = 0;
   int64_t op_type = 0;
   int64_t lock_op_status = 1; // does not used.
-  int64_t seq_no = 0;
+  ObTxSEQ seq_no;
   int64_t create_timestamp = 0;
   int64_t create_schema_version = 0;
 
@@ -725,7 +725,7 @@ DEF_COMMAND(TRANS, update_lock, 1, "tenant_id ls_id obj_type obj_id lock_mode ow
   int64_t lock_op_status = 1;
   int64_t commit_version = 0;
   int64_t commit_scn = 0;
-  int64_t seq_no = 0;
+  ObTxSEQ seq_no;
   int64_t create_timestamp = 0;
   int64_t create_schema_version = 0;
 
@@ -784,5 +784,82 @@ DEF_COMMAND(TRANS, update_lock, 1, "tenant_id ls_id obj_type obj_id lock_mode ow
     }
   }
   COMMON_LOG(INFO, "update_lock", K(arg));
+  return ret;
+}
+
+#ifdef OB_BUILD_ARBITRATION
+// force_clear_arb_cluster_info
+// @params [in]  cluster_id, which cluster to modify
+// @params [in]  svr_ip, the arbitration server IP
+// @params [in]  svr_port, the arbitration server IP
+// ATTENTION:
+//    Please make sure let log stream's leader to execute this command
+//    For permanant offline, orig_paxos_number should equals to new_paxos_number
+DEF_COMMAND(TRANS, force_clear_arb_cluster_info, 1, "cluster_id # force_clear_arb_cluster_info")
+{
+  int ret = OB_SUCCESS;
+  string arg_str;
+  int64_t cluster_id_to_clean = OB_INVALID_TENANT_ID;
+
+  if (cmd_ == action_name_) {
+    ret = OB_INVALID_ARGUMENT;
+    ADMIN_WARN("should provide cluster_id arb_svr_ip arb_svr_port");
+  } else {
+    arg_str = cmd_.substr(action_name_.length() + 1);
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (1 != sscanf(arg_str.c_str(), "%ld", &cluster_id_to_clean)) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid arg", K(ret), K(arg_str.c_str()), K(cmd_.c_str()), K(cluster_id_to_clean));
+  } else if (false == is_valid_cluster_id(cluster_id_to_clean)) {
+    COMMON_LOG(WARN, "invalid cluster_id", K(ret), K(cluster_id_to_clean));
+  } else {
+    ObForceClearArbClusterInfoArg arg(cluster_id_to_clean);
+    if (OB_FAIL(client_->force_clear_arb_cluster_info(arg))) {
+      COMMON_LOG(ERROR, "send req fail", K(ret));
+    }
+  }
+  COMMON_LOG(INFO, "force_clear_arb_cluster_info", K(cluster_id_to_clean));
+  return ret;
+}
+#endif
+
+// unlock_member_list
+// @params [in]  tenant_id, which tenant to modify
+// @params [in]  ls_id, which log stream to modify
+DEF_COMMAND(SERVER, unlock_member_list, 1, "tenant_id:ls_id:lock_id # unlock_member_list")
+{
+  int ret = OB_SUCCESS;
+  string arg_str;
+  ObAdminUnlockMemberListOpArg arg;
+  uint64_t tenant_id_to_set = OB_INVALID_TENANT_ID;
+  int64_t ls_id_to_set = 0;
+  int64_t lock_id = -1;
+
+  if (cmd_ == action_name_) {
+    ret = OB_INVALID_ARGUMENT;
+    ADMIN_WARN("should provide tenant_id, ls_id");
+  } else {
+    arg_str = cmd_.substr(action_name_.length() + 1);
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (3 != sscanf(arg_str.c_str(), "%ld:%ld:%ld", &tenant_id_to_set, &ls_id_to_set, &lock_id)) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid arg", K(ret), K(arg_str.c_str()), K(cmd_.c_str()),
+               K(tenant_id_to_set), K(ls_id_to_set), K(lock_id));
+  } else {
+    share::ObLSID ls_id(ls_id_to_set);
+    if (OB_INVALID_ID == tenant_id_to_set || !ls_id.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      COMMON_LOG(WARN, "argument is invalid", K(ret), K(tenant_id_to_set), K(ls_id));
+    } else if (OB_FAIL(arg.set(tenant_id_to_set, ls_id, lock_id))) {
+      COMMON_LOG(WARN, "failed to set unlock member list op arg", K(ret), K(tenant_id_to_set), K(ls_id), K(lock_id));
+    } else if (OB_FAIL(client_->admin_unlock_member_list_op(arg))) {
+      COMMON_LOG(ERROR, "send req fail", K(ret));
+    }
+  }
+  COMMON_LOG(INFO, "unlock_member_list", K(ret), K(arg));
   return ret;
 }

@@ -225,6 +225,7 @@ public:
     bool is_inited_;
     common::ObTabletID tablet_id_;
     storage::ObCopyTabletStatus::STATUS status_;
+    common::ObArenaAllocator allocator_;
     common::ObArray<blocksstable::ObMigrationSSTableParam> copy_table_info_array_;
     ObMigrationTabletParam tablet_meta_;
     DISALLOW_COPY_AND_ASSIGN(ObStorageHATabletTableInfoMgr);
@@ -290,7 +291,7 @@ private:
   void free_sstable_macro_range_info_reader_(ObICopySSTableMacroInfoReader *&reader);
 
 private:
-  static const int64_t MACRO_RANGE_MAX_MACRO_COUNT = 1024;
+  static const int64_t MACRO_RANGE_MAX_MACRO_COUNT = 128;
   typedef hash::ObHashMap<ObITable::TableKey, ObCopySSTableMacroRangeInfo *> CopySSTableMacroRangeInfoMap;
   bool is_inited_;
   ObStorageHACopySSTableParam param_;
@@ -335,7 +336,8 @@ private:
       const ObTableHandleV2 &table_handle,
       ObLS *ls,
       ObTablet *tablet,
-      const ObStorageSchema &storage_schema);
+      const ObStorageSchema &storage_schema,
+      const int64_t transfer_seq);
   static int inner_update_tablet_table_store_with_minor_(
       ObLS *ls,
       ObTablet *tablet,

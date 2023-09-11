@@ -24,6 +24,7 @@ namespace storage
 ObLSMemberListService::ObLSMemberListService()
   : is_inited_(false),
     ls_(NULL),
+    transfer_scn_iter_lock_(),
     log_handler_(NULL)
 {
 }
@@ -166,6 +167,69 @@ int ObLSMemberListService::switch_learner_to_acceptor(
   return ret;
 }
 
+int ObLSMemberListService::get_max_tablet_transfer_scn(share::SCN &transfer_scn)
+{
+  int ret = OB_SUCCESS;
+  const bool need_initial_state = false;
+  ObHALSTabletIDIterator iter(ls_->get_ls_id(), need_initial_state);
+  share::SCN max_transfer_scn = share::SCN::min_scn();
+  static const int64_t LOCK_TIMEOUT = 100_ms; // 100ms
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "not inited", K(ret), K_(is_inited));
+  } else if (OB_FAIL(ls_->build_tablet_iter(iter))) {
+    STORAGE_LOG(WARN, "failed to build tablet iter", K(ret));
+  } else if (OB_FAIL(transfer_scn_iter_lock_.lock(LOCK_TIMEOUT))) {
+    STORAGE_LOG(WARN, "failed to lock transfer scn iter lock", K(ret));
+  } else {
+    ObTenantMetaMemMgr *t3m = MTL(ObTenantMetaMemMgr*);
+    common::ObTabletID tablet_id;
+    ObTabletMapKey key;
+    key.ls_id_ = ls_->get_ls_id();
+    ObTabletCreateDeleteMdsUserData mds_data;
+    ObTabletHandle tablet_handle;
+    const WashTabletPriority priority = WashTabletPriority::WTP_LOW;
+    while (OB_SUCC(ret)) {
+      mds_data.reset();
+      if (OB_FAIL(iter.get_next_tablet_id(tablet_id))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          STORAGE_LOG(WARN, "failed to get tablet id", K(ret));
+        }
+      } else if (OB_FALSE_IT(key.tablet_id_ = tablet_id)) {
+      } else if (OB_FAIL(t3m->get_tablet(priority, key, tablet_handle))) {
+        STORAGE_LOG(WARN, "failed to get tablet", K(ret), K(key));
+      } else if (OB_FAIL(tablet_handle.get_obj()->ObITabletMdsInterface::get_tablet_status(share::SCN::max_scn(), mds_data, 0/*timeout*/))) {
+        if (OB_EMPTY_RESULT == ret) {
+          STORAGE_LOG(INFO, "committed tablet_status does not exist", K(ret), K(key));
+          ret = OB_SUCCESS;
+        } else if (OB_ERR_SHARED_LOCK_CONFLICT == ret) {
+          if (MTL_IS_PRIMARY_TENANT()) {
+            STORAGE_LOG(INFO, "committed tablet_status does not exist", K(ret), K(tablet_id));
+            break;
+          } else {
+            ret = OB_SUCCESS;
+          }
+        } else {
+          STORAGE_LOG(WARN, "failed to get mds table", KR(ret), K(key));
+        }
+      } else if (share::SCN::invalid_scn() == mds_data.transfer_scn_) {
+        // do nothing
+      } else {
+        transfer_scn = mds_data.transfer_scn_;
+        max_transfer_scn = MAX(transfer_scn, max_transfer_scn);
+      }
+    }
+    if (OB_SUCC(ret)) {
+      transfer_scn = max_transfer_scn;
+    }
+    transfer_scn_iter_lock_.unlock();
+  }
+  return ret;
+}
+
 int ObLSMemberListService::get_leader_config_version_and_transfer_scn_(
     palf::LogConfigVersion &leader_config_version,
     share::SCN &leader_transfer_scn)
@@ -293,6 +357,7 @@ int ObLSMemberListService::check_ls_transfer_scn_validity_for_primary_(palf::Log
 int ObLSMemberListService::check_ls_transfer_scn_validity_for_standby_(palf::LogConfigVersion &leader_config_version)
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   ObArray<ObAddr> addr_list;
   ObAddr leader_addr;
   if (OB_ISNULL(ls_)) {
@@ -310,7 +375,7 @@ int ObLSMemberListService::check_ls_transfer_scn_validity_for_standby_(palf::Log
       share::SCN transfer_scn;
       palf::LogConfigVersion config_version;
       bool need_get_config_version = (addr == leader_addr);
-      if (OB_FAIL(get_config_version_and_transfer_scn_(need_get_config_version, addr, config_version, transfer_scn))) {
+      if (OB_TMP_FAIL(get_config_version_and_transfer_scn_(need_get_config_version, addr, config_version, transfer_scn))) {
         STORAGE_LOG(WARN, "failed to get config version and transfer scn", K(ret), K(addr));
       } else if (OB_FAIL(check_ls_transfer_scn_(transfer_scn, check_pass))) {
         STORAGE_LOG(WARN, "failed to check ls transfer scn", K(ret), K(transfer_scn));

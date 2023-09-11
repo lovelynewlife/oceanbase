@@ -142,6 +142,19 @@
 #include "sql/resolver/ddl/ob_create_context_resolver.h"
 #include "sql/resolver/ddl/ob_drop_context_resolver.h"
 #include "sql/engine/cmd/ob_context_executor.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "sql/resolver/ddl/ob_create_keystore_stmt.h"
+#include "sql/resolver/ddl/ob_alter_keystore_stmt.h"
+#include "sql/resolver/ddl/ob_create_tablespace_stmt.h"
+#include "sql/resolver/ddl/ob_alter_tablespace_stmt.h"
+#include "sql/resolver/ddl/ob_drop_tablespace_stmt.h"
+#include "sql/engine/cmd/ob_keystore_cmd_executor.h"
+#include "sql/engine/cmd/ob_tablespace_cmd_executor.h"
+#endif
+#ifdef OB_BUILD_AUDIT_SECURITY
+#include "sql/resolver/ddl/ob_audit_stmt.h"
+#include "sql/engine/cmd/ob_audit_executor.h"
+#endif
 
 namespace oceanbase
 {
@@ -263,6 +276,12 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObCreateTenantStmt, ObCreateStandbyTenantExecutor);
         break;
       }
+#ifdef OB_BUILD_AUDIT_SECURITY
+      case stmt::T_AUDIT: {
+        DEFINE_EXECUTE_CMD(ObAuditStmt, ObAuditExecutor);
+        break;
+      }
+#endif
       case stmt::T_DROP_TENANT: {
         DEFINE_EXECUTE_CMD(ObDropTenantStmt, ObDropTenantExecutor);
         break;
@@ -695,6 +714,16 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         sql_text = ObString::make_empty_string();  // do not record
         break;
       }
+#ifdef OB_BUILD_ORACLE_PL
+      case stmt::T_CREATE_TYPE: {
+        DEFINE_EXECUTE_CMD(ObCreateUDTStmt, ObCreateUDTExecutor);
+        break;
+      }
+      case stmt::T_DROP_TYPE: {
+        DEFINE_EXECUTE_CMD(ObDropUDTStmt, ObDropUDTExecutor);
+        break;
+      }
+#endif
       case stmt::T_CREATE_PACKAGE: {
         DEFINE_EXECUTE_CMD(ObCreatePackageStmt, ObCreatePackageExecutor);
         break;
@@ -768,9 +797,8 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObDropSequenceStmt, ObDropSequenceExecutor);
         if (OB_SUCC(ret)) {
           ObDropSequenceStmt &stmt = *(static_cast<ObDropSequenceStmt*>(&cmd));
-          const uint64_t tenant_id = stmt.get_arg().get_tenant_id();
           const uint64_t sequence_id = stmt.get_arg().get_sequence_id();
-          if (OB_FAIL(my_session->drop_sequence_value_if_exists(tenant_id, sequence_id))) {
+          if (OB_FAIL(my_session->drop_sequence_value_if_exists(sequence_id))) {
             LOG_WARN("failed to drop sequence value from session", K(ret));
           }
         }
@@ -837,6 +865,28 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         DEFINE_EXECUTE_CMD(ObSetRoutineStmt, ObSetRoleExecutor);
         break;
       }*/
+#ifdef OB_BUILD_TDE_SECURITY
+      case stmt::T_CREATE_KEYSTORE: {
+        DEFINE_EXECUTE_CMD(ObCreateKeystoreStmt, ObCreateKeystoreExecutor);
+        break;
+      }
+      case stmt::T_ALTER_KEYSTORE: {
+        DEFINE_EXECUTE_CMD(ObAlterKeystoreStmt, ObAlterKeystoreExecutor);
+        break;
+      }
+      case stmt::T_CREATE_TABLESPACE: {
+        DEFINE_EXECUTE_CMD(ObCreateTablespaceStmt, ObCreateTablespaceExecutor);
+        break;
+      }
+      case stmt::T_ALTER_TABLESPACE: {
+        DEFINE_EXECUTE_CMD(ObAlterTablespaceStmt, ObAlterTablespaceExecutor);
+        break;
+      }
+      case stmt::T_DROP_TABLESPACE: {
+        DEFINE_EXECUTE_CMD(ObDropTablespaceStmt, ObDropTablespaceExecutor);
+        break;
+      }
+#endif
       case stmt::T_CREATE_PROFILE:
       case stmt::T_ALTER_PROFILE:
       case stmt::T_DROP_PROFILE: {
@@ -853,6 +903,10 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       }
       case stmt::T_CANCEL_RESTORE: {
         DEFINE_EXECUTE_CMD(ObCancelRestoreStmt, ObCancelRestoreExecutor);
+        break;
+      }
+      case stmt::T_RECOVER_TABLE: {
+        DEFINE_EXECUTE_CMD(ObRecoverTableStmt, ObRecoverTableExecutor);
         break;
       }
       case stmt::T_BACKUP_MANAGE: {
@@ -945,6 +999,10 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       }
       case stmt::T_CHECKPOINT_SLOG: {
         DEFINE_EXECUTE_CMD(ObCheckpointSlogStmt, ObCheckpointSlogExecutor);
+        break;
+      }
+      case stmt::T_TABLE_TTL: {
+        DEFINE_EXECUTE_CMD(ObTableTTLStmt, ObTableTTLExecutor);
         break;
       }
       case stmt::T_CS_DISKMAINTAIN:

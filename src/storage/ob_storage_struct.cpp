@@ -24,6 +24,118 @@ using namespace oceanbase::share::schema;
 using namespace oceanbase::share;
 
 
+#ifdef ERRSIM
+static const char *OB_ERRSIM_POINT_TYPES[] = {
+    "POINT_NONE",
+    "START_BACKFILL_BEFORE",
+    "REPLACE_SWAP_BEFORE",
+    "REPLACE_AFTER",
+};
+
+void ObErrsimBackfillPointType::reset()
+{
+  type_ = ObErrsimBackfillPointType::ERRSIM_POINT_NONE;
+}
+
+bool ObErrsimBackfillPointType::is_valid() const
+{
+  return true;
+}
+
+bool ObErrsimBackfillPointType::operator == (const ObErrsimBackfillPointType &other) const
+{
+  bool is_same = true;
+  if (this == &other) {
+    // same
+  } else {
+    is_same = type_ == other.type_;
+  }
+  return is_same;
+}
+
+int64_t ObErrsimBackfillPointType::hash() const
+{
+  int64_t hash_value = 0;
+  hash_value = common::murmurhash(
+      &type_, sizeof(type_), hash_value);
+  return hash_value;
+}
+
+int ObErrsimBackfillPointType::hash(uint64_t &hash_val) const
+{
+  hash_val = hash();
+  return OB_SUCCESS;
+}
+
+OB_SERIALIZE_MEMBER(ObErrsimBackfillPointType, type_);
+
+ObErrsimTransferBackfillPoint::ObErrsimTransferBackfillPoint()
+  : point_type_(ObErrsimBackfillPointType::ERRSIM_MODULE_MAX),
+    point_start_time_(0)
+{
+}
+
+ObErrsimTransferBackfillPoint::~ObErrsimTransferBackfillPoint()
+{
+}
+
+bool ObErrsimTransferBackfillPoint::is_valid() const
+{
+  return point_type_.is_valid() && point_start_time_ > 0;
+}
+
+int ObErrsimTransferBackfillPoint::set_point_type(const ObErrsimBackfillPointType &point_type)
+{
+  int ret = OB_SUCCESS;
+  if (!point_type.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("point type is invalid", K(ret), K(point_type));
+  } else if (is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("The point type is in effect, reset is not allowed", K(ret), K(point_type_), K(point_type));
+  } else {
+    point_type_ = point_type;
+  }
+
+  return ret;
+}
+int ObErrsimTransferBackfillPoint::set_point_start_time(int64_t start_time)
+{
+  int ret = OB_SUCCESS;
+  if (start_time < 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("point type is invalid", K(ret), K(start_time));
+  } else if (is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("The point type is in effect, reset is not allowed", K(ret), K(point_start_time_), K(start_time));
+  } else {
+    point_start_time_ = start_time;
+  }
+
+  return ret;
+}
+
+void ObErrsimTransferBackfillPoint::reset()
+{
+  point_type_.type_ = ObErrsimBackfillPointType::ERRSIM_MODULE_MAX;
+  point_start_time_ = 0;
+}
+
+bool ObErrsimTransferBackfillPoint::is_errsim_point(const ObErrsimBackfillPointType &point_type) const
+{
+  bool is_point = false;
+  if (!is_valid()) {
+    is_point = false;
+  } else if (point_type.type_ == point_type_.type_) {
+    is_point = true;
+  } else {
+    is_point = false;
+  }
+  return is_point;
+}
+
+#endif
+
 OB_SERIALIZE_MEMBER(ObTabletReportStatus,
     merge_snapshot_version_,
     cur_report_version_,
@@ -238,6 +350,8 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(false),
     ddl_info_(),
     allow_duplicate_sstable_(false),
+    need_check_transfer_seq_(false),
+    transfer_seq_(-1),
     tx_data_(),
     binding_info_(),
     autoinc_seq_(),
@@ -252,6 +366,8 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     const int64_t multi_version_start,
     const ObStorageSchema *storage_schema,
     const int64_t rebuild_seq,
+    const bool need_check_transfer_seq,
+    const int64_t transfer_seq,
     const bool need_report,
     const SCN clog_checkpoint_scn,
     const bool need_check_sstable,
@@ -268,6 +384,8 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(need_check_sstable),
     ddl_info_(),
     allow_duplicate_sstable_(allow_duplicate_sstable),
+    need_check_transfer_seq_(need_check_transfer_seq),
+    transfer_seq_(transfer_seq),
     tx_data_(),
     binding_info_(),
     autoinc_seq_(),
@@ -296,6 +414,8 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
     need_check_sstable_(false),
     ddl_info_(),
     allow_duplicate_sstable_(false),
+    need_check_transfer_seq_(false),
+    transfer_seq_(-1),
     tx_data_(),
     binding_info_(),
     autoinc_seq_(),
@@ -306,17 +426,25 @@ ObUpdateTableStoreParam::ObUpdateTableStoreParam(
 
 bool ObUpdateTableStoreParam::is_valid() const
 {
-  return multi_version_start_ >= ObVersionRange::MIN_VERSION
+  bool bret = false;
+  bret = multi_version_start_ >= ObVersionRange::MIN_VERSION
       && snapshot_version_ >= ObVersionRange::MIN_VERSION
       && clog_checkpoint_scn_.is_valid()
       && nullptr != storage_schema_
       && storage_schema_->is_valid()
       && rebuild_seq_ >= 0;
+  if (need_check_transfer_seq_) {
+    bret = bret && transfer_seq_ >= 0;
+  }
+  return bret;
 }
 
 
 ObBatchUpdateTableStoreParam::ObBatchUpdateTableStoreParam()
   : tables_handle_(),
+#ifdef ERRSIM
+    errsim_point_info_(),
+#endif
     rebuild_seq_(OB_INVALID_VERSION),
     update_logical_minor_sstable_(false),
     is_transfer_replace_(false),
@@ -364,6 +492,9 @@ int ObBatchUpdateTableStoreParam::assign(
     tablet_meta_ = param.tablet_meta_;
     update_ddl_sstable_ = param.update_ddl_sstable_;
     restore_status_ = param.restore_status_;
+#ifdef ERRSIM
+    errsim_point_info_ = param.errsim_point_info_;
+#endif
   }
   return ret;
 }

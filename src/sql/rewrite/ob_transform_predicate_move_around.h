@@ -55,6 +55,7 @@ public:
 
   virtual int construct_transform_hint(ObDMLStmt &stmt, void *trans_params) override;
 private:
+  int do_transform_predicate_move_around(ObDMLStmt *&stmt, bool &trans_happened);
 
   virtual int need_transform(const common::ObIArray<ObParentDMLStmt> &parent_stmts,
                              const int64_t current_level,
@@ -128,13 +129,22 @@ private:
                                 ObIArray<ObRawExpr *> &local_preds,
                                 ObIArray<ObRawExpr *> &pull_up_preds);
 
-  int check_expr_pullup_validity(const ObRawExpr *expr,
+  int check_expr_pullup_validity(ObRawExpr *expr,
                                  const ObIArray<ObRawExpr *> &pullup_list,
                                  int64_t &state);
+
+  int recursive_check_expr_pullup_validity(ObRawExpr *expr,
+                                           const ObIArray<ObRawExpr *> &pullup_list,
+                                           ObIArray<ObRawExpr *> &parent_exprs,
+                                           int64_t &state);
 
   int rename_pullup_predicates(ObDMLStmt &stmt,
                                TableItem &view,
                                const ObIArray<int64_t> &view_sel_list,
+                               ObIArray<ObRawExpr *> &preds);
+
+  int rename_pullup_predicates(ObDMLStmt &stmt,
+                               TableItem &view,
                                ObIArray<ObRawExpr *> &preds);
 
   int pullup_predicates_from_const_select(ObSelectStmt *parent_stmt,
@@ -166,7 +176,8 @@ private:
                                 ObIArray<ObRawExpr *> &right_pushdown_preds,
                                 ObIArray<ObRawExpr *> &output_pushdown_preds);
 
-  int extract_valid_preds(ObIArray<ObRawExpr *> &all_preds,
+  int extract_valid_preds(ObSelectStmt *stmt,
+                          ObIArray<ObRawExpr *> &all_preds,
                           ObIArray<ObRawExpr *> &valid_exprs,
                           ObIArray<ObRawExpr *> &invalid_exprs);
 
@@ -212,7 +223,8 @@ private:
 
   int pushdown_semi_info_right_filter(ObDMLStmt *stmt,
                                       ObTransformerCtx *ctx,
-                                      SemiInfo *semi_info);
+                                      SemiInfo *semi_info,
+                                      ObIArray<ObRawExpr *> &pullup_preds);
 
   int check_has_shared_query_ref(ObRawExpr *expr, bool &has);
 
@@ -247,15 +259,15 @@ private:
 
   int store_all_preds(const ObDMLStmt &stmt, ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds);
   int store_join_conds(const TableItem *table, ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds);
-  int check_transform_happened(const ObDMLStmt &stmt,
-                               const ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds,
+  int check_transform_happened(const ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds,
+                               ObDMLStmt &stmt,
                                bool &is_happened);
-  int check_join_conds_deduced(const TableItem *table,
-                               const ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds,
+  int check_join_conds_deduced(const ObIArray<ObSEArray<ObRawExpr*, 16>> &all_preds,
                                uint64_t &idx,
+                               TableItem *table,
                                bool &is_happened);
   int check_conds_deduced(const ObIArray<ObRawExpr *> &old_conditions,
-                          const ObIArray<ObRawExpr *> &new_conditions,
+                          ObIArray<ObRawExpr *> &new_conditions,
                           bool &is_happened);
 
   int pushdown_through_winfunc(ObSelectStmt &stmt,

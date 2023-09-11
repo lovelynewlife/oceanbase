@@ -24,7 +24,7 @@ namespace storage
 class ObLobLocatorHelper
 {
 public:
-  ObLobLocatorHelper();
+  ObLobLocatorHelper(common::ObIAllocator& allocator);
   virtual ~ObLobLocatorHelper();
   void reset();
   void reuse() {
@@ -81,7 +81,7 @@ private:
   int64_t ls_id_;
   int64_t tx_id_;
   int64_t snapshot_version_;
-  int64_t scn_;
+  transaction::ObTxSnapshot read_snapshot_;
   int64_t rowid_version_;
   const common::ObIArray<int32_t> *rowid_project_; //map to projected row
   common::ObSEArray<common::ObObj, DEFAULT_LOCATOR_OBJ_ARRAY_SIZE> rowid_objs_;

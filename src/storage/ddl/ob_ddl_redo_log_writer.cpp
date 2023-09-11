@@ -747,7 +747,8 @@ int ObDDLRedoLogWriter::write(
   return ret;
 }
 
-int ObDDLRedoLogWriter::write_ddl_start_log(ObTabletHandle &tablet_handle,
+int ObDDLRedoLogWriter::write_ddl_start_log(ObLSHandle &ls_handle,
+                                            ObTabletHandle &tablet_handle,
                                             ObDDLKvMgrHandle &ddl_kv_mgr_handle,
                                             const ObDDLStartLog &log,
                                             ObLogHandler *log_handler,
@@ -799,6 +800,8 @@ int ObDDLRedoLogWriter::write_ddl_start_log(ObTabletHandle &tablet_handle,
     LOG_WARN("fail to seriaize ddl start log", K(ret));
   } else if (OB_FAIL(log.serialize(buffer, buffer_size, pos))) {
     LOG_WARN("fail to seriaize ddl start log", K(ret));
+  } else if (OB_FAIL(ls_handle.get_ls()->get_ddl_log_handler()->add_tablet(log.get_table_key().get_tablet_id()))) {
+    LOG_WARN("add tablet failed", K(ret));
   } else if (OB_FAIL(log_handler->append(buffer,
                                          buffer_size,
                                          SCN::min_scn(),
@@ -818,7 +821,9 @@ int ObDDLRedoLogWriter::write_ddl_start_log(ObTabletHandle &tablet_handle,
     bool finish = false;
     const int64_t start_time = ObTimeUtility::current_time();
     while (OB_SUCC(ret) && !finish) {
-      if (tmp_cb->is_success()) {
+      if (OB_FAIL(THIS_WORKER.check_status())) {
+        LOG_WARN("check status failed", K(ret));
+      } else if (tmp_cb->is_success()) {
         finish = true;
       } else if (tmp_cb->is_failed()) {
         ret = OB_NOT_MASTER;
@@ -827,8 +832,11 @@ int ObDDLRedoLogWriter::write_ddl_start_log(ObTabletHandle &tablet_handle,
         const int64_t current_time = ObTimeUtility::current_time();
         if (current_time - start_time > ObDDLRedoLogHandle::DDL_REDO_LOG_TIMEOUT) {
           ret = OB_TIMEOUT;
-          LOG_WARN("write ddl start log timeout", K(ret));
+          LOG_WARN("write ddl start log timeout", K(ret), K(current_time), K(start_time));
         } else {
+          if (REACH_TIME_INTERVAL(10L * 1000L * 1000L)) { //10s
+            LOG_INFO("wait ddl start log callback", K(ret), K(finish), K(current_time), K(start_time));
+          }
           ob_usleep(ObDDLRedoLogHandle::CHECK_DDL_REDO_LOG_FINISH_INTERVAL);
         }
       }
@@ -982,7 +990,9 @@ int ObDDLRedoLogHandle::wait(const int64_t timeout)
     bool finish = false;
     const int64_t start_time = ObTimeUtility::current_time();
     while (OB_SUCC(ret) && !finish) {
-      if (cb_->is_success()) {
+      if (OB_FAIL(THIS_WORKER.check_status())) {
+        LOG_WARN("check status failed", K(ret));
+      } else if (cb_->is_success()) {
         finish = true;
       } else if (cb_->is_failed()) {
         ret = OB_NOT_MASTER;
@@ -991,8 +1001,11 @@ int ObDDLRedoLogHandle::wait(const int64_t timeout)
         const int64_t current_time = ObTimeUtility::current_time();
         if (current_time - start_time > timeout) {
           ret = OB_TIMEOUT;
-          LOG_WARN("write ddl redo log timeout", K(ret));
+          LOG_WARN("write ddl redo log timeout", K(ret), K(current_time), K(start_time));
         } else {
+          if (REACH_TIME_INTERVAL(10L * 1000L * 1000L)) { //10s
+            LOG_INFO("wait ddl redo log callback", K(ret), K(finish), K(current_time), K(start_time));
+          }
           ob_usleep(ObDDLRedoLogHandle::CHECK_DDL_REDO_LOG_FINISH_INTERVAL);
         }
       }
@@ -1019,7 +1032,9 @@ int ObDDLCommitLogHandle::wait(const int64_t timeout)
     bool finish = false;
     const int64_t start_time = ObTimeUtility::current_time();
     while (OB_SUCC(ret) && !finish) {
-      if (cb_->is_success()) {
+      if (OB_FAIL(THIS_WORKER.check_status())) {
+        LOG_WARN("check status failed", K(ret));
+      } else if (cb_->is_success()) {
         finish = true;
         ret = cb_->get_ret_code();
         if (OB_FAIL(ret)) {
@@ -1032,8 +1047,11 @@ int ObDDLCommitLogHandle::wait(const int64_t timeout)
         const int64_t current_time = ObTimeUtility::current_time();
         if (current_time - start_time > timeout) {
           ret = OB_TIMEOUT;
-          LOG_WARN("write ddl commit log timeout", K(ret));
+          LOG_WARN("write ddl commit log timeout", K(ret), K(current_time), K(start_time));
         } else {
+          if (REACH_TIME_INTERVAL(10L * 1000L * 1000L)) { //10s
+            LOG_INFO("wait ddl commit log callback", K(ret), K(finish), K(current_time), K(start_time));
+          }
           ob_usleep(ObDDLRedoLogHandle::CHECK_DDL_REDO_LOG_FINISH_INTERVAL);
         }
       }
@@ -1165,7 +1183,7 @@ int ObDDLSSTableRedoWriter::start_ddl_redo(const ObITable::TableKey &table_key,
     LOG_WARN("get tablet handle failed", K(ret), K(ls_id_), K(tablet_id_));
   } else if (OB_FAIL(tablet_handle.get_obj()->get_ddl_kv_mgr(ddl_kv_mgr_handle, true/*try_create*/))) {
     LOG_WARN("create ddl kv mgr failed", K(ret));
-  } else if (OB_FAIL(ObDDLRedoLogWriter::get_instance().write_ddl_start_log(tablet_handle, ddl_kv_mgr_handle, log, ls->get_log_handler(), tmp_scn))) {
+  } else if (OB_FAIL(ObDDLRedoLogWriter::get_instance().write_ddl_start_log(ls_handle, tablet_handle, ddl_kv_mgr_handle, log, ls->get_log_handler(), tmp_scn))) {
     LOG_WARN("fail to write ddl start log", K(ret), K(table_key));
   } else if (FALSE_IT(set_start_scn(tmp_scn))) {
   } else if (OB_FAIL(ddl_kv_mgr_handle.get_obj()->register_to_tablet(get_start_scn(), ddl_kv_mgr_handle))) {
@@ -1533,7 +1551,7 @@ int ObDDLRedoLogWriterCallback::init(const ObDDLMacroBlockType block_type,
     LOG_WARN("ObDDLSSTableRedoWriter has been inited twice", K(ret));
   } else if (OB_UNLIKELY(!table_key.is_valid() || nullptr == ddl_writer || DDL_MB_INVALID_TYPE == block_type || 0 == task_id || !ddl_kv_mgr_handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), K(table_key), K(block_type));
+    LOG_WARN("invalid arguments", K(ret), K(table_key), K(block_type), K(task_id));
   } else if (OB_FAIL(MTL(ObLSService *)->get_ls(ddl_kv_mgr_handle.get_obj()->get_ls_id(), ls_handle, ObLSGetMod::DDL_MOD))) {
     LOG_WARN("failed to get log stream", K(ret), KPC(ddl_kv_mgr_handle.get_obj()));
   } else if (OB_FAIL(ObDDLUtil::ddl_get_tablet(ls_handle,
@@ -1556,6 +1574,7 @@ int ObDDLRedoLogWriterCallback::init(const ObDDLMacroBlockType block_type,
 int ObDDLRedoLogWriterCallback::write(const ObMacroBlockHandle &macro_handle,
                                       const ObLogicMacroBlockId &logic_id,
                                       char *buf,
+                                      const int64_t buf_len,
                                       const int64_t data_seq)
 {
   int ret = OB_SUCCESS;
@@ -1567,7 +1586,7 @@ int ObDDLRedoLogWriterCallback::write(const ObMacroBlockHandle &macro_handle,
   } else {
     macro_block_id_ = macro_handle.get_macro_id();
     redo_info_.table_key_ = table_key_;
-    redo_info_.data_buffer_.assign(buf, OB_SERVER_BLOCK_MGR.get_macro_block_size());
+    redo_info_.data_buffer_.assign(buf, buf_len);
     redo_info_.block_type_ = block_type_;
     redo_info_.logic_id_ = logic_id;
     redo_info_.start_scn_ = ddl_writer_->get_start_scn();

@@ -74,6 +74,9 @@
 #include "sql/ob_optimizer_trace_impl.h"
 #include "sql/optimizer/ob_explain_note.h"
 #include "share/ob_lob_access_utils.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_define.h"
+#endif
 
 using namespace oceanbase;
 using namespace sql;
@@ -1175,12 +1178,24 @@ int ObLogPlan::generate_inner_join_detectors(const ObIArray<TableItem*> &table_i
   ObSEArray<ConflictDetector*, 8> outer_join_detectors;
   ObSEArray<ObRawExpr*, 4> all_table_filters;
   ObSEArray<ObRawExpr*, 4> table_filters;
+  ObSEArray<ObRawExpr*, 4> redundant_quals;
+  ObSEArray<ObRawExpr*, 4> all_quals;
   ObRelIds all_table_ids;
   ObRelIds table_ids;
   if (OB_FAIL(split_or_quals(table_items, quals))) {
     LOG_WARN("failed to split or quals", K(ret));
   } else if (OB_FAIL(get_table_ids(table_items, all_table_ids))) {
     LOG_WARN("failed to get table ids", K(ret));
+  } else if (OB_FAIL(deduce_redundant_join_conds(quals,
+                                                 table_items,
+                                                 redundant_quals))) {
+    LOG_WARN("failed to deduce redundancy quals", K(ret));
+  } else if (OB_FAIL(all_quals.assign(quals))) {
+    LOG_WARN("failed to assign array", K(ret));
+  } else if (OB_FAIL(append(all_quals, redundant_quals))) {
+    LOG_WARN("failed to append array", K(ret));
+  } else {
+    OPT_TRACE("deduce redundant qual:", redundant_quals);
   }
   //1. 生成单个table item内部的冲突规则
   for (int64_t i = 0; OB_SUCC(ret) && i < table_items.count(); ++i) {
@@ -1221,8 +1236,8 @@ int ObLogPlan::generate_inner_join_detectors(const ObIArray<TableItem*> &table_i
   ObRawExpr *expr = NULL;
   ConflictDetector *detector = NULL;
   ObSEArray<ObRawExpr*, 4> join_conditions;
-  for (int64_t i = 0; OB_SUCC(ret) && i < quals.count(); ++i) {
-    if (OB_ISNULL(expr = quals.at(i))) {
+  for (int64_t i = 0; OB_SUCC(ret) && i < all_quals.count(); ++i) {
+    if (OB_ISNULL(expr = all_quals.at(i))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpect null expr", K(ret));
     } else if (ObOptimizerUtil::find_item(all_table_filters, expr)) {
@@ -2062,21 +2077,17 @@ int ObLogPlan::select_replicas(ObExecContext &exec_ctx,
   ObFollowerFirstFeedbackType follower_first_feedback = FFF_HIT_MIN;
   int64_t route_policy_type = 0;
   bool proxy_priority_hit_support = false;
-  ObSqlCtx *sql_ctx = exec_ctx.get_sql_ctx();
-  bool use_weak_ignore_retry = false;
-  if (OB_ISNULL(session) || OB_ISNULL(sql_ctx)) {
+  if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("get unexpected NULL", K(ret), K(session), K(sql_ctx));
+    LOG_ERROR("get unexpected NULL", K(ret), K(session));
   } else if (OB_FAIL(session->get_sys_variable(SYS_VAR_OB_ROUTE_POLICY, route_policy_type))) {
     LOG_WARN("fail to get sys variable", K(ret));
   } else {
     proxy_priority_hit_support = session->get_proxy_cap_flags().is_priority_hit_support();
-    // explain may retry to check outline validation
-    use_weak_ignore_retry = (sql_ctx->first_plan_hash_ != 0 && !sql_ctx->first_outline_data_.empty());
   }
 
   if (OB_FAIL(ret)) {
-  } else if (is_weak && (!session->get_is_in_retry() || use_weak_ignore_retry)) {
+  } else if (is_weak) {
     int64_t max_read_stale_time = exec_ctx.get_my_session()->get_ob_max_read_stale_time();
     uint64_t tenant_id = exec_ctx.get_my_session()->get_effective_tenant_id();
     if (OB_FAIL(ObLogPlan::weak_select_replicas(local_server,
@@ -3831,6 +3842,8 @@ int ObLogPlan::try_split_or_qual(const ObRelIds &table_ids,
     /* do nothing */
   } else if (OB_FAIL(table_quals.push_back(new_expr))) {
     LOG_WARN("failed to push back new expr", K(ret));
+  } else if (OB_FAIL(new_or_quals_.push_back(new_expr))) {
+    LOG_WARN("failed to push back expr", K(ret));
   }
   return ret;
 }
@@ -5410,6 +5423,11 @@ int ObLogPlan::create_plan_tree_from_path(Path *path,
       if (OB_FAIL(allocate_subquery_path(subquery_path, op))) {
         LOG_WARN("failed to allocate subquery path", K(ret));
       } else { /* Do nothing */ }
+    } else if (path->is_values_table_path()) {
+      ValuesTablePath *values_table_path = static_cast<ValuesTablePath *>(path);
+      if (OB_FAIL(allocate_values_table_path(values_table_path, op))) {
+        LOG_WARN("failed to allocate values table path", K(ret));
+      } else { /* Do nothing */ }
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected path type");
@@ -5563,16 +5581,20 @@ int ObLogPlan::candi_allocate_sequence()
   ObSEArray<CandidatePlan, 4> sequence_plans;
   ObDMLStmt *root_stmt = NULL;
   bool will_use_parallel_sequence = false;
+  bool has_dblink_sequence = false;
   OPT_TRACE_TITLE("start to generate sequence plan");
   if (OB_ISNULL(root_stmt = get_optimizer_context().get_root_stmt())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(root_stmt), K(ret));
+  } else if (OB_FAIL(check_has_dblink_sequence(has_dblink_sequence))) {
+    LOG_WARN("failed to check has dblink sequence", K(ret));
   } else if (root_stmt->is_explain_stmt() &&
              OB_ISNULL(root_stmt=static_cast<ObExplainStmt*>(root_stmt)->get_explain_query_stmt())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(root_stmt), K(ret));
   } else {
-    will_use_parallel_sequence = get_optimizer_context().is_online_ddl() || root_stmt->is_insert_stmt();
+    will_use_parallel_sequence = (get_optimizer_context().is_online_ddl() || root_stmt->is_insert_stmt())
+                                  && !has_dblink_sequence;
     OPT_TRACE("check will use parallel sequence:", will_use_parallel_sequence);
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < candidates_.candidate_plans_.count(); ++i) {
@@ -5595,6 +5617,27 @@ int ObLogPlan::candi_allocate_sequence()
     if (OB_FAIL(prune_and_keep_best_plans(sequence_plans))) {
       LOG_WARN("failed to prune and keep best plans", K(ret));
     } else { /*do nothing*/ }
+  }
+  return ret;
+}
+
+int ObLogPlan::check_has_dblink_sequence(bool &has)
+{
+  int ret = OB_SUCCESS;
+  has = false;
+  ObSQLSessionInfo *session = get_optimizer_context().get_session_info();
+  if (OB_ISNULL(session) || OB_ISNULL(get_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("session info is invalid", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !has && i < get_stmt()->get_nextval_sequence_ids().count(); ++i) {
+    const ObSequenceSchema *seq_schema = NULL;
+    if (OB_FAIL(session->get_dblink_sequence_schema(get_stmt()->get_nextval_sequence_ids().at(i),
+                                                    seq_schema))) {
+      LOG_WARN("failed to get dblink sequence schema", K(ret));
+    } else if (NULL != seq_schema) {
+      has = true;
+    }
   }
   return ret;
 }
@@ -10371,6 +10414,7 @@ int ObLogPlan::add_candidate_plan(ObIArray<CandidatePlan> &current_plans,
   } else if (new_plan.plan_tree_->get_contains_match_all_fake_cte() &&
              !new_plan.plan_tree_->is_remote()) {
     should_add = false;
+    OPT_TRACE("containt match all fake cte, but not remote plan, will not add plan");
   }
   for (int64_t i = current_plans.count() - 1;
        OB_SUCC(ret) && should_add && i >= 0; --i) {
@@ -10861,6 +10905,9 @@ int ObLogPlan::check_enable_plan_expiration(bool &enable) const
 {
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *session = NULL;
+#ifdef OB_BUILD_SPM
+  bool use_spm = false;
+#endif
   enable = false;
   if (OB_ISNULL(get_stmt()) ||
       OB_ISNULL(session = optimizer_context_.get_session_info())) {
@@ -10868,6 +10915,12 @@ int ObLogPlan::check_enable_plan_expiration(bool &enable) const
     LOG_WARN("stmt is null", K(ret));
   } else if (!get_stmt()->is_select_stmt()) {
     // do nothing
+#ifdef OB_BUILD_SPM
+  } else if (OB_FAIL(session->get_use_plan_baseline(use_spm))) {
+    LOG_WARN("failed to check is spm enabled", K(ret));
+  } else if (use_spm) {
+    // do nothing
+#endif
   } else if (optimizer_context_.get_phy_plan_type() != OB_PHY_PLAN_LOCAL &&
              optimizer_context_.get_phy_plan_type() != OB_PHY_PLAN_DISTRIBUTED) {
     // do nothing
@@ -11189,9 +11242,16 @@ int ObLogPlan::init_plan_info()
   } else if (OB_FAIL(ObOptimizerUtil::compute_const_exprs(get_stmt()->get_condition_exprs(),
                                                           get_const_exprs()))) {
     LOG_WARN("failed to compute const equivalent exprs", K(ret));
+#ifndef OB_BUILD_SPM
   } else if (OB_FAIL(log_plan_hint_.init_log_plan_hint(*schema_guard, *get_stmt(),
                                                        query_ctx->get_query_hint()))) {
     LOG_WARN("failed to init log plan hint", K(ret));
+#else
+  } else if (OB_FAIL(log_plan_hint_.init_log_plan_hint(*schema_guard, *get_stmt(),
+                                                       query_ctx->get_query_hint(),
+                                                       query_ctx->is_spm_evolution_))) {
+    LOG_WARN("failed to init log plan hint", K(ret));
+#endif
   } else if (OB_FAIL(init_onetime_subquery_info())) {
     LOG_WARN("failed to extract onetime_exprs", K(ret));
   }
@@ -11715,6 +11775,8 @@ int ObLogPlan::set_duplicated_table_location(ObLogicalOperator *op, int64_t dup_
            phy_loc.get_phy_part_loc_info_list_for_update().at(i);
       phy_part_loc.set_selected_replica_idx(dup_table_pos);
     }
+  } else if (OB_FAIL(op->adjust_dup_table_replica_pos(dup_table_pos))) {
+    LOG_WARN("failed to adjust dup table replica pos", K(ret));
   } else {
     ObSEArray<int64_t, 8> dup_table_pos_list;
     if (op->get_dup_table_pos().empty()) {
@@ -11865,20 +11927,41 @@ int ObLogPlan::collect_table_location(ObLogicalOperator *op)
       } else if (OB_FAIL(add_global_table_partition_info(table_partition_info))) {
         LOG_WARN("failed to add table partition info", K(ret));
       } else { /*do nothing*/ }
-    } else if ((log_op_def::LOG_INSERT == op->get_type() ||
-                log_op_def::LOG_MERGE == op->get_type()) &&
-               !static_cast<ObLogInsert*>(op)->has_instead_of_trigger() &&
-               static_cast<ObLogInsert*>(op)->is_insert_select()) {
+    } else if (log_op_def::LOG_INSERT == op->get_type()
+               && static_cast<ObLogInsert*>(op)->is_insert_select()
+               && !static_cast<ObLogDelUpd*>(op)->has_instead_of_trigger()) {
       ObLogInsert *insert_op = static_cast<ObLogInsert*>(op);
       ObTablePartitionInfo *table_partition_info = insert_op->get_table_partition_info();
       if (OB_ISNULL(table_partition_info)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null", K(table_partition_info), K(ret));
-      } else if ((!insert_op->is_multi_part_dml() ||
-                 ObPhyPlanType::OB_PHY_PLAN_DISTRIBUTED == insert_op->get_phy_plan_type())) {
+      } else if (!insert_op->is_multi_part_dml() ||
+                 ObPhyPlanType::OB_PHY_PLAN_DISTRIBUTED == insert_op->get_phy_plan_type()) {
         if (OB_FAIL(add_global_table_partition_info(table_partition_info))) {
           LOG_WARN("failed to add table partition info", K(ret));
         } else { /*do nothing*/ }
+      } else { /*do nothing*/ }
+    } else if (log_op_def::LOG_MERGE == op->get_type()
+               && !static_cast<ObLogDelUpd*>(op)->has_instead_of_trigger()) {
+      ObLogDelUpd *dml_op = static_cast<ObLogDelUpd*>(op);
+      ObTablePartitionInfo *table_partition_info = dml_op->get_table_partition_info();
+      const ObOptimizerContext &opt_ctx = get_optimizer_context();
+      if (OB_ISNULL(table_partition_info) || OB_ISNULL(opt_ctx.get_query_ctx())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(table_partition_info), K(opt_ctx.get_query_ctx()), K(ret));
+      } else if (!dml_op->is_multi_part_dml()) {
+        /* for merge into view, additional table location for insert sharding need add
+          create table tp1(c1 int, c2 int, c3 int) partition by hash(c1) partitions 2;
+          create table tp2(c1 int, c2 int, c3 int) partition by hash(c1) partitions 2;
+          create or replace view v as select * from tp1 where c1 = 3;
+          merge into v v1 using (select * from tp2 where c1 = 2) t2 on (v1.c1 = t2.c1)
+          when matched then update set v1.c2 = t2.c1 + 100
+          when not matched then insert values (t2.c1, t2.c2, t2.c3);
+        */
+        table_partition_info->get_table_location().set_table_id(opt_ctx.get_query_ctx()->available_tb_id_ - 1);
+        if (OB_FAIL(add_global_table_partition_info(table_partition_info))) {
+          LOG_WARN("failed to add table partition info", K(ret));
+        }
       } else { /*do nothing*/ }
     } else { /*do nothing*/ }
     if (OB_SUCC(ret) && OB_FAIL(collect_location_related_info(*op))) {
@@ -13350,9 +13433,18 @@ int ObLogPlan::allocate_material_for_recursive_cte_plan(ObIArray<ObLogicalOperat
         } else { /*do nothing*/ }
       } else if (log_op_def::LOG_MATERIAL != child_ops.at(i)->get_type() &&
                  log_op_def::LOG_TABLE_SCAN != child_ops.at(i)->get_type() &&
-                 log_op_def::LOG_EXPR_VALUES != child_ops.at(i)->get_type() &&
-                 OB_FAIL(log_plan->allocate_material_as_top(child_ops.at(i)))) {
-        LOG_WARN("failed to allocate materialize as top", K(ret));
+                 log_op_def::LOG_EXPR_VALUES != child_ops.at(i)->get_type()) {
+        bool is_plan_root = child_ops.at(i)->is_plan_root();
+        child_ops.at(i)->set_is_plan_root(false);
+        if (OB_FAIL(log_plan->allocate_material_as_top(child_ops.at(i)))) {
+          LOG_WARN("failed to allocate materialize as top", K(ret));
+        } else if (is_plan_root) {
+          child_ops.at(i)->mark_is_plan_root();
+          child_ops.at(i)->get_plan()->set_plan_root(child_ops.at(i));
+          if (OB_FAIL(child_ops.at(i)->set_plan_root_output_exprs())) {
+            LOG_WARN("failed to set plan root output", K(ret));
+          }
+        }
       } else { /*do nothing*/ }
     }
   }
@@ -13848,6 +13940,145 @@ int ObLogPlan::perform_gather_stat_replace(ObLogicalOperator *op)
     }
     if (OB_SUCC(ret) && OB_FAIL(op->replace_op_exprs(stat_gather_replacer_))) {
       LOG_WARN("failed to replace generated aggr expr", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObLogPlan::allocate_values_table_path(ValuesTablePath *values_table_path,
+                                          ObLogicalOperator *&out_access_path_op)
+{
+  int ret = OB_SUCCESS;
+  ObLogExprValues *values_op = NULL;
+  const TableItem *table_item = NULL;
+  if (OB_ISNULL(values_table_path) || OB_ISNULL(get_stmt()) ||
+      OB_ISNULL(table_item = get_stmt()->get_table_item_by_id(values_table_path->table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(values_table_path), K(get_stmt()), K(ret));
+  } else if (OB_ISNULL(values_op = static_cast<ObLogExprValues*>(get_log_op_factory().
+                                   allocate(*this, LOG_EXPR_VALUES)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate values op", K(ret));
+  } else {
+    values_op->set_table_name(table_item->get_table_name());
+    values_op->set_is_values_table(true);
+    ObSEArray<ObColumnRefRawExpr *, 4> values_desc;
+    if (OB_FAIL(values_op->add_values_expr(table_item->table_values_))) {
+      LOG_WARN("failed to add values expr", K(ret));
+    } else if (OB_FAIL(get_stmt()->get_column_exprs(values_table_path->table_id_, values_desc))) {
+      LOG_WARN("failed to get column exprs");
+    } else if (OB_FAIL(values_op->add_values_desc(values_desc))) {
+      LOG_WARN("failed to add values desc", K(ret));
+    } else if (OB_FAIL(append(values_op->get_filter_exprs(), values_table_path->filter_))) {
+      LOG_WARN("failed to append expr", K(ret));
+    } else if (OB_FAIL(values_op->compute_property(values_table_path))) {
+      LOG_WARN("failed to compute propery", K(ret));
+    } else {
+      out_access_path_op = values_op;
+    }
+  }
+  return ret;
+}
+
+int ObLogPlan::deduce_redundant_join_conds(const ObIArray<ObRawExpr*> &quals,
+                                           const ObIArray<TableItem*> &table_items,
+                                           ObIArray<ObRawExpr*> &redundant_quals)
+{
+  int ret = OB_SUCCESS;
+  EqualSets all_equal_sets;
+  ObSEArray<ObRelIds, 8> connect_infos;
+  ObSEArray<ObRelIds, 8> single_table_ids;
+  ObRelIds table_ids;
+  if (OB_FAIL(ObEqualAnalysis::compute_equal_set(&allocator_,
+                                                 quals,
+                                                 all_equal_sets))) {
+    LOG_WARN("failed to compute equal set", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < quals.count(); ++i) {
+    if (OB_ISNULL(quals.at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (OB_FAIL(add_var_to_array_no_dup(connect_infos,
+                                               quals.at(i)->get_relation_ids()))) {
+      LOG_WARN("failed to add var to array no dup", K(ret));
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < table_items.count(); ++i) {
+    table_ids.reuse();
+    if (OB_FAIL(get_table_ids(table_items.at(i), table_ids))) {
+      LOG_WARN("failed to get table ids", K(ret));
+    } else if (OB_FAIL(single_table_ids.push_back(table_ids))) {
+      LOG_WARN("failed to push back table ids", K(ret));
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < all_equal_sets.count(); ++i) {
+    ObIArray<ObRawExpr*> *esets = all_equal_sets.at(i);
+    if (OB_ISNULL(esets)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (OB_FAIL(deduce_redundant_join_conds_with_equal_set(*esets,
+                                                                  connect_infos,
+                                                                  single_table_ids,
+                                                                  redundant_quals))) {
+      LOG_WARN("failed to deduce redundancy quals with equal set", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObLogPlan::deduce_redundant_join_conds_with_equal_set(
+               const ObIArray<ObRawExpr*> &equal_set,
+               ObIArray<ObRelIds> &connect_infos,
+               ObIArray<ObRelIds> &single_table_ids,
+               ObIArray<ObRawExpr*> &redundant_quals)
+{
+  int ret = OB_SUCCESS;
+  ObRelIds table_ids;
+  ObRawExpr *new_expr = NULL;
+  if (OB_ISNULL(get_optimizer_context().get_session_info())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  }
+  for (int64_t m = 0; OB_SUCC(ret) && m < equal_set.count() - 1; ++m) {
+    for (int64_t n = m + 1; OB_SUCC(ret) && n < equal_set.count(); ++n) {
+      table_ids.reuse();
+      new_expr = NULL;
+      if (OB_ISNULL(equal_set.at(m)) ||
+          OB_ISNULL(equal_set.at(n))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (equal_set.at(m)->get_result_meta() !=
+                  equal_set.at(n)->get_result_meta()) {
+        // do nothing
+      } else if (!equal_set.at(m)->has_flag(CNT_COLUMN) ||
+                 !equal_set.at(n)->has_flag(CNT_COLUMN) ||
+                 equal_set.at(m)->get_relation_ids().overlap(equal_set.at(n)->get_relation_ids())) {
+        // do nothing
+      } else if (OB_FAIL(table_ids.add_members(equal_set.at(m)->get_relation_ids())) ||
+                 OB_FAIL(table_ids.add_members(equal_set.at(n)->get_relation_ids()))) {
+        LOG_WARN("failed to add members", K(ret));
+      } else if (ObOptimizerUtil::find_item(connect_infos, table_ids)) {
+        // do nothing
+      } else if (ObOptimizerUtil::find_superset(table_ids, single_table_ids)) {
+        // do nothing
+      } else if (OB_FAIL(ObRawExprUtils::create_double_op_expr(
+                         get_optimizer_context().get_expr_factory(),
+                         get_optimizer_context().get_session_info(),
+                         T_OP_EQ,
+                         new_expr,
+                         equal_set.at(m),
+                         equal_set.at(n)))) {
+          LOG_WARN("failed to create double op expr", K(ret));
+      } else if (OB_ISNULL(new_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (OB_FAIL(new_expr->pull_relation_id())) {
+        LOG_WARN("failed to pull releation id");
+      } else if (OB_FAIL(connect_infos.push_back(table_ids))) {
+          LOG_WARN("failed to push back array", K(ret));
+      } else if (OB_FAIL(redundant_quals.push_back(new_expr))) {
+        LOG_WARN("failed to push back array", K(ret));
+      }
     }
   }
   return ret;

@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   suzhi.yt <>
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SERVER
 
@@ -303,7 +311,7 @@ int ObTableLoadStore::commit(ObTableLoadResultInfo &result_info)
       LOG_WARN("fail to commit sql stats", KR(ret));
     } else if (OB_FAIL(store_ctx_->merger_->collect_dml_stat(dml_stats))) {
       LOG_WARN("fail to build dml stat", KR(ret));
-    } else if (OB_FAIL(ObOptStatMonitorManager::get_instance().update_dml_stat_info_from_direct_load(dml_stats.dml_stat_array_))) {
+    } else if (OB_FAIL(ObOptStatMonitorManager::update_dml_stat_info_from_direct_load(dml_stats.dml_stat_array_))) {
       LOG_WARN("fail to update dml stat info", KR(ret));
     } else if (OB_FAIL(store_ctx_->set_status_commit())) {
       LOG_WARN("fail to set store status commit", KR(ret));

@@ -25,6 +25,7 @@
 #include "common/ob_smart_call.h"
 #include "sql/resolver/expr/ob_raw_expr_copier.h"
 #include "pl/ob_pl_user_type.h"
+#include "dblink/ob_pl_dblink_guard.h"
 namespace oceanbase
 {
 using namespace common;
@@ -77,7 +78,14 @@ int ObPLDataType::get_udt_type_by_name(uint64_t tenant_id,
     LOG_WARN("udt not exist", K(ret), K(tenant_id), K(owner_id), K(udt));
     LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_TYPE, udt.length(), udt.ptr());
   }
+#ifdef OB_BUILD_ORACLE_PL
+  OX (type = udt_info->is_opaque()
+        ? PL_OPAQUE_TYPE :
+          udt_info->is_collection()
+            ? (udt_info->is_varray() ? PL_VARRAY_TYPE : PL_NESTED_TABLE_TYPE) : PL_RECORD_TYPE);
+#else
   OX (type = PL_RECORD_TYPE);
+#endif
   OX (pl_type.set_user_type_id(type, udt_info->get_type_id()));
   OX (pl_type.set_type_from(PL_TYPE_UDT));
   if (OB_SUCC(ret) && OB_NOT_NULL(obj_version)) {
@@ -86,6 +94,103 @@ int ObPLDataType::get_udt_type_by_name(uint64_t tenant_id,
   return ret;
 }
 
+#ifdef OB_BUILD_ORACLE_PL
+int ObPLDataType::get_pkg_type_by_name(uint64_t tenant_id,
+                                       uint64_t owner_id,
+                                       const ObString &pkg,
+                                       const ObString &type,
+                                       ObIAllocator &allocator,
+                                       sql::ObSQLSessionInfo &session_info,
+                                       share::schema::ObSchemaGetterGuard &schema_guard,
+                                       common::ObMySQLProxy &sql_proxy,
+                                       bool is_pkg_var, // pkg var or pkg type
+                                       ObPLDataType &pl_type,
+                                       ObSchemaObjVersion *obj_version)
+{
+  int ret = OB_SUCCESS;
+  const share::schema::ObPackageInfo *package_info = NULL;
+  int64_t compatible_mode = lib::is_oracle_mode() ? COMPATIBLE_ORACLE_MODE
+                                                  : COMPATIBLE_MYSQL_MODE;
+  ObPLPackageManager *package_manager = NULL;
+  pl::ObPLPackageGuard package_guard(session_info.get_effective_tenant_id());
+  pl::ObPLResolveCtx resolve_ctx(allocator, session_info, schema_guard,
+                                package_guard, sql_proxy, false);
+  OZ (package_guard.init());
+  CK (OB_NOT_NULL(session_info.get_pl_engine()));
+  OZ (schema_guard.get_package_info(tenant_id, owner_id, pkg, share::schema::PACKAGE_TYPE,
+                                    compatible_mode, package_info));
+  if (OB_SUCC(ret) && OB_ISNULL(package_info)) {
+    ret = OB_ERR_PACKAGE_DOSE_NOT_EXIST;
+    LOG_WARN("package not exist", K(ret), K(tenant_id), K(owner_id), K(pkg), K(type));
+    {
+      ObString db_name("");
+      const ObDatabaseSchema *database_schema = NULL;
+      if (OB_SUCCESS == schema_guard.get_database_schema(tenant_id, owner_id, database_schema)) {
+        if (NULL != database_schema) {
+          db_name =database_schema->get_database_name_str();
+        }
+      }
+      LOG_USER_ERROR(OB_ERR_PACKAGE_DOSE_NOT_EXIST, "PACKAGE OR TABLE",
+                               db_name.length(), db_name.ptr(), pkg.length(), pkg.ptr());
+    }
+  }
+  OX (package_manager = &(session_info.get_pl_engine()->get_package_manager()));
+  CK (OB_NOT_NULL(package_manager));
+  if (is_pkg_var) {
+    const ObPLVar *pkg_var = NULL;
+    int64_t var_idx = OB_INVALID_ID;
+    CK (OB_NOT_NULL(package_info));
+    OZ (package_manager->get_package_var(resolve_ctx,
+                                         package_info->get_package_id(),
+                                         type,
+                                         pkg_var,
+                                         var_idx));
+    if (OB_SUCC(ret) && OB_ISNULL(pkg_var)) {
+      ret = OB_ERR_SP_UNDECLARED_TYPE;
+      LOG_WARN("package variable is not exist", K(ret), K(tenant_id), K(owner_id), K(pkg), K(type));
+      LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_TYPE, type.length(), type.ptr());
+    }
+    if (OB_FAIL(ret) || OB_ISNULL(pkg_var)) {
+    } else if (pl::PL_CURSOR_TYPE == pkg_var->get_type().get_type()) {
+      OX (pl_type.set_user_type_id(PL_RECORD_TYPE, pkg_var->get_type().get_user_type_id()));
+      OX (pl_type.set_type_from(PL_TYPE_PACKAGE));
+    } else {
+      OX (pl_type = pkg_var->get_type());
+      OX (pl_type.set_type_from(PL_TYPE_ATTR_TYPE));
+    }
+  } else {
+    const ObUserDefinedType *user_type = NULL;
+    CK (OB_NOT_NULL(package_info));
+    OZ (package_manager->get_package_type(resolve_ctx,
+                                          package_info->get_package_id(),
+                                          type,
+                                          user_type));
+    if (OB_SUCC(ret) && OB_ISNULL(user_type)) {
+      ret = OB_ERR_SP_UNDECLARED_TYPE;
+      LOG_WARN("package type is not exist", K(ret), K(tenant_id), K(owner_id), K(pkg), K(type));
+      LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_TYPE, type.length(), type.ptr());
+    }
+    if (OB_SUCC(ret)) {
+      if (user_type->is_subtype()) {
+        const ObUserDefinedSubType* subtype = static_cast<const ObUserDefinedSubType*>(user_type);
+        CK (OB_NOT_NULL(subtype));
+        OX (pl_type = *(subtype->get_base_type()));
+      } else {
+        OX (pl_type = *user_type);
+      }
+      if (!pl_type.is_sys_refcursor_type()) {
+        OX (pl_type.set_type_from(PL_TYPE_PACKAGE));
+      }
+    }
+  }
+  if (OB_SUCC(ret) && OB_NOT_NULL(obj_version)) {
+    new(obj_version)ObSchemaObjVersion(package_info->get_package_id(),
+                                       package_info->get_schema_version(),
+                                       DEPENDENCY_PACKAGE);
+  }
+  return ret;
+}
+#endif
 
 int ObPLDataType::get_table_type_by_name(uint64_t tenant_id,
                                          uint64_t owner_id,
@@ -151,7 +256,8 @@ int ObPLDataType::transform_from_iparam(const ObRoutineParam *iparam,
                                         ObIAllocator &allocator,
                                         common::ObMySQLProxy &sql_proxy,
                                         pl::ObPLDataType &pl_type,
-                                        ObSchemaObjVersion *obj_version)
+                                        ObSchemaObjVersion *obj_version,
+                                        ObPLDbLinkGuard *dblink_guard)
 {
   int ret = OB_SUCCESS;
   CK (OB_NOT_NULL(iparam));
@@ -185,6 +291,84 @@ int ObPLDataType::transform_from_iparam(const ObRoutineParam *iparam,
                                  obj_version));
         break;
       }
+#ifdef OB_BUILD_ORACLE_PL
+      case SP_EXTERN_PKG: {
+        OZ (get_pkg_type_by_name(tenant_id,
+                                 iparam->get_type_owner(),
+                                 iparam->get_type_subname(),
+                                 iparam->get_type_name(),
+                                 allocator,
+                                 session_info,
+                                 schema_guard,
+                                 sql_proxy,
+                                 false,
+                                 pl_type,
+                                 obj_version));
+        break;
+      }
+      case SP_EXTERN_PKG_VAR: {
+        OZ (get_pkg_type_by_name(tenant_id,
+                                 iparam->get_type_owner(),
+                                 iparam->get_type_subname(),
+                                 iparam->get_type_name(),
+                                 allocator,
+                                 session_info,
+                                 schema_guard,
+                                 sql_proxy,
+                                 true,
+                                 pl_type,
+                                 obj_version));
+        break;
+      }
+      case SP_EXTERN_TAB_COL: {
+        OZ (get_table_type_by_name(tenant_id,
+                                   iparam->get_type_owner(),
+                                   iparam->get_type_subname(),
+                                   iparam->get_type_name(),
+                                   allocator,
+                                   session_info,
+                                   schema_guard,
+                                   false,
+                                   pl_type,
+                                   obj_version));
+        if (OB_SUCC(ret) && iparam->is_in_param() && ob_is_numeric_type(pl_type.get_obj_type())) {
+          const ObAccuracy &default_accuracy =  ObAccuracy::DDL_DEFAULT_ACCURACY2[lib::is_oracle_mode()][pl_type.get_obj_type()];
+          pl_type.get_data_type()->set_accuracy(default_accuracy);
+        }
+        break;
+      }
+      case SP_EXTERN_PKGVAR_OR_TABCOL: {
+        OZ (get_table_type_by_name(tenant_id,
+                                   iparam->get_type_owner(),
+                                   iparam->get_type_subname(),
+                                   iparam->get_type_name(),
+                                   allocator,
+                                   session_info,
+                                   schema_guard,
+                                   false,
+                                   pl_type,
+                                   obj_version));
+        if (OB_TABLE_NOT_EXIST == ret || OB_ERR_COLUMN_NOT_FOUND == ret) {
+          ret = OB_SUCCESS;
+          OZ (get_pkg_type_by_name(tenant_id,
+                                   iparam->get_type_owner(),
+                                   iparam->get_type_subname(),
+                                   iparam->get_type_name(),
+                                   allocator,
+                                   session_info,
+                                   schema_guard,
+                                   sql_proxy,
+                                   true,
+                                   pl_type,
+                                   obj_version));
+        }
+        break;
+      }
+      case SP_EXTERN_SYS_REFCURSOR: {
+        pl_type.set_sys_refcursor_type();
+      }
+        break;
+#endif
       case SP_EXTERN_TAB: {
         OZ (get_table_type_by_name(tenant_id,
                                    iparam->get_type_owner(),
@@ -213,6 +397,21 @@ int ObPLDataType::transform_from_iparam(const ObRoutineParam *iparam,
         }
         break;
       }
+#ifdef OB_BUILD_ORACLE_PL
+      case SP_EXTERN_DBLINK :{
+        const ObUserDefinedType *udt = NULL;
+        const ObRoutineParam *param = static_cast<const ObRoutineParam*>(iparam);
+        CK (OB_NOT_NULL(param));
+        CK (OB_NOT_NULL(dblink_guard));
+        CK (param->get_extended_type_info().count() > 0);
+        OZ (dblink_guard->get_dblink_type_by_name(param->get_type_owner(), param->get_extended_type_info().at(0),
+                                                  param->get_type_subname(), param->get_type_name(), udt));
+        CK (OB_NOT_NULL(udt));
+        OX (pl_type.set_user_type_id(udt->get_type(), udt->get_user_type_id()));
+        OX (pl_type.set_type_from(ObPLTypeFrom::PL_TYPE_DBLINK));
+      }
+      break;
+#endif
       default: {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected extern type", K(ret), K(type));
@@ -937,16 +1136,7 @@ int ObPLDataType::convert(ObPLResolveCtx &ctx, ObObj *&src, ObObj *&dst) const
     const ObUserDefinedType *user_type = NULL;
     OZ (ctx.get_user_type(get_user_type_id(), user_type));
     CK (OB_NOT_NULL(user_type));
-    if (OB_FAIL(ret)) {
-    } else if (is_record_type()) {
-      ObObj* tmp_src = reinterpret_cast<ObObj*>(src->get_ext());
-      ObObj* tmp_dst = reinterpret_cast<ObObj*>(dst->get_ext());
-      CK (OB_NOT_NULL(tmp_src));
-      CK (OB_NOT_NULL(tmp_dst));
-      OZ (user_type->convert(ctx, tmp_src, tmp_dst));
-    } else {
-      OZ (user_type->convert(ctx, src, dst));
-    }
+    OZ (user_type->convert(ctx, src, dst));
   }
   return ret;
 }
@@ -1033,7 +1223,15 @@ int ObPLDataType::get_external_user_type(const ObPLResolveCtx &resolve_ctx,
 {
   int ret = OB_SUCCESS;
   uint64_t user_type_id = get_user_type_id();
-  if (is_package_type()) { // other package type
+  if (common::is_dblink_type_id(user_type_id)) {
+    if (OB_FAIL(resolve_ctx.package_guard_.dblink_guard_.get_dblink_type_by_id(
+                extract_package_id(user_type_id), user_type_id, user_type))) {
+      LOG_WARN("failed to get dblink package id", K(ret), K(user_type_id));
+    } else if (OB_ISNULL(user_type)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get dblink type is null", K(ret), K(user_type_id));
+    }
+  } else if (is_package_type()) { // other package type
     ObPLPackageManager &pl_manager = resolve_ctx.session_info_.get_pl_engine()->get_package_manager();
     uint64_t package_id = extract_package_id(user_type_id);
     uint64_t type_id = extract_type_id(user_type_id);
@@ -1189,6 +1387,14 @@ case type: {                                                            \
     DEEP_COPY_TYPE(PL_RECORD_TYPE, ObRecordType, COPY_COMMON);
     DEEP_COPY_TYPE(PL_CURSOR_TYPE, ObRefCursorType, COPY_COMMON);
     case PL_INTEGER_TYPE: /*do nothing*/ break;
+#ifdef OB_BUILD_ORACLE_PL
+    DEEP_COPY_TYPE(PL_NESTED_TABLE_TYPE, ObNestedTableType, COPY_COMMON);
+    DEEP_COPY_TYPE(PL_ASSOCIATIVE_ARRAY_TYPE, ObAssocArrayType, COPY_COMMON);
+    DEEP_COPY_TYPE(PL_VARRAY_TYPE, ObVArrayType, COPY_COMMON);
+    DEEP_COPY_TYPE(PL_SUBTYPE, ObUserDefinedSubType, COPY_COMMON);
+    DEEP_COPY_TYPE(PL_REF_CURSOR_TYPE, ObRefCursorType, COPY_COMMON);
+    case PL_OPAQUE_TYPE: /*do nothing*/ break;
+#endif
     default: {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("type for anytype is not supported", K(ret), K(src));
@@ -1261,6 +1467,10 @@ void ObObjAccessIdx::reset()
 
 bool ObObjAccessIdx::operator==(const ObObjAccessIdx &other) const
 {
+  int ret = OB_SUCCESS;
+  // udf deterministic default value is false, we need display setting check_ctx.need_check_deterministic_
+  ObExprEqualCheckContext check_ctx;
+  check_ctx.need_check_deterministic_ = false;
   return elem_type_ == other.elem_type_
       && access_type_ == other.access_type_
       && 0 == var_name_.case_compare(other.var_name_)
@@ -1269,7 +1479,7 @@ bool ObObjAccessIdx::operator==(const ObObjAccessIdx &other) const
       && routine_info_ == other.routine_info_
       && is_array_equal(type_method_params_, other.type_method_params_)
       && (get_sysfunc_ == other.get_sysfunc_
-          || (NULL != get_sysfunc_ && NULL != other.get_sysfunc_ && get_sysfunc_->same_as(*other.get_sysfunc_)));
+          || (NULL != get_sysfunc_ && NULL != other.get_sysfunc_ && get_sysfunc_->same_as(*other.get_sysfunc_, &check_ctx)));
 }
 
 bool ObObjAccessIdx::is_table(const common::ObIArray<ObObjAccessIdx> &access_idxs)
@@ -1765,6 +1975,13 @@ int ObPLCursorInfo::deep_copy(ObPLCursorInfo &src, common::ObIAllocator *allocat
                             src_cursor->row_store_.get_mem_limit()));
     CK (OB_NOT_NULL(dest_cursor));
     OZ (dest_cursor->row_desc_.assign(src_cursor->row_desc_));
+#ifdef OB_BUILD_ORACLE_PL
+    if (OB_SUCC(ret) && src_cursor->fields_.count() > 0) {
+      OZ (ObDbmsCursorInfo::deep_copy_field_columns(*copy_allocator,
+                                                    &(src_cursor->fields_),
+                                                    dest_cursor->fields_));
+    }
+#endif
     OX (dest_cursor->cur_ = src_cursor->cur_);
 
     while (OB_SUCC(ret) && cur < src_cursor->row_store_.get_row_cnt()) {
@@ -1814,6 +2031,13 @@ int ObPLCursorInfo::close(sql::ObSQLSessionInfo &session, bool is_reuse)
         get_allocator()->free(get_spi_cursor());
       }
     }
+#ifdef OB_BUILD_ORACLE_PL
+    if (lib::is_oracle_mode()) {
+      /* unregiter snapshot whether ret is succ or not*/
+      MTL(transaction::ObTransService*)->unregister_tx_snapshot_verify(get_snapshot());
+      get_snapshot().reset();
+    }
+#endif
   } else {
     LOG_INFO("NOTICE: cursor is closed without openning", K(*this), K(ret));
   }
@@ -2000,13 +2224,19 @@ int ObPLCursorInfo::prepare_spi_result(ObPLExecCtx *ctx, ObSPIResultSet *&spi_re
   CK (OB_NOT_NULL(ctx));
   CK (OB_NOT_NULL(ctx->exec_ctx_));
   CK (OB_NOT_NULL(ctx->exec_ctx_->get_my_session()));
-  if (OB_ISNULL(spi_cursor_)) {
+  if (OB_ISNULL(spi_cursor_) || !last_stream_cursor_) {
     OV (OB_NOT_NULL(get_allocator()));
+    if (OB_SUCC(ret) && OB_NOT_NULL(spi_cursor_) && OB_NOT_NULL(static_cast<ObSPICursor*>(spi_cursor_))) {
+      static_cast<ObSPICursor*>(spi_cursor_)->~ObSPICursor();
+      get_allocator()->free(spi_cursor_);
+      spi_cursor_ = NULL;
+    }
     OX (spi_cursor_ = get_allocator()->alloc(sizeof(ObSPIResultSet)));
     OV (OB_NOT_NULL(spi_cursor_), OB_ALLOCATE_MEMORY_FAILED);
   }
   OX (spi_result = new (spi_cursor_) ObSPIResultSet());
   OZ (spi_result->init(*ctx->exec_ctx_->get_my_session()));
+  OX (last_stream_cursor_ = true);
   return ret;
 }
 
@@ -2028,6 +2258,7 @@ int ObPLCursorInfo::prepare_spi_cursor(ObSPICursor *&spi_cursor,
     OV (OB_NOT_NULL(spi_cursor_), OB_ALLOCATE_MEMORY_FAILED);
   }
   OX (spi_cursor = new (spi_cursor_) ObSPICursor(*spi_allocator));
+  OX (last_stream_cursor_ = false);
   if (OB_SUCC(ret)) {
     if (OB_INVALID_SIZE == mem_limit) {
       mem_limit = GCONF._chunk_row_store_mem_limit;

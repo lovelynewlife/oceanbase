@@ -13,6 +13,7 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "ob_table_direct_load_rpc_executor.h"
+#include "observer/ob_server.h"
 #include "observer/omt/ob_multi_tenant.h"
 #include "observer/omt/ob_tenant.h"
 #include "observer/table_load/ob_table_load_client_service.h"
@@ -27,6 +28,7 @@ namespace oceanbase
 {
 namespace observer
 {
+using namespace observer;
 using namespace omt;
 using namespace share::schema;
 using namespace sql;
@@ -64,11 +66,22 @@ int ObTableDirectLoadBeginExecutor::check_args()
   return ret;
 }
 
+int ObTableDirectLoadBeginExecutor::set_result_header()
+{
+  int ret = OB_SUCCESS;
+  ret = ParentType::set_result_header();
+  if (OB_SUCC(ret)) {
+    this->result_.header_.addr_ = ObServer::get_instance().get_self();
+  }
+  return ret;
+}
+
 int ObTableDirectLoadBeginExecutor::process()
 {
   int ret = OB_SUCCESS;
   LOG_INFO("table direct load begin", K_(arg));
   const uint64_t tenant_id = ctx_.get_tenant_id();
+  const uint64_t user_id = ctx_.get_user_id();
   const uint64_t database_id = ctx_.get_database_id();
   uint64_t table_id = 0;
 
@@ -138,8 +151,8 @@ int ObTableDirectLoadBeginExecutor::process()
       if (OB_ISNULL(client_task_ = ObTableLoadClientService::alloc_task())) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("fail to alloc client task", KR(ret));
-      } else if (OB_FAIL(
-                   client_task_->init(tenant_id, ctx_.get_user_id(), table_id, arg_.timeout_))) {
+      } else if (OB_FAIL(client_task_->init(tenant_id, user_id, database_id, table_id,
+                                            arg_.timeout_, arg_.heartbeat_timeout_))) {
         LOG_WARN("fail to init client task", KR(ret));
       } else {
         // create table ctx
@@ -482,7 +495,8 @@ int ObTableDirectLoadInsertExecutor::decode_payload(const ObString &payload,
     LOG_WARN("invalid args", KR(ret), K(payload));
   } else {
     ObTableLoadSharedAllocatorHandle allocator_handle =
-      ObTableLoadSharedAllocatorHandle::make_handle("TLD_share_alloc", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+      ObTableLoadSharedAllocatorHandle::make_handle("TLD_share_alloc", OB_MALLOC_NORMAL_BLOCK_SIZE,
+                                                    MTL_ID());
     const int64_t data_len = payload.length();
     char *buf = nullptr;
     int64_t pos = 0;
@@ -517,6 +531,36 @@ int ObTableDirectLoadInsertExecutor::set_batch_seq_no(int64_t batch_id,
       row.seq_no_.batch_id_ = batch_id;
       row.seq_no_.batch_seq_no_ = i;
     }
+  }
+  return ret;
+}
+
+// heart_beat
+int ObTableDirectLoadHeartBeatExecutor::check_args()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(OB_INVALID_ID == arg_.table_id_ || 0 == arg_.task_id_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", KR(ret), K(arg_));
+  }
+  return ret;
+}
+
+int ObTableDirectLoadHeartBeatExecutor::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("table direct load heart beat", K_(arg));
+  ObTableLoadClientTask *client_task = nullptr;
+  ObTableLoadUniqueKey key(arg_.table_id_, arg_.task_id_);
+  if (OB_FAIL(ObTableLoadClientService::get_task(key, client_task))) {
+    LOG_WARN("fail to get client task", KR(ret), K(key));
+  } else {
+    client_task->get_exec_ctx()->last_heartbeat_time_ = ObTimeUtil::current_time();
+    client_task->get_status(res_.status_, res_.error_code_);
+  }
+  if (nullptr != client_task) {
+    ObTableLoadClientService::revert_task(client_task);
+    client_task = nullptr;
   }
   return ret;
 }

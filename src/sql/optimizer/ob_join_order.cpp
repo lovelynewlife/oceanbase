@@ -1203,7 +1203,9 @@ int ObJoinOrder::virtual_table_heuristics(const uint64_t table_id,
       } else if (OB_ISNULL(query_range_info)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("query_range_info should not be null", K(ret));
-      } else if (query_range_info->is_index_column_get()) {
+      } else if (query_range_info->is_index_column_get() ||
+          (query_range_info->has_valid_range_condition() &&
+          virtual_table_index_can_range_scan(valid_index_ids.at(i)))) {
         idx_id = valid_index_ids.at(i);
         LOG_TRACE("OPT:[VT] found index to use", K(idx_id));
       } else {
@@ -1641,12 +1643,6 @@ int ObJoinOrder::create_one_access_path(const uint64_t table_id,
         if (!sample_info->is_no_sample() && ap->use_das_) {
           //block(row) sample scan do not support DAS TSC
           ap->use_das_ = false;
-        }
-        bool is_exists_opt = false;
-        if (OB_FAIL(OPT_CTX.get_global_hint().opt_params_.get_bool_opt_param(ObOptParamHint::USE_FORCE_BLOCK_SAMPLE,
-                                                                             ap->sample_info_.force_block_,
-                                                                             is_exists_opt))) {
-          LOG_WARN("fail to check use force block sample", K(ret));
         }
       } else if (get_plan()->get_optimizer_context().is_online_ddl() &&
                  get_plan()->get_optimizer_context().get_root_stmt()->is_insert_stmt()) {
@@ -4683,6 +4679,11 @@ bool oceanbase::sql::Path::is_access_path() const
   return NULL != parent_ && parent_->get_type() == ACCESS;
 }
 
+bool oceanbase::sql::Path::is_values_table_path() const
+{
+  return NULL != parent_ && parent_->get_type() == VALUES_TABLE_ACCESS;
+}
+
 bool oceanbase::sql::Path::is_join_path() const
 {
   return NULL != parent_ && parent_->get_type() == JOIN;
@@ -5427,12 +5428,6 @@ int JoinPath::compute_join_path_sharding()
       } else if (OB_UNLIKELY(2 != reselected_dup_pos.count())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected array count", K(reselected_dup_pos.count()), K(ret));
-      } else if (OB_FAIL(ObOptimizerUtil::adjust_join_path_dup_table_replica_pos(left_path_,
-                                                                                 reselected_dup_pos.at(0)))) {
-        LOG_WARN("failed to adjust join path dup table replica pos", K(ret));
-      } else if (OB_FAIL(ObOptimizerUtil::adjust_join_path_dup_table_replica_pos(right_path_,
-                                                                                 reselected_dup_pos.at(1)))) {
-        LOG_WARN("failed to adjust join path dup table replica pos", K(ret));
       } else {
         left_dup_table_pos_ = reselected_dup_pos.at(0);
         right_dup_table_pos_ = reselected_dup_pos.at(1);
@@ -6947,6 +6942,8 @@ int ObJoinOrder::init_base_join_order(const TableItem *table_item)
       set_type(FUNCTION_TABLE_ACCESS);
     } else if (table_item->is_json_table()) {
       set_type(JSON_TABLE_ACCESS);
+    } else if (table_item->is_values_table()) {
+      set_type(VALUES_TABLE_ACCESS);
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid type of table item", K(table_item->type_), K(ret));
@@ -6972,6 +6969,8 @@ int ObJoinOrder::generate_base_paths()
     OPT_TRACE_TITLE("begin generate subplan");
     ret = generate_normal_subquery_paths();
     OPT_TRACE_TITLE("end generate subplan");
+  } else if (VALUES_TABLE_ACCESS == get_type()) {
+    ret = generate_values_table_paths();
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected base path type", K(get_type()), K(ret));
@@ -7429,7 +7428,68 @@ int ObJoinOrder::generate_temp_table_paths()
       LOG_WARN("failed to compute pipelined path", K(ret));
     } else if (OB_FAIL(add_path(temp_table_path))) {
       LOG_WARN("failed to add path", K(ret));
-    } else { /*do nothing*/ }
+    } else if (ObShardingInfo::is_shuffled_server_list(temp_table_path->server_list_)) {
+      /** Two temp tables with shuffled server list might not be in the same real server list
+       *  TEMP1 (shuffled : s1,s2)    TEMP2 (shuffled : s3,s4)
+       *             |                           |
+       *          GROUPY BY                   GROUP BY
+       *             |                           |
+       *        HASH EXCHANGE               HASH EXCHANGE
+       *             |                           |
+       *      TABLE SCAN(s1, s2)         TABLE SCAN(s3, s4)
+       *  TEMP1 and TEMP2 should not be union all by ext partition wise
+      */
+      temp_table_path->server_list_.reuse();
+    }
+  }
+  return ret;
+}
+
+int ObJoinOrder::extract_necessary_pushdown_quals(ObIArray<ObRawExpr *> &candi_quals,
+                                                  ObIArray<ObRawExpr *> &necessary_pushdown_quals,
+                                                  ObIArray<ObRawExpr *> &unnecessary_pushdown_quals)
+{
+  int ret = OB_SUCCESS;
+  const ObDMLStmt *stmt = NULL;
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(get_plan()), K(stmt));
+  } else if (stmt->is_hierarchical_query()) {
+    /**
+      * PredicateMoveAround skipped hierarchical query,
+      * so we push down all of its quals here.
+    */
+    if (OB_FAIL(append(necessary_pushdown_quals, candi_quals))) {
+      LOG_WARN("failed to append", K(ret));
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < candi_quals.count(); i ++) {
+      ObRawExpr *expr = candi_quals.at(i);
+      /**
+       * Only push down such filters here:
+       * a. Filters contain dynamic param, such as onetime exprs: `a = ?`
+       *      select * from (select * from t) where a = (select max(b) from t);
+       * b. Filters generated by optimizer: `v1.a = 1 or v1.a = 2`
+       *      select * from (select * from t) v1, v2 where (v1.a = 1 and v1.b = v2.b) or v1.a = 2;
+       * c. Filters push down by upper log plan
+       *
+       * case a and case b should be removed after they can be push down in the transformer
+      */
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null", K(ret));
+      } else if (expr->has_flag(CNT_DYNAMIC_PARAM) ||
+                ObOptimizerUtil::find_item(get_plan()->get_new_or_quals(), expr) ||
+                ObOptimizerUtil::find_item(get_plan()->get_pushdown_filters(), expr)) {
+        if (OB_FAIL(necessary_pushdown_quals.push_back(expr))) {
+          LOG_WARN("failed to push back", K(ret));
+        }
+      } else {
+        if (OB_FAIL(unnecessary_pushdown_quals.push_back(expr))) {
+          LOG_WARN("failed to push back", K(ret));
+        }
+      }
+    }
   }
   return ret;
 }
@@ -7444,6 +7504,7 @@ int ObJoinOrder::generate_normal_subquery_paths()
   ObSQLSessionInfo *session_info = NULL;
   ObRawExprFactory *expr_factory = NULL;
   ObSEArray<ObRawExpr*, 4> candi_pushdown_quals;
+  ObSEArray<ObRawExpr*, 4> candi_nonpushdown_quals;
   helper.is_inner_path_ = false;
   LOG_TRACE("start to generate normal subquery path", K(table_id_));
   if (OB_ISNULL(get_plan()) || OB_ISNULL(parent_stmt = get_plan()->get_stmt()) ||
@@ -7455,15 +7516,21 @@ int ObJoinOrder::generate_normal_subquery_paths()
   } else if (OB_ISNULL(helper.child_stmt_ = table_item->ref_query_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt is null", K(ret));
+  } else if (OB_FAIL(extract_necessary_pushdown_quals(get_restrict_infos(),
+                                                      candi_pushdown_quals,
+                                                      candi_nonpushdown_quals))) {
+    LOG_WARN("failed to classify push down quals", K(ret));
   } else if (OB_FAIL(ObOptimizerUtil::pushdown_and_rename_filter_into_subquery(*parent_stmt,
                                                                                *helper.child_stmt_,
                                                                                table_id_,
                                                                                get_plan()->get_optimizer_context(),
-                                                                               get_restrict_infos(),
+                                                                               candi_pushdown_quals,
                                                                                helper.pushdown_filters_,
                                                                                helper.filters_,
                                                                                /*check_match_index*/false))) {
         LOG_WARN("failed to push down filter into subquery", K(ret));
+  } else if (OB_FAIL(append(helper.filters_, candi_nonpushdown_quals))) {
+    LOG_WARN("failed to append", K(ret));
   } else if (OB_FAIL(generate_subquery_paths(helper))) {
     LOG_WARN("failed to generate subquery path", K(ret));
   }
@@ -10736,6 +10803,20 @@ int ObJoinOrder::get_valid_path_info_from_hint(const ObRelIds &table_set,
       path_info.local_methods_ &= log_join_hint->local_methods_;
     } else if (OB_FAIL(log_hint.check_status())) {  // spm outline mode, must get local_methods_ from hint
       LOG_WARN("failed to get valid local methods from hint", K(ret));
+    } else {
+      ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
+      int64_t local_methods_mask = 0;
+      if (opt_ctx.is_hash_join_enabled()) {
+        local_methods_mask |= HASH_JOIN;
+      }
+      if (opt_ctx.is_merge_join_enabled()){
+        local_methods_mask |= MERGE_JOIN;
+      }
+      if (opt_ctx.is_nested_join_enabled()) {
+        local_methods_mask |= NESTED_LOOP_JOIN;
+      }
+      path_info.local_methods_ &= local_methods_mask;
+      path_info.prune_mj_ = path_info.local_methods_ != MERGE_JOIN;
     }
   }
   return ret;
@@ -11680,9 +11761,7 @@ int ObJoinOrder::init_est_sel_info_for_access_path(const uint64_t table_id,
               table_partition_info_->get_phy_tbl_location_info().get_phy_part_loc_info_list();
     for (int64_t i = 0; OB_SUCC(ret) && i < part_loc_info_array.count(); ++i) {
       const ObOptTabletLoc &part_loc = part_loc_info_array.at(i).get_partition_location();
-      int64_t part_id = (!table_schema.is_partitioned_table() && is_virtual_table(ref_table_id))
-                                                       ? ref_table_id : part_loc.get_partition_id();
-      if (OB_FAIL(all_used_part_id.push_back(part_id))) {
+      if (OB_FAIL(all_used_part_id.push_back(part_loc.get_partition_id()))) {
         LOG_WARN("failed to push back partition id", K(ret));
       } else if (OB_FAIL(all_used_tablet_id.push_back(part_loc.get_tablet_id()))) {
         LOG_WARN("failed to push back tablet id", K(ret));
@@ -11922,10 +12001,12 @@ int ObJoinOrder::check_use_global_stat(const uint64_t ref_table_id,
       OB_ISNULL(OPT_CTX.get_exec_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (all_used_parts.count() <= 1) {
+  } else if (all_used_parts.count() <= 1 && !is_virtual_table(ref_table_id)) {
     // at most one partition are used
     // directly use the partition
-  } else if (all_used_parts.count() == schema.get_all_part_num()) {
+  } else if (all_used_parts.count() == schema.get_all_part_num() ||
+             is_virtual_table(ref_table_id)) {
+    global_part_id = schema.is_partitioned_table() ? -1 : ref_table_id;
     if (OB_ISNULL(OPT_CTX.get_opt_stat_manager())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected null", K(ret), K(OPT_CTX.get_opt_stat_manager()));
@@ -13097,6 +13178,7 @@ int ObJoinOrder::generate_inner_subquery_paths(const ObIArray<ObRawExpr *> &join
   int ret = OB_SUCCESS;
   const ObDMLStmt *parent_stmt = NULL;
   ObSEArray<ObRawExpr*, 4> pushdown_quals;
+  ObSEArray<ObRawExpr*, 4> dummy;
   LOG_TRACE("OPT:start to generate inner subquery path", K(right_tree.table_id_), K(join_relids));
   if (OB_ISNULL(get_plan()) || OB_ISNULL(parent_stmt = get_plan()->get_stmt())) {
     ret = OB_ERR_UNEXPECTED;
@@ -13130,6 +13212,8 @@ int ObJoinOrder::generate_inner_subquery_paths(const ObDMLStmt &parent_stmt,
   bool can_pushdown = false;
   ObSEArray<ObRawExpr*, 4> param_pushdown_quals;
   ObSEArray<ObRawExpr*, 4> candi_pushdown_quals;
+  ObSEArray<ObRawExpr*, 4> neccesary_pushdown_quals;
+  ObSEArray<ObRawExpr*, 4> candi_nonpushdown_quals;
   ObSEArray<ObExecParamRawExpr *, 4> nl_params;
   ObSQLSessionInfo *session_info = NULL;
   ObRawExprFactory *expr_factory = NULL;
@@ -13149,10 +13233,14 @@ int ObJoinOrder::generate_inner_subquery_paths(const ObDMLStmt &parent_stmt,
                                                    pushdown_quals,
                                                    param_pushdown_quals))) {
     LOG_WARN("failed to extract params for inner path", K(ret));
+  } else if (OB_FAIL(extract_necessary_pushdown_quals(param_pushdown_quals,
+                                                      neccesary_pushdown_quals,
+                                                      candi_nonpushdown_quals))) {
+    LOG_WARN("failed to classify push down quals", K(ret));
   } else if (OB_FAIL(ObOptimizerUtil::pushdown_filter_into_subquery(parent_stmt,
                                                                     *child_stmt,
                                                                     get_plan()->get_optimizer_context(),
-                                                                    param_pushdown_quals,
+                                                                    neccesary_pushdown_quals,
                                                                     candi_pushdown_quals,
                                                                     helper.filters_,
                                                                     can_pushdown))) {
@@ -13169,6 +13257,8 @@ int ObJoinOrder::generate_inner_subquery_paths(const ObDMLStmt &parent_stmt,
                                                             candi_pushdown_quals,
                                                             helper.pushdown_filters_))) {
     LOG_WARN("failed to rename pushdown filter", K(ret));
+  } else if (append(helper.filters_, candi_nonpushdown_quals)) {
+    LOG_WARN("failed to append", K(ret));
   } else if (OB_FAIL(generate_subquery_paths(helper))) {
     LOG_WARN("failed to generate subquery path", K(ret));
   } else if (OB_FAIL(check_and_fill_inner_path_info(helper,
@@ -13303,6 +13393,7 @@ int ObJoinOrder::generate_force_inner_path(const ObIArray<ObRawExpr *> &join_con
     } else {
       inner_path->is_inner_path_ = true;
       inner_path->inner_row_count_ = right_tree.get_output_rows();
+      inner_path->log_op_ = NULL;
     }
   }
   return ret;
@@ -13411,6 +13502,20 @@ int ObJoinOrder::copy_path(const Path& src_path, Path* &dst_path)
         LOG_WARN("failed to assign access path", K(ret));
       } else {
         dst_path = new_cte_path;
+      }
+    }
+  } else if (src_path.is_values_table_path()) {
+    const ValuesTablePath &values_table_path = static_cast<const ValuesTablePath&>(src_path);
+    ValuesTablePath *new_values_table_path = NULL;
+    if (OB_ISNULL(new_values_table_path = reinterpret_cast<ValuesTablePath*>(allocator_->alloc(sizeof(ValuesTablePath))))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("failed to allocate an ValuesTablePath", K(ret));
+    } else {
+      new_values_table_path = new(new_values_table_path) ValuesTablePath();
+      if (OB_FAIL(new_values_table_path->assign(values_table_path, allocator_))) {
+        LOG_WARN("failed to assign access path", K(ret));
+      } else {
+        dst_path = new_values_table_path;
       }
     }
   } else {
@@ -14367,6 +14472,134 @@ int ObJoinOrder::extract_valid_range_expr_for_oracle_agent_table(const ObIArray<
       // skip
     } else if (OB_FAIL(new_filters.push_back(filters.at(i)))) {
       LOG_WARN("failed to push back filter exprs", K(ret));
+    }
+  }
+  return ret;
+}
+
+static uint64_t virtual_table_index_scan_white_list[2]{
+    OB_ALL_VIRTUAL_ASH_ALL_VIRTUAL_ASH_I1_TID,
+    OB_ALL_VIRTUAL_ASH_ORA_ALL_VIRTUAL_ASH_I1_TID};
+
+bool ObJoinOrder::virtual_table_index_can_range_scan(uint64_t table_id) {
+  bool bret = false;
+  for (int i = 0; i < sizeof(virtual_table_index_scan_white_list); i++) {
+    if (table_id == virtual_table_index_scan_white_list[i]) {
+      bret = true;
+      break;
+    }
+  }
+  return bret;
+}
+
+int ValuesTablePath::assign(const ValuesTablePath &other, common::ObIAllocator *allocator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(Path::assign(other, allocator))) {
+    LOG_WARN("failed to assgin", K(ret));
+  } else {
+    table_id_ = other.table_id_;
+  }
+  return ret;
+}
+
+int ValuesTablePath::estimate_cost()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(parent_) || OB_ISNULL(parent_->get_plan())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get unexpected null", K(parent_), K(ret));
+  } else {
+    ObOptimizerContext &opt_ctx = parent_->get_plan()->get_optimizer_context();
+    cost_ = ObOptEstCost::cost_get_rows(get_path_output_rows(), opt_ctx.get_cost_model_type());
+    op_cost_ = cost_;
+  }
+  return ret;
+}
+
+int ObJoinOrder::generate_values_table_paths()
+{
+  int ret = OB_SUCCESS;
+  ValuesTablePath *values_path = NULL;
+  const ObDMLStmt *stmt = NULL;
+  TableItem *table_item = NULL;
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt()) || OB_ISNULL(allocator_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get unexpected null", K(get_plan()), K(stmt), K(allocator_), K(ret));
+  } else if (OB_ISNULL(table_item = stmt->get_table_item_by_id(table_id_)) ||
+             OB_UNLIKELY(!table_item->is_values_table() ||
+                         stmt->get_column_size(table_id_) == 0 ||
+                         table_item->table_values_.empty() ||
+                         table_item->table_values_.count() % stmt->get_column_size(table_id_) != 0)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(table_id_), KPC(stmt), K(ret));
+  } else if (OB_ISNULL(values_path = reinterpret_cast<ValuesTablePath*>(
+                       allocator_->alloc(sizeof(ValuesTablePath))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate values path", K(ret));
+  } else {
+    values_path = new(values_path) ValuesTablePath();
+    values_path->table_id_ = table_id_;
+    values_path->parent_ = this;
+    ObSEArray<ObExecParamRawExpr *, 4> nl_params;
+    output_rows_ = table_item->table_values_.count() / stmt->get_column_size(table_id_);
+    values_path->strong_sharding_ = get_plan()->get_optimizer_context().get_match_all_sharding();
+    if (OB_FAIL(values_path->set_parallel_and_server_info_for_match_all())) {
+      LOG_WARN("failed set parallel and server info for match all", K(ret));
+    } else if (OB_FAIL(append(values_path->filter_, get_restrict_infos()))) {
+      LOG_WARN("failed to append filter", K(ret));
+    } else if (OB_FAIL(ObOptEstCost::estimate_width_for_table(get_plan()->get_basic_table_metas(),
+                                                              get_plan()->get_selectivity_ctx(),
+                                                              stmt->get_column_items(),
+                                                              table_id_,
+                                                              output_row_size_))) {
+      LOG_WARN("estimate width of row failed", K(table_id_), K(ret));
+    } else if (OB_FAIL(param_values_table_expr(table_item->table_values_,
+                                               nl_params,
+                                               values_path->subquery_exprs_))) {
+      LOG_WARN("failed to extract param for values table expr", K(ret));
+    } else if (OB_FAIL(values_path->nl_params_.assign(nl_params))) {
+      LOG_WARN("failed to assign nl params", K(ret));
+    } else if (OB_FAIL(values_path->estimate_cost())) {
+      LOG_WARN("failed to estimate cost", K(ret));
+    } else if (OB_FAIL(values_path->compute_pipeline_info())) {
+      LOG_WARN("failed to compute pipelined path", K(ret));
+    } else if (OB_FAIL(add_path(values_path))) {
+      LOG_WARN("failed to add path", K(ret));
+    } else { /*do nothing*/ }
+  }
+  return ret;
+}
+
+int ObJoinOrder::param_values_table_expr(ObIArray<ObRawExpr*> &values_vector,
+                                         ObIArray<ObExecParamRawExpr *> &nl_params,
+                                         ObIArray<ObRawExpr*> &subquery_exprs)
+{
+  int ret = OB_SUCCESS;
+  const ObDMLStmt *stmt = NULL;
+  ObLogPlan *plan = get_plan();
+  for (int64_t i = 0; OB_SUCC(ret) && i < values_vector.count(); ++i) {
+    ObSEArray<ObRawExpr *, 1> old_values_exprs;
+    ObSEArray<ObRawExpr *, 1> new_values_exprs;
+    ObSEArray<ObExecParamRawExpr *, 4> tmp_nl_params;
+    if (OB_ISNULL(plan = get_plan()) || OB_ISNULL(stmt = plan->get_stmt())) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("NULL pointer error", K(plan), K(ret));
+    } else if (OB_FAIL(old_values_exprs.push_back(values_vector.at(i)))) {
+      LOG_WARN("failed to push back function table expr", K(ret));
+    } else if (OB_FAIL(extract_params_for_inner_path(values_vector.at(i)->get_relation_ids(),
+                                                     tmp_nl_params,
+                                                     subquery_exprs,
+                                                     old_values_exprs,
+                                                     new_values_exprs))) {
+      LOG_WARN("failed to extract params", K(ret));
+    } else if (OB_UNLIKELY(new_values_exprs.count() != 1) || OB_ISNULL(new_values_exprs.at(0))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("new values table expr is invalid", K(ret), K(new_values_exprs));
+    } else if (OB_FAIL(append(nl_params, tmp_nl_params))) {
+      LOG_WARN("failed to append", K(ret));
+    } else {
+      values_vector.at(i) = new_values_exprs.at(0);
     }
   }
   return ret;

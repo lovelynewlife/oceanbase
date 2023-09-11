@@ -237,10 +237,10 @@ int ObRepartSliceIdxCalc::get_previous_row_tablet_id(ObObj &tablet_id)
   return ret;
 }
 
-int ObSlaveMapRepartIdxCalcBase::init()
+int ObSlaveMapRepartIdxCalcBase::init(uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObRepartSliceIdxCalc::init())) {
+  if (OB_FAIL(ObRepartSliceIdxCalc::init(tenant_id))) {
     LOG_WARN("fail init base", K(ret));
   }
   // 在pkey random情况下，一个partition是可以被其所在的SQC上的所有worker处理的，
@@ -252,9 +252,12 @@ int ObSlaveMapRepartIdxCalcBase::init()
   // p0 : [task1,task2,task3]
   // p1 : [task1,task2,task3]
   // p2 : [task4,task5]
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(part_to_task_array_map_.create(max(1, part_ch_array.count()), ObModIds::OB_SQL_PX))) {
+    if (OB_FAIL(part_to_task_array_map_.create(max(1, part_ch_array.count()),
+                                               ObModIds::OB_SQL_PX,
+                                               ObModIds::OB_HASH_NODE,
+                                               tenant_id))) {
       LOG_WARN("fail create part to task array map", "count", part_ch_array.count(), K(ret));
     } else {
       // In ObRepartSliceIdxCalc::init(), the support_vectorized_calc_ has been set to true.
@@ -304,9 +307,9 @@ int ObSlaveMapRepartIdxCalcBase::destroy()
   return ret;
 }
 
-int ObRepartRandomSliceIdxCalc::init()
+int ObRepartRandomSliceIdxCalc::init(uint64_t tenant_id)
 {
-  return ObSlaveMapRepartIdxCalcBase::init();
+  return ObSlaveMapRepartIdxCalcBase::init(tenant_id);
 }
 
 int ObRepartRandomSliceIdxCalc::destroy()
@@ -471,13 +474,13 @@ int ObAffinitizedRepartSliceIdxCalc::get_slice_idx_vec(const ObIArray<ObExpr*> &
   return ret;
 }
 
-int ObRepartSliceIdxCalc::init()
+int ObRepartSliceIdxCalc::init(uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   if (px_repart_ch_map_.created()) {
     ret = OB_INIT_TWICE;
     LOG_WARN("this map has been init twice", K(ret));
-  } else if (OB_FAIL(build_repart_ch_map(px_repart_ch_map_))) {
+  } else if (OB_FAIL(build_repart_ch_map(px_repart_ch_map_, tenant_id))) {
     LOG_WARN("failed to build affi hash map", K(ret));
   } else if (OB_FAIL(setup_one_side_one_level_info())) {
     LOG_WARN("fail to build one side on level map", K(ret));
@@ -515,11 +518,14 @@ int ObRepartSliceIdxCalc::setup_one_side_one_level_info()
   return ret;
 }
 
-int ObRepartSliceIdxCalc::build_repart_ch_map(ObPxPartChMap &affinity_map)
+int ObRepartSliceIdxCalc::build_repart_ch_map(ObPxPartChMap &affinity_map, uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
-  if (OB_FAIL(affinity_map.create(max(1, part_ch_array.count()), ObModIds::OB_SQL_PX))) {
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
+  if (OB_FAIL(affinity_map.create(max(1, part_ch_array.count()),
+                                  ObModIds::OB_SQL_PX,
+                                  ObModIds::OB_HASH_NODE,
+                                  tenant_id))) {
     LOG_WARN("fail create hashmap", "count", part_ch_array.count(), K(ret));
   }
 
@@ -580,7 +586,7 @@ int ObSlaveMapBcastIdxCalc::get_slice_indexes(const ObIArray<ObExpr*> &exprs,
       LOG_WARN("failed to push back slice idx", K(ret));
     }
   } else {
-    const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+    const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
     ARRAY_FOREACH (part_ch_array, idx) {
       if (tablet_id == part_ch_array.at(idx).first_) {
         if (OB_FAIL(slice_idx_array.push_back(part_ch_array.at(idx).second_))) {
@@ -795,13 +801,13 @@ ObSlaveMapPkeyRangeIdxCalc::~ObSlaveMapPkeyRangeIdxCalc()
   destroy();
 }
 
-int ObSlaveMapPkeyRangeIdxCalc::init()
+int ObSlaveMapPkeyRangeIdxCalc::init(uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret), K(is_inited_));
-  } else if (OB_FAIL(ObSlaveMapRepartIdxCalcBase::init())) {
+  } else if (OB_FAIL(ObSlaveMapRepartIdxCalcBase::init(tenant_id))) {
     LOG_WARN("fail init base repart class", K(ret));
   } else if (OB_UNLIKELY(nullptr == calc_part_id_expr_ || sort_exprs_.count() <= 0)) {
     ret = OB_INVALID_ARGUMENT;
@@ -1048,10 +1054,10 @@ int ObSlaveMapPkeyRangeIdxCalc::get_slice_idx(
 }
 
 /*******************                 ObSlaveMapPkeyHashIdxCalc                 ********************/
-int ObSlaveMapPkeyHashIdxCalc::init()
+int ObSlaveMapPkeyHashIdxCalc::init(uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObSlaveMapRepartIdxCalcBase::init())) {
+  if (OB_FAIL(ObSlaveMapRepartIdxCalcBase::init(tenant_id))) {
     LOG_WARN("fail init base repart class", K(ret));
   } else if (affi_hash_map_.created()) {
     ret = OB_INIT_TWICE;
@@ -1134,7 +1140,7 @@ int ObSlaveMapPkeyHashIdxCalc::build_affi_hash_map(hash::ObHashMap<int64_t, ObPx
   int ret = OB_SUCCESS;
   int64_t tablet_id = common::OB_INVALID_INDEX_INT64;
   ObPxPartChMapItem item;
-  const ObPxPartChMapArray &part_ch_array = part_ch_info_.part_ch_array_;
+  const ObPxPartChMapTMArray &part_ch_array = part_ch_info_.part_ch_array_;
   if (OB_FAIL(affi_hash_map.create(part_ch_array.count(), common::ObModIds::OB_SQL_PX))) {
     LOG_WARN("failed to create part ch map", K(ret));
   }
@@ -1339,10 +1345,10 @@ int ObNullAwareHashSliceIdCalc::get_slice_indexes(const ObIArray<ObExpr*> &exprs
   return ret;
 }
 
-int ObNullAwareAffinitizedRepartSliceIdxCalc::init()
+int ObNullAwareAffinitizedRepartSliceIdxCalc::init(uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  OZ (ObRepartSliceIdxCalc::init());
+  OZ (ObRepartSliceIdxCalc::init(tenant_id));
   OX (support_vectorized_calc_ = false);
   return ret;
 }

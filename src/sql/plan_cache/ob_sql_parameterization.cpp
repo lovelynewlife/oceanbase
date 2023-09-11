@@ -226,7 +226,6 @@ int ObSqlParameterization::transform_syntax_tree(ObIAllocator &allocator,
     SQL_PC_LOG(DEBUG, "after transform_tree",
                "result_tree_", SJ(ObParserResultPrintWrapper(*tree)));
   }
-
   return ret;
 }
 
@@ -676,9 +675,13 @@ int ObSqlParameterization::transform_tree(TransformTreeCtx &ctx,
     }
 
     // sql with charset need not ps parameterize
-    if (OB_SUCC(ret) && T_QUESTIONMARK == ctx.tree_->type_ && OB_NOT_NULL(ctx.tree_->children_)
-        && OB_NOT_NULL(ctx.tree_->children_[0]) && ctx.tree_->children_[0]->type_ == T_CHARSET) {
-      ctx.sql_info_->ps_need_parameterized_ = false;
+    if (OB_SUCC(ret)) {
+      if (T_QUESTIONMARK == ctx.tree_->type_ && OB_NOT_NULL(ctx.tree_->children_)
+          && OB_NOT_NULL(ctx.tree_->children_[0]) && ctx.tree_->children_[0]->type_ == T_CHARSET) {
+        ctx.sql_info_->ps_need_parameterized_ = false;
+      } else if (T_INTO_OUTFILE == ctx.tree_->type_) {
+        ctx.sql_info_->ps_need_parameterized_ = false;
+      }
     }
 
     //判断insert中values()在tree中的哪一层，当某结点value_father_level_处于VALUE_VECTOR_LEVEL时,
@@ -1019,6 +1022,9 @@ int ObSqlParameterization::parameterize_syntax_tree(common::ObIAllocator &alloca
     SQL_PC_LOG(ERROR, "got session is NULL", K(ret));
   } else if (is_prepare_mode(mode)
             || is_transform_outline
+#ifdef OB_BUILD_SPM
+            || pc_ctx.sql_ctx_.spm_ctx_.is_retry_for_spm_
+#endif
             ) {
     // if so, faster parser is needed
     // otherwise, fast parser has been done before
@@ -1028,13 +1034,20 @@ int ObSqlParameterization::parameterize_syntax_tree(common::ObIAllocator &alloca
     fp_ctx.sql_mode_ = session->get_sql_mode();
     fp_ctx.is_udr_mode_ = pc_ctx.is_rewrite_sql_;
     fp_ctx.def_name_ctx_ = pc_ctx.def_name_ctx_;
+    ObString raw_sql = pc_ctx.raw_sql_;
+    if (pc_ctx.sql_ctx_.is_do_insert_batch_opt()) {
+      raw_sql = pc_ctx.insert_batch_opt_info_.new_reconstruct_sql_;
+    } else if (pc_ctx.exec_ctx_.has_dynamic_values_table()) {
+      raw_sql = pc_ctx.new_raw_sql_;
+    }
     if (OB_FAIL(fast_parser(allocator,
                             fp_ctx,
-                            pc_ctx.raw_sql_,
+                            raw_sql,
                             pc_ctx.fp_result_))) {
       SQL_PC_LOG(WARN, "fail to fast parser", K(ret));
     }
   }
+
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (FALSE_IT(reserved_cnt = pc_ctx.fp_result_.raw_params_.count())) {
@@ -1466,11 +1479,12 @@ int ObSqlParameterization::fast_parser(ObIAllocator &allocator,
     || (ObParser::is_pl_stmt(sql, nullptr, &is_call_procedure) && !is_call_procedure))) {
     (void)fp_result.pc_key_.name_.assign_ptr(sql.ptr(), sql.length());
   } else if (GCONF._ob_enable_fast_parser) {
-    if (OB_FAIL(ObFastParser::parse(sql, fp_ctx, allocator, no_param_sql_ptr,
-                no_param_sql_len, p_list, param_num, fp_result.question_mark_ctx_))) {
+    if (OB_FAIL(ObFastParser::parse(sql, fp_ctx, allocator, no_param_sql_ptr, no_param_sql_len,
+                                    p_list, param_num, fp_result, fp_result.values_token_pos_))) {
       LOG_WARN("fast parse error", K(param_num),
               K(ObString(no_param_sql_len, no_param_sql_ptr)), K(sql));
     }
+
     if (OB_SUCC(ret)) {
       (void)fp_result.pc_key_.name_.assign_ptr(no_param_sql_ptr, no_param_sql_len);
       if (param_num > 0) {
@@ -1816,6 +1830,10 @@ int ObSqlParameterization::mark_tree(ParseNode *tree ,SqlInfo &sql_info)
           SQL_PC_LOG(WARN, "fail to mark arg", K(ret));
         }
       } else if ((0 == func_name.case_compare("concat")) && 1 == node[0]->reserved_) {
+        sql_info.ps_need_parameterized_ = false;
+      } else if ((0 == func_name.case_compare("json_equal"))) {
+        sql_info.ps_need_parameterized_ = false;
+      } else if ((0 == func_name.case_compare("json_extract"))) {
         sql_info.ps_need_parameterized_ = false;
       }
     }

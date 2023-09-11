@@ -24,6 +24,7 @@ namespace oceanbase
 namespace obrpc
 {
 class  ObSrvRpcProxy;
+struct ObLSAccessModeInfo;
 }
 namespace common
 {
@@ -71,41 +72,6 @@ int do_nonblock_renew(const ARRAY &array_l, const ARRAY &array_r, const uint64_t
  */
 class ObTenantRoleTransitionService
 {
-public:
-struct LSAccessModeInfo
-{
-  LSAccessModeInfo(): tenant_id_(OB_INVALID_TENANT_ID), ls_id_(),
-                    leader_addr_(),
-                    mode_version_(palf::INVALID_PROPOSAL_ID),
-                    access_mode_(palf::AccessMode::INVALID_ACCESS_MODE) { }
-  virtual ~LSAccessModeInfo() {}
-  bool is_valid() const
-  {
-    return OB_INVALID_TENANT_ID != tenant_id_
-         && ls_id_.is_valid()
-         && leader_addr_.is_valid()
-         && palf::INVALID_PROPOSAL_ID != mode_version_
-         && palf::AccessMode::INVALID_ACCESS_MODE != access_mode_;
-
-  }
-  int init(uint64_t tenant_id, const share::ObLSID &ls_id, const ObAddr &addr,
-           const int64_t mode_version, const palf::AccessMode &access_mode);
-  int assign(const LSAccessModeInfo &other);
-  void reset();
-  share::ObLSID get_ls_id() const
-  {
-    return ls_id_;
-  }
-
-  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(leader_addr),
-               K_(mode_version), K_(access_mode));
-  uint64_t tenant_id_;
-  share::ObLSID ls_id_;
-  ObAddr leader_addr_;
-  int64_t mode_version_;
-  palf::AccessMode access_mode_;
-};
-
 public:
   ObTenantRoleTransitionService(const uint64_t tenant_id,
       common::ObMySQLProxy *sql_proxy,
@@ -194,12 +160,21 @@ private:
   int do_failover_to_primary_(const share::ObAllTenantInfo &tenant_info);
   int do_prepare_flashback_(share::ObAllTenantInfo &tenant_info);
   int do_flashback_();
-  int change_ls_access_mode_(palf::AccessMode target_access_mode,
-                             const share::SCN &ref_scn);
-  int get_ls_access_mode_(ObIArray<LSAccessModeInfo> &ls_access_info);
-  int do_change_ls_access_mode_(const ObIArray<LSAccessModeInfo> &ls_access_info,
-                                palf::AccessMode target_access_mode,
-                                const share::SCN &ref_scn);
+  int get_status_and_change_ls_access_mode_(
+      palf::AccessMode target_access_mode,
+      const SCN &ref_scn);
+  int change_ls_access_mode_(
+      const share::ObLSStatusInfoArray &status_info_array,
+      const palf::AccessMode target_access_mode,
+      const share::SCN &ref_scn,
+      const share::SCN &sys_ls_sync_scn);
+  int get_ls_access_mode_(
+      const share::ObLSStatusInfoArray &status_info_array,
+      ObIArray<obrpc::ObLSAccessModeInfo> &ls_access_info);
+  int do_change_ls_access_mode_(const ObIArray<obrpc::ObLSAccessModeInfo> &ls_access_info,
+                                const palf::AccessMode target_access_mode,
+                                const share::SCN &ref_scn,
+                                const share::SCN &sys_ls_sync_scn);
   int do_switch_access_mode_to_flashback(
     const share::ObAllTenantInfo &tenant_info);
 
@@ -220,6 +195,11 @@ private:
    * @param[in] checkpoints checkpoint
    * @return return code
    */
+  int get_sys_ls_sync_scn_(
+    const uint64_t tenant_id,
+    const bool need_check_sync_to_latest,
+    share::SCN &sys_ls_sync_scn,
+    bool &is_sync_to_latest);
   int get_sys_ls_sync_scn_(
       const ObIArray<obrpc::ObCheckpoint> &checkpoints,
       share::SCN &sys_ls_sync_scn,
@@ -246,6 +226,12 @@ private:
       const SCN &max_sys_ls_sync_scn/* SYS LS real max sync scn */,
       const SCN &target_tenant_sync_scn/* tenant target sync scn in switchover */);
   int wait_ls_balance_task_finish_();
+  int get_all_ls_status_and_change_access_mode_(
+      const palf::AccessMode target_access_mode,
+      const share::SCN &ref_scn,
+      const share::SCN &sys_ls_sync_scn);
+  int check_tenant_server_online_();
+  int construct_inactive_servers_(common::sqlclient::ObMySQLResult &res, ObArray<ObAddr> &inactive_servers);
 
 private:
   const static int64_t SEC_UNIT = 1000L * 1000L;

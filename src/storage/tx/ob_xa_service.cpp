@@ -355,7 +355,7 @@ int ObXAService::insert_xa_lock(ObISQLClient &client,
                                     LOCK_FORMAT_ID, trans_id.get_id(),
                                     scheduler_ip_buf, GCTX.self_addr().get_port(),
                                     ObXATransState::ACTIVE,
-                                    (long)ObXAFlag::TMNOFLAGS))) {
+                                    (long)ObXAFlag::OBTMNOFLAGS))) {
     TRANS_LOG(WARN, "generate insert xa trans sql fail",
               KR(ret), K(exec_tenant_id), K(tenant_id), K(sql));
   } else if (OB_FAIL(client.write(exec_tenant_id, sql.ptr(), affected_rows))) {
@@ -600,7 +600,7 @@ int ObXAService::delete_xa_all_tightly_branch(const uint64_t tenant_id,
                                     OB_ALL_TENANT_GLOBAL_TRANSACTION_TNAME,
                                     tenant_id,
                                     (int)gtrid_len, gtrid_str,
-                                    (long)ObXAFlag::LOOSELY))) {
+                                    (long)ObXAFlag::OBLOOSELY))) {
     TRANS_LOG(WARN, "generate delete xa trans sql fail", K(ret), K(xid));
   } else if (OB_FAIL(mysql_proxy->write(exec_tenant_id, sql.ptr(), affected_rows))) {
     TRANS_LOG(WARN, "execute delete xa trans sql fail",
@@ -2065,8 +2065,6 @@ int ObXAService::xa_rollback_all_changes(const ObXATransID &xid, ObTxDesc *&tx_d
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
-  const int64_t savepoint = 1;
-
   if (NULL == tx_desc || !tx_desc->is_valid() || !xid.is_valid() || stmt_expired_time < 0) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid argument", K(ret), KP(tx_desc), K(xid), K(stmt_expired_time));
@@ -2075,6 +2073,7 @@ int ObXAService::xa_rollback_all_changes(const ObXATransID &xid, ObTxDesc *&tx_d
     if (OB_FAIL(start_stmt(xid, 0/*unused session id*/, *tx_desc))) {
       TRANS_LOG(WARN, "xa start stmt fail", K(ret), K(xid), K(tx_id));
     } else {
+      const transaction::ObTxSEQ savepoint = tx_desc->get_tx_seq(1);
       if (OB_FAIL(MTL(transaction::ObTransService *)->rollback_to_implicit_savepoint(*tx_desc,
               savepoint, stmt_expired_time, NULL))) {
         TRANS_LOG(WARN, "do savepoint rollback error", K(ret), K(xid), K(tx_id));
@@ -2714,7 +2713,7 @@ int ObXAService::update_coord(const uint64_t tenant_id,
   
   int64_t mask = 0;
   if (has_tx_level_temp_table) {
-    mask = ObXAFlag::TEMPTABLE;
+    mask = ObXAFlag::OBTEMPTABLE;
   }
 
   THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + XA_INNER_TABLE_TIMEOUT);

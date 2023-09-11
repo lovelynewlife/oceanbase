@@ -29,7 +29,7 @@ int interrupt(ObTxDesc &tx, int cause);
 /*
  * create an implicit savepoint when txn is active
  */
-int create_in_txn_implicit_savepoint(ObTxDesc &tx, int64_t &savepoint);
+int create_in_txn_implicit_savepoint(ObTxDesc &tx, ObTxSEQ &savepoint);
 
 /*
  * prepare a transaction
@@ -80,7 +80,8 @@ int get_write_store_ctx(ObTxDesc &tx,
                         const ObTxReadSnapshot &snapshot,
                         const concurrent_control::ObWriteFlag write_flag,
                         storage::ObStoreCtx &store_ctx,
-                        const bool special);
+                        const ObTxSEQ &spec_seq_no = ObTxSEQ::INVL(),
+                        const bool special = false);
 int revert_store_ctx(storage::ObStoreCtx &store_ctx);
 
 int acquire_tx_ctx(const share::ObLSID &ls_id,
@@ -198,14 +199,14 @@ void abort_tx__(ObTxDesc &tx, bool cleanup);
 int finalize_tx_(ObTxDesc &tx);
 int find_parts_after_sp_(ObTxDesc &tx,
                          ObTxPartRefList &parts,
-                         const int64_t scn);
+                         const ObTxSEQ scn);
 int rollback_savepoint_(ObTxDesc &tx,
                         ObTxPartRefList &parts,
-                        const int64_t savepoint,
+                        const ObTxSEQ savepoint,
                         int64_t expire_ts);
 int rollback_savepoint_slowpath_(ObTxDesc &tx,
                                  const ObTxPartRefList &parts,
-                                 const int64_t scn,
+                                 const ObTxSEQ scn,
                                  const int64_t expire_ts);
 void on_sp_rollback_succ_(const ObTxLSEpochPair &part,
                           ObTxDesc &tx,
@@ -235,7 +236,7 @@ int revert_tx_ctx_(ObPartTransCtx *ctx);
 int validate_snapshot_version_(const share::SCN snapshot,
                                const int64_t expire_ts,
                                ObLS &ls);
-int check_replica_readable_(const share::SCN &snapshot,
+int check_replica_readable_(const ObTxReadSnapshot &snapshot,
                             const bool elr,
                             const ObTxReadSnapshot::SRC src,
                             const share::ObLSID &ls_id,
@@ -247,7 +248,10 @@ bool check_ls_readable_(ObLS &ls,
                         const ObTxReadSnapshot::SRC src);
 int build_tx_commit_msg_(const ObTxDesc &tx, ObTxCommitMsg &msg);
 int abort_participants_(const ObTxDesc &tx_desc);
-int acquire_local_snapshot_(const share::ObLSID &ls_id, share::SCN &snapshot);
+int acquire_local_snapshot_(const share::ObLSID &ls_id,
+                            share::SCN &snapshot,
+                            const bool is_read_only,
+                            bool &acquire_from_follower);
 int sync_acquire_global_snapshot_(ObTxDesc &tx,
                                   const int64_t expire_ts,
                                   share::SCN &snapshot,
@@ -341,7 +345,7 @@ int ls_rollback_to_savepoint_(const ObTransID &tx_id,
                               const share::ObLSID &ls,
                               const int64_t verify_epoch,
                               const int64_t op_sn,
-                              const int64_t savepoint,
+                              const ObTxSEQ savepoint,
                               int64_t &ctx_born_epoch,
                               const ObTxDesc *tx,
                               int64_t expire_ts = -1);
@@ -352,20 +356,20 @@ int sync_rollback_savepoint__(ObTxDesc &tx,
                               const int64_t max_retry_interval,
                               int &retries);
 int create_local_implicit_savepoint_(ObTxDesc &tx,
-                                     int64_t &savepoint);
+                                     ObTxSEQ &savepoint);
 int create_global_implicit_savepoint_(ObTxDesc &tx,
                                       const ObTxParam &tx_param,
-                                      int64_t &savepoint,
+                                      ObTxSEQ &savepoint,
                                       const bool release);
 int rollback_to_local_implicit_savepoint_(ObTxDesc &tx,
-                                          const int64_t savepoint,
+                                          const ObTxSEQ savepoint,
                                           const int64_t expire_ts);
 int rollback_to_global_implicit_savepoint_(ObTxDesc &tx,
-                                           const int64_t savepoint,
+                                           const ObTxSEQ savepoint,
                                            const int64_t expire_ts,
                                            const share::ObLSArray *extra_touched_ls);
 int ls_sync_rollback_savepoint__(ObPartTransCtx *part_ctx,
-                                 const int64_t savepoint,
+                                 const ObTxSEQ savepoint,
                                  const int64_t op_sn,
                                  const int64_t expire_ts);
 void tx_post_terminate_(ObTxDesc &tx);

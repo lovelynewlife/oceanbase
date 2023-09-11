@@ -121,12 +121,18 @@ int ObSelectResolver::do_check_basic_table_in_cte_recursive_union(const ParseNod
 int ObSelectResolver::do_check_node_in_cte_recursive_union(const ParseNode* current_node, bool &recursive_union) 
 {
   int ret = OB_SUCCESS;
-  while (OB_NOT_NULL(current_node) && current_node->type_ != T_RELATION_FACTOR && current_node->num_child_ == 1) {
+  while (OB_NOT_NULL(current_node)
+        && current_node->type_ != T_RELATION_FACTOR
+        && current_node->type_ != T_WITH_CLAUSE_LIST
+        && current_node->num_child_ == 1) {
     // the current node with only one child node expands immediately to prevent the recursive level from being too high
     current_node = current_node->children_[0];
   }
 
   if (OB_ISNULL(current_node)) {
+  } else if (current_node->type_ == T_WITH_CLAUSE_LIST && is_oracle_mode()) {
+    ret = OB_ERR_UNSUPPORTED_USE_OF_CTE;
+    LOG_WARN("invalid argument, oracle cte do not support a with clause nest", K(ret));
   } else if (current_node->type_ == T_RELATION_FACTOR) {
     // find relation factor, check it
     if (OB_FAIL(do_check_basic_table_in_cte_recursive_union(*current_node, recursive_union))) {
@@ -158,6 +164,9 @@ int ObSelectResolver::check_query_is_recursive_union(const ParseNode &parse_tree
       || OB_ISNULL(parse_tree.children_[PARSE_SELECT_SET])) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret));
+  } else if (NULL != parse_tree.children_[PARSE_SELECT_WITH] && is_oracle_mode()) {
+    ret = OB_ERR_UNSUPPORTED_USE_OF_CTE;
+    LOG_WARN("invalid argument, oracle cte do not support a with clause nest", K(ret));
   } else if (OB_FAIL(do_check_node_in_cte_recursive_union(left_node, left_recursive_union))) {
     //test left branch
     LOG_WARN("failed to check set query in cte is recursive union", K(ret));
@@ -254,9 +263,15 @@ int ObSelectResolver::do_resolve_set_query_in_cte(const ParseNode &parse_tree, b
     } else {
       LOG_WARN("Failed to find anchor member", K(ret));
     }
+  } else if (OB_ISNULL(left_select_stmt = left_resolver.get_child_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null stmt");
+  } else if (lib::is_oracle_mode() && left_select_stmt->is_set_stmt()) {
+    ret = OB_ERR_NEED_ONLY_TWO_BRANCH_IN_RECURSIVE_CTE;
+    LOG_WARN("UNION ALL operation in recursive WITH clause must have only two branches", K(ret));
+  } else if (OB_FAIL(ObRawExprUtils::wrap_enum_set_for_stmt(*params_.expr_factory_, left_select_stmt, session_info_))) {
+    LOG_WARN("failed to wrap_enum_set_for_stmt", KPC(left_select_stmt));
   } else {
-    left_select_stmt = left_resolver.get_child_stmt();
-
     if (swap_branch) {
       select_stmt->set_children_swapped();
     }
@@ -296,14 +311,19 @@ int ObSelectResolver::do_resolve_set_query_in_cte(const ParseNode &parse_tree, b
     select_stmt->add_set_query(left_select_stmt);
     select_stmt->add_set_query(right_select_stmt);
     select_stmt->set_calc_found_rows(left_select_stmt->is_calc_found_rows());
+    /**MySQL
+     * The types of the CTE result columns are inferred from the column types of the nonrecursive SELECT part only,
+     * and the columns are all nullable. For type determination, the recursive SELECT part is ignored.
+    */
     if (OB_FAIL(ObOptimizerUtil::gen_set_target_list(allocator_, session_info_,
                                                      params_.expr_factory_, *left_select_stmt,
                                                      *right_select_stmt, select_stmt,
-                                                     !is_oracle_mode()))) {
+                                                     lib::is_mysql_mode() && right_resolver.cte_ctx_.is_recursive(),
+                                                     &cte_ctx_.cte_col_names_))) {
       LOG_WARN("failed to gen set target list.", K(ret));
     } else if (!right_resolver.cte_ctx_.is_recursive()) {
       /*do nothing*/
-    } else if (OB_FAIL(check_cte_set_types(*left_select_stmt, *right_select_stmt))) {
+    } else if (lib::is_oracle_mode() && OB_FAIL(check_cte_set_types(*left_select_stmt, *right_select_stmt))) {
       LOG_WARN("check cte set types", K(ret));
     } else if (select_stmt->is_set_distinct() || ObSelectStmt::UNION != select_stmt->get_set_op()) {
       // 必须是union all
@@ -1275,6 +1295,14 @@ int ObSelectResolver::resolve(const ParseNode &parse_tree)
       }
     }
   }
+  if (OB_SUCC(ret) && !is_oracle_mode() && !params_.has_cte_param_list_) {
+    cte_ctx_.cte_col_names_.reuse();
+    for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); i++) {
+      if (OB_FAIL(cte_ctx_.cte_col_names_.push_back(select_stmt->get_select_item(i).alias_name_))) {
+        LOG_WARN("push back column alias name failed", K(ret));
+      }
+    }
+  }
 
   return ret;
 }
@@ -1850,8 +1878,8 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
         }
       } else if (OB_UNLIKELY((params_.is_from_create_view_ || params_.is_from_create_table_)
                              && !params_.is_specified_col_name_
-                             && 0 == select_item.expr_name_.case_compare(
-                                     OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME))) {
+                             && (lib::is_oracle_mode() && 0 == select_item.expr_name_.case_compare(
+                                                           OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME)))) {
         // must name alias for rowid
         //  eg: create view/table as select rowid from t1;
         ret = OB_NO_COLUMN_ALIAS;
@@ -1942,7 +1970,17 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
               break;
             }
           } while (true);
-          if (is_oracle_mode()) {
+          if (T_REMOTE_SEQUENCE == project_node->type_) {
+            if (project_node->num_child_ < 3) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected select item type",
+                       K(select_item), K(project_node->type_), K(project_node->num_child_), K(ret));
+            } else {
+              alias_node = project_node->children_[2];
+              select_item.alias_name_.assign_ptr(const_cast<char *>(alias_node->str_value_),
+                                                 static_cast<int32_t>(alias_node->str_len_));
+            }
+          } else if (is_oracle_mode()) {
             if (T_OBJ_ACCESS_REF != project_node->type_) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("unexpected select item type", K(select_item), K(project_node->type_), K(ret));
@@ -2159,12 +2197,6 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
     } else if (OB_FAIL(recursive_check_grouping_columns(select_stmt, select_item.expr_))) {
       LOG_WARN("failed to recursive check grouping columns", K(ret));
     } else {/*do nothing*/}
-    // add for cte:
-    if (OB_SUCC(ret) && !is_oracle_mode() && !params_.has_cte_param_list_) {
-      if (OB_FAIL(cte_ctx_.cte_col_names_.push_back(select_item.alias_name_))) {
-        LOG_WARN("push back column alias name failed", K(ret));
-      }
-    }
   } // end for
 
   if (OB_SUCC(ret) && has_nested_aggr_) {
@@ -2250,6 +2282,13 @@ int ObSelectResolver::expand_target_list(
   } else if (table_item.is_json_table()) {
     if (OB_FAIL(resolve_all_json_table_columns(table_item, &column_items))) {
       LOG_WARN("resolve function table columns failed", K(ret));
+    }
+  } else if (table_item.is_values_table()) {
+    if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(get_stmt()->get_column_size() == 0)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected error", K(ret), KPC(get_stmt()));
+    } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
+      LOG_WARN("failed to append", K(ret));
     }
   } else {
     ret = OB_ERR_UNEXPECTED;
@@ -2474,13 +2513,6 @@ int ObSelectResolver::resolve_star_for_table_groups()
         }
       }
     }
-    if (OB_SUCC(ret) && !is_oracle_mode() && !params_.has_cte_param_list_) {
-      for (int64_t i = 0; OB_SUCC(ret) && i < target_list.count(); ++i) {
-        if (OB_FAIL(cte_ctx_.cte_col_names_.push_back(target_list[i].alias_name_))) {
-          LOG_WARN("push back column alias name failed", K(ret));
-        }
-      }
-    }
   }
 
   return ret;
@@ -2656,11 +2688,6 @@ int ObSelectResolver::resolve_star(const ParseNode *node)
           }
         }
       }
-      if (OB_SUCC(ret) && !is_oracle_mode() && !params_.has_cte_param_list_) {
-        if (OB_FAIL(cte_ctx_.cte_col_names_.push_back(select_item.alias_name_))) {
-          LOG_WARN("push back column alias name failed", K(ret));
-        }
-      }
     } else if (OB_FAIL(resolve_star_for_table_groups())) {
       LOG_WARN("resolve star for table groups failed", K(ret));
     }
@@ -2734,11 +2761,6 @@ int ObSelectResolver::resolve_star(const ParseNode *node)
           if (OB_SUCC(ret) && !is_column_name_equal) {
             ret = column_namespace_checker_.check_column_existence_in_using_clause(
                     table_items.at(i)->table_id_, target_list.at(j).expr_name_);
-          }
-          if (OB_SUCC(ret) && !is_oracle_mode() && !params_.has_cte_param_list_) {
-            if (OB_FAIL(cte_ctx_.cte_col_names_.push_back(target_list[j].alias_name_))) {
-              LOG_WARN("push back column alias name failed", K(ret));
-            }
           }
         }
       }
@@ -3505,7 +3527,7 @@ int ObSelectResolver::resolve_cte_pseudo_column(const ParseNode *search_node,
 
 int ObSelectResolver::add_parent_cte_table_item(TableItem *table_item) {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(parent_cte_tables_.push_back(table_item))) {
+  if (OB_FAIL(add_var_to_array_no_dup(parent_cte_tables_, table_item))) {
     LOG_WARN("add parent cte table failed", K(ret));
   }
   return ret;
@@ -4765,6 +4787,9 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
     } else if (OB_UNLIKELY(is_in_set_query())) {
       ret = OB_INAPPROPRIATE_INTO;
       LOG_WARN("select into can not in set query", K(ret));
+    } else if (is_mysql_mode() && params_.is_from_create_view_) {
+      ret = OB_ERR_VIEW_SELECT_CONTAIN_INTO;
+      LOG_WARN("View's SELECT contains a 'INTO' clause.", K(ret));
     } else {
       new(into_item) ObSelectIntoItem();
       into_item->into_type_ = node->type_;
@@ -4891,7 +4916,8 @@ int ObSelectResolver::resolve_column_ref_expr(
     LOG_WARN("session info is null");
   } else  if (OB_FALSE_IT(const_cast<ObQualifiedName&>(q_name).current_resolve_level_ = current_level_)) {
 
-  } else if (q_name.parents_expr_info_.has_member(IS_AGG)) {
+  } else if (q_name.parents_expr_info_.has_member(IS_AGG) &&
+             !q_name.parents_expr_info_.has_member(IS_WINDOW_FUNC)) {
     const_cast<ObQualifiedName&>(q_name).parent_aggr_level_ = current_level_;
   } else {
     const_cast<ObQualifiedName&>(q_name).parent_aggr_level_ = parent_aggr_level_;
@@ -6135,7 +6161,12 @@ int ObSelectResolver::check_recursive_cte_usage(const ObSelectStmt &select_stmt)
     }
   }
   if (cte_ctx_.invalid_recursive_union() && fake_cte_table_count >= 1) {
-    ret = OB_ERR_NEED_UNION_ALL_IN_RECURSIVE_CTE;
+    if (lib::is_mysql_mode()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "recursive UNION DISTINCT in Recursive Common Table Expression");
+    } else {
+      ret = OB_ERR_NEED_UNION_ALL_IN_RECURSIVE_CTE;
+    }
     LOG_WARN("recursive WITH clause must use a UNION ALL operation", K(ret));
   } else if (fake_cte_table_count > 1) {
     ret = OB_ERR_CTE_RECURSIVE_QUERY_NAME_REFERENCED_MORE_THAN_ONCE;
@@ -6615,6 +6646,8 @@ int ObSelectResolver::resolve_shared_order_item(OrderItem &order_item, ObSelectS
       OB_ISNULL(params_.query_ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null pointer", K(ret));
+  } else if (select_stmt->is_order_siblings()) {
+    // do noting
   } else if (OB_FAIL(select_stmt->get_select_exprs(select_exprs))) {
     LOG_WARN("failed to get select exprs", K(ret));
   } else if (ObOptimizerUtil::find_item(select_exprs, order_item.expr_)) {

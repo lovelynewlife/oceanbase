@@ -17,6 +17,7 @@
 #include "storage/memtable/mvcc/ob_query_engine.h"
 #include "storage/memtable/ob_memtable_data.h"
 #include "storage/memtable/ob_memtable_context.h"
+#include "storage/memtable/ob_row_conflict_handler.h"
 #include "storage/tx/ob_trans_ctx.h"
 #include "common/ob_clock_generator.h"
 
@@ -56,22 +57,14 @@ int ObMvccValueIterator::init(ObMvccAccessCtx &ctx,
     }
   }
 
-  if (ctx_->get_tx_table_guards().during_transfer()) {
-    TRANS_LOG(INFO, "value_iter.init", K(ret),
-              KPC(value),
-              KPC_(version_iter),
-              K(query_flag),
-              KPC(key),
-              K(ctx));
-  } else {
-    TRANS_LOG(TRACE, "value_iter.init", K(ret),
-              KPC(value),
-              KPC_(version_iter),
-              K(query_flag.is_read_latest()),
-              KPC(key),
-              K(ctx),
-              K(lbt()));
-  }
+  TRANS_LOG(TRACE, "value_iter.init", K(ret),
+            KPC(value),
+            KPC_(version_iter),
+            K(query_flag.is_read_latest()),
+            KPC(key),
+            K(ctx),
+            K(lbt()));
+
   return ret;
 }
 
@@ -139,7 +132,7 @@ int ObMvccValueIterator::lock_for_read_inner_(const ObQueryFlag &flag,
   //        reader_tx_id.
   const ObTransID &snapshot_tx_id = ctx_->snapshot_.tx_id_;
   const ObTransID &reader_tx_id = ctx_->tx_id_;
-  const int64_t snapshot_seq_no = ctx_->snapshot_.scn_;
+  const ObTxSEQ snapshot_seq_no = ctx_->snapshot_.scn_;
 
   const SCN snapshot_version = ctx_->get_snapshot_version();
   const bool read_latest = flag.is_read_latest();
@@ -351,8 +344,6 @@ int ObMvccValueIterator::check_row_locked(ObStoreRowLockState &lock_state)
     TRANS_LOG(WARN, "get value iter but mvcc row in it is null", K(ret));
   } else if (OB_FAIL(value_->check_row_locked(*ctx_, lock_state))){
     TRANS_LOG(WARN, "check row locked fail", K(ret), KPC(value_), KPC(ctx_), K(lock_state));
-  } else {
-    lock_state.mvcc_row_ = value_;
   }
   return ret;
 }
@@ -403,7 +394,8 @@ int ObMvccRowIterator::init(
 int ObMvccRowIterator::get_next_row(
     const ObMemtableKey *&key,
     ObMvccValueIterator *&value_iter,
-    uint8_t& iter_flag)
+    uint8_t& iter_flag,
+    ObStoreRowLockState &lock_state)
 {
   int ret = OB_SUCCESS;
   uint8_t read_partial_row = 0;
@@ -427,22 +419,31 @@ int ObMvccRowIterator::get_next_row(
     } else if (NULL == (value = query_engine_iter_->get_value())) {
       TRANS_LOG(ERROR, "unexpected value null pointer", "ctx", *ctx_);
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(value_iter_.init(*ctx_,
-                                        tmp_key,
-                                        value,
-                                        query_flag_))) {
-      TRANS_LOG(WARN, "value iter init fail", K(ret), "ctx", *ctx_, KP(value), K(*value));
-    } else if (!value_iter_.is_exist()) {
-      read_partial_row = (query_engine_iter_->get_iter_flag() & STORE_ITER_ROW_PARTIAL);
-      // continue
-    } else {
-      key = tmp_key;
-      value_iter = &value_iter_;
-      iter_flag = (query_engine_iter_->get_iter_flag() | read_partial_row);
-      break;
+    } else if (query_flag_.is_for_foreign_key_check()) {
+      if (OB_FAIL(ObRowConflictHandler::check_foreign_key_constraint_for_memtable(ctx_, value, lock_state))) {
+        // we will throw error code if it's failed here, but we need to
+        // post lock with key outside, so we have to set it here.
+        key = tmp_key;
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(value_iter_.init(*ctx_,
+                                   tmp_key,
+                                   value,
+                                   query_flag_))) {
+        TRANS_LOG(WARN, "value iter init fail", K(ret), "ctx", *ctx_, KP(value), K(*value));
+      } else if (!value_iter_.is_exist()) {
+        read_partial_row = (query_engine_iter_->get_iter_flag() & STORE_ITER_ROW_PARTIAL);
+        // continue
+      } else {
+        key = tmp_key;
+        value_iter = &value_iter_;
+        iter_flag = (query_engine_iter_->get_iter_flag() | read_partial_row);
+        break;
+      }
     }
   }
-
   return ret;
 }
 

@@ -204,7 +204,8 @@ struct TableItem
                K_(ddl_schema_version), K_(ddl_table_id),
                K_(is_view_table), K_(part_ids), K_(part_names), K_(cte_type),
                KPC_(function_table_expr),
-               K_(flashback_query_type), KPC_(flashback_query_expr), K_(table_type));
+               K_(flashback_query_type), KPC_(flashback_query_expr), K_(table_type),
+               K(table_values_));
 
   enum TableType
   {
@@ -219,6 +220,7 @@ struct TableItem
     LINK_TABLE,
     JSON_TABLE,
     EXTERNAL_TABLE,
+    VALUES_TABLE
   };
 
   /**
@@ -254,6 +256,7 @@ struct TableItem
   bool is_link_table() const { return OB_INVALID_ID != dblink_id_; } // why not use type_, cause type_ will be changed in dblink transform rule, but dblink id don't change
   bool is_link_type() const { return LINK_TABLE == type_; } // after dblink transformer, LINK_TABLE will be BASE_TABLE, BASE_TABLE will be LINK_TABLE
   bool is_json_table() const { return JSON_TABLE == type_; }
+  bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
   bool is_synonym() const { return !synonym_name_.empty(); }
   bool is_oracle_all_or_user_sys_view() const
   {
@@ -337,6 +340,8 @@ struct TableItem
   common::ObSEArray<ObString, 1, common::ModulePageAllocator, true> part_names_;
   // json table
   ObJsonTableDef* json_table_def_;
+  // values table
+  common::ObArray<ObRawExpr*, common::ModulePageAllocator, true> table_values_;
 };
 
 struct ColumnItem
@@ -643,8 +648,12 @@ public:
     ObSEArray<int64_t, 4,common::ModulePageAllocator, true> check_flags_;
   };
 
-  typedef common::ObSEArray<uint64_t, 8, common::ModulePageAllocator, true> ObViewTableIds;
-
+  typedef common::hash::ObHashMap<uint64_t, int64_t, common::hash::NoPthreadDefendMode,
+                                  common::hash::hash_func<uint64_t>,
+                                  common::hash::equal_to<uint64_t>,
+                                  TableHashAllocator,
+                                  common::hash::NormalPointer,
+                                  common::ObWrapperAllocator> ObDMLStmtTableHash;
 public:
 
   explicit ObDMLStmt(stmt::StmtType type);
@@ -671,6 +680,8 @@ public:
     is_modified = false;
     return OB_SUCCESS;
   }
+
+  virtual int init_stmt(TableHashAllocator &table_hash_alloc, ObWrapperAllocator &wrapper_alloc) override;
 
   bool is_hierarchical_query() const;
 
@@ -811,6 +822,15 @@ public:
   int64_t get_table_size() const { return table_items_.count(); }
   int64_t get_CTE_table_size() const;
   int64_t get_column_size() const { return column_items_.count(); }
+  int64_t get_column_size(const uint64_t table_id) const {
+    int64_t size = 0;
+    for (int64_t i = 0; i < column_items_.count(); i++) {
+      if (table_id == column_items_.at(i).table_id_) {
+        ++size;
+      }
+    }
+    return size;
+  }
   inline int64_t get_condition_size() const { return condition_exprs_.count(); }
   void reset_table_items() { table_items_.reset(); }
   const ColumnItem *get_column_item(int64_t index) const
@@ -896,6 +916,7 @@ public:
   int generate_anonymous_view_name(ObIAllocator &allocator, ObString &view_name);
   int generate_func_table_name(ObIAllocator &allocator, ObString &table_name);
   int generate_json_table_name(ObIAllocator &allocator, ObString &table_name);
+  int generate_values_table_name(ObIAllocator &allocator, ObString &table_name);
   int append_id_to_view_name(char *buf,
                              int64_t buf_len,
                              int64_t &pos,
@@ -903,6 +924,7 @@ public:
                              bool is_anonymous = false);
   int32_t get_table_bit_index(uint64_t table_id) const;
   int set_table_bit_index(uint64_t table_id);
+  int assign_tables_hash(const ObDMLStmtTableHash &tables_hash);
   ColumnItem *get_column_item(uint64_t table_id, const common::ObString &col_name);
   ColumnItem *get_column_item(uint64_t table_id, uint64_t column_id);
   int add_column_item(ColumnItem &column_item);
@@ -920,7 +942,8 @@ public:
   { return pseudo_column_like_exprs_; }
   const common::ObIArray<ObRawExpr *> &get_pseudo_column_like_exprs() const
   { return pseudo_column_like_exprs_; }
-  common::ObRowDesc &get_table_hash() { return tables_hash_; }
+  int get_table_pseudo_column_like_exprs(uint64_t table_id, ObIArray<ObRawExpr *> &pseudo_columns);
+  int get_table_pseudo_column_like_exprs(ObIArray<uint64_t> &table_id, ObIArray<ObRawExpr *> &pseudo_columns);
   int rebuild_tables_hash();
   int update_rel_ids(ObRelIds &rel_ids, const ObIArray<int64_t> &bit_index_map);
   int update_column_item_rel_id();
@@ -1130,6 +1153,7 @@ public:
                                       bool need_replace);
 
   int check_has_cursor_expression(bool &has_cursor_expr) const;
+  bool is_values_table_query() const;
 
   int do_formalize_query_ref_exprs_pre();
 
@@ -1204,9 +1228,7 @@ protected:
   common::ObSEArray<ObRawExpr *, 16, common::ModulePageAllocator, true> condition_exprs_;
   // 存放共享的类伪列表达式, 我们认为除了一般的伪列表达式ObPseudoColumnRawExpr, rownum和sequence也属于伪列
   common::ObSEArray<ObRawExpr *, 8, common::ModulePageAllocator, true> pseudo_column_like_exprs_;
-  // it is only used to record the table_id--bit_index map
-  // although it is a little weird, but it is high-performance than ObHashMap
-  common::ObRowDesc tables_hash_;
+  ObDMLStmtTableHash tables_hash_;
   common::ObSEArray<ObQueryRefRawExpr*, 4, common::ModulePageAllocator, true> subquery_exprs_;
   const TransposeItem *transpose_item_;
 

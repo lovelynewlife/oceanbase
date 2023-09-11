@@ -296,7 +296,7 @@ void ObTxReplayExecutor::finish_replay_(const int retcode)
     if (OB_SUCCESS != retcode) {
       mt_ctx_->replay_end(false, /*is_replay_succ*/
                           log_ts_ns_);
-      TRANS_LOG_RET(WARN, OB_ERR_UNEXPECTED, "[Replay Tx]Tx Redo replay error, rollback to start", K(*this));
+      TRANS_LOG_RET(WARN, OB_EAGAIN, "[Replay Tx]Tx Redo replay error, rollback to start", K(*this));
     } else {
       mt_ctx_->replay_end(true, /*is_replay_succ*/
                           log_ts_ns_);
@@ -548,6 +548,10 @@ int ObTxReplayExecutor::replay_redo_in_memtable_(ObTxRedoLog &redo)
                                            pos, encrypt_info))
              || redo.get_mutator_size() != pos) {
     TRANS_LOG(WARN, "[Replay Tx] deserialize fail or pos does not match data_len", K(ret));
+#ifdef OB_BUILD_TDE_SECURITY
+  } else if (OB_FAIL(encrypt_info.decrypt_table_key())) {
+    TRANS_LOG(WARN, "[Replay Tx] failed to decrypt table key", K(ret));
+#endif
   } else {
     meta_flag = mmi_ptr_->get_meta().get_flags();
     ObEncryptRowBuf row_buf;
@@ -602,8 +606,9 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
   int ret = OB_SUCCESS;
   lib::Worker::CompatMode mode;
   ObTabletHandle tablet_handle;
+  const bool is_update_mds_table = false;
 
-  if (OB_FAIL(ls_->replay_get_tablet(row_head.tablet_id_, log_ts_ns_, tablet_handle))) {
+  if (OB_FAIL(ls_->replay_get_tablet(row_head.tablet_id_, log_ts_ns_, is_update_mds_table, tablet_handle))) {
     if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
       ctx_->force_no_need_replay_checksum();
       ret = OB_SUCCESS;

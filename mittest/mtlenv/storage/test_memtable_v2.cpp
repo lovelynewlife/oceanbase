@@ -250,8 +250,8 @@ public:
   }
 
   void rollback_to_txn(ObStoreCtx *store_ctx,
-                       const int64_t from,
-                       const int64_t to)
+                       const ObTxSEQ from,
+                       const ObTxSEQ to)
   {
     ObUndoAction undo(from, to);
     ObPartTransCtx *tx_ctx = store_ctx->mvcc_acc_ctx_.tx_ctx_;
@@ -387,14 +387,14 @@ public:
     store_ctx->mvcc_acc_ctx_.type_ = ObMvccAccessCtx::T::WRITE;
     store_ctx->mvcc_acc_ctx_.snapshot_.tx_id_ = store_ctx->mvcc_acc_ctx_.tx_id_;
     store_ctx->mvcc_acc_ctx_.snapshot_.version_ = snapshot_scn;
-    store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = ObSequence::get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
     const int64_t abs_expire_time = expire_time + ::oceanbase::common::ObTimeUtility::current_time();
     store_ctx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(), 0);
   }
   void start_pdml_stmt(ObStoreCtx *store_ctx,
                        const share::SCN snapshot_scn,
-                       const int64_t read_seq_no,
+                       const ObTxSEQ read_seq_no,
                        const int64_t expire_time = 10000000000)
   {
     ObSequence::inc();
@@ -404,7 +404,7 @@ public:
     store_ctx->mvcc_acc_ctx_.snapshot_.scn_ = read_seq_no;
     const int64_t abs_expire_time = expire_time + ::oceanbase::common::ObTimeUtility::current_time();
     store_ctx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+    store_ctx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(), 0);
   }
   void print_callback(ObStoreCtx *wtx)
   {
@@ -818,16 +818,15 @@ public:
                                                               OB_MAX_MASTER_KEY_LENGTH,
                                                               master_key_len));
       meta.master_key_.get_content().set_length(master_key_len);
-      EXPECT_EQ(OB_SUCCESS, ObAesEncryption::aes_decrypt(meta.master_key_.ptr(),
-                                                         meta.master_key_.size(),
-                                                         meta.encrypted_table_key_.ptr(),
-                                                         meta.encrypted_table_key_.size(),
-                                                         OB_ENCRYPTED_TABLE_KEY_LEN,
-                                                         NULL,
-                                                         0,
-                                                         static_cast<ObAesOpMode>(meta.encrypt_algorithm_),
-                                                         decrypted_table_key,
-                                                         out_len));
+      EXPECT_EQ(OB_SUCCESS, ObBlockCipher::decrypt(meta.master_key_.ptr(),
+                                                   meta.master_key_.size(),
+                                                   meta.encrypted_table_key_.ptr(),
+                                                   meta.encrypted_table_key_.size(),
+                                                   OB_ENCRYPTED_TABLE_KEY_LEN,
+                                                   NULL, 0, NULL, 0, NULL, 0,
+                                                   static_cast<ObCipherOpMode>(meta.encrypt_algorithm_),
+                                                   decrypted_table_key,
+                                                   out_len));
       meta.table_key_.set_content(decrypted_table_key, out_len);
 
       EXPECT_EQ(true, meta.is_valid());
@@ -920,7 +919,7 @@ public:
 
   void verify_cb(ObMvccRowCallback *cb,
                  const ObMemtable *mt,
-                 const int64_t seq_no,
+                 const ObTxSEQ seq_no,
                  const int64_t k,
                  const bool is_link = true,
                  const bool need_fill_redo = true,
@@ -952,7 +951,7 @@ public:
                     const ObMemtable *mt,
                     const ObTransID &tx_id,
                     const int64_t trans_version,
-                    const int64_t seq_no,
+                    const ObTxSEQ seq_no,
                     const uint32_t modify_count,
                     const uint8_t tnode_flag,
                     const ObDmlFlag dml_flag,
@@ -1011,7 +1010,7 @@ public:
                   ObMemtable *wmt,
                   ObMvccTransNode *prev,
                   ObMvccTransNode *next,
-                  int64_t seq_no,
+                  ObTxSEQ seq_no,
                   uint32_t modify_count,
                   int64_t k,
                   int64_t v)
@@ -1114,13 +1113,13 @@ public:
     char encrypt_table_key[OB_ENCRYPTED_TABLE_KEY_LEN] = {0};
 
     int64_t encrypt_out_len = 0;
-    int algorithm = ObAesOpMode::ob_invalid_mode + 3;
+    int algorithm = ObCipherOpMode::ob_invalid_mode + 3;
     EXPECT_EQ(OB_SUCCESS, ObKeyGenerator::generate_encrypt_key(origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN));
-    EXPECT_EQ(OB_SUCCESS, ObAesEncryption::aes_encrypt(cur_master_key, strlen(cur_master_key),
-                                                       origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN,
-                                                       OB_ENCRYPTED_TABLE_KEY_LEN, NULL, 0,
-                                                       static_cast<ObAesOpMode>(algorithm),
-                                                       encrypt_table_key, encrypt_out_len));
+    EXPECT_EQ(OB_SUCCESS, ObBlockCipher::encrypt(cur_master_key, strlen(cur_master_key),
+                                                 origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN,
+                                                 OB_ENCRYPTED_TABLE_KEY_LEN, NULL, 0, NULL, 0, 0,
+                                                 static_cast<ObCipherOpMode>(algorithm),
+                                                 encrypt_table_key, encrypt_out_len, NULL));
     encrypt_table_key[encrypt_out_len] = '\0';
     EXPECT_STRNE(origin_table_key, encrypt_table_key);
 
@@ -1132,13 +1131,9 @@ public:
     EXPECT_EQ(OB_SUCCESS, ObMasterKeyGetter::get_master_key(tenant_id, master_key_id, master_key, OB_MAX_MASTER_KEY_LENGTH, master_key_len));
     EXPECT_STREQ(master_key, cur_master_key);
 
-    char random_string[OB_CLOG_ENCRYPT_RANDOM_LEN] = {0};
-    EXPECT_EQ(OB_SUCCESS, ObKeyGenerator::generate_encrypt_key(random_string, OB_CLOG_ENCRYPT_RANDOM_LEN));
-
     encrypt_meta.master_key_.set_content(master_key, master_key_len);
     encrypt_meta.table_key_.set_content(origin_table_key, OB_ORIGINAL_TABLE_KEY_LEN);
     encrypt_meta.encrypted_table_key_.set_content(encrypt_table_key, OB_ENCRYPTED_TABLE_KEY_LEN);
-    encrypt_meta.random_.set_content(random_string, OB_CLOG_ENCRYPT_RANDOM_LEN);
     encrypt_meta.tenant_id_ = tenant_id;
     encrypt_meta.master_key_version_ = master_key_id;
     encrypt_meta.encrypt_algorithm_ = algorithm;
@@ -1200,7 +1195,7 @@ TEST_F(TestMemtableV2, test_write_read_conflict)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
@@ -1343,7 +1338,7 @@ TEST_F(TestMemtableV2, test_tx_abort)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
@@ -1459,7 +1454,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
-            ObSequence::get_max_seq_no(),
+            ObTxSEQ(ObSequence::get_max_seq_no(),0),
             1,   /*key*/
             true /*is_link*/);
   verify_tnode(get_tx_last_tnode(wtx),
@@ -1468,7 +1463,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
                memtable,
                wtx->mvcc_acc_ctx_.tx_id_,
                INT64_MAX, /*trans_version*/
-               ObSequence::get_max_seq_no(),
+               ObTxSEQ(ObSequence::get_max_seq_no(),0),
                0,         /*modify_count*/
                ObMvccTransNode::F_INIT,
                ObDmlFlag::DF_INSERT,
@@ -1526,7 +1521,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
 
   verify_cb(get_tx_last_cb(wtx),
             memtable,
-            ObSequence::get_max_seq_no(),
+            ObTxSEQ(ObSequence::get_max_seq_no(),0),
             1,   /*key*/
             true /*is_link*/);
   verify_tnode(get_tx_last_tnode(wtx),
@@ -1535,7 +1530,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
                memtable,
                wtx->mvcc_acc_ctx_.tx_id_,
                INT64_MAX, /*trans_version*/
-               ObSequence::get_max_seq_no(),
+               ObTxSEQ(ObSequence::get_max_seq_no(),0),
                1,         /*modify_count*/
                ObMvccTransNode::F_INIT,
                ObDmlFlag::DF_INSERT,
@@ -1590,7 +1585,7 @@ TEST_F(TestMemtableV2, test_write_write_conflict)
            memtable,
            2100, /*snapshot version*/
            write_row2);
-  const int64_t wtx2_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(wtx2),
             memtable,
@@ -1672,7 +1667,7 @@ TEST_F(TestMemtableV2, test_lock)
           memtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   verify_cb(get_tx_last_cb(ltx),
             memtable,
@@ -1780,7 +1775,7 @@ TEST_F(TestMemtableV2, test_lock)
           memtable,
           2500, /*snapshot version*/
           rowkey);
-  const int64_t wtx2_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   verify_cb(get_tx_last_cb(wtx2),
             memtable,
             wtx2_seq_no,
@@ -1845,7 +1840,7 @@ TEST_F(TestMemtableV2, test_lock)
            memtable,
            4500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   verify_cb(get_tx_last_cb(wtx3),
             memtable,
             wtx3_seq_no,
@@ -1972,12 +1967,12 @@ TEST_F(TestMemtableV2, test_rollback_to)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            memtable,
            1000, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   print_callback(wtx);
 
@@ -2071,7 +2066,7 @@ TEST_F(TestMemtableV2, test_replay)
            lmemtable,
            500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   commit_txn(wtx3,
              800,/*commit_version*/
              false/*need_write_back*/);
@@ -2082,12 +2077,12 @@ TEST_F(TestMemtableV2, test_replay)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi;
   mock_replay_iterator(wtx, mmi);
@@ -2258,12 +2253,12 @@ TEST_F(TestMemtableV2, test_replay_with_clog_encryption)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(), 0);
 
   //use encrypt_meta_ in memtable during submitting log
   char *redo_log_buffer = new char[REDO_BUFFER_SIZE];
@@ -2393,12 +2388,12 @@ TEST_F(TestMemtableV2, test_compact)
            lmemtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   write_tx(wtx,
            lmemtable,
            1200, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi;
   mock_replay_iterator(wtx, mmi);
@@ -2415,7 +2410,7 @@ TEST_F(TestMemtableV2, test_compact)
            lmemtable,
            2500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   commit_txn(wtx3,
              3000,/*commit_version*/
              false/*need_write_back*/);
@@ -2626,7 +2621,7 @@ TEST_F(TestMemtableV2, test_compact_v2)
           memtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_first_tnode = get_tx_last_tnode(wtx);
   ObMvccRow *row = get_tx_last_mvcc_row(wtx);
 
@@ -2634,14 +2629,14 @@ TEST_F(TestMemtableV2, test_compact_v2)
            memtable,
            1200, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no2 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no2 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_second_tnode = get_tx_last_tnode(wtx);
 
   write_tx(wtx,
            memtable,
            1300, /*snapshot version*/
            write_row2);
-  const int64_t wtx_seq_no3 = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no3 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx_third_tnode = get_tx_last_tnode(wtx);
 
   print_callback(wtx);
@@ -2656,7 +2651,7 @@ TEST_F(TestMemtableV2, test_compact_v2)
            memtable,
            2500, /*snapshot version*/
            write_row3);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx3_first_tnode = get_tx_last_tnode(wtx3);
   commit_txn(wtx3,
              3000,/*commit_version*/
@@ -2929,7 +2924,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
            lmemtable,
            400, /*snapshot version*/
            write_row1);
-  const int64_t wtx1_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx1_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRow *wtx1_row = get_tx_last_mvcc_row(wtx1);
   ObMvccTransNode *wtx1_tnode1 = get_tx_last_tnode(wtx1);
 
@@ -2960,7 +2955,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
           lmemtable,
           1000, /*snapshot version*/
           rowkey);
-  const int64_t wtx2_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx2_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   ObMemtableMutatorIterator mmi2;
   mock_replay_iterator(wtx2, mmi2);
@@ -2982,7 +2977,7 @@ TEST_F(TestMemtableV2, test_dml_flag)
            lmemtable,
            1400, /*snapshot version*/
            write_row2);
-  const int64_t wtx3_seq_no1 = ObSequence::get_max_seq_no();
+  const auto wtx3_seq_no1 = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccTransNode *wtx3_tnode1 = get_tx_last_tnode(wtx3);
 
   ObMemtableMutatorIterator mmi3;
@@ -3082,7 +3077,7 @@ TEST_F(TestMemtableV2, test_fast_commit)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRowCallback *wtx_cb = (ObMvccRowCallback *)(get_tx_last_cb(wtx));
   ObMvccRow *wtx_row = get_tx_last_mvcc_row(wtx);
   ObMvccTransNode *wtx_tnode = get_tx_last_tnode(wtx);
@@ -3202,7 +3197,7 @@ TEST_F(TestMemtableV2, test_fast_commit_with_no_delay_cleanout)
            memtable,
            1000, /*snapshot version*/
            write_row);
-  const int64_t wtx_seq_no = ObSequence::get_max_seq_no();
+  const auto wtx_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   ObMvccRowCallback *wtx_cb = (ObMvccRowCallback *)(get_tx_last_cb(wtx));
   ObMvccRow *wtx_row = get_tx_last_mvcc_row(wtx);
   ObMvccTransNode *wtx_tnode = get_tx_last_tnode(wtx);
@@ -3330,7 +3325,7 @@ TEST_F(TestMemtableV2, test_seq_set_violation)
   ObTransID write_tx_id = ObTransID(1);
   ObStoreCtx *wtx = start_tx(write_tx_id);
 
-  int64_t read_seq_no = ObSequence::get_max_seq_no();
+  ObTxSEQ read_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
   share::SCN scn_3000;
   scn_3000.convert_for_tx(3000);
   start_pdml_stmt(wtx, scn_3000, read_seq_no, 1000000000/*expire_time*/);
@@ -3385,7 +3380,7 @@ TEST_F(TestMemtableV2, test_parallel_lock_with_same_txn)
 
   // Step1: prepare the global sequence
   ObSequence::inc();
-  int64_t read_seq_no = ObSequence::get_max_seq_no();
+  ObTxSEQ read_seq_no = ObTxSEQ(ObSequence::get_max_seq_no(),0);
 
   // Step2: init the mvcc acc ctx
   wtx->mvcc_acc_ctx_.type_ = ObMvccAccessCtx::T::WRITE;
@@ -3394,7 +3389,7 @@ TEST_F(TestMemtableV2, test_parallel_lock_with_same_txn)
   wtx->mvcc_acc_ctx_.snapshot_.scn_ = read_seq_no;
   const int64_t abs_expire_time = 10000000000 + ::oceanbase::common::ObTimeUtility::current_time();
   wtx->mvcc_acc_ctx_.abs_lock_timeout_ = abs_expire_time;
-  wtx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+  wtx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(),0);
 
   ObTableAccessContext context;
   ObVersionRange trans_version_range;
@@ -3417,7 +3412,7 @@ TEST_F(TestMemtableV2, test_parallel_lock_with_same_txn)
                                               rowkey)));
 
   // Step4: lock for the second time
-  wtx->mvcc_acc_ctx_.tx_scn_ = ObSequence::inc_and_get_max_seq_no();
+  wtx->mvcc_acc_ctx_.tx_scn_ = ObTxSEQ(ObSequence::inc_and_get_max_seq_no(),0);
   EXPECT_EQ(OB_SUCCESS, (ret = memtable->lock(iter_param_,
                                               context,
                                               rowkey)));

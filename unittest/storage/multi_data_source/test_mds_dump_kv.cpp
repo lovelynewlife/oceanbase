@@ -18,7 +18,6 @@
 #define protected public
 #include "storage/multi_data_source/compile_utility/mds_dummy_key.h"
 #include "storage/multi_data_source/compile_utility/map_type_index_in_tuple.h"
-#include "common_define.h"
 #include "storage/multi_data_source/adapter_define/mds_dump_node.h"
 #include <thread>
 #include <iostream>
@@ -27,7 +26,6 @@
 #include "storage/multi_data_source/runtime_utility/mds_factory.h"
 #include "common/ob_clock_generator.h"
 #include "storage/multi_data_source/mds_node.h"
-#include "example_user_helper_define.cpp"
 #include "storage/multi_data_source/mds_table_handle.h"
 #include "storage/tablet/ob_tablet_meta.h"
 namespace oceanbase {
@@ -95,7 +93,7 @@ void TestMdsDumpKV::test_dump_node_convert_and_serialize_and_compare()
 
   ObArenaAllocator allocator;
   ASSERT_EQ(OB_SUCCESS, dump_node2.deserialize(allocator, buffer, buf_len, pos));
-  OB_ASSERT(dump_node2.crc_check_number_ == dump_node2.generate_hash());
+  MDS_ASSERT(dump_node2.crc_check_number_ == dump_node2.generate_hash());
   ASSERT_EQ(dump_node2.generate_hash(), dump_node2.crc_check_number_);
   ASSERT_EQ(dump_node2.crc_check_number_, dump_node.crc_check_number_);
   UserMdsNode<DummyKey, ExampleUserData2> user_mds_node2;

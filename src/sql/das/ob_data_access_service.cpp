@@ -228,6 +228,14 @@ int ObDataAccessService::refresh_task_location_info(ObDASRef &das_ref, ObIDASTas
     LOG_WARN("get tablet location failed", K(ret), KPC(tablet_loc));
   } else {
     task_op.set_ls_id(tablet_loc->ls_id_);
+    if (!task_op.is_local_task()) {
+      int64_t task_id;
+      if (OB_FAIL(MTL(ObDataAccessService*)->get_das_task_id(task_id))) {
+        LOG_WARN("retry get das task id failed", KR(ret));
+      } else {
+        task_op.set_task_id(task_id);
+      }
+    }
   }
   return ret;
 }
@@ -253,19 +261,28 @@ int ObDataAccessService::retry_das_task(ObDASRef &das_ref, ObIDASTaskOp &task_op
                KR(task_op.errcode_), K(need_retry),
                "retry_cnt", location_router.get_retry_cnt(),
                KPC(task_op.get_tablet_loc()));
+      if (need_retry &&
+          task_op.get_gi_above_and_rescan() &&
+          location_router.get_retry_cnt() > 100) { //hard code retry 100 times.
+        //When das scan under px gi with transfor case, we need to disable das retry.
+        need_retry = false;
+        retry_continue = false;
+        LOG_INFO("[DAS RETRY] The PX task has retried too many times and has exited the DAS retry process");
+      }
       if (need_retry) {
         task_op.in_part_retry_ = true;
         location_router.set_last_errno(task_op.get_errcode());
         location_router.inc_retry_cnt();
+        oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
         if (OB_TMP_FAIL(clear_task_exec_env(das_ref, task_op))) {
           LOG_WARN("clear task execution environment failed", K(tmp_ret));
         }
         if (OB_FAIL(das_ref.get_exec_ctx().check_status())) {
-          LOG_WARN("query is timeout, terminate retry", K(ret));
+          LOG_WARN("query is timeout or interrupted, terminate retry", KR(ret));
         } else if (OB_FAIL(refresh_task_location_info(das_ref, task_op))) {
           LOG_WARN("refresh task location failed", K(ret));
         } else {
-          LOG_INFO("start to retry DAS task now", KPC(task_op.get_tablet_loc()));
+          LOG_INFO("[DAS RETRY] Start retrying the DAS task now", KPC(task_op.get_tablet_loc()));
           das_task_wrapper.reuse();
           task_op.set_task_status(ObDasTaskStatus::UNSTART);
           if (OB_FAIL(das_task_wrapper.push_back_task(&task_op))) {
@@ -273,9 +290,14 @@ int ObDataAccessService::retry_das_task(ObDASRef &das_ref, ObIDASTaskOp &task_op
           } else if (OB_FAIL(execute_dist_das_task(das_ref, das_task_wrapper, false))) {
             LOG_WARN("execute dist DAS task failed", K(ret));
           }
+          LOG_INFO("[DAS RETRY] Retry completing the DAS Task", KPC(task_op.get_tablet_loc()), KR(ret));
         }
         task_op.errcode_ = ret;
         retry_continue = (OB_SUCCESS != ret);
+        if (retry_continue && IS_INTERRUPTED()) {
+          retry_continue = false;
+          LOG_INFO("[DAS RETRY] Retry is interrupted by worker interrupt signal", KR(ret));
+        }
       } else {
         ret = task_op.errcode_;
       }
@@ -380,6 +402,11 @@ int ObDataAccessService::do_async_remote_das_task(
   remote_info.trans_desc_ = session->get_tx_desc();
   remote_info.snapshot_ = *task_arg.get_task_op()->get_snapshot();
   remote_info.need_tx_ = (remote_info.trans_desc_ != nullptr);
+  session->get_cur_sql_id(remote_info.sql_id_, sizeof(remote_info.sql_id_));
+  remote_info.user_id_ = session->get_user_id();
+  remote_info.session_id_ = session->get_sessid();
+  remote_info.plan_id_ = session->get_current_plan_id();
+
   task_arg.set_remote_info(&remote_info);
   ObDASRemoteInfo::get_remote_info() = &remote_info;
   ObIDASTaskResult *op_result = nullptr;
@@ -469,6 +496,11 @@ int ObDataAccessService::do_sync_remote_das_task(
   remote_info.trans_desc_ = session->get_tx_desc();
   remote_info.snapshot_ = *task_arg.get_task_op()->get_snapshot();
   remote_info.need_tx_ = (remote_info.trans_desc_ != nullptr);
+  session->get_cur_sql_id(remote_info.sql_id_, sizeof(remote_info.sql_id_));
+  remote_info.user_id_ = session->get_user_id();
+  remote_info.session_id_ = session->get_sessid();
+  remote_info.plan_id_ = session->get_current_plan_id();
+
   task_arg.set_remote_info(&remote_info);
   ObDASRemoteInfo::get_remote_info() = &remote_info;
 

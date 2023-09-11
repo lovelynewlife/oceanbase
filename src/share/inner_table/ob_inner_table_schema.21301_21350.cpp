@@ -25,6 +25,106 @@ using namespace common;
 namespace share
 {
 
+int ObInnerTableSchema::dba_ob_kv_ttl_tasks_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_DBA_OB_KV_TTL_TASKS_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_DBA_OB_KV_TTL_TASKS_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT       b.table_name as TABLE_NAME,       a.table_id as TABLE_ID,       a.tablet_id as TABLET_ID,       a.task_id as TASK_ID,       usec_to_time(a.task_start_time) as START_TIME,       usec_to_time(a.task_update_time) as END_TIME,       case a.trigger_type         when 0 then "PERIODIC"          when 1 then "USER"         else "INVALID" END AS TRIGGER_TYPE,       case a.status         when 0 then "PREPARED"          when 1 then "RUNNING"          when 2 then "PENDING"          when 3 then "CANCELED"          when 4 then "FINISHED"          when 5 then "MOVED"          when 15 then "RS_TRIGGERING"         when 16 then "RS_SUSPENDING"         when 17 then "RS_CANCELING"         when 18 then "RS_MOVING"         when 47 then "RS_TRIGGERD"         when 48 then "RS_SUSPENDED"         when 49 then "RS_CANCELED"         when 50 then "RS_MOVED"         else "INVALID" END AS STATUS,       a.ttl_del_cnt as TTL_DEL_CNT,       a.max_version_del_cnt as MAX_VERSION_DEL_CNT,       a.scan_cnt as SCAN_CNT,       a.ret_code as RET_CODE       FROM oceanbase.__all_virtual_kv_ttl_task a left outer JOIN oceanbase.__all_table b on           a.table_id = b.table_id and a.tenant_id = effective_tenant_id() )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::dba_ob_kv_ttl_task_history_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_DBA_OB_KV_TTL_TASK_HISTORY_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_DBA_OB_KV_TTL_TASK_HISTORY_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT       b.table_name as TABLE_NAME,       a.table_id as TABLE_ID,       a.tablet_id as TABLET_ID,       a.task_id as TASK_ID,       usec_to_time(a.task_start_time) as START_TIME,       usec_to_time(a.task_update_time) as END_TIME,       case a.trigger_type         when 0 then "PERIODIC"          when 1 then "USER"         else "INVALID" END AS TRIGGER_TYPE,       case a.status         when 0 then "PREPARED"          when 1 then "RUNNING"          when 2 then "PENDING"          when 3 then "CANCELED"          when 4 then "FINISHED"          when 5 then "MOVED"          else "INVALID" END AS STATUS,       a.ttl_del_cnt as TTL_DEL_CNT,       a.max_version_del_cnt as MAX_VERSION_DEL_CNT,       a.scan_cnt as SCAN_CNT,       a.ret_code as RET_CODE       FROM oceanbase.__all_virtual_kv_ttl_task_history a left outer JOIN oceanbase.__all_table b on           a.table_id = b.table_id and a.tenant_id = effective_tenant_id() )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
 int ObInnerTableSchema::gv_ob_log_stat_schema(ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
@@ -268,6 +368,106 @@ int ObInnerTableSchema::query_response_time_schema(ObTableSchema &table_schema)
 
   if (OB_SUCC(ret)) {
     if (OB_FAIL(table_schema.set_view_definition(R"__(select response_time as RESPONSE_TIME,                    count as COUNT,                    total as TOTAL                    from oceanbase.__all_virtual_query_response_time                    where tenant_id = effective_tenant_id() )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::cdb_ob_kv_ttl_tasks_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_CDB_OB_KV_TTL_TASKS_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_CDB_OB_KV_TTL_TASKS_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT       a.tenant_id as TENANT_ID,       b.table_name as TABLE_NAME,       a.table_id as TABLE_ID,       a.tablet_id as TABLET_ID,       a.task_id as TASK_ID,       usec_to_time(a.task_start_time) as START_TIME,       usec_to_time(a.task_update_time) as END_TIME,       case a.trigger_type         when 0 then "PERIODIC"          when 1 then "USER"         else "INVALID" END AS TRIGGER_TYPE,       case a.status         when 0 then "PREPARED"          when 1 then "RUNNING"          when 2 then "PENDING"          when 3 then "CANCELED"          when 4 then "FINISHED"          when 5 then "MOVED"          when 15 then "RS_TRIGGERING"         when 16 then "RS_SUSPENDING"         when 17 then "RS_CANCELING"         when 18 then "RS_MOVING"         when 47 then "RS_TRIGGERD"         when 48 then "RS_SUSPENDED"         when 49 then "RS_CANCELED"         when 50 then "RS_MOVED"         else "INVALID" END AS STATUS,       a.ttl_del_cnt as TTL_DEL_CNT,       a.max_version_del_cnt as MAX_VERSION_DEL_CNT,       a.scan_cnt as SCAN_CNT,       a.ret_code as RET_CODE       FROM oceanbase.__all_virtual_kv_ttl_task a left outer JOIN oceanbase.__all_virtual_table b on           a.table_id = b.table_id and a.tenant_id = b.tenant_id )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::cdb_ob_kv_ttl_task_history_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_CDB_OB_KV_TTL_TASK_HISTORY_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_CDB_OB_KV_TTL_TASK_HISTORY_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT       a.tenant_id as TENANT_ID,       b.table_name as TABLE_NAME,       a.table_id as TABLE_ID,       a.tablet_id as TABLET_ID,       a.task_id as TASK_ID,       usec_to_time(a.task_start_time) as START_TIME,       usec_to_time(a.task_update_time) as END_TIME,       case a.trigger_type         when 0 then "PERIODIC"          when 1 then "USER"         else "INVALID" END AS TRIGGER_TYPE,       case a.status         when 0 then "PREPARED"          when 1 then "RUNNING"          when 2 then "PENDING"          when 3 then "CANCELED"          when 4 then "FINISHED"          when 5 then "MOVED"          else "INVALID" END AS STATUS,       a.ttl_del_cnt as TTL_DEL_CNT,       a.max_version_del_cnt as MAX_VERSION_DEL_CNT,       a.scan_cnt as SCAN_CNT,       a.ret_code as RET_CODE       FROM oceanbase.__all_virtual_kv_ttl_task_history a left outer JOIN oceanbase.__all_virtual_table b on           a.table_id = b.table_id and a.tenant_id = b.tenant_id )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -1767,7 +1967,7 @@ int ObInnerTableSchema::parameters_schema(ObTableSchema &table_schema)
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(select CAST('def' AS CHAR(512)) AS SPECIFIC_CATALOG,                         CAST(d.database_name AS CHAR(128)) AS SPECIFIC_SCHEMA,                         CAST(r.routine_name AS CHAR(64)) AS SPECIFIC_NAME,                         CAST(rp.param_position AS signed) AS ORDINAL_POSITION,                         CAST(CASE rp.param_position WHEN 0 THEN NULL                           ELSE CASE rp.flag & 0x03                           WHEN 1 THEN "IN"                           WHEN 2 THEN "OUT"                           WHEN 3 THEN "INOUT"                           ELSE NULL                           END                         END AS CHAR(5)) AS PARAMETER_MODE,                         CAST(rp.param_name AS CHAR(64)) AS PARAMETER_NAME,                         CAST(lower(v.data_type_str) AS CHAR(64)) AS DATA_TYPE,                         CASE WHEN rp.param_type IN (22, 23, 27, 28, 29, 30) THEN CAST(rp.param_length AS SIGNED)                           ELSE CAST(NULL AS SIGNED)                         END AS CHARACTER_MAXIMUM_LENGTH,                         CASE WHEN rp.param_type IN (22, 23, 27, 28, 29, 30, 43, 44, 46)                           THEN CAST(                             rp.param_length * CASE rp.param_coll_type                             WHEN 63 THEN 1                             WHEN 249 THEN 4                             WHEN 248 THEN 4                             WHEN 87 THEN 2                             WHEN 28 THEN 2                             WHEN 55 THEN 4                             WHEN 54 THEN 4                             WHEN 101 THEN 2                             WHEN 46 THEN 4                             WHEN 45 THEN 4                             WHEN 224 THEN 4                             ELSE 1                             END                               AS SIGNED                           )                           ELSE CAST(NULL AS SIGNED)                         END AS CHARACTER_OCTET_LENGTH,                         CASE WHEN rp.param_type IN (1, 2, 3, 4, 5, 15, 16)                           THEN CAST(rp.param_precision AS UNSIGNED)                           ELSE CAST(NULL AS UNSIGNED)                         END AS NUMERIC_PRECISION,                         CASE WHEN rp.param_type IN (15, 16) THEN CAST(rp.param_scale AS SIGNED)                           WHEN rp.param_type IN (1, 2, 3, 4, 5, 11, 12, 13, 14) THEN CAST(0 AS SIGNED)                           ELSE CAST(NULL AS SIGNED)                         END AS NUMERIC_SCALE,                         CASE WHEN rp.param_type IN (17, 18, 20) THEN CAST(rp.param_scale AS UNSIGNED)                           ELSE CAST(NULL AS UNSIGNED)                         END AS DATETIME_PRECISION,                         CAST(CASE rp.param_charset                           WHEN 1 THEN "binary"                           WHEN 2 THEN "utf8mb4"                           WHEN 3 THEN "gbk"                           WHEN 4 THEN "utf16"                           WHEN 5 THEN "gb18030"                           WHEN 6 THEN "latin1"                           WHEN 7 THEN "gb18030_2022"                           ELSE NULL                         END AS CHAR(64)) AS CHARACTER_SET_NAME,                         CAST(CASE rp.param_coll_type                           WHEN 45 THEN 'utf8mb4_general_ci'                           WHEN 46 THEN 'utf8mb4_bin'                           WHEN 63 THEN 'binary'                           ELSE NULL                         END AS CHAR(64)) AS COLLATION_NAME,                         CAST(CASE WHEN rp.param_type IN (1, 2, 3, 4, 5)                           THEN CONCAT(lower(v.data_type_str),'(',rp.param_precision,')')                           WHEN rp.param_type IN (15,16)                           THEN CONCAT(lower(v.data_type_str),'(',rp.param_precision, ',', rp.param_scale,')')                           WHEN rp.param_type IN (18, 20)                           THEN CONCAT(lower(v.data_type_str),'(', rp.param_scale, ')')                           WHEN rp.param_type IN (22, 23)                           THEN CONCAT(lower(v.data_type_str),'(', rp.param_length, ')')                           ELSE lower(v.data_type_str) END AS char(4194304)) AS DTD_IDENTIFIER,                         CAST(CASE WHEN r.routine_type = 1 THEN 'PROCEDURE'                           WHEN ROUTINE_TYPE = 2 THEN 'FUNCTION'                           ELSE NULL                         END AS CHAR(9)) AS ROUTINE_TYPE                       from                         oceanbase.__all_routine_param as rp                         join oceanbase.__all_routine as r on rp.subprogram_id = r.subprogram_id                         and rp.tenant_id = r.tenant_id                         and rp.routine_id = r.routine_id                         join oceanbase.__all_database as d on r.database_id = d.database_id                         left join oceanbase.__all_virtual_data_type v on rp.param_type = v.data_type                       WHERE                         rp.tenant_id = 0                         and in_recyclebin = 0                         and database_name != '__recyclebin'                       order by SPECIFIC_SCHEMA,                         SPECIFIC_NAME,                         ORDINAL_POSITION                       )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(select CAST('def' AS CHAR(512)) AS SPECIFIC_CATALOG,                         CAST(d.database_name AS CHAR(128)) AS SPECIFIC_SCHEMA,                         CAST(r.routine_name AS CHAR(64)) AS SPECIFIC_NAME,                         CAST(rp.param_position AS signed) AS ORDINAL_POSITION,                         CAST(CASE rp.param_position WHEN 0 THEN NULL                           ELSE CASE rp.flag & 0x03                           WHEN 1 THEN "IN"                           WHEN 2 THEN "OUT"                           WHEN 3 THEN "INOUT"                           ELSE NULL                           END                         END AS CHAR(5)) AS PARAMETER_MODE,                         CAST(rp.param_name AS CHAR(64)) AS PARAMETER_NAME,                         CAST(lower(case v.data_type_str                                    when 'TINYINT UNSIGNED' then 'TINYINT'                                    when 'SMALLINT UNSIGNED' then 'SMALLINT'                                    when 'MEDIUMINT UNSIGNED' then 'MEDIUMINT'                                    when 'INT UNSIGNED' then 'INT'                                    when 'BIGINT UNSIGNED' then 'BIGINT'                                    when 'FLOAT UNSIGNED' then 'FLOAT'                                    when 'DOUBLE UNSIGNED' then 'DOUBLE'                                    when 'DECIMAL UNSIGNED' then 'DECIMAL'                                    else v.data_type_str end) AS CHAR(64)) AS DATA_TYPE,                         CASE WHEN rp.param_type IN (22, 23, 27, 28, 29, 30) THEN CAST(rp.param_length AS SIGNED)                           ELSE CAST(NULL AS SIGNED)                         END AS CHARACTER_MAXIMUM_LENGTH,                         CASE WHEN rp.param_type IN (22, 23, 27, 28, 29, 30, 43, 44, 46)                           THEN CAST(                             rp.param_length * CASE rp.param_coll_type                             WHEN 63 THEN 1                             WHEN 249 THEN 4                             WHEN 248 THEN 4                             WHEN 87 THEN 2                             WHEN 28 THEN 2                             WHEN 55 THEN 4                             WHEN 54 THEN 4                             WHEN 101 THEN 2                             WHEN 46 THEN 4                             WHEN 45 THEN 4                             WHEN 224 THEN 4                             ELSE 1                             END                               AS SIGNED                           )                           ELSE CAST(NULL AS SIGNED)                         END AS CHARACTER_OCTET_LENGTH,                         CASE WHEN rp.param_type IN (1, 2, 3, 4, 5, 15, 16)                           THEN CAST(rp.param_precision AS UNSIGNED)                           ELSE CAST(NULL AS UNSIGNED)                         END AS NUMERIC_PRECISION,                         CASE WHEN rp.param_type IN (15, 16) THEN CAST(rp.param_scale AS SIGNED)                           WHEN rp.param_type IN (1, 2, 3, 4, 5, 11, 12, 13, 14) THEN CAST(0 AS SIGNED)                           ELSE CAST(NULL AS SIGNED)                         END AS NUMERIC_SCALE,                         CASE WHEN rp.param_type IN (17, 18, 20) THEN CAST(rp.param_scale AS UNSIGNED)                           ELSE CAST(NULL AS UNSIGNED)                         END AS DATETIME_PRECISION,                         CAST(CASE rp.param_charset                           WHEN 1 THEN "binary"                           WHEN 2 THEN "utf8mb4"                           WHEN 3 THEN "gbk"                           WHEN 4 THEN "utf16"                           WHEN 5 THEN "gb18030"                           WHEN 6 THEN "latin1"                           WHEN 7 THEN "gb18030_2022"                           ELSE NULL                         END AS CHAR(64)) AS CHARACTER_SET_NAME,                         CAST(CASE rp.param_coll_type                           WHEN 45 THEN 'utf8mb4_general_ci'                           WHEN 46 THEN 'utf8mb4_bin'                           WHEN 63 THEN 'binary'                           ELSE NULL                         END AS CHAR(64)) AS COLLATION_NAME,                         CAST(CASE WHEN rp.param_type IN (1, 2, 3, 4, 5)                           THEN CONCAT(lower(v.data_type_str),'(',rp.param_precision,')')                           WHEN rp.param_type IN (15,16)                           THEN CONCAT(lower(v.data_type_str),'(',rp.param_precision, ',', rp.param_scale,')')                           WHEN rp.param_type IN (18, 20)                           THEN CONCAT(lower(v.data_type_str),'(', rp.param_scale, ')')                           WHEN rp.param_type IN (22, 23)                           THEN CONCAT(lower(v.data_type_str),'(', rp.param_length, ')')                           ELSE lower(v.data_type_str) END AS char(4194304)) AS DTD_IDENTIFIER,                         CAST(CASE WHEN r.routine_type = 1 THEN 'PROCEDURE'                           WHEN ROUTINE_TYPE = 2 THEN 'FUNCTION'                           ELSE NULL                         END AS CHAR(9)) AS ROUTINE_TYPE                       from                         oceanbase.__all_routine_param as rp                         join oceanbase.__all_routine as r on rp.subprogram_id = r.subprogram_id                         and rp.tenant_id = r.tenant_id                         and rp.routine_id = r.routine_id                         join oceanbase.__all_database as d on r.database_id = d.database_id                         left join oceanbase.__all_virtual_data_type v on rp.param_type = v.data_type                       WHERE                         rp.tenant_id = 0                         and in_recyclebin = 0                         and database_name != '__recyclebin'                       order by SPECIFIC_SCHEMA,                         SPECIFIC_NAME,                         ORDINAL_POSITION                       )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }

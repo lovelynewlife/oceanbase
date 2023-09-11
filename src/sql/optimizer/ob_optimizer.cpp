@@ -32,7 +32,7 @@ using namespace oceanbase::common;
 
 int ObOptimizer::optimize(ObDMLStmt &stmt, ObLogPlan *&logical_plan)
 {
-  ObActiveSessionGuard::get_stat().in_sql_optimize_ = true;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_sql_optimize);
   int ret = OB_SUCCESS;
   ObLogPlan *plan = NULL;
   const ObQueryCtx *query_ctx = ctx_.get_query_ctx();
@@ -85,7 +85,6 @@ int ObOptimizer::optimize(ObDMLStmt &stmt, ObLogPlan *&logical_plan)
   }
   optimizer_mem_usage = ctx_.get_allocator().total() - last_mem_usage;
   LOG_TRACE("[SQL MEM USAGE]", K(optimizer_mem_usage), K(last_mem_usage));
-  ObActiveSessionGuard::get_stat().in_sql_optimize_ = false;
   return ret;
 }
 
@@ -443,7 +442,7 @@ int ObOptimizer::check_pdml_enabled(const ObDMLStmt &stmt,
   } else if (OB_ISNULL(sql_ctx = ctx_.get_exec_ctx()->get_sql_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), K(ctx_.get_exec_ctx()));
-  } else if (sql_ctx->multi_stmt_item_.is_batched_multi_stmt()) {
+  } else if (sql_ctx->is_batch_params_execute()) {
     can_use_pdml = false;
     // 当batch优化打开时，不支持pdml
   } else if (!stmt.is_pdml_supported_stmt()) {
@@ -696,6 +695,18 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     ctx_.set_has_dblink(has_dblink);
     ctx_.set_cost_model_type(rowsets_enabled ? ObOptEstCost::VECTOR_MODEL : ObOptEstCost::NORMAL_MODEL);
     ctx_.set_has_cursor_expression(has_cursor_expr);
+    if (!tenant_config.is_valid() ||
+        (!tenant_config->_hash_join_enabled &&
+         !tenant_config->_optimizer_sortmerge_join_enabled &&
+         !tenant_config->_nested_loop_join_enabled)) {
+      ctx_.set_hash_join_enabled(true);
+      ctx_.set_merge_join_enabled(true);
+      ctx_.set_nested_join_enabled(true);
+    } else {
+      ctx_.set_hash_join_enabled(tenant_config->_hash_join_enabled);
+      ctx_.set_merge_join_enabled(tenant_config->_optimizer_sortmerge_join_enabled);
+      ctx_.set_nested_join_enabled(tenant_config->_nested_loop_join_enabled);
+    }
   }
   return ret;
 }
@@ -1078,16 +1089,21 @@ int ObOptimizer::add_column_usage_arg(const ObDMLStmt &stmt,
 int ObOptimizer::update_column_usage_infos()
 {
   int ret = OB_SUCCESS;
-  const ObSQLSessionInfo *session = ctx_.get_session_info();
+  ObSQLSessionInfo *session = ctx_.get_session_info();
   if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret));
+    LOG_WARN("get unexpected null", K(ret), K(session));
   } else {
-    ret = ObOptStatMonitorManager::get_instance().update_local_cache(
-                session->get_effective_tenant_id(),
-                ctx_.get_column_usage_infos());
+    MTL_SWITCH(session->get_effective_tenant_id()) {
+      ObOptStatMonitorManager *optstat_monitor_mgr = NULL;
+      if (OB_ISNULL(optstat_monitor_mgr = MTL(ObOptStatMonitorManager*))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret), K(optstat_monitor_mgr));
+      } else if (OB_FAIL(optstat_monitor_mgr->update_local_cache(ctx_.get_column_usage_infos()))) {
+        LOG_WARN("failed to update local cache", K(ret));
+      } else {/*do nothiing*/}
+    }
   }
-
   return ret;
 }
 

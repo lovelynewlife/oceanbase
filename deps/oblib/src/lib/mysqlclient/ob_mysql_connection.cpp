@@ -92,19 +92,6 @@ void ObMySQLConnection::reset()
   set_last_error(OB_SUCCESS);
 }
 
-int ObMySQLConnection::create_statement(ObMySQLStatement &stmt, const uint64_t tenant_id, const char *sql)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(switch_tenant(tenant_id))) {
-    LOG_WARN("switch tenant failed", K(tenant_id), K(ret));
-  } else if (OB_FAIL(reset_read_consistency())) {
-    LOG_WARN("fail to set read consistency", K(ret));
-  } else if (OB_FAIL(stmt.init(*this, sql))) {
-    LOG_WARN("fail to init prepared statement", K(ret));
-  }
-  return ret;
-}
-
 int ObMySQLConnection::prepare_statement(ObMySQLPreparedStatement &stmt, const char *sql)
 {
   int ret = OB_SUCCESS;
@@ -134,6 +121,9 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     LOG_INFO("connecting to mysql server", "ip", host, "port", addr.get_port());
     mysql_init(&mysql_);
     timeout_ = timeout;
+#ifdef OB_BUILD_TDE_SECURITY
+    int64_t ssl_enforce = 1;
+#endif
     mysql_options(&mysql_, MYSQL_OPT_CONNECT_TIMEOUT,  &timeout_);
     if (read_write_no_timeout) {
       int64_t zero_second = 0;
@@ -157,6 +147,9 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     default:
        mysql_options4(&mysql_, MYSQL_OPT_CONNECT_ATTR_ADD, OB_SQL_REQUEST_LEVEL, OB_SQL_REQUEST_LEVEL0);
     }
+#ifdef OB_BUILD_TDE_SECURITY
+    mysql_options(&mysql_, MYSQL_OPT_SSL_ENFORCE, &ssl_enforce);
+#endif
     int32_t port = addr.get_port();
     MYSQL *mysql = mysql_real_connect(&mysql_, host, user, pass, db, port, NULL, 0);
     if (OB_ISNULL(mysql)) {
@@ -204,6 +197,12 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     close();
     LOG_INFO("connecting to mysql server", "ip", host, "port", root_->get_server().get_port());
     mysql_init(&mysql_);
+#ifdef OB_BUILD_TDE_SECURITY
+    int64_t ssl_enforce = 1;
+    if (! use_ssl) {
+      ssl_enforce = 0;
+    }
+#endif
     mysql_options(&mysql_, MYSQL_OPT_CONNECT_TIMEOUT,  &timeout_);
     if (read_write_no_timeout) {
       int64_t zero_second = 0;
@@ -227,12 +226,18 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     default:
        mysql_options4(&mysql_, MYSQL_OPT_CONNECT_ATTR_ADD, OB_SQL_REQUEST_LEVEL, OB_SQL_REQUEST_LEVEL0);
     }
+#ifdef OB_BUILD_TDE_SECURITY
+    mysql_options(&mysql_, MYSQL_OPT_SSL_ENFORCE, &ssl_enforce);
+#endif
     int32_t port = root_->get_server().get_port();
     MYSQL *mysql = mysql_real_connect(&mysql_, host, user, pass, db, port, NULL, 0);
     if (OB_ISNULL(mysql)) {
       ret = -mysql_errno(&mysql_);
+      char errmsg[256] = {0};
+      const char *srcmsg = mysql_error(&mysql_);
+      MEMCPY(errmsg, srcmsg, MIN(255, STRLEN(srcmsg)));
       LOG_WARN("fail to connect to mysql server", K(get_sessid()), KCSTRING(host), KCSTRING(user), KCSTRING(db), K(port),
-               "info", mysql_error(&mysql_), K(ret));
+               "info", errmsg, K(ret));
       if (OB_INVALID_ID != get_dblink_id()) {
         LOG_WARN("dblink connection error", K(ret),
                                             KP(this),
@@ -242,8 +247,9 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
                                             K(user),
                                             K(db),
                                             K(host),
-                                            K(port));
-        TRANSLATE_CLIENT_ERR_2(ret, false, mysql_error(&mysql_));
+                                            K(port),
+                                            K(errmsg));
+        TRANSLATE_CLIENT_ERR_2(ret, false, errmsg);
       }
     } else {
       /*Note: mysql_real_connect() incorrectly reset the MYSQL_OPT_RECONNECT option
@@ -500,6 +506,31 @@ int ObMySQLConnection::execute_write(const uint64_t tenant_id, const char *sql,
       LOG_WARN("create statement failed", KCSTRING(sql), K(ret));
     } else if (OB_FAIL(stmt.execute_update(affected_rows))) {
       LOG_WARN("statement execute update failed", KCSTRING(sql), K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObMySQLConnection::execute_proc(const uint64_t tenant_id,
+                                    ObIAllocator &allocator,
+                                    ParamStore &params,
+                                    ObString &sql,
+                                    const share::schema::ObRoutineInfo &routine_info,
+                                    const common::ObIArray<const pl::ObUserDefinedType *> &udts,
+                                    const ObTimeZoneInfo *tz_info)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(closed_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("connection not established. call connect first", K(ret));
+  } else {
+    ObMySQLProcStatement stmt;
+    if (OB_FAIL(create_statement(stmt, tenant_id, sql.ptr()))) {
+      LOG_WARN("create statement failed", K(sql), K(ret));
+    } else if (OB_FAIL(stmt.execute_proc(allocator, params, routine_info, tz_info))) {
+      LOG_WARN("statement execute update failed", K(sql), K(ret));
+    } else if (OB_FAIL(stmt.close())) {
+      LOG_WARN("fail to close stmt", K(ret));
     }
   }
   return ret;

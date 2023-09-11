@@ -65,6 +65,8 @@ int ObDropIndexTask::init(
     parent_task_id_ = parent_task_id;
     consumer_group_id_ = consumer_group_id;
     task_version_ = OB_DROP_INDEX_TASK_VERSION;
+    dst_tenant_id_ = tenant_id_;
+    dst_schema_version_ = schema_version_;
     is_inited_ = true;
     ddl_tracing_.open();
   }
@@ -91,6 +93,8 @@ int ObDropIndexTask::init(
     parent_task_id_ = task_record.parent_task_id_;
     task_version_ = task_record.task_version_;
     ret_code_ = task_record.ret_code_;
+    dst_tenant_id_ = tenant_id_;
+    dst_schema_version_ = schema_version_;
     if (nullptr != task_record.message_.ptr()) {
       int64_t pos = 0;
       if (OB_FAIL(deserlize_params_from_message(task_record.tenant_id_, task_record.message_.ptr(), task_record.message_.length(), pos))) {
@@ -232,6 +236,7 @@ int ObDropIndexTask::drop_index_impl()
     int64_t ddl_rpc_timeout = 0;
     obrpc::ObDropIndexArg drop_index_arg;
     obrpc::ObDropIndexRes drop_index_res;
+    drop_index_arg.is_inner_          = true;
     drop_index_arg.tenant_id_         = tenant_id_;
     drop_index_arg.exec_tenant_id_    = tenant_id_;
     drop_index_arg.index_table_id_    = target_object_id_;

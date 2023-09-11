@@ -77,6 +77,7 @@ class ObPLRoutineParam;
 class ObPLUserTypeTable;
 class ObUserDefinedType;
 class ObPLStmt;
+class ObPLDbLinkGuard;
 
 enum ObProcType
 {
@@ -196,6 +197,7 @@ enum ObPLTypeFrom
   PL_TYPE_ATTR_ROWTYPE,
   PL_TYPE_ATTR_TYPE,
   PL_TYPE_SYS_REFCURSOR,
+  PL_TYPE_DBLINK,
 };
 
 enum ObPLTypeSize
@@ -532,6 +534,19 @@ public:
                                   share::schema::ObSchemaGetterGuard &schema_guard,
                                   ObPLDataType &pl_type,
                                   share::schema::ObSchemaObjVersion *obj_version);
+#ifdef OB_BUILD_ORACLE_PL
+  static int get_pkg_type_by_name(uint64_t tenant_id,
+                                  uint64_t owner_id,
+                                  const common::ObString &pkg,
+                                  const common::ObString &type,
+                                  common::ObIAllocator &allocator,
+                                  sql::ObSQLSessionInfo &session_info,
+                                  share::schema::ObSchemaGetterGuard &schema_guard,
+                                  common::ObMySQLProxy &sql_proxy,
+                                  bool is_pkg_var, // pkg var or pkg type
+                                  ObPLDataType &pl_type,
+                                  share::schema::ObSchemaObjVersion *obj_version);
+#endif
   static int get_table_type_by_name(uint64_t tenant_id,
                                   uint64_t owner_id,
                                   const ObString &table,
@@ -548,7 +563,8 @@ public:
                                   common::ObIAllocator &allocator,
                                   common::ObMySQLProxy &sql_proxy,
                                   pl::ObPLDataType &pl_type,
-                                  share::schema::ObSchemaObjVersion *obj_version = NULL);
+                                  share::schema::ObSchemaObjVersion *obj_version = NULL,
+                                  pl::ObPLDbLinkGuard *dblink_guard = NULL);
   static int transform_and_add_routine_param(const pl::ObPLRoutineParam *param,
                                   int64_t position,
                                   int64_t level,
@@ -626,6 +642,8 @@ public:
     IS_UDF_NS = 20,
     IS_LOCAL_TYPE = 21,     // 本地的自定义类型
     IS_PKG_TYPE = 22,       // 包中的自定义类型
+    IS_SELF_ATTRIBUTE = 23, // self attribute for udt
+    IS_DBLINK_PKG_NS = 24,  // dblink package
   };
 
   ObObjAccessIdx()
@@ -760,7 +778,8 @@ public:
     cursor_flag_(CURSOR_FLAG_UNDEF),
     ref_count_(0),
     is_scrollable_(false),
-    last_execute_time_(0)
+    last_execute_time_(0),
+    last_stream_cursor_(false)
   {
     reset();
   }
@@ -778,7 +797,8 @@ public:
     is_scrollable_(false),
     snapshot_(),
     is_need_check_snapshot_(false),
-    last_execute_time_(0)
+    last_execute_time_(0),
+    last_stream_cursor_(false)
   {
     reset();
   }
@@ -1025,6 +1045,7 @@ protected:
   transaction::ObTxReadSnapshot snapshot_;
   bool is_need_check_snapshot_;
   int64_t last_execute_time_; // 记录上一次cursor操作的时间点
+  bool last_stream_cursor_; // cursor复用场景下，记录上一次是否是流式cursor
 };
 
 class ObPLGetCursorAttrInfo

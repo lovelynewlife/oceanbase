@@ -93,6 +93,7 @@ public:
   bool is_stop() { return is_stop_; }
   int update_rebuild_seq();
   int64_t get_rebuild_seq();
+  int fill_restore_arg();
 private:
   int cancel_task_();
   int check_before_do_restore_(bool &can_do_restore);
@@ -104,7 +105,6 @@ private:
   template <typename T>
   int construct_state_handler_(T *&new_handler);
   int deal_failed_restore_();
-  int fill_restore_arg_();
 private:
   bool is_inited_;
   bool is_stop_; // used by ls destory
@@ -144,6 +144,9 @@ public:
     return OB_SUCCESS;
   }
 
+  int report_start_replay_clog_lsn_();
+  int report_finish_replay_clog_lsn_();
+
   TO_STRING_KV(K_(*ls), K_(ls_restore_status));
 protected:
   int leader_fill_tablet_group_restore_arg_(const ObIArray<ObTabletID> &tablet_need_restore,
@@ -175,6 +178,7 @@ protected:
       const ObLSRestoreArg &arg,
       const share::ObTaskId &task_id);
   int check_restore_concurrency_limit_(bool &reach_limit);
+  int inner_check_can_do_restore_(bool &can_restore);
   int schedule_tablet_group_restore_dag_net_(
       const ObTabletGroupRestoreArg &arg,
       const share::ObTaskId &task_id);
@@ -212,6 +216,7 @@ protected:
   storage::ObStorageRpc *storage_rpc_;
   common::ObMySQLProxy *proxy_;
   common::ObAddr self_addr_;
+  bool need_report_clog_lsn_;
   
   DISALLOW_COPY_AND_ASSIGN(ObILSRestoreState);
 };

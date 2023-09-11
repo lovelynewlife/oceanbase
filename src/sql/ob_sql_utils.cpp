@@ -53,7 +53,10 @@
 #include "lib/charset/ob_charset.h"
 #include "pl/ob_pl_user_type.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "observer/omt/ob_tenant_srs_mgr.h"
+#ifdef OB_BUILD_SPM
+#include "sql/spm/ob_spm_controller.h"
+#endif
+#include "observer/omt/ob_tenant_srs.h"
 #include "sql/executor/ob_maintain_dependency_info_task.h"
 #include "sql/resolver/ddl/ob_create_view_resolver.h"
 extern "C" {
@@ -449,6 +452,7 @@ int ObSQLUtils::calc_simple_expr_without_row(
   } else if (OB_FAIL(calc_const_expr(session, *raw_expr, result, allocator, *params))) {
     SQL_LOG(WARN, "Get const_expr value error", KPC(raw_expr), K(ret));
   }
+
   return ret;
 }
 int ObSQLUtils::calc_raw_expr_without_row(
@@ -1193,8 +1197,7 @@ int ObSQLUtils::check_index_name(const ObCollationType cs_type, ObString &name)
   }
   return ret;
 }
-
-int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name)
+int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name, bool is_from_view)
 {
   /*如果table name的字节数大于128则报错OB_ERR_TOO_LONG_IDENT;
    *如果table name的最后一个字符是空格，则报错OB_WRONG_COLUMN_NAME */
@@ -1231,7 +1234,7 @@ int ObSQLUtils::check_column_name(const ObCollationType cs_type, ObString &name)
   }
 
   if (OB_SUCC(ret)) {
-    if (last_char_is_space) {
+    if (last_char_is_space && !is_from_view) {
       ret = OB_WRONG_COLUMN_NAME;
       LOG_USER_ERROR(OB_WRONG_COLUMN_NAME, name.length(), name.ptr());
       LOG_WARN("incorrect column name", K(name), K(ret));
@@ -2996,8 +2999,23 @@ int ObSQLUtils::get_ext_obj_data_type(const ObObjParam &obj, ObDataType &data_ty
       data_type = array_params->element_;
     }
   } else if (obj.is_pl_extend()) {
+#ifndef OB_BUILD_ORACLE_PL
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not support", K(ret));
+#else
+    if (obj.get_meta().get_extend_type() == pl::PL_NESTED_TABLE_TYPE
+      || obj.get_meta().get_extend_type() == pl::PL_ASSOCIATIVE_ARRAY_TYPE
+      || obj.get_meta().get_extend_type() == pl::PL_VARRAY_TYPE) {
+      const pl::ObPLNestedTable *nested_table =
+          reinterpret_cast<const pl::ObPLNestedTable*>(obj.get_ext());
+      if (OB_ISNULL(nested_table)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("nested table is null", K(ret));
+      } else {
+        data_type = nested_table->get_element_type();
+      }
+    }
+#endif
   } else {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("obj is not extend type", K(ret), K(obj));
@@ -4186,7 +4204,7 @@ int ObSqlGeoUtils::check_srid_by_srs(uint64_t tenant_id, uint64_t srid)
     ret = OB_OPERATE_OVERFLOW;
     LOG_USER_ERROR(OB_OPERATE_OVERFLOW, "srid", "UINT32_MAX");
   } else if (srid != 0 &&
-      OB_FAIL(OTSRS_MGR.get_tenant_srs_guard(tenant_id, srs_guard))) {
+      OB_FAIL(OTSRS_MGR->get_tenant_srs_guard(srs_guard))) {
     LOG_WARN("failed to get srs guard", K(tenant_id), K(srid), K(ret));
   } else if (OB_FAIL(srs_guard.get_srs_item(srid, srs))) {
     LOG_WARN("get srs failed", K(srid), K(ret));
@@ -4390,11 +4408,6 @@ bool ObSQLUtils::is_fk_nested_sql(ObExecContext *cur_ctx)
 bool ObSQLUtils::is_nested_sql(ObExecContext *cur_ctx)
 {
   return is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx);
-}
-
-bool ObSQLUtils::is_batch_execute(ObSqlCtx &sql_ctx)
-{
-  return sql_ctx.multi_stmt_item_.is_batched_multi_stmt();
 }
 
 bool ObSQLUtils::is_select_from_dual(ObExecContext &ctx)
@@ -4800,8 +4813,7 @@ int ObSQLUtils::check_location_access_priv(const ObString &location, ObSQLSessio
     ObArenaAllocator allocator;
     ObString real_location = location;
     real_location += strlen(OB_FILE_PREFIX);
-    if (!real_location.empty() && '.' == real_location[0]) {
-      //Relative path
+    if (!real_location.empty()) {
       ObArrayWrap<char> buffer;
       OZ (buffer.allocate_array(allocator, PATH_MAX));
       if (OB_SUCC(ret)) {
@@ -4822,6 +4834,28 @@ int ObSQLUtils::check_location_access_priv(const ObString &location, ObSQLSessio
   return ret;
 }
 
+#ifdef OB_BUILD_SPM
+int ObSQLUtils::handle_plan_baseline(const ObAuditRecordData &audit_record,
+                                     ObPhysicalPlan *plan,
+                                     const int ret_code,
+                                     ObSqlCtx &sql_ctx)
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(plan) && OB_UNLIKELY(OB_SUCCESS != ret_code && plan->get_evolution())) {
+    plan->update_plan_error_cnt();
+  }
+  if (OB_LIKELY(!sql_ctx.spm_ctx_.check_execute_status_)) {
+    /*do nothing*/
+  } else if (OB_SUCCESS == ret_code) {
+    if (OB_FAIL(ObSpmController::accept_new_plan_as_baseline(sql_ctx.spm_ctx_, audit_record))) {
+      LOG_WARN("failed to accept new plan as baseline", K(ret));
+    }
+  } else if (OB_FAIL(ObSpmController::deny_new_plan_as_baseline(sql_ctx.spm_ctx_))) {
+    LOG_WARN("failed to deny new plan as baseline", K(ret));
+  }
+  return ret;
+}
+#endif
 
 int ObSQLUtils::async_recompile_view(const share::schema::ObTableSchema &old_view_schema,
                                      ObSelectStmt *select_stmt,

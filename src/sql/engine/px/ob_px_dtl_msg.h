@@ -26,6 +26,7 @@
 #include "lib/compress/ob_compress_util.h"
 #include "storage/tx/ob_trans_define.h"
 #include "sql/engine/ob_exec_feedback_info.h"
+#include "sql/ob_sql_define.h"
 
 namespace oceanbase
 {
@@ -210,6 +211,11 @@ typedef common::ObArray<ObPxPartChMapItem,
                         false, /*auto free*/
                         common::ObArrayDefaultCallBack<ObPxPartChMapItem>,
                         common::DefaultItemEncode<ObPxPartChMapItem> > ObPxPartChMapArray;
+typedef sql::ObTMArray<ObPxPartChMapItem,
+                       common::ModulePageAllocator,
+                       false, /*auto free*/
+                       common::ObArrayDefaultCallBack<ObPxPartChMapItem>,
+                       common::DefaultItemEncode<ObPxPartChMapItem> > ObPxPartChMapTMArray;
 typedef common::hash::ObHashMap<int64_t, int64_t, common::hash::NoPthreadDefendMode> ObPxPartChMap;
 
 
@@ -217,7 +223,7 @@ struct ObPxPartChInfo
 {
   ObPxPartChInfo() : part_ch_array_() {}
   ~ObPxPartChInfo() = default;
-  ObPxPartChMapArray part_ch_array_;
+  ObPxPartChMapTMArray part_ch_array_;
 };
 
 class ObPxReceiveDataChannelMsg
@@ -379,6 +385,7 @@ public:
       : dfo_id_(common::OB_INVALID_ID),
         sqc_id_(common::OB_INVALID_ID),
         rc_(common::OB_SUCCESS),
+        das_retry_rc_(common::OB_SUCCESS),
         task_monitor_info_array_(),
         sqc_affected_rows_(0),
         dml_row_info_(),
@@ -391,20 +398,22 @@ public:
   transaction::ObTxExecResult &get_trans_result() { return trans_result_; }
   void reset()
   {
-    dfo_id_ = OB_INVALID_ID;
-    sqc_id_ = OB_INVALID_ID;
-    rc_ = OB_SUCCESS;
+    dfo_id_ = common::OB_INVALID_ID;
+    sqc_id_ = common::OB_INVALID_ID;
+    rc_ = common::OB_SUCCESS;
+    das_retry_rc_ = common::OB_SUCCESS;
     trans_result_.reset();
     task_monitor_info_array_.reset();
     dml_row_info_.reset();
     fb_info_.reset();
     err_msg_.reset();
   }
-  TO_STRING_KV(K_(dfo_id), K_(sqc_id), K_(rc), K_(sqc_affected_rows));
+  TO_STRING_KV(K_(dfo_id), K_(sqc_id), K_(rc), K_(das_retry_rc), K_(sqc_affected_rows));
 public:
   int64_t dfo_id_;
   int64_t sqc_id_;
   int rc_; // 错误码
+  int das_retry_rc_; //record the error code that cause DAS to retry
   transaction::ObTxExecResult trans_result_;
   ObPxTaskMonitorInfoArray task_monitor_info_array_; // deprecated, keep for compatiablity
   int64_t sqc_affected_rows_; // pdml情况下，一个sqc 影响的行数
@@ -537,9 +546,9 @@ public:
 public:
   static const int64_t DEFAULT_RANGE_COUNT = 8;
   typedef common::ObSEArray<common::ObRowkey, DEFAULT_RANGE_COUNT> EndKeys;
-  typedef Ob2DArray<ObDatum> DatumKey;
+  typedef ObTMSegmentArray<ObDatum> DatumKey;
   typedef ObSEArray<int64_t, 2> RangeWeight;
-  typedef ObSEArray<DatumKey, DEFAULT_RANGE_COUNT> RangeCut; // not include MAX at last nor MIN at first
+  typedef ObTMArray<DatumKey> RangeCut; // not include MAX at last nor MIN at first
   typedef ObSEArray<RangeWeight, DEFAULT_RANGE_COUNT> RangeWeights;
 
   int64_t tablet_id_;

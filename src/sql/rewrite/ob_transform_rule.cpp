@@ -394,6 +394,7 @@ int ObTransformRule::evaluate_cost(common::ObIArray<ObParentDMLStmt> &parent_stm
     } else {
       LOG_DEBUG("get transformed heuristic rule stmt when evaluate_cost", K(*root_stmt));
       CREATE_WITH_TEMP_CONTEXT(param) {
+        ObRawExprFactory tmp_expr_factory(CURRENT_CONTEXT->get_arena_allocator());
         HEAP_VAR(ObOptimizerContext, optctx,
                 ctx_->session_info_,
                 ctx_->exec_ctx_,
@@ -404,7 +405,7 @@ int ObTransformRule::evaluate_cost(common::ObIArray<ObParentDMLStmt> &parent_stm
                 *ctx_->self_addr_,
                 GCTX.srv_rpc_proxy_,
                 stmt->get_query_ctx()->get_global_hint(),
-                *ctx_->expr_factory_,
+                tmp_expr_factory,
                 root_stmt,
                 false,
                 ctx_->exec_ctx_->get_stmt_factory()->get_query_ctx()) {
@@ -608,7 +609,8 @@ int ObTransformRule::adjust_transformed_stmt(ObIArray<ObParentDMLStmt> &parent_s
 bool ObTransformRule::is_normal_disabled_transform(const ObDMLStmt &stmt)
 {
   return (stmt.is_hierarchical_query() && transform_method_ != TransMethod::ROOT_ONLY) ||
-         stmt.is_insert_all_stmt();
+         stmt.is_insert_all_stmt() ||
+         stmt.is_values_table_query();
 }
 
 int ObTransformRule::need_transform(const common::ObIArray<ObParentDMLStmt> &parent_stmts,
@@ -663,6 +665,10 @@ int ObTransformRule::transform_self(common::ObIArray<ObParentDMLStmt> &parent_st
       OB_ISNULL(query_hint = stmt->get_stmt_hint().query_hint_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("null point error", K(ret), K(stmt), K(ctx_), K(query_hint));
+  } else if (stmt->is_select_stmt() &&
+             static_cast<ObSelectStmt*>(stmt)->get_select_item_size() == 0) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("find select stmt with 0 select item", K(ret), KPC(stmt));
   } else if (OB_FAIL(stmt->get_qb_name(ctx_->src_qb_name_))) {
     LOG_WARN("failed to get qb name", K(ret));
   } else {

@@ -241,7 +241,7 @@ int ObGarbageCollector::QueryLSIsValidMemberFunctor::handle_rpc_response_(const 
           ObMigrationStatus migration_status;
           if (OB_FAIL(ls->get_migration_status(migration_status))) {
             CLOG_LOG(WARN, "get_migration_status failed", K(ret), K(id));
-          } else if (OB_FAIL(ObMigrationStatusHelper::check_ls_allow_gc(id, migration_status, true/*not_in_member_list_scene*/, allow_gc))) {
+          } else if (OB_FAIL(ObMigrationStatusHelper::check_ls_allow_gc(id, migration_status, allow_gc))) {
             CLOG_LOG(WARN, "failed to check allow gc", K(ret), K(id), K(leader));
           } else if (!allow_gc) {
             CLOG_LOG(INFO, "The ls is dependent and is not allowed to be GC", K(id), K(leader));
@@ -686,13 +686,9 @@ bool ObGCHandler::is_tablet_clear_(const ObGarbageCollector::LSStatus &ls_status
   bool bool_ret = false;
   ObLSID ls_id = ls_->get_ls_id();
   if (ObGarbageCollector::is_ls_dropping_ls_status(ls_status)) {
-    //TODO: transfer完成前先统一检查事务结束
     if (OB_FAIL(ls_->check_all_tx_clean_up())) {
       if (OB_EAGAIN == ret) {
         CLOG_LOG(INFO, "check_all_tx_clean_up need retry", K(ls_id), K(ret));
-        if (OB_FAIL(ls_->kill_all_tx(true))) { //gracefully kill
-          CLOG_LOG(WARN, "gracefully kill_all_tx failed", K(ret), K(ls_id));
-        }
       } else {
         CLOG_LOG(WARN, "check_all_tx_clean_up failed", K(ls_id), K(ret));
       }
@@ -1566,7 +1562,7 @@ int ObGarbageCollector::gc_check_ls_status_(storage::ObLS &ls,
       if (OB_SUCCESS != (tmp_ret = ls.get_migration_status(migration_status))) {
         CLOG_LOG(WARN, "get_migration_status failed", K(tmp_ret), K(ls_id));
       } else if (OB_SUCCESS != (tmp_ret = ObMigrationStatusHelper::check_ls_allow_gc(
-            ls.get_ls_id(), migration_status, false/*not_in_member_list_scene*/, allow_gc))) {
+            ls.get_ls_id(), migration_status, allow_gc))) {
         CLOG_LOG(WARN, "failed to check ls allowed to gc", K(tmp_ret), K(migration_status), K(ls_id));
       } else if (!allow_gc) {
         CLOG_LOG(INFO, "The ls is dependent and is not allowed to be GC", K(ls_id), K(migration_status));

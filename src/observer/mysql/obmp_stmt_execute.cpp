@@ -382,6 +382,7 @@ int ObMPStmtExecute::response_result_for_arraybinding(
       for (int64_t i = 0; OB_SUCC(ret) && i < arraybinding_columns_->count(); ++i) {
         ObMySQLField field;
         OZ (ObMySQLResultSet::to_mysql_field(arraybinding_columns_->at(i), field));
+        ObMySQLResultSet::replace_lob_type(session_info, arraybinding_columns_->at(i), field);
         OMPKField fp(field);
         OZ (response_packet(fp, &session_info));
       }
@@ -735,10 +736,7 @@ int ObMPStmtExecute::parse_request_param_value(ObIAllocator &alloc,
   } else {
     param.set_type(ob_type);
     param.set_param_meta();
-    bool is_null = ObSMUtils::update_from_bitmap(param, bitmap, idx);
-    if (is_null) {
-      LOG_DEBUG("param is null", K(idx), K(param), K(param_type));
-    } else if (OB_FAIL(parse_param_value(alloc,
+    if (OB_FAIL(parse_param_value(alloc,
                                          param_type,
                                          charset,
                                          is_oracle_mode() ? cs_server : cs_conn,
@@ -747,6 +745,7 @@ int ObMPStmtExecute::parse_request_param_value(ObIAllocator &alloc,
                                          session->get_timezone_info(),
                                          &param_type_info,
                                          param,
+                                         bitmap,
                                          idx))) {
       LOG_WARN("get param value failed", K(param));
     } else {
@@ -1397,6 +1396,11 @@ int ObMPStmtExecute::do_process(ObSQLSessionInfo &session,
     bool need_retry = (THIS_THWORKER.need_retry()
                        || RETRY_TYPE_NONE != retry_ctrl_.get_retry_type());
     if (!is_ps_cursor()) {
+#ifdef OB_BUILD_SPM
+      if (!need_retry) {
+        (void)ObSQLUtils::handle_plan_baseline(audit_record, result.get_physical_plan(), ret, ctx_);
+      }
+#endif
       // ps cursor has already record after inner_open in spi
       ObSQLUtils::handle_audit_record(need_retry, EXECUTE_PS_EXECUTE, session, ctx_.is_sensitive_);
     }
@@ -1412,7 +1416,13 @@ int ObMPStmtExecute::response_result(
     bool &async_resp_used)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_SPM
   bool need_trans_cb  = result.need_end_trans_callback() && (!force_sync_resp);
+#else
+  bool need_trans_cb  = result.need_end_trans_callback() &&
+                        (!force_sync_resp) &&
+                        (!ctx_.spm_ctx_.check_execute_status_);
+#endif
 
   // NG_TRACE_EXT(exec_begin, ID(arg1), force_sync_resp, ID(end_trans_cb), need_trans_cb);
 
@@ -1482,6 +1492,7 @@ OB_NOINLINE int ObMPStmtExecute::process_retry(ObSQLSessionInfo &session,
 {
   int ret = OB_SUCCESS;
   //create a temporary memory context to process retry, avoid memory bloat caused by retries
+  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
   lib::ContextParam param;
   param.set_mem_attr(MTL_ID(),
       ObModIds::OB_SQL_EXECUTOR, ObCtxIds::DEFAULT_CTX_ID)
@@ -1655,7 +1666,8 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
   setup_wb(session);
   const bool enable_trace_log = lib::is_trace_log_enabled();
   //============================ 注意这些变量的生命周期 ================================
-  ObSessionStatEstGuard stat_est_guard(get_conn()->tenant_->id(), session.get_sessid());
+  ObSMConnection *conn = get_conn();
+  ObSessionStatEstGuard stat_est_guard(conn->tenant_->id(), session.get_sessid());
   if (OB_FAIL(init_process_var(ctx_, multi_stmt_item, session))) {
     LOG_WARN("init process var failed.", K(ret), K(multi_stmt_item));
   } else {
@@ -1719,14 +1731,10 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
       if (OB_FAIL(do_process_single(session, params_, has_more_result, force_sync_resp, async_resp_used))) {
         LOG_WARN("fail to do process", K(ret), K(ctx_.cur_sql_));
       }
-      if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid()) {
+      if (OB_UNLIKELY(NULL != GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid() && is_conn_valid()) {
         int bak_ret = ret;
-        ObSMConnection *conn = get_conn();
         ObSQLSessionInfo *sess = NULL;
-        if (OB_ISNULL(conn)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("null conn ptr", K(ret));
-        } else if (OB_FAIL(get_session(sess))) {
+        if (OB_FAIL(get_session(sess))) {
           LOG_WARN("get session fail", K(ret));
         } else if (OB_ISNULL(sess)) {
           ret = OB_ERR_UNEXPECTED;
@@ -2040,10 +2048,53 @@ int ObMPStmtExecute::get_pl_type_by_type_info(ObIAllocator &allocator,
                                               const pl::ObUserDefinedType *&pl_type)
 {
   int ret = OB_SUCCESS;
+#ifndef OB_BUILD_ORACLE_PL
   UNUSEDx(allocator, type_info, pl_type);
   ret = OB_NOT_SUPPORTED;
   LOG_WARN("not support", K(ret));
   LOG_USER_ERROR(OB_NOT_SUPPORTED, "Get PL type by type info is not supported in CE version");
+#else
+  const share::schema::ObUDTTypeInfo *udt_info = NULL;
+  if (OB_ISNULL(type_info)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("type info is null", K(ret), K(type_info));
+  } else if (!type_info->is_elem_type_) {
+    if (type_info->package_name_.empty()) {
+      OZ (get_udt_by_name(type_info->relation_name_, type_info->type_name_, udt_info));
+      OZ (udt_info->transform_to_pl_type(allocator, pl_type));
+    } else {
+      OZ (get_package_type_by_name(allocator, type_info, pl_type));
+    }
+  } else {
+    void *ptr = NULL;
+    pl::ObNestedTableType *table_type = NULL;
+    pl::ObPLDataType elem_type;
+    const pl::ObUserDefinedType *elem_type_ptr = NULL;
+    if (type_info->elem_type_.get_obj_type() != ObExtendType) {
+      elem_type.set_data_type(type_info->elem_type_);
+    } else if (OB_FAIL(get_udt_by_name(type_info->relation_name_, type_info->type_name_, udt_info))) {
+      LOG_WARN("failed to get udt info", K(ret), K(type_info->relation_name_), K(type_info->type_name_));
+    } else if (OB_FAIL(udt_info->transform_to_pl_type(allocator, elem_type_ptr))) {
+      LOG_WARN("failed to transform udt to pl type", K(ret));
+    } else if (OB_ISNULL(elem_type_ptr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to get elem type ptr", K(ret));
+    } else {
+      elem_type = *(static_cast<const pl::ObPLDataType*>(elem_type_ptr));
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_ISNULL(ptr = allocator.alloc(sizeof(pl::ObNestedTableType)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory for ObNestedTableType", K(ret));
+    } else {
+      table_type = new(ptr)pl::ObNestedTableType();
+      table_type->set_type_from(pl::ObPLTypeFrom::PL_TYPE_LOCAL);
+      table_type->set_element_type(elem_type);
+      pl_type = table_type;
+    }
+  }
+  CK (OB_NOT_NULL(pl_type));
+#endif
   return ret;
 }
 
@@ -2424,6 +2475,7 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
                                        const common::ObTimeZoneInfo *tz_info,
                                        TypeInfo *type_info,
                                        ObObjParam &param,
+                                       const char *bitmap,
                                        int16_t param_id)
 {
   int ret = OB_SUCCESS;
@@ -2441,7 +2493,10 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
   } else if (OB_ISNULL(piece_cache) || OB_ISNULL(piece)) {
     // send piece data will init piece cache
     // if piece cache is null, it must not be send piece protocol
-    if (OB_UNLIKELY(MYSQL_TYPE_COMPLEX == type)) {
+    bool is_null = ObSMUtils::update_from_bitmap(param, bitmap, param_id);
+    if (is_null) {
+      LOG_DEBUG("param is null", K(param_id), K(param), K(type));
+    } else if (OB_UNLIKELY(MYSQL_TYPE_COMPLEX == type)) {
       if (OB_FAIL(parse_complex_param_value(allocator, charset, cs_type, ncs_type,
                                             data, tz_info, type_info,
                                             param))) {
@@ -2476,55 +2531,60 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
   } else {
     if (OB_UNLIKELY(MYSQL_TYPE_COMPLEX == type)) {
       // this must be array bounding.
-      // 1. read count
-      ObMySQLUtil::get_length(data, count);
-      // 2. make null map
-      int64_t bitmap_bytes = ((count + 7) / 8);
-      char is_null_map[bitmap_bytes];
-      MEMSET(is_null_map, 0, bitmap_bytes);
-      length = piece_cache->get_length_length(count) + bitmap_bytes;
-      // 3. get string buffer (include lenght + value)
-      if (OB_FAIL(str_buf.prepare_allocate(count))) {
-        LOG_WARN("prepare fail.");
-      } else if (OB_FAIL(piece_cache->get_buffer(stmt_id_,
-                                                 param_id,
-                                                 count,
-                                                 length,
-                                                 str_buf,
-                                                 is_null_map))) {
-        LOG_WARN("piece get buffer fail.", K(ret), K(stmt_id_), K(param_id));
+      bool is_null = ObSMUtils::update_from_bitmap(param, bitmap, param_id);
+      if (is_null) {
+        LOG_DEBUG("param is null", K(param_id), K(param), K(type));
       } else {
-        // 4. merge all this info
-        char *tmp = static_cast<char*>(piece->get_allocator()->alloc(length));
-        int64_t pos = 0;
-        if (OB_ISNULL(tmp)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to alloc memory", K(ret));
-        } else if (FALSE_IT(MEMSET(tmp, 0, length))) {
-        } else if (OB_FAIL(ObMySQLUtil::store_length(tmp, length, count, pos))) {
-          LOG_WARN("store length fail.", K(ret), K(stmt_id_), K(param_id));
+        // 1. read count
+        ObMySQLUtil::get_length(data, count);
+        // 2. make null map
+        int64_t bitmap_bytes = ((count + 7) / 8);
+        char is_null_map[bitmap_bytes];
+        MEMSET(is_null_map, 0, bitmap_bytes);
+        length = piece_cache->get_length_length(count) + bitmap_bytes;
+        // 3. get string buffer (include lenght + value)
+        if (OB_FAIL(str_buf.prepare_allocate(count))) {
+          LOG_WARN("prepare fail.");
+        } else if (OB_FAIL(piece_cache->get_buffer(stmt_id_,
+                                                  param_id,
+                                                  count,
+                                                  length,
+                                                  str_buf,
+                                                  is_null_map))) {
+          LOG_WARN("piece get buffer fail.", K(ret), K(stmt_id_), K(param_id));
         } else {
-          MEMCPY(tmp+pos, is_null_map, bitmap_bytes);
-          pos += bitmap_bytes;
-          for (int64_t i=0; OB_SUCC(ret) && i<count; i++) {
-            if (OB_FAIL(ObMySQLUtil::store_obstr(tmp, length, str_buf.at(i).string(), pos))) {
-              LOG_WARN("store string fail.", K(ret), K(stmt_id_), K(param_id),
-                      K(length), K(pos), K(i), K(str_buf.at(i).string()), K(str_buf.at(i).string().length()),
-                      K(str_buf.at(i).length()));
+          // 4. merge all this info
+          char *tmp = static_cast<char*>(piece->get_allocator()->alloc(length));
+          int64_t pos = 0;
+          if (OB_ISNULL(tmp)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("failed to alloc memory", K(ret));
+          } else if (FALSE_IT(MEMSET(tmp, 0, length))) {
+          } else if (OB_FAIL(ObMySQLUtil::store_length(tmp, length, count, pos))) {
+            LOG_WARN("store length fail.", K(ret), K(stmt_id_), K(param_id));
+          } else {
+            MEMCPY(tmp+pos, is_null_map, bitmap_bytes);
+            pos += bitmap_bytes;
+            for (int64_t i=0; OB_SUCC(ret) && i<count; i++) {
+              if (OB_FAIL(ObMySQLUtil::store_obstr(tmp, length, str_buf.at(i).string(), pos))) {
+                LOG_WARN("store string fail.", K(ret), K(stmt_id_), K(param_id),
+                        K(length), K(pos), K(i), K(str_buf.at(i).string()), K(str_buf.at(i).string().length()),
+                        K(str_buf.at(i).length()));
+              }
             }
           }
-        }
-        if (OB_FAIL(ret)) {
-          // do nothing.
-        } else {
-          const char* src = tmp;
-          if (OB_FAIL(parse_complex_param_value(allocator, charset, cs_type, ncs_type,
-                                                src, tz_info, type_info,
-                                                param))) {
-            LOG_WARN("failed to parse complex value", K(ret));
+          if (OB_FAIL(ret)) {
+            // do nothing.
+          } else {
+            const char* src = tmp;
+            if (OB_FAIL(parse_complex_param_value(allocator, charset, cs_type, ncs_type,
+                                                  src, tz_info, type_info,
+                                                  param))) {
+              LOG_WARN("failed to parse complex value", K(ret));
+            }
           }
+          piece->get_allocator()->free(tmp);
         }
-        piece->get_allocator()->free(tmp);
       }
     } else {
       if (OB_FAIL(str_buf.prepare_allocate(count))) {
@@ -2631,7 +2691,6 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
   int ret = OB_SUCCESS;
   bool cast_to_number = !(lib::is_mysql_mode() || is_complex_element || MYSQL_TYPE_TINY == type);
   int64_t res_val = 0;
-  ObObjType unsigned_type = is_unsigned ? ObUInt64Type : ObNumberType;
   switch(type) {
     case MYSQL_TYPE_TINY: {
       PS_STATIC_DEFENSE_CHECK(checker, 1)
@@ -2650,10 +2709,15 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         if (!cast_to_number) {
           is_unsigned ? param.set_usmallint(value) : param.set_smallint(value);
         } else {
-          if (is_unsigned) {
-            unsigned_type = ObUSmallIntType;
-          }
           res_val = static_cast<int64_t>(value);
+          if (is_unsigned) {
+            if (((1LL << 16) + res_val) < 1 || res_val > 0xFFFF) {
+              ret = OB_DECIMAL_OVERFLOW_WARN;
+              LOG_WARN("param is over flower.", K(res_val), K(type), K(ret));
+            } else {
+              res_val = res_val < 0 ? ((1LL << 16) + res_val) : res_val;
+            }
+          }
         }
       }
       break;
@@ -2666,10 +2730,15 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         if (!cast_to_number) {
           is_unsigned ? param.set_uint32(value) : param.set_int32(value);
         } else {
-          if (is_unsigned) {
-            unsigned_type = ObUInt32Type;
-          }
           res_val = static_cast<int64_t>(value);
+          if (is_unsigned) {
+            if (((1LL << 32) + res_val) < 1 || res_val > 0xFFFFFFFF) {
+              ret = OB_DECIMAL_OVERFLOW_WARN;
+              LOG_WARN("param is over flower.", K(res_val), K(type), K(ret));
+            } else {
+              res_val = res_val < 0 ? ((1LL << 32) + res_val) : res_val;
+            }
+          }
         }
       }
       break;
@@ -2682,9 +2751,6 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
         if (!cast_to_number) {
           is_unsigned ? param.set_uint(ObUInt64Type, value) : param.set_int(value);
         } else {
-          if (is_unsigned) {
-            unsigned_type = ObUInt64Type;
-          }
           res_val = value;
         }
       }
@@ -2698,14 +2764,12 @@ int ObMPStmtExecute::parse_integer_value(const uint32_t type,
   }
   if (OB_SUCC(ret) && cast_to_number) {
     number::ObNumber nb;
-    if (OB_FAIL(nb.from(res_val, allocator))) {
+    if (is_unsigned && OB_FAIL(nb.from(static_cast<uint64_t>(res_val), allocator))) {
+      LOG_WARN("decode param to number failed", K(ret), K(res_val));
+    } else if (!is_unsigned && OB_FAIL(nb.from(static_cast<int64_t>(res_val), allocator))) {
       LOG_WARN("decode param to number failed", K(ret), K(res_val));
     } else {
-      if (is_unsigned) {
-        param.set_number(unsigned_type, nb);
-      } else {
-        param.set_number(nb);
-      }
+      param.set_number(nb);
     }
   }
   return ret;

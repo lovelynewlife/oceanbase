@@ -280,7 +280,7 @@ public:
 
   int init();
   void update_queue_size();
-  int acquire_more_worker(int64_t num, int64_t &succ_num);
+  int acquire_more_worker(int64_t num, int64_t &succ_num, bool force = false);
   void check_worker_count();
   void check_worker_count(ObThWorker &w);
   int clear_worker();
@@ -359,7 +359,7 @@ class ObTenant : public share::ObTenantBase
   friend class ObResourceGroup;
   friend int ::select_dump_tenant_info(lua_State*);
   friend int create_worker(ObThWorker* &worker, ObTenant *tenant, int32_t group_id,
-                           int32_t level, ObResourceGroup *group);
+                           int32_t level, bool force, ObResourceGroup *group);
   friend int destroy_worker(ObThWorker *worker);
   using WListNode = common::ObDLinkNode<lib::Worker*>;
   using WList = common::ObDList<WListNode>;
@@ -506,7 +506,7 @@ private:
   void check_group_worker_count();
   // alloc NUM worker
   int acquire_level_worker(int64_t num, int64_t &succ_num, int32_t level);
-  int acquire_more_worker(int64_t num, int64_t &succ_num);
+  int acquire_more_worker(int64_t num, int64_t &succ_num, bool force = false);
 
   int64_t worker_count() const { return workers_.get_size(); }
 
@@ -605,7 +605,12 @@ OB_INLINE int64_t ObResourceGroup::min_worker_cnt() const
 {
   const uint64_t worker_concurrency = share::ObCgSet::instance().get_worker_concurrency(group_id_);
   int64_t cnt = worker_concurrency * (int64_t)ceil(tenant_->unit_min_cpu());
-  return (share::OBCG_CLOG == group_id_ || share::OBCG_LQ == group_id_) ? std::max(cnt, 8L) : cnt;
+  if (share::OBCG_CLOG == group_id_ || share::OBCG_LQ == group_id_) {
+    cnt =  std::max(cnt, 8L);
+  } else if (share::OBCG_WR == group_id_) {
+    cnt = 2;  // one for take snapshot, one for purge
+  }
+  return cnt;
 }
 
 OB_INLINE int64_t ObResourceGroup::max_worker_cnt() const
@@ -616,6 +621,8 @@ OB_INLINE int64_t ObResourceGroup::max_worker_cnt() const
     cnt = std::max(cnt, 8L);
   } else if (share::OBCG_LQ == group_id_) {
     cnt = std::max(cnt, tenant_->max_worker_cnt());
+  } else if (share::OBCG_WR == group_id_) {
+    cnt = 2;  // one for take snapshot, one for purge
   }
   return cnt;
 }

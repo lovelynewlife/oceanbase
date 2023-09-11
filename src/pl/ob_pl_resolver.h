@@ -19,6 +19,9 @@
 #include "sql/resolver/expr/ob_raw_expr.h"
 #include "sql/resolver/dml/ob_sequence_namespace_checker.h"
 #include "objit/common/ob_item_type.h"
+#ifdef OB_BUILD_ORACLE_PL
+#include "pl/ob_pl_warning.h"
+#endif
 
 #ifndef LOG_IN_CHECK_MODE
 #define LOG_IN_CHECK_MODE(fmt, args...) \
@@ -125,10 +128,14 @@ class ObPLMockSelfArg
 {
 public:
   ObPLMockSelfArg(
-    const ObIArray<ObObjAccessIdx> &access_idxs, ObSEArray<ObRawExpr*, 4> &expr_params, ObRawExprFactory &expr_factory)
+    const ObIArray<ObObjAccessIdx> &access_idxs,
+    ObSEArray<ObRawExpr*, 4> &expr_params,
+    ObRawExprFactory &expr_factory,
+    ObSQLSessionInfo &session_info)
     : access_idxs_(access_idxs),
       expr_params_(expr_params),
       expr_factory_(expr_factory),
+      session_info_(session_info),
       mark_only_(false),
       mocked_(false) {}
   int mock();
@@ -137,6 +144,7 @@ private:
   const ObIArray<ObObjAccessIdx> &access_idxs_;
   ObSEArray<ObRawExpr*, 4> &expr_params_;
   ObRawExprFactory &expr_factory_;
+  ObSQLSessionInfo &session_info_;
   bool mark_only_;
   bool mocked_;
 };
@@ -434,7 +442,7 @@ public:
                                share::schema::ObIRoutineInfo *routine_info,
                                ObProcType &routine_type,
                                const ObPLDataType &ret_type);
-
+  static int build_pl_integer_type(ObPLIntegerType type, ObPLDataType &data_type);
 
   int get_caller_accessor_item(
     const ObPLStmtBlock *caller, AccessorItem &caller_item);
@@ -507,6 +515,7 @@ public:
   int resolve_condition_compile(
     const ParseNode *node,
     const ParseNode *&new_node,
+    int64_t &question_mark_count,
     bool is_inner_parse = false,
     bool is_for_trigger = false,
     bool is_for_dynamic = false,
@@ -547,11 +556,46 @@ public:
     sql::ObUDFInfo &udf_info, ObIArray<ObObjAccessIdx> &access_idxs, ObPLCompileUnitAST &func);
 
   int construct_name(ObString &database_name, ObString &package_name, ObString &routine_name, ObSqlString &object_name);
+  static int resolve_dblink_routine(ObPLResolveCtx &resolve_ctx,
+                                    const ObString &dblink_name,
+                                    const ObString &db_name,
+                                    const ObString &pkg_name,
+                                    const ObString &routine_name,
+                                    const common::ObIArray<sql::ObRawExpr *> &expr_params,
+                                    const ObIRoutineInfo *&routine_info);
+  static int resolve_dblink_routine_with_synonym(ObPLResolveCtx &resolve_ctx,
+                                                 const uint64_t pkg_syn_id,
+                                                 const ObString &routine_name,
+                                                 const common::ObIArray<sql::ObRawExpr *> &expr_params,
+                                                 const ObIRoutineInfo *&routine_info);
+  int resolve_dblink_type_with_synonym(const uint64_t pkg_syn_id,
+                                       const ObString &type_name,
+                                       ObPLCompileUnitAST &func,
+                                       ObPLDataType &pl_type);
+  int resolve_dblink_type(const ObString &dblink_name,
+                          const ObString &db_name,
+                          const ObString &pkg_name,
+                          const ObString &udt_name,
+                          ObPLCompileUnitAST &func,
+                          ObPLDataType &pl_type);
 private:
   int resolve_declare_var(const ObStmtNodeTree *parse_tree, ObPLDeclareVarStmt *stmt, ObPLFunctionAST &func_ast);
   int resolve_declare_var(const ObStmtNodeTree *parse_tree, ObPLPackageAST &package_ast);
   int resolve_declare_var_comm(const ObStmtNodeTree *parse_tree, ObPLDeclareVarStmt *stmt,
                                ObPLCompileUnitAST &unit_ast);
+#ifdef OB_BUILD_ORACLE_PL
+  int resolve_declare_user_type(const ObStmtNodeTree *parse_tree, ObPLDeclareUserTypeStmt *stmt, ObPLFunctionAST &func);
+  int resolve_declare_user_type(const ObStmtNodeTree *parse_tree, ObPLPackageAST &package_ast);
+  int resolve_declare_user_type_comm(const ObStmtNodeTree *parse_tree, ObPLDeclareUserTypeStmt *stmt,
+                                     ObPLCompileUnitAST &unit_ast);
+  int resolve_subtype_precision(const ObStmtNodeTree *precision_node, ObPLDataType &base_type);
+  int resolve_declare_user_subtype(const ObStmtNodeTree *parse_tree,
+                                   ObPLDeclareUserTypeStmt *stmt,
+                                   ObPLCompileUnitAST &unit_ast);
+  int resolve_ref_cursor_type(const ParseNode *node, ObPLDeclareUserTypeStmt *stmt, ObPLCompileUnitAST &unit_ast);
+  int resolve_declare_collection_type(const ParseNode *type_node, ObPLDeclareUserTypeStmt *stmt, ObPLCompileUnitAST &unit_ast);
+  int resolve_declare_ref_cursor(const ObStmtNodeTree *parse_tree, ObPLDeclareCursorStmt *stmt, ObPLFunctionAST &func);
+#endif
   int resolve_declare_record_type(const ParseNode *type_node, ObPLDeclareUserTypeStmt *stmt, ObPLCompileUnitAST &unit_ast);
   int resolve_extern_type_info(share::schema::ObSchemaGetterGuard &schema_guard,
                                const ObSQLSessionInfo &session_info,
@@ -565,6 +609,9 @@ private:
                           ObPLDataType &pl_type,
                           ObPLExternTypeInfo *extern_type_info = NULL,
                           bool with_rowid = false);
+  int resolve_dblink_type(const ParseNode *node,
+                          ObPLCompileUnitAST &func,
+                          ObPLDataType &pl_type);
   int resolve_sp_composite_type(const ParseNode *sp_data_type_node,
                                 ObPLCompileUnitAST &func,
                                 ObPLDataType &data_type,
@@ -647,6 +694,17 @@ private:
   int resolve_do(const ObStmtNodeTree *parse_tree, 
                 ObPLDoStmt *stmt, 
                 ObPLFunctionAST &func);
+#ifdef OB_BUILD_ORACLE_PL
+  int resolve_object_elem_spec_def(const ParseNode *parse_tree,
+                                   ObPLCompileUnitAST &package_ast);
+  int resolve_object_def(const ParseNode *parse_tree,
+                         ObPLCompileUnitAST &package_ast);
+  int resolve_object_elem_spec_list(const ParseNode *parse_tree,
+                                    ObPLCompileUnitAST &package_ast);
+  int resolve_object_constructor(const ParseNode *parse_tree,
+                                 ObPLCompileUnitAST &package_ast,
+                                 ObPLRoutineInfo *&routine_info);
+#endif
 private:
   int resolve_ident(const ParseNode *node, common::ObString &ident);
   int build_raw_expr(const ParseNode *node, ObPLCompileUnitAST &unit_ast, ObRawExpr *&expr,
@@ -831,6 +889,9 @@ private:
   int check_duplicate_condition(const ObPLDeclareHandlerStmt &stmt, const ObPLConditionValue &value,
                                 bool &dup, ObPLDeclareHandlerStmt::DeclareHandler::HandlerDesc* cur_desc);
   int analyze_actual_condition_type(const ObPLConditionValue &value, ObPLConditionType &type);
+#ifdef OB_BUILD_ORACLE_PL
+  int check_collection_constructor(const ParseNode *node, const common::ObString &type_name, bool &is_constructor);
+#endif
   int check_subprogram_variable_read_only(ObPLBlockNS &ns, uint64_t subprogram_id, int64_t var_idx);
   int check_package_variable_read_only(uint64_t package_id, uint64_t var_idx);
   int check_local_variable_read_only(
@@ -849,6 +910,12 @@ private:
                                  ObSchemaGetterGuard *schema_guard,
                                  bool for_write,
                                  ObString &result);
+  static
+  int set_write_property(ObRawExpr *obj_expr,
+                         ObRawExprFactory &expr_factory,
+                         const ObSQLSessionInfo *session_info,
+                         ObSchemaGetterGuard *schema_guard,
+                         bool for_write);
   static
   int make_var_from_access(const ObIArray<ObObjAccessIdx> &access_idxs,
                            ObRawExprFactory &expr_factory,
@@ -875,6 +942,10 @@ private:
   int resolve_obj_access_idents(const ParseNode &node,
                                 common::ObIArray<ObObjAccessIdent> &obj_access_idents,
                                 ObPLCompileUnitAST &func);
+  int resolve_dblink_idents(const ParseNode &node,
+                            common::ObIArray<ObObjAccessIdent> &obj_access_idents,
+                            ObPLCompileUnitAST &func,
+                            common::ObIArray<ObObjAccessIdx> &access_idexs);
   int build_collection_attribute_access(ObRawExprFactory &expr_factory,
                                         const ObSQLSessionInfo *session_info,
                                         const ObPLBlockNS &ns,
@@ -909,7 +980,6 @@ private:
                                   int32_t upper,
                                   ObRawExpr *&expr);
   int add_pl_integer_checker_expr(ObRawExprFactory &expr_factory, ObRawExpr *&expr, bool &need_replace);
-  static int build_pl_integer_type(ObPLIntegerType type, ObPLDataType &data_type);
 
   int check_use_idx_illegal(ObRawExpr* expr, int64_t idx);
 

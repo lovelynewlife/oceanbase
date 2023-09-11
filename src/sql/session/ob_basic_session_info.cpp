@@ -2018,6 +2018,9 @@ int ObBasicSessionInfo::sys_variable_exists(const ObString &var, bool &is_exists
     LOG_ERROR("got store_idx is invalid", K(store_idx), K(ret));
   } else {
     is_exists = (NULL != sys_vars_[store_idx]);
+    if (NULL != sys_vars_[store_idx]) {
+      is_exists = !sys_vars_[store_idx]->is_base_value_empty();
+    }
   }
   return ret;
 }
@@ -2248,9 +2251,11 @@ OB_INLINE int ObBasicSessionInfo::process_session_variable(ObSysVarClassType var
       break;
     }
     case SYS_VAR_SQL_SELECT_LIMIT: {
-      int64_t int_val = 0;
-      OZ (val.get_int(int_val), val);
-      OX (sys_vars_cache_.set_sql_select_limit(int_val));
+      if (!lib::is_oracle_mode()) {
+        int64_t int_val = 0;
+        OZ (val.get_int(int_val), val);
+        OX (sys_vars_cache_.set_sql_select_limit(int_val));
+      }
       break;
     }
     case SYS_VAR_AUTO_INCREMENT_OFFSET: {
@@ -5896,6 +5901,9 @@ int ObBasicSessionInfo::trans_restore_session(TransSavedValue &saved_value)
     LOG_WARN("failed to assign trans result", K(tmp_ret));
     ret = COVER_SUCC(tmp_ret);
   }
+  if (OB_NOT_NULL(tx_desc_)) {
+    MTL(transaction::ObTransService *)->release_tx(*tx_desc_);
+  }
   tx_desc_ = saved_value.tx_desc_;
   if (OB_TMP_FAIL(base_restore_session(saved_value))) {
     LOG_WARN("failed to restore base session", K(tmp_ret));
@@ -6307,7 +6315,7 @@ int ObExecEnv::init(const ObString &exec_env)
 #undef SET_ENV_VALUE
 #undef GET_ENV_VALUE
 
-int ObExecEnv::load(ObBasicSessionInfo &session)
+int ObExecEnv::load(ObBasicSessionInfo &session, ObIAllocator *alloc)
 {
   int ret = OB_SUCCESS;
   ObObj val;
@@ -6336,7 +6344,11 @@ int ObExecEnv::load(ObBasicSessionInfo &session)
       }
       break;
       case PLSQL_CCFLAGS: {
-        plsql_ccflags_ = val.get_varchar();
+        if (OB_NOT_NULL(alloc)) {
+          OZ (ob_write_string(*alloc, val.get_varchar(), plsql_ccflags_));
+        } else {
+          plsql_ccflags_ = val.get_varchar();
+        }
       }
       break;
       default: {
@@ -6440,8 +6452,7 @@ observer::ObSMConnection *ObBasicSessionInfo::get_sm_connection()
     } else {
       conn = &sess->conn_;
     }
-  }
-    else {
+  } else {
     LOG_ERROR_RET(OB_ERR_UNEXPECTED, "invalid sock_desc type", K(sock_desc.type_));
   }
   return conn;

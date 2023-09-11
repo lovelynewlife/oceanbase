@@ -230,7 +230,10 @@ public:
       ObTenantLSInfo& tenant_ls_info,
       common::ObMySQLTransaction &trans,
       const share::ObLSFlag &ls_flag);
-  static int balance_ls_group(ObTenantLSInfo& tenant_ls_info);//for standby tenant
+  static int balance_ls_group(
+      const bool need_execute_balance,
+      ObTenantLSInfo& tenant_ls_info,
+      bool &is_balanced);//for standby tenant
   static int update_ls_recover_in_trans(
             const share::ObLSRecoveryStat &ls_recovery_stat,
             const bool only_update_readable_scn,
@@ -247,9 +250,9 @@ public:
       const uint64_t &old_unit_group_id,
       ObTenantLSInfo& tenant_ls_info,
       common::ObISQLClient &sql_proxy);
-  static int check_if_need_wait_user_ls_sync_scn(const uint64_t tenant_id, const share::SCN &sys_ls_target_scn);
   static int wait_all_tenants_user_ls_sync_scn(common::hash::ObHashMap<uint64_t, share::SCN> &tenants_sys_ls_target_scn);
 private:
+  static int check_if_need_wait_user_ls_sync_scn_(const uint64_t tenant_id, const share::SCN &sys_ls_target_scn);
   static int revision_to_equal_status_(
       const ObLSStatusMachineParameter &status_machine,
       const share::ObTenantSwitchoverStatus &working_sw_status,

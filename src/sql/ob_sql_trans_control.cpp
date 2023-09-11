@@ -456,14 +456,21 @@ int ObSqlTransControl::do_end_trans_(ObSQLSessionInfo *session,
         LOG_WARN("fail to inc session ref", K(ret));
       } else {
         callback->handout();
+        // Add ASH flags to async commit of transactions
+        // In the end of async commit in func named ` ObEndTransAsyncCallback::callback() `,
+        // set the ash flag named  `in_committing_` to false.
+        ObActiveSessionGuard::get_stat().in_committing_ = true;
         if(OB_FAIL(txs->submit_commit_tx(*tx_ptr, expire_ts, *callback, &trace_info))) {
           LOG_WARN("submit commit tx fail", K(ret), KP(callback), K(expire_ts), KPC(tx_ptr));
           GCTX.session_mgr_->revert_session(session);
           callback->handin();
         }
       }
-    } else if (OB_FAIL(txs->commit_tx(*tx_ptr, expire_ts, &trace_info))) {
-      LOG_WARN("sync commit tx fail", K(ret), K(expire_ts), KPC(tx_ptr));
+    } else {
+      ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
+      if (OB_FAIL(txs->commit_tx(*tx_ptr, expire_ts, &trace_info))) {
+        LOG_WARN("sync commit tx fail", K(ret), K(expire_ts), KPC(tx_ptr));
+      }
     }
   }
 
@@ -550,7 +557,7 @@ int ObSqlTransControl::start_stmt(ObExecContext &exec_ctx)
     auto &ar_snapshot = audit_record.snapshot_;
     ar_snapshot.version_ = snapshot.core_.version_;
     ar_snapshot.tx_id_ = snapshot.core_.tx_id_.get_id();
-    ar_snapshot.scn_ = snapshot.core_.scn_;
+    ar_snapshot.scn_ = snapshot.core_.scn_.cast_to_int();
     ar_snapshot.source_ = snapshot.get_source_name().ptr();
   }
   if (OB_SUCC(ret) && !session->has_start_stmt()) {
@@ -679,7 +686,7 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
     auto &tx_desc = *session->get_tx_desc();
     snapshot.init_none_read();
     snapshot.core_.tx_id_ = tx_desc.get_tx_id();
-    snapshot.core_.scn_ = common::ObSequence::get_max_seq_no();
+    snapshot.core_.scn_ = tx_desc.get_tx_seq();
   } else {
     auto &tx_desc = *session->get_tx_desc();
     int64_t stmt_expire_ts = get_stmt_expire_ts(plan_ctx, *session);
@@ -697,7 +704,7 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
                                                    stmt_expire_ts,
                                                    snapshot))) {
       } else {
-        local_single_ls_plan = has_same_lsid(das_ctx, snapshot.core_.version_, first_ls_id);
+        local_single_ls_plan = has_same_lsid(das_ctx, snapshot, first_ls_id);
       }
     }
     if (OB_SUCC(ret) && !local_single_ls_plan) {
@@ -730,6 +737,46 @@ int ObSqlTransControl::stmt_refresh_snapshot(ObExecContext &exec_ctx) {
   return ret;
 }
 
+int ObSqlTransControl::set_fk_check_snapshot(ObExecContext &exec_ctx)
+{
+  int ret = OB_SUCCESS;
+  ObSQLSessionInfo *session = GET_MY_SESSION(exec_ctx);
+  ObDASCtx &das_ctx = DAS_CTX(exec_ctx);
+  ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(exec_ctx);
+  const ObPhysicalPlan *plan = plan_ctx->get_phy_plan();
+  // insert stmt does not set snapshot by default, set snapshopt for foreign key check induced by insert heres
+  if (plan->is_plain_insert()) {
+    transaction::ObTransService *txs = NULL;
+    auto &snapshot = das_ctx.get_snapshot();
+    auto &tx_desc = *session->get_tx_desc();
+    int64_t stmt_expire_ts = get_stmt_expire_ts(plan_ctx, *session);
+    share::ObLSID local_ls_id;
+    bool local_single_ls_plan = plan->is_local_plan()
+      && OB_PHY_PLAN_LOCAL == plan->get_location_type()
+      && has_same_lsid(das_ctx, snapshot, local_ls_id);
+    if (OB_FAIL(get_tx_service(session, txs))) {
+      LOG_WARN("failed to get transaction service", K(ret));
+    } else {
+      if (local_single_ls_plan) {
+        ret = txs->get_ls_read_snapshot(tx_desc,
+                                        session->get_tx_isolation(),
+                                        local_ls_id,
+                                        stmt_expire_ts,
+                                        snapshot);
+      } else {
+        ret = txs->get_read_snapshot(tx_desc,
+                                      session->get_tx_isolation(),
+                                      stmt_expire_ts,
+                                      snapshot);
+      }
+      if (OB_FAIL(ret)) {
+        LOG_WARN("fail to get snapshot", K(ret), K(local_ls_id), KPC(session));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObSqlTransControl::stmt_setup_savepoint_(ObSQLSessionInfo *session,
                                              ObDASCtx &das_ctx,
                                              ObPhysicalPlanCtx *plan_ctx,
@@ -740,7 +787,7 @@ int ObSqlTransControl::stmt_setup_savepoint_(ObSQLSessionInfo *session,
   ObTxParam &tx_param = plan_ctx->get_trans_param();
   OZ (build_tx_param_(session, tx_param));
   auto &tx = *session->get_tx_desc();
-  int64_t savepoint = 0;
+  transaction::ObTxSEQ savepoint;
   OZ (txs->create_implicit_savepoint(tx, tx_param, savepoint, nested_level == 0), tx, tx_param);
   OX (das_ctx.set_savepoint(savepoint));
   return ret;
@@ -798,12 +845,13 @@ int ObSqlTransControl::get_first_lsid(const ObDASCtx &das_ctx, share::ObLSID &fi
 }
 
 bool ObSqlTransControl::has_same_lsid(const ObDASCtx &das_ctx,
-                                      const share::SCN &snapshot_version,
+                                      const transaction::ObTxReadSnapshot &snapshot,
                                       share::ObLSID &first_lsid)
 {
   int ret = OB_SUCCESS;
   bool bret = true;
   ObLSHandle ls_handle;
+  const share::SCN snapshot_version = snapshot.core_.version_;
   const DASTableLocList &table_locs = das_ctx.get_table_loc_list();
   FOREACH_X(table_node, table_locs, bret) {
     ObDASTableLoc *table_loc = *table_node;
@@ -845,6 +893,17 @@ bool ObSqlTransControl::has_same_lsid(const ObDASCtx &das_ctx,
           } else {
             // do nothing
           }
+        }
+      }
+      if (bret && common::ObRole::FOLLOWER == snapshot.snapshot_ls_role_) {
+        ObLS *ls = NULL;
+        if (OB_ISNULL(ls = ls_handle.get_ls())) {
+          bret = false;
+          LOG_WARN("invalid ls", K(bret), K(first_lsid), K(snapshot));
+        } else if (!(ls->get_dup_table_ls_handler()->is_dup_tablet(tablet_id))) {
+          bret = false;
+          LOG_WARN("There is a normal tablet, retry to acquire snapshot with gts", K(bret), K(first_lsid),
+                   K(snapshot), K(tablet_loc));
         }
       }
     }
@@ -889,6 +948,22 @@ int ObSqlTransControl::rollback_savepoint(ObExecContext &exec_ctx,
       ret = COVER_SUCC(tmp_ret);
     }
   }
+  return ret;
+}
+
+int ObSqlTransControl::release_stash_savepoint(ObExecContext &exec_ctx,
+                                               const ObString &sp_name)
+{
+  int ret = OB_SUCCESS;
+  ObSQLSessionInfo *session = GET_MY_SESSION(exec_ctx);
+  transaction::ObTransService *txs = NULL;
+  CK (OB_NOT_NULL(session));
+  // NOTE: should _NOT_ check session is zombie, because the stash savepoint
+  // should be release before query quit
+  // CHECK_SESSION (session);
+  OZ (get_tx_service(session, txs), *session);
+  OZ (acquire_tx_if_need_(txs, *session));
+  OZ (txs->release_explicit_savepoint(*session->get_tx_desc(), sp_name, get_real_session_id(*session)), *session, sp_name);
   return ret;
 }
 
@@ -950,7 +1025,7 @@ int ObSqlTransControl::end_stmt(ObExecContext &exec_ctx, const bool rollback)
   transaction::ObTxDesc *tx_desc = NULL;
   sql::stmt::StmtType stmt_type = sql::stmt::StmtType::T_NONE;
   bool is_plain_select = false;
-  int64_t savepoint = das_ctx.get_savepoint();
+  transaction::ObTxSEQ savepoint = das_ctx.get_savepoint();
 
   CK (OB_NOT_NULL(session), OB_NOT_NULL(plan_ctx));
   CK (OB_NOT_NULL(plan = plan_ctx->get_phy_plan()));
@@ -1047,7 +1122,7 @@ bool ObSqlTransControl::is_isolation_RR_or_SE(ObTxIsolationLevel isolation)
           || isolation == ObTxIsolationLevel::SERIAL);
 }
 
-int ObSqlTransControl::create_anonymous_savepoint(ObExecContext &exec_ctx, int64_t &savepoint)
+int ObSqlTransControl::create_anonymous_savepoint(ObExecContext &exec_ctx, transaction::ObTxSEQ &savepoint)
 {
   int ret = OB_SUCCESS;
   transaction::ObTransService *txs = NULL;
@@ -1060,7 +1135,7 @@ int ObSqlTransControl::create_anonymous_savepoint(ObExecContext &exec_ctx, int64
   return ret;
 }
 
-int ObSqlTransControl::create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, int64_t &savepoint)
+int ObSqlTransControl::create_anonymous_savepoint(transaction::ObTxDesc &tx_desc, transaction::ObTxSEQ &savepoint)
 {
   int ret = OB_SUCCESS;
   transaction::ObTransService *txs = NULL;
@@ -1072,7 +1147,7 @@ int ObSqlTransControl::create_anonymous_savepoint(transaction::ObTxDesc &tx_desc
   return ret;
 }
 
-int ObSqlTransControl::rollback_savepoint(ObExecContext &exec_ctx, const int64_t savepoint)
+int ObSqlTransControl::rollback_savepoint(ObExecContext &exec_ctx, const transaction::ObTxSEQ savepoint)
 {
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *session = GET_MY_SESSION(exec_ctx);

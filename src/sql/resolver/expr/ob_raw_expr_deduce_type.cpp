@@ -865,8 +865,15 @@ int ObRawExprDeduceType::check_expr_param(ObOpRawExpr &expr)
     }
   } else if (lib::is_oracle_mode()
              && (T_OP_EQ == expr.get_expr_type() || T_OP_NE == expr.get_expr_type())
-             && (T_OP_ROW == expr.get_param_expr(0)->get_expr_type())) {
-    if (1 > expr.get_param_expr(0)->get_param_count()
+             && (T_OP_ROW == expr.get_param_expr(0)->get_expr_type() ||
+                 T_OP_ROW == expr.get_param_expr(1)->get_expr_type())) {
+    if (expr.get_param_expr(0)->get_expr_type() != T_OP_ROW
+        && expr.get_param_expr(1)->get_expr_type() == T_OP_ROW) {
+      // scalar = vector is not allowed
+      ret = OB_ERR_INVALID_COLUMN_NUM;
+      LOG_WARN("invalid relational operator", K(ret));
+      LOG_USER_ERROR(OB_ERR_INVALID_COLUMN_NUM, static_cast<long>(1));
+    } else if (1 > expr.get_param_expr(0)->get_param_count()
         || T_OP_ROW == expr.get_param_expr(0)->get_param_expr(0)->get_expr_type()
         || T_OP_ROW != expr.get_param_expr(1)->get_expr_type()) {
       ret = OB_ERR_INVALID_COLUMN_NUM;
@@ -1247,6 +1254,7 @@ int ObRawExprDeduceType::set_json_agg_result_type(ObAggFunRawExpr &expr, ObExprR
           parse_node.value_ = static_cast<ObConstRawExpr *>(return_type_expr)->get_value().get_int();
           ObScale scale = static_cast<ObConstRawExpr *>(return_type_expr)->get_accuracy().get_scale();
           bool is_json_type = (scale == 1) && (col_type.get_type_class() == ObJsonTC);
+          is_json_type = (is_json_type || parse_node.value_ == 0);
           ObObjType obj_type = static_cast<ObObjType>(parse_node.int16_values_[OB_NODE_CAST_TYPE_IDX]);
           result_type.set_collation_type(static_cast<ObCollationType>(parse_node.int16_values_[OB_NODE_CAST_COLL_IDX]));
           if (ob_is_string_type(obj_type) && !is_json_type) {
@@ -2428,6 +2436,20 @@ int ObRawExprDeduceType::visit(ObWinFunRawExpr &expr)
       } else {
         func_params.at(0) = cast_expr;
       }
+    } else if (OB_UNLIKELY(lib::is_mysql_mode() &&
+                           (!func_params.at(0)->is_const_expr() ||
+                            !func_params.at(0)->get_result_type().is_integer_type()))) {
+      if (func_params.at(0)->get_expr_type() == T_FUN_SYS_FLOOR &&
+          func_params.at(0)->get_param_count() >= 1 &&
+          func_params.at(0)->get_param_expr(0) != NULL &&
+          func_params.at(0)->get_param_expr(0)->get_expr_type() == T_REF_QUERY &&
+          func_params.at(0)->get_param_expr(0)->get_result_type().is_integer_type()) {
+        //do nothing
+      } else {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("Incorrect arguments to ntile", K(ret), KPC(func_params.at(0)));
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ntile");
+      }
     }
   } else if (T_WIN_FUN_NTH_VALUE == expr.get_func_type()) {
     // nth_value函数的返回类型可以为null. lead和lag也是
@@ -2597,6 +2619,31 @@ int ObRawExprDeduceType::visit(ObWinFunRawExpr &expr)
       } else {
         ret = OB_INVALID_NUMERIC;
         LOG_WARN("interval is not numberic", K(ret), KPC(expr.lower_.interval_expr_));
+      }
+    }
+    if (OB_SUCC(ret) &&
+        lib::is_mysql_mode() &&
+        expr.get_window_type() == WINDOW_RANGE &&
+        (expr.upper_.interval_expr_ != NULL || expr.lower_.interval_expr_ != NULL)) {
+      if (expr.get_order_items().empty()) {
+        //do nothing
+      } else if (OB_UNLIKELY(expr.get_order_items().count() != 1)) {
+        ret = OB_ERR_INVALID_WINDOW_FUNC_USE;
+        LOG_WARN("invalid window specification", K(ret), K(expr.get_order_items()));
+      } else if (OB_UNLIKELY(((expr.upper_.interval_expr_ != NULL && !expr.upper_.is_nmb_literal_) ||
+                              (expr.lower_.interval_expr_ != NULL && !expr.lower_.is_nmb_literal_)) &&
+                              expr.get_order_items().at(0).expr_->get_result_type().is_numeric_type())) {
+        ret = OB_ERR_WINDOW_RANGE_FRAME_NUMERIC_TYPE;
+        LOG_WARN("Window with RANGE frame has ORDER BY expression of numeric type. INTERVAL bound value not allowed.", K(ret));
+        ObString tmp_name = expr.get_win_name().empty() ? ObString("<unnamed window>") : expr.get_win_name();
+        LOG_USER_ERROR(OB_ERR_WINDOW_RANGE_FRAME_NUMERIC_TYPE, tmp_name.length(), tmp_name.ptr());
+      } else if (OB_UNLIKELY(((expr.upper_.interval_expr_ != NULL && expr.upper_.is_nmb_literal_) ||
+                              (expr.lower_.interval_expr_ != NULL && expr.lower_.is_nmb_literal_)) &&
+                              expr.get_order_items().at(0).expr_->get_result_type().is_temporal_type())) {
+        ret = OB_ERR_WINDOW_RANGE_FRAME_TEMPORAL_TYPE;
+        LOG_WARN("Window with RANGE frame has ORDER BY expression of datetime type. Only INTERVAL bound value allowed.", K(ret));
+        ObString tmp_name = expr.get_win_name().empty() ? ObString("<unnamed window>") : expr.get_win_name();
+        LOG_USER_ERROR(OB_ERR_WINDOW_RANGE_FRAME_TEMPORAL_TYPE, tmp_name.length(), tmp_name.ptr());
       }
     }
     LOG_DEBUG("finish add cast for window function", K(result_number_type), K(expr.lower_), K(expr.upper_));
@@ -2986,7 +3033,7 @@ int ObRawExprDeduceType::set_agg_json_array_result_type(ObAggFunRawExpr &expr,
         result_type.set_calc_collation_type(my_session_->get_nls_collation());
       }
       result_type.set_collation_level(CS_LEVEL_IMPLICIT);
-    } else if (ob_is_json(obj_type)) {
+    } else if (ob_is_json(obj_type) || parse_node.value_ == 0) {
       result_type.set_json();
       result_type.set_length((ObAccuracy::DDL_DEFAULT_ACCURACY[ObJsonType]).get_length());
     } else if (ob_is_raw(obj_type)) {

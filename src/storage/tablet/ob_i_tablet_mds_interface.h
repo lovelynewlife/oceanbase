@@ -18,7 +18,7 @@
 #include "storage/meta_mem/ob_tablet_pointer.h"
 #include "storage/tablet/ob_tablet_mds_data.h"
 #include "storage/tablet/ob_tablet_member_wrapper.h"
-#include "storage/tablet/ob_tablet_meta.h"
+#include "storage/ls/ob_ls_switch_checker.h"
 
 namespace oceanbase
 {
@@ -42,11 +42,11 @@ public:
   int remove(const Key &key, mds::MdsCtx &ctx, const int64_t lock_timeout_us = 0);
   // sometimes mds ndoes needed be forcely released, e.g.: ls offline
   template <int N>
-  int forcely_reset_mds_table(const char (&reason)[N]);// reason must be cimpile-time str
+  int forcely_reset_mds_table(const char (&reason)[N]);// reason must be compile-time str
   template <typename T>
   int is_locked_by_others(bool &is_locked, const mds::MdsWriter &self = mds::MdsWriter()) const;
 
-  int check_mds_written(bool &written);
+  int check_tablet_status_written(bool &written);
   // specialization get for each module
   int get_latest_tablet_status(ObTabletCreateDeleteMdsUserData &data, bool &is_committed) const;
   int get_tablet_status(const share::SCN &snapshot,

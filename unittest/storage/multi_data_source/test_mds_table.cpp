@@ -14,7 +14,6 @@
 #include <gtest/gtest.h>
 #define private public
 #define protected public
-#include "multi_data_source/example_user_data_define.h"
 #include "share/ob_ls_id.h"
 #include "storage/multi_data_source/mds_writer.h"
 #include <thread>
@@ -22,7 +21,6 @@
 #include <vector>
 #include <chrono>
 #include <exception>
-#include "common_define.h"
 #include "lib/ob_errno.h"
 #include "share/ob_errno.h"
 #include "storage/multi_data_source/adapter_define/mds_dump_node.h"
@@ -33,7 +31,6 @@
 #include "storage/multi_data_source/mds_unit.h"
 #include "storage/multi_data_source/mds_table_handle.h"
 #include "storage/multi_data_source/mds_table_handler.h"
-#include "example_user_helper_define.cpp"
 #include "storage/tx/ob_trans_define.h"
 #include <algorithm>
 #include <numeric>
@@ -139,7 +136,7 @@ void TestMdsTable::replay() {
   share::SCN recorde_scn = mock_scn(0);
   unit.single_row_.v_.sorted_list_.for_each_node_from_tail_to_head_until_true([&](const UserMdsNode<DummyKey, ExampleUserData1> &node) -> int {
     if (!node.is_aborted_()) {
-      OB_ASSERT(node.redo_scn_ > recorde_scn);
+      MDS_ASSERT(node.redo_scn_ > recorde_scn);
       recorde_scn = node.redo_scn_;
     }
     return OB_SUCCESS;
@@ -383,11 +380,11 @@ void TestMdsTable::test_flush() {
   ASSERT_EQ(mock_scn(199), mds_table_.p_mds_table_base_->flushing_scn_);// 2. 实际上以199为版本号进行flush动作
   ASSERT_EQ(OB_SUCCESS, mds_table_.for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump(
     [&idx](const MdsDumpKV &kv) -> int {// 2. 转储时扫描mds table
-      OB_ASSERT(kv.v_.end_scn_ < mock_scn(199));// 扫描时看不到199版本以上的提交
-      OB_ASSERT(idx < 10);
+      MDS_ASSERT(kv.v_.end_scn_ < mock_scn(199));// 扫描时看不到199版本以上的提交
+      MDS_ASSERT(idx < 10);
       MDS_LOG(INFO, "print dump node kv", K(kv));
       return OB_SUCCESS;
-    }, true)
+    }, 0, true)
   );
   mds_table_.on_flush(mock_scn(199), OB_SUCCESS);// 3. 推大rec_scn【至少】到200
   share::SCN rec_scn;
@@ -518,7 +515,7 @@ TEST_F(TestMdsTable, test_recycle) {
   ASSERT_EQ(OB_SUCCESS, mds_table_.flush(mock_scn(20000)));
   mds_table_.for_each_unit_from_small_key_to_big_from_old_node_to_new_to_dump([](const MdsDumpKV &){
     return OB_SUCCESS;
-  }, true);
+  }, 0, true);
   mds_table_.on_flush(mock_scn(20000), OB_SUCCESS);
   share::SCN rec_scn;
   ASSERT_EQ(OB_SUCCESS, mds_table_.get_rec_scn(rec_scn));

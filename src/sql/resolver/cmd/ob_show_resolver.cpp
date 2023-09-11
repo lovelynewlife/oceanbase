@@ -471,7 +471,7 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
               LOG_WARN("fail to resolve show from table", K(ret));
             }
             if (OB_FAIL(ret)) {
-            } else if (T_SHOW_CREATE_VIEW == parse_tree.type_) {
+            } else if (T_SHOW_CREATE_VIEW == parse_tree.type_ || is_view) {
               if (ObSchemaChecker::is_ora_priv_check()) {
               } else {
                 ObNeedPriv need_priv;
@@ -1420,9 +1420,19 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
         break;
       }
       case T_SHOW_RESTORE_PREVIEW: {
-  // TODO:  fix restore preview later.
-        ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "show restore preview is");
+        if (OB_UNLIKELY(parse_tree.num_child_ != 0)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("parse tree is wrong", K(ret), K(parse_tree.num_child_));
+        } else if (!is_sys_tenant(real_tenant_id)) {
+          ret = OB_OP_NOT_ALLOW;
+          LOG_WARN("the tenant has no priv to show restore preview", K(ret), K(real_tenant_id));
+        } else {
+          show_resv_ctx.stmt_type_ = stmt::T_SHOW_RESTORE_PREVIEW;
+          GEN_SQL_STEP_1(ObShowSqlSet::SHOW_RESTORE_PREVIEW);
+          GEN_SQL_STEP_2(ObShowSqlSet::SHOW_RESTORE_PREVIEW,
+                         OB_SYS_DATABASE_NAME,
+                         OB_TENANT_VIRTUAL_SHOW_RESTORE_PREVIEW_TNAME);
+        }
         break;
       }
       default:
@@ -2831,7 +2841,7 @@ DEFINE_SHOW_CLAUSE_SET(SHOW_TRIGGERS_LIKE,
                        NULL,
                        "select t.trigger_name as `Trigger`, t.event_manipulation as `Event`, t.event_object_table as `Table`, t.action_statement as `Statement`, t.action_timing as `Timing`, t.created as `Created`, t.sql_mode as `sql_mode`, t.definer as `Definer`, t.character_set_client as `character_set_client`, t.collation_connection as `collation_connection`, t.database_collation as `Database Collation` from %s.%s t, %s.%s d where t.event_object_schema = d.database_name and d.database_id = %ld ",
                        NULL,
-                       "Trigger");
+                       "Table");
 DEFINE_SHOW_CLAUSE_SET(SHOW_WARNINGS,
                        NULL,
                        "SELECT `level` AS `Level`, `code` AS `Code`, `message` AS `Message` FROM %s.%s ",

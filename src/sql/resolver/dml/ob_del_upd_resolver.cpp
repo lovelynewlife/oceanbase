@@ -473,7 +473,8 @@ int ObDelUpdResolver::resolve_assign_columns(const ParseNode &assign_target,
     } else if (q_name.is_star_) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("'*' should not be here, parser has already blocked this error", K(ret));
-    } else if (ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
+    } else if (lib::is_oracle_mode() &&
+               ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
                                                  q_name.col_name_)) {
       ret = OB_ERR_VIRTUAL_COL_NOT_ALLOWED;
       LOG_WARN("cannot update rowid pseudo column", K(ret), K(q_name));
@@ -867,8 +868,9 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
     } else {
       ObRawExpr *expr = stmt->get_select_item(idx).expr_;
       if (!expr->is_column_ref_expr() ||
-          ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
-                                     static_cast<ObColumnRefRawExpr *>(expr)->get_column_name())) {
+          (lib::is_oracle_mode() &&
+           ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
+                                             static_cast<ObColumnRefRawExpr *>(expr)->get_column_name()))) {
         ret = is_mysql_mode() ? OB_ERR_NONUPDATEABLE_COLUMN : OB_ERR_VIRTUAL_COL_NOT_ALLOWED;
         LOG_WARN("column is not updatable", K(ret), K(col_ref));
       } else {
@@ -908,6 +910,12 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
           } else if (new_table_item->is_fake_cte_table()) {
             ret = OB_ERR_ILLEGAL_VIEW_UPDATE;
             LOG_WARN("illegal view update", K(ret));
+          } else if (new_table_item->is_values_table()) {
+            ret = dml->is_insert_stmt() ? OB_ERR_NON_INSERTABLE_TABLE : OB_ERR_NON_UPDATABLE_TABLE;
+            LOG_WARN("view is not updatable", K(ret));
+          } else if (new_table_item->is_json_table()) {
+            ret = OB_ERR_NON_INSERTABLE_TABLE;
+            LOG_WARN("json table can not be insert", K(ret));
           } else {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("column is not updatable", K(ret), K(col_ref));
@@ -1005,6 +1013,9 @@ int ObDelUpdResolver::set_base_table_for_view(TableItem &table_item, const bool 
         if (OB_FAIL(SMART_CALL(set_base_table_for_view(*base, inner_log_error)))) {
           LOG_WARN("set base table for view failed", K(ret));
         }
+      } else if (base->is_values_table()) {
+        ret = OB_ERR_NON_UPDATABLE_TABLE;
+        LOG_WARN("non update table", K(ret));
       } else {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected table type in view", K(ret), K(*base));
@@ -1043,8 +1054,9 @@ int ObDelUpdResolver::check_same_base_table(const TableItem &table_item,
   } else {
     ObRawExpr *expr = stmt->get_select_item(idx).expr_;
     if (!expr->is_column_ref_expr() ||
-        ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
-                                      static_cast<ObColumnRefRawExpr *>(expr)->get_column_name())) {
+        (lib::is_oracle_mode() &&
+         ObCharset::case_insensitive_equal(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME,
+                                      static_cast<ObColumnRefRawExpr *>(expr)->get_column_name()))) {
       ret = is_mysql_mode() ? OB_ERR_NONUPDATEABLE_COLUMN : OB_ERR_VIRTUAL_COL_NOT_ALLOWED;
       LOG_WARN("column is not updatable", K(ret), K(col_ref));
     } else {
@@ -3195,6 +3207,7 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
   ObArray<int64_t> value_idxs; //store the old order of columns in values_desc
   uint64_t value_count = OB_INVALID_ID;
   bool is_all_default = false;
+  bool is_update_view = false;
   if (OB_ISNULL(del_upd_stmt) || OB_ISNULL(node) || OB_ISNULL(session_info_) ||
       T_VALUE_LIST != node->type_ || OB_ISNULL(node->children_) || OB_ISNULL(del_upd_stmt->get_query_ctx())) {
     ret = OB_INVALID_ARGUMENT;
@@ -3215,9 +3228,15 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
     LOG_WARN("reserve memory fail", K(ret));
   }
   if (OB_SUCC(ret)) {
+    TableItem* table_item = NULL;
     if (OB_FAIL(check_need_match_all_params(table_info.values_desc_,
                                             del_upd_stmt->get_query_ctx()->need_match_all_params_))) {
       LOG_WARN("check need match all params failed", K(ret));
+    } else if (OB_ISNULL(table_item = del_upd_stmt->get_table_item_by_id(table_info.table_id_))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (table_item->is_generated_table()) {
+      is_update_view = true;
     }
   }
   if (OB_SUCC(ret)) {
@@ -3249,6 +3268,10 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
         LOG_WARN("fail to append new values_desc");
       }
     }
+  }
+  if (OB_SUCC(ret)) {
+    //move generated columns behind basic columns before resolve values
+    OZ (adjust_values_desc_position(table_info, value_idxs));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; i++) {
     ParseNode *vector_node = node->children_[i];
@@ -3299,8 +3322,11 @@ int ObDelUpdResolver::resolve_insert_values(const ParseNode *node,
               LOG_ERROR("fail to resolve sql expr", K(ret), K(expr));
             } else if (T_DEFAULT == expr->get_expr_type()) {
               ColumnItem *column_item = NULL;
-              if (OB_ISNULL(column_item = del_upd_stmt->get_column_item_by_id(table_info.table_id_,
-                                                                             column_id))) {
+              if (is_update_view && is_oracle_mode()) {
+                ret = OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS;
+                LOG_USER_ERROR(OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS);
+              } else if (OB_ISNULL(column_item = del_upd_stmt->get_column_item_by_id(table_info.table_id_,
+                                                                                     column_id))) {
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("get column item by id failed", K(table_info.table_id_), K(column_id));
               } else  if (column_expr->is_generated_column()) {
@@ -3985,7 +4011,8 @@ int ObDelUpdResolver::add_select_list_for_set_stmt(ObSelectStmt &select_stmt)
       res_type.reset();
       new_select_item.alias_name_ = select_item.alias_name_;
       new_select_item.expr_name_ = select_item.expr_name_;
-      new_select_item.is_real_alias_ = select_item.is_real_alias_ || select_item.expr_->is_column_ref_expr();
+      new_select_item.is_real_alias_ = select_item.is_real_alias_ ||
+                                       ObRawExprUtils::is_column_ref_skip_implicit_cast(select_item.expr_);
       res_type = select_item.expr_->get_result_type();
       if (OB_FAIL(ObRawExprUtils::make_set_op_expr(*params_.expr_factory_, i, set_op_type, res_type,
                                                    session_info_, new_select_item.expr_))) {

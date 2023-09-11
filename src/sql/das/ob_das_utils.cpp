@@ -20,7 +20,7 @@
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/location_cache/ob_location_service.h"
 #include "observer/ob_server_struct.h"
-#include "observer/omt/ob_tenant_srs_mgr.h"
+#include "observer/omt/ob_tenant_srs.h"
 #include "lib/geo/ob_s2adapter.h"
 #include "lib/geo/ob_geo_utils.h"
 namespace oceanbase
@@ -88,7 +88,8 @@ int ObDASUtils::check_nested_sql_mutating(ObTableID ref_table_id, ObExecContext 
     FOREACH_X(node, parent_das_ctx.get_table_loc_list(), OB_SUCC(ret)) {
       ObDASTableLoc *table_loc = *node;
       if (table_loc->loc_meta_->ref_table_id_ == ref_table_id
-          && (table_loc->is_writing_ || (!is_reading && lib::is_mysql_mode()))) {
+          && (table_loc->is_writing_ || (!is_reading && lib::is_mysql_mode()))
+          && !table_loc->is_fk_check_ ) {
         ObSchemaGetterGuard schema_guard;
         const ObTableSchema *table_schema = NULL;
         uint64_t tenant_id = exec_ctx.get_my_session()->get_effective_tenant_id();
@@ -311,13 +312,13 @@ int ObDASUtils::generate_spatial_index_rows(
   if (OB_FAIL(ObGeoTypeUtil::get_srid_from_wkb(wkb_str, srid))) {
     LOG_WARN("failed to get srid", K(ret), K(wkb_str));
   } else if (srid != 0 &&
-      OB_FAIL(OTSRS_MGR.get_tenant_srs_guard(MTL_ID(), srs_guard))) {
+      OB_FAIL(OTSRS_MGR->get_tenant_srs_guard(srs_guard))) {
     LOG_WARN("failed to get srs guard", K(ret), K(MTL_ID()), K(srid));
   } else if (srid != 0 &&
       OB_FAIL(srs_guard.get_srs_item(srid, srs_item))) {
     LOG_WARN("failed to get srs item", K(ret), K(MTL_ID()), K(srid));
   } else if (((srid == 0) || !(srs_item->is_geographical_srs())) &&
-              OB_FAIL(OTSRS_MGR.get_srs_bounds(srid, srs_item, srs_bound))) {
+              OB_FAIL(OTSRS_MGR->get_srs_bounds(srid, srs_item, srs_bound))) {
     LOG_WARN("failed to get srs bound", K(ret), K(srid));
   } else {
     ObS2Adapter s2object(&allocator, srid != 0 ? srs_item->is_geographical_srs() : false);
@@ -392,7 +393,7 @@ int ObDASUtils::wait_das_retry(int64_t retry_cnt)
   uint32_t timeout_factor = static_cast<uint32_t>((retry_cnt > 100) ? 100 : retry_cnt);
   int64_t sleep_us = 10000L * timeout_factor > THIS_WORKER.get_timeout_remain()
                                             ? THIS_WORKER.get_timeout_remain()
-                                                : 1000L * timeout_factor;
+                                                : 10000L * timeout_factor;
   if (sleep_us > 0) {
     LOG_INFO("will sleep", K(sleep_us), K(THIS_WORKER.get_timeout_remain()));
     THIS_WORKER.sched_wait();

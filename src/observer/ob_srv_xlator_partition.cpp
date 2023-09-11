@@ -55,6 +55,7 @@
 
 #include "observer/table_load/ob_table_load_rpc_processor.h"
 #include "observer/net/ob_net_endpoint_ingress_rpc_processor.h"
+#include "share/wr/ob_wr_snapshot_rpc_processor.h"
 
 using namespace oceanbase;
 using namespace oceanbase::observer;
@@ -96,9 +97,21 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObAddDiskP, gctx_);
   RPC_PROCESSOR(ObDropDiskP, gctx_);
   RPC_PROCESSOR(ObForceSetServerListP, gctx_);
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_PROCESSOR(ObGetMasterKeyP, gctx_);
+  RPC_PROCESSOR(ObRestoreKeyP, gctx_);
+  RPC_PROCESSOR(ObSetRootKeyP, gctx_);
+#endif
   RPC_PROCESSOR(ObHandlePartTransCtxP, gctx_);
+#ifdef OB_BUILD_TDE_SECURITY
+  RPC_PROCESSOR(ObDumpTenantCacheMasterKeyP, gctx_);
+#endif
   RPC_PROCESSOR(ObRpcSetMemberListP, gctx_);
   RPC_PROCESSOR(ObRpcCreateLSP, gctx_);
+#ifdef OB_BUILD_ARBITRATION
+  RPC_PROCESSOR(ObRpcCreateArbP, gctx_);
+  RPC_PROCESSOR(ObRpcDeleteArbP, gctx_);
+#endif
   RPC_PROCESSOR(ObRpcCheckLSCanOfflineP, gctx_);
   RPC_PROCESSOR(ObCleanSequenceCacheP, gctx_);
   RPC_PROCESSOR(ObRegisterTxDataP, gctx_);
@@ -145,17 +158,15 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(ObCheckStartTransferTabletsP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObGetLSActiveTransCountP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObGetTransferStartScnP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObFetchTransferTabletsInfoP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObFetchLSReplayScnP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObCheckTransferTabletsBackfillP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageGetConfigVersionAndTransferScnP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObStorageBlockTxP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObStorageKillTxP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObStorageUnBlockTxP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageLockConfigChangeP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageUnlockConfigChangeP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageGetLogConfigStatP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageWakeupTransferServiceP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObFetchLSMemberAndLearnerListP);
+  RPC_PROCESSOR(ObAdminUnlockMemberListP, gctx_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
@@ -188,6 +199,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObTableQueryAndMutateP, gctx_);
   RPC_PROCESSOR(ObTableQuerySyncP, gctx_);
   RPC_PROCESSOR(ObTableDirectLoadP, gctx_);
+  RPC_PROCESSOR(ObTenantTTLP, gctx_);
 
   // HA GTS
   RPC_PROCESSOR(ObHaGtsPingRequestP, gctx_);
@@ -255,6 +267,13 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObGAISPushAutoIncP);
   RPC_PROCESSOR(ObGAISClearAutoIncCacheP);
 
+#ifdef OB_BUILD_SPM
+  // sql plan baseline
+  RPC_PROCESSOR(ObServerAcceptPlanBaselineP, gctx_);
+  RPC_PROCESSOR(ObServerCancelEvolveTaskP, gctx_);
+  RPC_PROCESSOR(ObLoadBaselineP, gctx_);
+  RPC_PROCESSOR(ObLoadBaselineV2P, gctx_);
+#endif
 
   //sql optimizer estimate tablet block count
   RPC_PROCESSOR(ObEstimateTabletBlockCountP, gctx_);
@@ -279,4 +298,11 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
 
   // direct load
   RPC_PROCESSOR(ObDirectLoadControlP, gctx_);
+
+  // wr
+  RPC_PROCESSOR(ObWrAsyncSnapshotTaskP, gctx_);
+  RPC_PROCESSOR(ObWrAsyncPurgeSnapshotTaskP, gctx_);
+  RPC_PROCESSOR(ObWrSyncUserSubmitSnapshotTaskP, gctx_);
+  RPC_PROCESSOR(ObWrSyncUserModifySettingsTaskP, gctx_);
+
 }

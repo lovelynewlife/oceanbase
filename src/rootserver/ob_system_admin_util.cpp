@@ -509,8 +509,21 @@ int ObAdminClearMergeError::execute(const obrpc::ObAdminMergeArg &arg)
   } else {
     ObTenantAdminMergeParam param;
     param.transport_ = GCTX.net_frame_->get_req_transport();
-    if (arg.affect_all_) {
-      param.need_all_ = true;
+    if (arg.affect_all_ || arg.affect_all_user_ || arg.affect_all_meta_) {
+      if ((true == arg.affect_all_ && true == arg.affect_all_user_) ||
+          (true == arg.affect_all_ && true == arg.affect_all_meta_) ||
+          (true == arg.affect_all_user_ && true == arg.affect_all_meta_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("only one of affect_all,affect_all_user,affect_all_meta can be true",
+                 KR(ret), "affect_all", arg.affect_all_, "affect_all_user",
+                 arg.affect_all_user_, "affect_all_meta", arg.affect_all_meta_);
+      } else {
+        if (arg.affect_all_ || arg.affect_all_user_) {
+          param.need_all_user_ = true;
+        } else {
+          param.need_all_meta_ = true;
+        }
+      }
     } else if (OB_FAIL(param.tenant_array_.assign(arg.tenant_ids_))) {
       LOG_WARN("fail to assign tenant_ids", KR(ret), K(arg));
     }
@@ -575,8 +588,21 @@ int ObAdminMerge::execute(const obrpc::ObAdminMergeArg &arg)
       case ObAdminMergeArg::SUSPEND_MERGE: {
         ObTenantAdminMergeParam param;
         param.transport_ = GCTX.net_frame_->get_req_transport();
-        if (arg.affect_all_) {
-          param.need_all_ = true;
+        if (arg.affect_all_ || arg.affect_all_user_ || arg.affect_all_meta_) {
+          if ((true == arg.affect_all_ && true == arg.affect_all_user_) ||
+              (true == arg.affect_all_ && true == arg.affect_all_meta_) ||
+              (true == arg.affect_all_user_ && true == arg.affect_all_meta_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("only one of affect_all,affect_all_user,affect_all_meta can be true",
+                     KR(ret), "affect_all", arg.affect_all_, "affect_all_user",
+                     arg.affect_all_user_, "affect_all_meta", arg.affect_all_meta_);
+          } else {
+            if (arg.affect_all_ || arg.affect_all_user_) {
+              param.need_all_user_ = true;
+            } else {
+              param.need_all_meta_ = true;
+            }
+          }
         } else if (OB_FAIL(param.tenant_array_.assign(arg.tenant_ids_))) {
           LOG_WARN("fail to assign tenant_ids", KR(ret), K(arg));
         }
@@ -588,8 +614,21 @@ int ObAdminMerge::execute(const obrpc::ObAdminMergeArg &arg)
       case ObAdminMergeArg::RESUME_MERGE: {
         ObTenantAdminMergeParam param;
         param.transport_ = GCTX.net_frame_->get_req_transport();
-        if (arg.affect_all_) {
-          param.need_all_ = true;
+        if (arg.affect_all_ || arg.affect_all_user_ || arg.affect_all_meta_) {
+          if ((true == arg.affect_all_ && true == arg.affect_all_user_) ||
+              (true == arg.affect_all_ && true == arg.affect_all_meta_) ||
+              (true == arg.affect_all_user_ && true == arg.affect_all_meta_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("only one of affect_all,affect_all_user,affect_all_meta can be true",
+                     KR(ret), "affect_all", arg.affect_all_, "affect_all_user",
+                     arg.affect_all_user_, "affect_all_meta", arg.affect_all_meta_);
+          } else {
+            if (arg.affect_all_ || arg.affect_all_user_) {
+              param.need_all_user_ = true;
+            } else {
+              param.need_all_meta_ = true;
+            }
+          }
         } else if (OB_FAIL(param.tenant_array_.assign(arg.tenant_ids_))) {
           LOG_WARN("fail to assign tenant_ids", KR(ret), K(arg));
         }
@@ -760,6 +799,7 @@ int ObAdminSetConfig::verify_config(obrpc::ObAdminSetConfigArg &arg)
       ObConfigItem *ci = nullptr;
       if (OB_SYS_TENANT_ID != item->exec_tenant_id_ || item->tenant_name_.size() > 0) {
         // tenants(user or sys tenants) modify tenant level configuration
+        item->want_to_set_tenant_config_ = true;
         if (nullptr == tenant_cfg) {
           if (OB_ISNULL(cfg_ptr = ob_malloc(sizeof(ObTenantConfigChecker),
                         ObModIds::OB_RS_PARTITION_TABLE_TEMP))) {
@@ -782,15 +822,30 @@ int ObAdminSetConfig::verify_config(obrpc::ObAdminSetConfigArg &arg)
             share::schema::ObSchemaGetterGuard schema_guard;
             if (OB_FAIL(ctx_.ddl_service_->get_tenant_schema_guard_with_version_in_inner_table(OB_SYS_TENANT_ID, schema_guard))) {
               LOG_WARN("get_schema_guard failed", KR(ret));
-            } else if (OB_SYS_TENANT_ID == item->exec_tenant_id_
-                && item->tenant_name_ == ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1>("all")) {
+            } else if (OB_SYS_TENANT_ID == item->exec_tenant_id_ &&
+                      (item->tenant_name_ == ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1>("all") ||
+                       item->tenant_name_ == ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1>("all_user"))) {
               common::ObArray<uint64_t> tenant_ids;
               if (OB_FAIL(schema_guard.get_tenant_ids(tenant_ids))) {
                 LOG_WARN("get_tenant_ids failed", KR(ret));
               } else {
                 for (const uint64_t tenant_id: tenant_ids) {
-                  if (!is_virtual_tenant_id(tenant_id)
-                      && OB_FAIL(item->tenant_ids_.push_back(tenant_id))) {
+                  if (is_user_tenant(tenant_id) &&
+                      OB_FAIL(item->tenant_ids_.push_back(tenant_id))) {
+                    LOG_WARN("add tenant_id failed", K(tenant_id), KR(ret));
+                    break;
+                  }
+                } // for
+              }
+            } else if (OB_SYS_TENANT_ID == item->exec_tenant_id_ &&
+                       item->tenant_name_ == ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1>("all_meta")) {
+              common::ObArray<uint64_t> tenant_ids;
+              if (OB_FAIL(schema_guard.get_tenant_ids(tenant_ids))) {
+                LOG_WARN("get_tenant_ids failed", KR(ret));
+              } else {
+                for (const uint64_t tenant_id: tenant_ids) {
+                  if (is_meta_tenant(tenant_id) &&
+                      OB_FAIL(item->tenant_ids_.push_back(tenant_id))) {
                     LOG_WARN("add tenant_id failed", K(tenant_id), KR(ret));
                     break;
                   }
@@ -853,6 +908,7 @@ int ObAdminSetConfig::verify_config(obrpc::ObAdminSetConfigArg &arg)
             ci = *sys_ci_ptr;
           } else if (OB_NOT_NULL(tenant_ci_ptr)) {
             ci = *tenant_ci_ptr;
+            item->want_to_set_tenant_config_ = true;
             if (OB_FAIL(item->tenant_ids_.push_back(OB_SYS_TENANT_ID))) {
               LOG_WARN("add tenant_id failed", KR(ret));
             }
@@ -959,7 +1015,7 @@ int ObAdminSetConfig::update_config(obrpc::ObAdminSetConfigArg &arg, int64_t new
       }
 
       if (OB_FAIL(ret)) {
-      } else if (item->tenant_ids_.size() > 0) {
+      } else if (item->tenant_ids_.size() > 0 || item->want_to_set_tenant_config_) {
         // tenant config
         ObDMLSqlSplicer dml;
         share::schema::ObSchemaGetterGuard schema_guard;
@@ -1885,6 +1941,92 @@ int ObAdminFlushCache::execute(const obrpc::ObAdminFlushCacheArg &arg)
   return ret;
 }
 
+#ifdef OB_BUILD_SPM
+int ObAdminLoadBaseline::execute(const obrpc::ObLoadPlanBaselineArg &arg)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObAddr, 8> server_list;
+  if (OB_FAIL(get_tenant_servers(arg.tenant_id_, server_list))) {
+    LOG_WARN("fail to get tenant servers", "tenant_id", arg.tenant_id_, KR(ret));
+  } else {
+    //call tenant servers;
+    for (int64_t j = 0; OB_SUCC(ret) && j < server_list.count(); ++j) {
+      if (OB_FAIL(call_server(server_list.at(j), arg))) {
+        LOG_WARN("fail to call tenant server",
+                 "tenant_id", arg.tenant_id_,
+                 "server addr", server_list.at(j),
+                 KR(ret));
+      }
+    }
+  }
+  server_list.reset();
+  return ret;
+}
+
+int ObAdminLoadBaseline::call_server(const common::ObAddr &server,
+                                     const obrpc::ObLoadPlanBaselineArg &arg)
+{
+  int ret = OB_SUCCESS;
+  if (!ctx_.is_inited()) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!server.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid server", K(server), KR(ret));
+  } else if (OB_FAIL(ctx_.rpc_proxy_->to(server)
+                                     .by(arg.tenant_id_)
+                                     .as(arg.tenant_id_)
+                                     .load_baseline(arg))) {
+    LOG_WARN("request server load baseline failed", KR(ret), K(server));
+  }
+
+  return ret;
+}
+
+int ObAdminLoadBaselineV2::execute(const obrpc::ObLoadPlanBaselineArg &arg, uint64_t &total_load_count)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObAddr, 8> server_list;
+  if (OB_FAIL(get_tenant_servers(arg.tenant_id_, server_list))) {
+    LOG_WARN("fail to get tenant servers", "tenant_id", arg.tenant_id_, KR(ret));
+  } else {
+    //call tenant servers;
+    for (int64_t j = 0; OB_SUCC(ret) && j < server_list.count(); ++j) {
+      obrpc::ObLoadBaselineRes res;
+      if (OB_FAIL(call_server(server_list.at(j), arg, res))) {
+        LOG_WARN("fail to call tenant server",
+                 "tenant_id", arg.tenant_id_,
+                 "server addr", server_list.at(j),
+                 KR(ret));
+      } else {
+        total_load_count += res.load_count_;
+      }
+    }
+  }
+  server_list.reset();
+  return ret;
+}
+
+int ObAdminLoadBaselineV2::call_server(const common::ObAddr &server,
+                                     const obrpc::ObLoadPlanBaselineArg &arg,
+                                     obrpc::ObLoadBaselineRes &res)
+{
+  int ret = OB_SUCCESS;
+  if (!ctx_.is_inited()) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!server.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid server", K(server), KR(ret));
+  } else if (OB_FAIL(ctx_.rpc_proxy_->to(server)
+                                     .by(arg.tenant_id_)
+                                     .as(arg.tenant_id_)
+                                     .load_baseline_v2(arg, res))) {
+    LOG_WARN("request server load baseline failed", KR(ret), K(server));
+  }
+  return ret;
+}
+#endif
 
 int ObTenantServerAdminUtil::get_tenant_servers(const uint64_t tenant_id, common::ObIArray<ObAddr> &servers)
 {

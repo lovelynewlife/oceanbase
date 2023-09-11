@@ -43,6 +43,7 @@ public:
       const share::SCN replay_scn,
       bool &need_rebuild);
   static int get_readable_scn_with_retry(share::SCN &readable_scn);
+  static int64_t get_rpc_timeout();
 
 private:
   static int check_merge_error_(const uint64_t tenant_id, common::ObISQLClient &sql_client);
@@ -57,10 +58,12 @@ private:
 struct ObTransferUtils
 {
   static bool is_need_retry_error(const int err);
-  static int block_tx(const uint64_t tenant_id, const share::ObLSID &ls_id);
-  static int kill_tx(const uint64_t tenant_id, const share::ObLSID &ls_id);
-  static int unblock_tx(const uint64_t tenant_id, const share::ObLSID &ls_id);
+  static int block_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts_scn);
+  static int kill_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts_scn);
+  static int unblock_tx(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &gts_scn);
   static int get_gts(const uint64_t tenant_id, share::SCN &gts);
+  static void set_transfer_module();
+  static void clear_transfer_module();
 };
 
 } // end namespace storage

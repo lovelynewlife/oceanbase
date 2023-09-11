@@ -42,6 +42,21 @@ using namespace blocksstable;
 using namespace memtable;
 using namespace transaction;
 
+namespace concurrent_control
+{
+int check_sequence_set_violation(const concurrent_control::ObWriteFlag ,
+                                 const transaction::ObTxSEQ ,
+                                 const transaction::ObTransID ,
+                                 const blocksstable::ObDmlFlag ,
+                                 const transaction::ObTxSEQ ,
+                                 const transaction::ObTransID ,
+                                 const blocksstable::ObDmlFlag ,
+                                 const transaction::ObTxSEQ )
+{
+  return OB_SUCCESS;
+}
+} // concurrent_control
+
 namespace common
 {
 // override the function
@@ -292,7 +307,7 @@ public:
     store_ctx.mvcc_acc_ctx_.init_write(trans_ctx_,
                                        mem_ctx_,
                                        tx_desc_.tx_id_,
-                                       1000,
+                                       ObTxSEQ(1000, 0),
                                        tx_desc_,
                                        tx_table_guard,
                                        snapshot,

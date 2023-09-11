@@ -25,6 +25,8 @@
 #include "common/ob_range.h"
 #include "rpc/obrpc/ob_poc_rpc_server.h"
 
+#include "share/table/ob_table_ttl_common.h"
+#include "common/rowkey/ob_rowkey.h"
 namespace oceanbase
 {
 namespace common
@@ -236,6 +238,7 @@ struct ObTableOperationType
     INCREMENT = 6,
     APPEND = 7,
     SCAN = 8,
+    TTL = 9, // internal type for ttl executor cache key
     INVALID = 15
   };
 };
@@ -328,6 +331,33 @@ public:
 private:
   const ObITableEntity *entity_;
   ObTableOperationType::Type operation_type_;
+};
+
+class ObTableTTLOperation
+{
+public:
+  ObTableTTLOperation(uint64_t tenant_id, uint64_t table_id, const ObTTLTaskParam &para,
+                      uint64_t del_row_limit, ObRowkey start_rowkey)
+  : tenant_id_(tenant_id), table_id_(table_id), max_version_(para.max_version_),
+    time_to_live_(para.ttl_), is_htable_(para.is_htable_), del_row_limit_(del_row_limit),
+    start_rowkey_(start_rowkey)
+  {}
+
+  ~ObTableTTLOperation() {}
+  bool is_valid() const
+  {
+    return common::OB_INVALID_TENANT_ID != tenant_id_ && common::OB_INVALID_ID != table_id_ &&
+           (!is_htable_ || max_version_ > 0 || time_to_live_ > 0) && del_row_limit_ > 0;
+  }
+  TO_STRING_KV(K_(tenant_id), K_(table_id), K_(max_version),  K_(time_to_live), K_(is_htable), K_(del_row_limit), K_(start_rowkey));
+public:
+  uint64_t tenant_id_;
+  uint64_t table_id_;
+  int32_t max_version_;
+  int32_t time_to_live_;
+  bool is_htable_;
+  uint64_t del_row_limit_;
+  ObRowkey start_rowkey_;
 };
 
 /// common result for ObTable
@@ -625,6 +655,34 @@ private:
   ObString filter_string_;
 };
 
+enum ObTableAggregationType
+{
+  INVAILD = 0,
+  MAX = 1,
+  MIN = 2,
+  COUNT = 3,
+  SUM = 4,
+  AVG = 5,
+};
+
+class ObTableAggregation
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObTableAggregation()
+      : type_(ObTableAggregationType::INVAILD),
+        column_()
+  {}
+  ObTableAggregationType get_type() const { return type_; }
+  const common::ObString &get_column() const { return column_; }
+  bool is_agg_all_column() const { return column_ == "*"; };
+  int deep_copy(common::ObIAllocator &allocator, ObTableAggregation &dst) const;
+  TO_STRING_KV(K_(type), K_(column));
+private:
+  ObTableAggregationType type_; // e.g. max
+  common::ObString column_; // e.g. age
+};
+
 /// A table query
 /// 1. support multi range scan
 /// 2. support reverse scan
@@ -644,7 +702,9 @@ public:
       index_name_(),
       batch_size_(-1),
       max_result_size_(-1),
-      htable_filter_()
+      htable_filter_(),
+      scan_range_columns_(),
+      aggregations_()
   {}
   ~ObTableQuery() = default;
   void reset();
@@ -690,6 +750,8 @@ public:
   void clear_scan_range() { key_ranges_.reset(); }
   void set_deserialize_allocator(common::ObIAllocator *allocator) { deserialize_allocator_ = allocator; }
   int deep_copy(ObIAllocator &allocator, ObTableQuery &dst) const;
+  const common::ObIArray<ObTableAggregation> &get_aggregations() const { return aggregations_; }
+  bool is_aggregate_query() const { return !aggregations_.empty(); }
   TO_STRING_KV(K_(key_ranges),
                K_(select_columns),
                K_(filter_string),
@@ -697,9 +759,11 @@ public:
                K_(offset),
                K_(scan_order),
                K_(index_name),
-               K_(htable_filter),
                K_(batch_size),
-               K_(max_result_size));
+               K_(max_result_size),
+               K_(htable_filter),
+               K_(scan_range_columns),
+               K_(aggregations));
 public:
   static ObString generate_filter_condition(const ObString &column, const ObString &op, const ObObj &value);
   static ObString combile_filters(const ObString &filter1, const ObString &op, const ObString &filter2);
@@ -716,6 +780,8 @@ private:
   int32_t batch_size_;
   int64_t max_result_size_;
   ObHTableFilter htable_filter_;
+  ObSEArray<ObString, 8> scan_range_columns_;
+  ObSEArray<ObTableAggregation, 8> aggregations_;
 };
 
 /// result for ObTableQuery
@@ -781,6 +847,7 @@ public:
   int assign_property_names(const common::ObIArray<common::ObString> &other);
   void reset_property_names() { properties_names_.reset(); }
   int add_row(const common::ObNewRow &row);
+  int add_row(const common::ObIArray<ObObj> &row);
   int add_all_property(const ObTableQueryResult &other);
   int add_all_row(const ObTableQueryResult &other);
   int64_t get_row_count() const { return row_count_; }
@@ -863,8 +930,33 @@ enum class ObTableDirectLoadOperationType {
   ABORT = 2,
   GET_STATUS = 3,
   INSERT = 4,
+  HEART_BEAT = 5,
   MAX_TYPE
 };
+
+class ObTableTTLOperationResult
+{
+public:
+  ObTableTTLOperationResult()
+    : ttl_del_rows_(0),
+      max_version_del_rows_(0),
+      scan_rows_(0),
+      end_rowkey_()
+    {}
+  ~ObTableTTLOperationResult() {}
+  uint64_t get_ttl_del_row() { return ttl_del_rows_; }
+  uint64_t get_max_version_del_row() { return max_version_del_rows_; }
+  uint64_t get_del_row() { return ttl_del_rows_ + max_version_del_rows_; }
+  uint64_t get_scan_row() { return scan_rows_; }
+  common::ObString get_end_rowkey() { return end_rowkey_; }
+  TO_STRING_KV(K_(ttl_del_rows), K_(max_version_del_rows), K_(scan_rows), K_(end_rowkey));
+public:
+  uint64_t ttl_del_rows_;
+  uint64_t max_version_del_rows_;
+  uint64_t scan_rows_;
+  common::ObString end_rowkey_;
+};
+
 
 } // end namespace table
 } // end namespace oceanbase

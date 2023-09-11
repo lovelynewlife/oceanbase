@@ -13,7 +13,6 @@
 #ifndef OB_SQL_SPM_OB_PLAN_BASELINE_MGR_H_
 #define OB_SQL_SPM_OB_PLAN_BASELINE_MGR_H_
 #include "sql/spm/ob_spm_define.h"
-#include "sql/spm/ob_plan_baseline_cache.h"
 #include "sql/spm/ob_plan_baseline_sql_service.h"
 #include "lib/task/ob_timer.h"
 #include "lib/list/ob_list.h"
@@ -55,7 +54,7 @@ public:
   ObPlanBaselineMgr* baseline_mgr_;
 };
 
-typedef ObList<EvolutionTaskResult*, ObIAllocator> task_result_list;
+typedef ObList<EvoResultUpdateTask*, ObIAllocator> task_result_list;
 
 class ObPlanBaselineMgr
 {
@@ -91,7 +90,6 @@ public:
   int force_accept_new_plan_baseline(ObSpmCacheCtx& spm_ctx, uint64_t plan_hash, const bool with_plan_hash);
   int sync_baseline_from_inner_table();
   int sync_baseline_from_server();
-  int sync_baseline_before_evict(ObBaselineKey &key, ObIArray<ObPlanBaselineItem*>& baselines);
 
   int alter_plan_baseline(const uint64_t tenant_id,
                           const uint64_t database_id,

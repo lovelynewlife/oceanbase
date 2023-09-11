@@ -127,17 +127,18 @@ int ObBackupDataScheduler::get_need_reload_task(
 int ObBackupDataScheduler::do_get_need_reload_task_(
     const ObBackupJobAttr &job,
     const ObBackupSetTaskAttr &set_task_attr,
-    const ObIArray<ObBackupLSTaskAttr> &ls_tasks,
+    ObIArray<ObBackupLSTaskAttr> &ls_tasks,
     common::ObIAllocator &allocator,
     ObIArray<ObBackupScheduleTask *> &tasks)
 {
   int ret = OB_SUCCESS;
+  int64_t full_replica_num = 0;
   if (!job.is_valid() || ls_tasks.empty()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[DATA_BACKUP]invalid argument", K(ret), K(job), K(ls_tasks));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < ls_tasks.count(); ++i) {
-      const ObBackupLSTaskAttr &ls_task = ls_tasks.at(i);
+      ObBackupLSTaskAttr &ls_task = ls_tasks.at(i);
       ObBackupScheduleTask *task = nullptr;
       bool is_dropped = false;
       if (OB_FAIL(ObBackupDataLSTaskMgr::check_ls_is_dropped(ls_task, *sql_proxy_, is_dropped))) {
@@ -152,6 +153,9 @@ int ObBackupDataScheduler::do_get_need_reload_task_(
               *backup_service_, *sql_proxy_, ls_task, result_info))) {
           LOG_WARN("failed to handle execute over", K(ret), K(ls_task));
         }
+      } else if (OB_FAIL(ObBackupUtils::get_full_replica_num(ls_task.tenant_id_, full_replica_num))) {
+        LOG_WARN("failed to get full replica num", K(ret));
+      } else if (ls_task.black_servers_.count() >= full_replica_num && OB_FALSE_IT(ls_task.black_servers_.reset())) {
       } else if (OB_FAIL(build_task_(job, set_task_attr, ls_task, allocator, task))) {
         LOG_WARN("[DATA_BACKUP]failed to build task", K(ret), K(job), K(ls_task));
       } else if (OB_ISNULL(task)) {
@@ -955,7 +959,8 @@ int ObBackupDataScheduler::process()
       LOG_WARN("[DATA_BACKUP]failed to init tenant backup job mgr", K(ret), K_(tenant_id), K(job_attr));
     } else if (OB_SUCCESS != (tmp_ret = job_mgr->process())) { // tenant level backups are isolated
       LOG_WARN("[DATA_BACKUP]failed to schedule tenant backup job", K(tmp_ret), K_(tenant_id), K(job_attr));
-      if (!is_sys_tenant(tenant_id_) && OB_SUCCESS != (tmp_ret = handle_failed_job_(tenant_id_, tmp_ret, *job_mgr, job_attr))) {
+      if (job_attr.status_.is_backup_finish()) { // completed, failed or canceled job no need to deal error code
+      } else if (!is_sys_tenant(tenant_id_) && OB_SUCCESS != (tmp_ret = handle_failed_job_(tenant_id_, tmp_ret, *job_mgr, job_attr))) {
         LOG_WARN("failed to handle user tenant failed job", K(tmp_ret), K(job_attr));
       } else {
         backup_service_->wakeup();

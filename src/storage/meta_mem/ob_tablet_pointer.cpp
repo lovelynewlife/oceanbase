@@ -326,14 +326,14 @@ int ObTabletPointer::try_gc_mds_table()
   return mds_table_handler_.try_gc_mds_table();
 }
 
-void ObTabletPointer::set_mds_written()
+void ObTabletPointer::set_tablet_status_written()
 {
-  mds_table_handler_.set_mds_written();
+  mds_table_handler_.set_tablet_status_written();
 }
 
-bool ObTabletPointer::is_mds_written() const
+bool ObTabletPointer::is_tablet_status_written() const
 {
-  return mds_table_handler_.is_mds_written();
+  return mds_table_handler_.is_tablet_status_written();
 }
 
 void ObTabletPointer::mark_mds_table_deleted()
@@ -405,6 +405,11 @@ int ObTabletPointer::get_min_mds_ckpt_scn(share::SCN &scn)
 
   }
   return ret;
+}
+
+ObLS *ObTabletPointer::get_ls() const
+{
+  return ls_handle_.get_ls();
 }
 
 int ObTabletPointer::acquire_obj(ObTablet *&t)

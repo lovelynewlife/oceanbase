@@ -13,6 +13,7 @@
 #include "log_block_handler.h"
 #include "lib/ob_define.h"                              // some constexpr
 #include "lib/ob_errno.h"                               // OB_SUCCESS...
+#include "lib/stat/ob_session_stat.h"         // Session
 #include "lib/time/ob_time_utility.h"
 #include "lib/utility/ob_macro_utils.h"                 // some macros
 #include "lib/utility/ob_tracepoint.h"                  // ERRSIM
@@ -387,7 +388,6 @@ int LogBlockHandler::inner_write_once_(const offset_t offset,
     const int64_t buf_len)
 {
   int ret = OB_SUCCESS;
-  int64_t write_size = 0;
   char *aligned_buf = const_cast<char *>(buf);
   int64_t aligned_buf_len = buf_len;
 
@@ -398,18 +398,18 @@ int LogBlockHandler::inner_write_once_(const offset_t offset,
         K(aligned_buf), K(aligned_buf_len), K(aligned_block_offset), K(offset));
   } else if (OB_FAIL(inner_write_impl_(io_fd_, aligned_buf, aligned_buf_len, aligned_block_offset))){
     PALF_LOG(ERROR, "pwrite failed", K(ret), K(io_fd_), K(aligned_buf), K(aligned_block_offset),
-        K(offset), K(buf_len), K(write_size));
+        K(offset), K(buf_len));
   } else {
     dio_aligned_buf_.truncate_buf();
     total_write_size_ += buf_len;
     total_write_size_after_dio_ += aligned_buf_len;
     count_++;
-    if (palf_reach_time_interval(10 * 1000 * 1000, trace_time_)) {
-      //const int64_t each_pwrite_cost = ob_pwrite_used_ts_/count_;
-      PALF_LOG(INFO, "inner_write_once_ success", K(ret), K(offset), KPC(this), K(write_size),
-          K(aligned_buf_len), K(aligned_buf), K(aligned_block_offset), K(buf_len), K(total_write_size_),
-          K(total_write_size_after_dio_), K_(ob_pwrite_used_ts), K_(count));
-      total_write_size_ = total_write_size_after_dio_ = count_ = 0;
+    if (palf_reach_time_interval(PALF_IO_STAT_PRINT_INTERVAL_US, trace_time_)) {
+      const int64_t each_pwrite_cost = ob_pwrite_used_ts_ / count_;
+      PALF_LOG(INFO, "[PALF STAT WRITE LOG INFO TO DISK]", K(ret), K(offset), KPC(this), K(aligned_buf_len),
+          K(aligned_buf), K(aligned_block_offset), K(buf_len), K(total_write_size_),
+          K(total_write_size_after_dio_), K_(ob_pwrite_used_ts), K_(count), K(each_pwrite_cost));
+      total_write_size_ = total_write_size_after_dio_ = count_ = ob_pwrite_used_ts_ = 0;
     }
   }
   return ret;
@@ -456,6 +456,9 @@ int LogBlockHandler::inner_write_impl_(const int fd, const char *buf, const int6
     }
   } while (OB_FAIL(ret));
   int64_t cost_ts = ObTimeUtility::fast_current_time() - start_ts;
+  EVENT_TENANT_INC(ObStatEventIds::PALF_WRITE_IO_COUNT, MTL_ID());
+  EVENT_ADD(ObStatEventIds::PALF_WRITE_SIZE, count);
+  EVENT_ADD(ObStatEventIds::PALF_WRITE_TIME, cost_ts);
   ob_pwrite_used_ts_ += cost_ts;
   return ret;
 }

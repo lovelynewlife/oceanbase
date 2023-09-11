@@ -196,14 +196,12 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
       if (var_type.is_cursor_type()
           && OB_FAIL(resolve_ctx.session_info_.init_cursor_cache())) {
         LOG_WARN("failed to init cursor cache", K(ret));
-      } else if (var->is_formal_param()) {
-        // cursor formal param will as variable added to symbol, skip cursor formal param init
       } else if (OB_FAIL(var_type.init_session_var(resolve_ctx,
                                             var_type.is_cursor_type() ?
                                               package_state.get_pkg_cursor_allocator()
                                               : package_state.get_pkg_allocator(),
                                             exec_ctx,
-                                            get_default_expr(var->get_default()),
+                                            var->is_formal_param() ? NULL : get_default_expr(var->get_default()),
                                             var->is_default_construct(),
                                             value))) {
         LOG_WARN("init sesssion var failed", K(ret));
@@ -306,7 +304,8 @@ int ObPLPackage::get_var(const ObString &var_name, const ObPLVar *&var, int64_t 
   var_idx = OB_INVALID_INDEX;
   for (int64_t i = 0; OB_ISNULL(var) && i < var_table_.count(); ++i) {
     ObPLVar *tmp_var = var_table_.at(i);
-    if (ObCharset::case_insensitive_equal(var_name, tmp_var->get_name())) {
+    if (!tmp_var->is_formal_param()
+        && ObCharset::case_insensitive_equal(var_name, tmp_var->get_name())) {
       var = tmp_var;
       var_idx = i;
     }

@@ -35,6 +35,7 @@ namespace compaction
 class ObMediumCompactionInfoKey;
 class ObMediumCompactionInfo;
 class ObMediumCompactionInfoList;
+class ObExtraMediumInfo;
 }
 
 namespace storage
@@ -92,9 +93,7 @@ public:
   int init_with_update_medium_info(
       common::ObIAllocator &allocator,
       const ObTabletMdsData &other);
-  int init(
-      ObArenaAllocator &allocator,
-      const ObTabletCreateDeleteMdsUserData &tablet_status);
+  int init_empty_shell(const ObTabletCreateDeleteMdsUserData &tablet_status);
   int set_tablet_status(
       ObArenaAllocator *allocator,
       const ObTabletStatus::Status &tablet_status,
@@ -168,19 +167,19 @@ private:
   int init_medium_info_list(
       common::ObIAllocator &allocator,
       const ObTabletDumpedMediumInfo *old_medium_info_list,
-      const ObTaletExtraMediumInfo &old_extra_medium_info,
+      const compaction::ObExtraMediumInfo &old_extra_medium_info,
       const int64_t finish_medium_scn = 0,
       const ObMergeType merge_type = ObMergeType::MERGE_TYPE_MAX);
   int init_medium_info_list(
       common::ObIAllocator &allocator,
       const ObTabletDumpedMediumInfo *old_medium_info_list,
       const ObTabletFullMediumInfo &full_memory_medium_info_list,
-      const ObTaletExtraMediumInfo &old_extra_medium_info,
+      const compaction::ObExtraMediumInfo &old_extra_medium_info,
       const int64_t finish_medium_scn);
   int init_with_update_medium_info(
       common::ObIAllocator &allocator,
       const ObTabletDumpedMediumInfo *old_medium_info_list,
-      const ObTaletExtraMediumInfo &old_extra_medium_info);
+      const compaction::ObExtraMediumInfo &old_extra_medium_info);
   static int fuse_mds_dump_node(
       common::ObIAllocator &allocator,
       const ObTabletComplexAddr<mds::MdsDumpKV> &mds_table_data,
@@ -215,8 +214,6 @@ private:
       const ObTabletDumpedMediumInfo &input_medium_info_list1,
       const ObTabletDumpedMediumInfo &input_medium_info_list2,
       ObTabletDumpedMediumInfo &medium_info_list);
-  static int check_medium_info_continuity(
-      const ObTabletDumpedMediumInfo &medium_info_list);
   template <typename T>
   static int update_user_data_from_complex_addr(
       const ObTabletComplexAddr<mds::MdsDumpKV> &complex_addr,
@@ -226,7 +223,7 @@ public:
   ObTabletMdsDumpStruct tablet_status_;
   ObTabletMdsDumpStruct aux_tablet_info_;
 
-  ObTaletExtraMediumInfo extra_medium_info_;
+  compaction::ObExtraMediumInfo extra_medium_info_;
   ObTabletComplexAddr<ObTabletDumpedMediumInfo> medium_info_list_;
 
   ObTabletComplexAddr<share::ObTabletAutoincSeq> auto_inc_seq_;

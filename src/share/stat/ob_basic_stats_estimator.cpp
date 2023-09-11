@@ -153,9 +153,9 @@ int ObBasicStatsEstimator::estimate_block_count(ObExecContext &ctx,
   } else if (param.part_level_ == share::schema::PARTITION_LEVEL_TWO &&
              OB_FAIL(generate_first_part_idx_map(param.all_part_infos_, first_part_idx_map))) {
     LOG_WARN("failed to generate first part idx map", K(ret));
-  } else if (OB_FAIL(do_estimate_block_count(ctx, param.tenant_id_, table_id, tablet_ids,
-                                             partition_ids, estimate_result))) {
-    LOG_WARN("failed to do estimate block count", K(ret));
+  } else if (OB_FAIL(do_estimate_block_count_and_row_count(ctx, param.tenant_id_, table_id, tablet_ids,
+                                                           partition_ids, estimate_result))) {
+    LOG_WARN("failed to do estimate block count and row count", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < estimate_result.count(); ++i) {
       BolckNumPair block_num_pair;
@@ -213,12 +213,12 @@ int ObBasicStatsEstimator::estimate_block_count(ObExecContext &ctx,
   return ret;
 }
 
-int ObBasicStatsEstimator::do_estimate_block_count(ObExecContext &ctx,
-                                                   const uint64_t tenant_id,
-                                                   const uint64_t table_id,
-                                                   const ObIArray<ObTabletID> &tablet_ids,
-                                                   const ObIArray<ObObjectID> &partition_ids,
-                                                   ObIArray<EstimateBlockRes> &estimate_res)
+int ObBasicStatsEstimator::do_estimate_block_count_and_row_count(ObExecContext &ctx,
+                                                                const uint64_t tenant_id,
+                                                                const uint64_t table_id,
+                                                                const ObIArray<ObTabletID> &tablet_ids,
+                                                                const ObIArray<ObObjectID> &partition_ids,
+                                                                ObIArray<EstimateBlockRes> &estimate_res)
 {
   int ret = OB_SUCCESS;
   common::ObSEArray<ObCandiTabletLoc, 4> candi_tablet_locs;
@@ -279,8 +279,8 @@ int ObBasicStatsEstimator::do_estimate_block_count(ObExecContext &ctx,
           } else {/*do nothing*/}
         }
         if (OB_SUCC(ret)) {//begin storage estimate block count
-          if (OB_FAIL(stroage_estimate_block_count(ctx, cur_selected_addr, arg, result))) {
-            LOG_WARN("failed to stroage estimate block count", K(ret));
+          if (OB_FAIL(stroage_estimate_block_count_and_row_count(ctx, cur_selected_addr, arg, result))) {
+            LOG_WARN("failed to stroage estimate block count and row count", K(ret));
           } else {
             for (int64_t i = 0; OB_SUCC(ret) && i < selected_tablet_idx.count(); ++i) {
               int64_t idx = selected_tablet_idx.at(i);
@@ -293,6 +293,8 @@ int ObBasicStatsEstimator::do_estimate_block_count(ObExecContext &ctx,
                 estimate_res.at(idx).part_id_ = partition_ids.at(idx);
                 estimate_res.at(idx).macro_block_count_ = result.tablet_params_res_.at(i).macro_block_count_;
                 estimate_res.at(idx).micro_block_count_ = result.tablet_params_res_.at(i).micro_block_count_;
+                estimate_res.at(idx).sstable_row_count_ = result.tablet_params_res_.at(i).sstable_row_count_;
+                estimate_res.at(idx).memtable_row_count_ = result.tablet_params_res_.at(i).memtable_row_count_;
               }
             }
             LOG_TRACE("succeed to estimate block count", K(selected_tablet_idx), K(partition_ids),
@@ -305,17 +307,17 @@ int ObBasicStatsEstimator::do_estimate_block_count(ObExecContext &ctx,
   return ret;
 }
 
-int ObBasicStatsEstimator::stroage_estimate_block_count(ObExecContext &ctx,
-                                                        const ObAddr &addr,
-                                                        const obrpc::ObEstBlockArg &arg,
-                                                        obrpc::ObEstBlockRes &result)
+int ObBasicStatsEstimator::stroage_estimate_block_count_and_row_count(ObExecContext &ctx,
+                                                                      const ObAddr &addr,
+                                                                      const obrpc::ObEstBlockArg &arg,
+                                                                      obrpc::ObEstBlockRes &result)
 {
   int ret = OB_SUCCESS;
   if (addr == ctx.get_addr()) {
-    if (OB_FAIL(ObStorageEstimator::estimate_block_count(arg, result))) {
+    if (OB_FAIL(ObStorageEstimator::estimate_block_count_and_row_count(arg, result))) {
       LOG_WARN("failed to estimate partition rows", K(ret));
     } else {
-      LOG_TRACE("succeed to stroage estimate block count", K(addr), K(arg), K(result));
+      LOG_TRACE("succeed to stroage estimate block count and row count", K(addr), K(arg), K(result));
     }
   } else {
     obrpc::ObSrvRpcProxy *rpc_proxy = NULL;
@@ -578,6 +580,7 @@ int ObBasicStatsEstimator::estimate_stale_partition(ObExecContext &ctx,
   ObSqlString select_sql;
   bool is_valid = true;
   no_regather_first_part_cnt = 0;
+  ObSEArray<int64_t, 4> monitor_modified_part_ids;
   if (OB_FAIL(ObDbmsStatsUtils::check_table_read_write_valid(tenant_id, is_valid))) {
     LOG_WARN("failed to check table read write valid", K(ret));
   } else if (!is_valid) {
@@ -634,6 +637,10 @@ int ObBasicStatsEstimator::estimate_stale_partition(ObExecContext &ctx,
                                                         no_regather_partition_ids,
                                                         no_regather_first_part_cnt))) {
             LOG_WARN("failed to check partition stat state", K(ret));
+          } else if (OB_FAIL(monitor_modified_part_ids.push_back(dst_partition))) {
+            LOG_WARN("failed to push back part ids occurred in monitor_modified", K(ret));
+          } else if (OB_FAIL(add_var_to_array_no_dup(monitor_modified_part_ids, cur_part_id))) {
+            LOG_WARN("failed to push back part ids occurred in monitor_modified", K(ret));
           } else if (ObDbmsStatsUtils::is_subpart_id(partition_infos, dst_partition, dst_part_id)) {
             if (cur_part_id == dst_part_id) {
               cur_inc_mod_count += inc_mod_count;
@@ -680,9 +687,29 @@ int ObBasicStatsEstimator::estimate_stale_partition(ObExecContext &ctx,
         }
       }
     }
+    for (int64_t i = 0; OB_SUCC(ret) && i < partition_infos.count(); ++i) {
+      int64_t partition_id = partition_infos.at(i).part_id_;
+      int64_t first_part_id = partition_infos.at(i).first_part_id_;
+      // Partitions who not have dml infos are no need to regather stats
+      if (!is_contain(monitor_modified_part_ids, partition_id)) {
+        int64_t part_id = -1;
+        if (OB_FAIL(no_regather_partition_ids.push_back(partition_id))) {
+          LOG_WARN("failed to push back part id that does not have dml info", K(ret));
+        } else if (!ObDbmsStatsUtils::is_subpart_id(partition_infos, partition_id, part_id)) {
+          ++no_regather_first_part_cnt;
+        }
+      }
+      if (first_part_id != OB_INVALID_ID && !is_contain(monitor_modified_part_ids, first_part_id)) {
+        ret = no_regather_partition_ids.push_back(first_part_id);
+      }
+    }
   }
-  LOG_TRACE("succeed to estimate stale partition", K(stale_percent_threshold),
-               K(partition_stat_infos), K(no_regather_partition_ids),K(no_regather_first_part_cnt));
+  LOG_INFO("succeed to estimate stale partition", K(stale_percent_threshold),
+                                                   K(partition_stat_infos),
+                                                   K(partition_infos),
+                                                   K(monitor_modified_part_ids),
+                                                   K(no_regather_partition_ids),
+                                                   K(no_regather_first_part_cnt));
   return ret;
 }
 
@@ -911,6 +938,115 @@ int ObBasicStatsEstimator::get_all_tablet_id_and_object_id(const ObTableStatPara
   return ret;
 }
 
+int ObBasicStatsEstimator::get_need_stats_table_cnt(ObExecContext &ctx,
+                                                    const int64_t tenant_id,
+                                                    int64_t &task_table_count)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString select_sql;
+  if (OB_FAIL(select_sql.append_fmt(
+          "select count(1) as cnt from (select m.table_id from " \
+          "%s m left join %s up on m.table_id = up.table_id and up.pname = 'STALE_PERCENT' join %s gp on gp.sname = 'STALE_PERCENT' " \
+          "where (case when (m.inserts+m.updates+m.deletes) = 0 then 0 "
+          "else ((m.inserts+m.updates+m.deletes) - (m.last_inserts+m.last_updates+m.last_deletes)) * 1.0 / (m.inserts+m.updates+m.deletes) > " \
+          "(CASE WHEN up.valchar IS NOT NULL THEN cast(up.valchar as signed) * 1.0 / 100 ELSE Cast(gp.spare4 AS signed) * 1.0 / 100 end) end)) ",
+          share::OB_ALL_MONITOR_MODIFIED_TNAME,
+          share::OB_ALL_OPTSTAT_USER_PREFS_TNAME,
+          share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME))) {
+    LOG_WARN("failed to append fmt", K(ret));
+  } else {
+    ObCommonSqlProxy *sql_proxy = ctx.get_sql_proxy();
+    SMART_VAR(ObMySQLProxy::MySQLResult, proxy_result) {
+      sqlclient::ObMySQLResult *client_result = NULL;
+      ObSQLClientRetryWeak sql_client_retry_weak(sql_proxy);
+      if (OB_FAIL(sql_client_retry_weak.read(proxy_result, tenant_id, select_sql.ptr()))) {
+        LOG_WARN("failed to execute sql", K(ret), K(select_sql));
+      } else if (OB_ISNULL(client_result = proxy_result.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to execute sql", K(ret));
+      } else {
+        while (OB_SUCC(ret) && OB_SUCC(client_result->next())) {
+          int64_t idx = 0;
+          ObObj obj;
+          if (OB_FAIL(client_result->get_obj(idx, obj))) {
+            LOG_WARN("failed to get object", K(ret));
+          } else if (OB_FAIL(obj.get_int(task_table_count))) {
+            LOG_WARN("failed to get int", K(ret), K(obj));
+          }
+        }
+        ret = OB_ITER_END == ret ? OB_SUCCESS : ret;
+      }
+      int tmp_ret = OB_SUCCESS;
+      if (NULL != client_result) {
+        if (OB_SUCCESS != (tmp_ret = client_result->close())) {
+          LOG_WARN("close result set failed", K(ret), K(tmp_ret));
+          ret = COVER_SUCC(tmp_ret);
+        }
+      }
+    }
+    LOG_TRACE("succeed to get table count that need gathering table stats", K(ret), K(task_table_count));
+  }
+  return ret;
+}
+
+int ObBasicStatsEstimator::get_need_stats_tables(ObExecContext &ctx,
+                                                 const int64_t tenant_id,
+                                                 ObIArray<int64_t> &table_ids,
+                                                 int64_t &slice_cnt)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString select_sql;
+  if (OB_FAIL(select_sql.append_fmt(
+          "select distinct table_id from (select m.table_id from " \
+          "%s m left join %s up on m.table_id = up.table_id and up.pname = 'STALE_PERCENT' join %s gp on gp.sname = 'STALE_PERCENT' " \
+          "where (case when (m.inserts+m.updates+m.deletes) = 0 then 0 "
+          "else ((m.inserts+m.updates+m.deletes) - (m.last_inserts+m.last_updates+m.last_deletes)) * 1.0 / (m.inserts+m.updates+m.deletes) > " \
+          "(CASE WHEN up.valchar IS NOT NULL THEN cast(up.valchar as signed) * 1.0 / 100 ELSE Cast(gp.spare4 AS signed) * 1.0 / 100 end) end)) "
+          "ORDER BY table_id DESC limit %ld",
+          share::OB_ALL_MONITOR_MODIFIED_TNAME,
+          share::OB_ALL_OPTSTAT_USER_PREFS_TNAME,
+          share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,
+          slice_cnt))) {
+    LOG_WARN("failed to append fmt", K(ret));
+  } else {
+    ObCommonSqlProxy *sql_proxy = ctx.get_sql_proxy();
+    SMART_VAR(ObMySQLProxy::MySQLResult, proxy_result) {
+      sqlclient::ObMySQLResult *client_result = NULL;
+      ObSQLClientRetryWeak sql_client_retry_weak(sql_proxy);
+      if (OB_FAIL(sql_client_retry_weak.read(proxy_result, tenant_id, select_sql.ptr()))) {
+        LOG_WARN("failed to execute sql", K(ret), K(select_sql));
+      } else if (OB_ISNULL(client_result = proxy_result.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to execute sql", K(ret));
+      } else {
+        while (OB_SUCC(ret) && OB_SUCC(client_result->next())) {
+          int64_t idx = 0;
+          ObObj obj;
+          int64_t table_id = -1;
+          if (OB_FAIL(client_result->get_obj(idx, obj))) {
+            LOG_WARN("failed to get object", K(ret));
+          } else if (OB_FAIL(obj.get_int(table_id))) {
+            LOG_WARN("failed to get int", K(ret), K(obj));
+          } else if (OB_FAIL(table_ids.push_back(table_id))) {
+            LOG_WARN("failed to push back table id", K(ret));
+          }
+        }
+        ret = OB_ITER_END == ret ? OB_SUCCESS : ret;
+      }
+      int tmp_ret = OB_SUCCESS;
+      if (NULL != client_result) {
+        if (OB_SUCCESS != (tmp_ret = client_result->close())) {
+          LOG_WARN("close result set failed", K(ret), K(tmp_ret));
+          ret = COVER_SUCC(tmp_ret);
+        }
+      }
+    }
+    LOG_TRACE("succeed to get table ids that need gathering table stats",
+              K(ret), K(slice_cnt), K(tenant_id), K(table_ids.count()), K(table_ids));
+  }
+  return ret;
+}
+
 int ObBasicStatsEstimator::generate_first_part_idx_map(const ObIArray<PartInfo> &all_part_infos,
                                                        hash::ObHashMap<int64_t, int64_t> &first_part_idx_map)
 {
@@ -1061,7 +1197,7 @@ int ObBasicStatsEstimator::fill_hints(common::ObIAllocator &alloc,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(table_name));
   } else {
-    const char *fmt_str = "NO_REWRITE USE_PLAN_CACHE(NONE) DBMS_STATS FULL(%.*s)";
+    const char *fmt_str = "NO_REWRITE USE_PLAN_CACHE(NONE) DBMS_STATS FULL(%.*s) OPT_PARAM('ROWSETS_MAX_ROWS', 256)";
     int64_t buf_len = table_name.length() + strlen(fmt_str);
     char *buf = NULL;
     if (OB_ISNULL(buf = static_cast<char *>(alloc.alloc(buf_len)))) {

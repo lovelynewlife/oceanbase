@@ -40,11 +40,12 @@ public:
 
 protected:
   int deserialize() override { return this->request_.get_arg(this->arg_); }
-  int serialize() override
+  int set_result_header() override
   {
-    this->result_.operation_type_ = pcode;
-    return this->result_.set_res(this->res_, ctx_.get_allocator());
+    this->result_.header_.operation_type_ = pcode;
+    return OB_SUCCESS;
   }
+  int serialize() override { return this->result_.set_res(this->res_, ctx_.get_allocator()); }
 
 protected:
   ObTableDirectLoadExecContext &ctx_;
@@ -64,6 +65,7 @@ public:
 
 protected:
   int check_args() override;
+  int set_result_header() override;
   int process() override;
 
 private:
@@ -159,6 +161,27 @@ private:
   static int decode_payload(const common::ObString &payload,
                             table::ObTableLoadObjRowArray &obj_row_array);
   int set_batch_seq_no(int64_t batch_id, table::ObTableLoadObjRowArray &obj_row_array);
+};
+
+// heart_beat
+class ObTableDirectLoadHeartBeatExecutor
+  : public ObTableDirectLoadRpcExecutor<table::ObTableDirectLoadOperationType::HEART_BEAT>
+{
+  typedef ObTableDirectLoadRpcExecutor<table::ObTableDirectLoadOperationType::HEART_BEAT>
+    ParentType;
+
+public:
+  ObTableDirectLoadHeartBeatExecutor(ObTableDirectLoadExecContext &ctx,
+                                     const table::ObTableDirectLoadRequest &request,
+                                     table::ObTableDirectLoadResult &result)
+    : ParentType(ctx, request, result)
+  {
+  }
+  virtual ~ObTableDirectLoadHeartBeatExecutor() = default;
+
+protected:
+  int check_args() override;
+  int process() override;
 };
 
 } // namespace observer

@@ -151,7 +151,7 @@ int ObMetaPointer<T>::read_from_disk(common::ObArenaAllocator &allocator, char *
     STORAGE_LOG(WARN, "slog handler is nullptr", K(ret), KP(ckpt_slog_hanlder));
   } else if (OB_FAIL(ckpt_slog_hanlder->read_from_disk(phy_addr_, allocator, r_buf, r_len))) {
     if (OB_SEARCH_NOT_FOUND != ret) {
-      STORAGE_LOG(ERROR, "fail to read from addr", K(ret), K(phy_addr_));
+      STORAGE_LOG(WARN, "fail to read from addr", K(ret), K(phy_addr_));
     }
   } else {
     addr = phy_addr_;
@@ -368,7 +368,7 @@ int ObMetaPointer<T>::deserialize(
     STORAGE_LOG(WARN, "invalid argument", K(ret), KP(buf), K(buf_len), KP(t));
   } else if (OB_FAIL(set_attr_for_obj(t))) {
     STORAGE_LOG(WARN, "fail to set attr for obj", K(ret));
-  } else if (OB_FAIL(t->deserialize(allocator, buf, buf_len, pos))) {
+  } else if (OB_FAIL(t->load_deserialize(allocator, buf, buf_len, pos))) {
     STORAGE_LOG(WARN, "fail to de-serialize T", K(ret), KP(buf), K(buf_len), KP(t));
   }
   return ret;

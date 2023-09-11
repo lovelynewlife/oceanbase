@@ -147,18 +147,12 @@ void ObRecoveryLSService::do_work()
     LOG_WARN("not init", K(ret), K(inited_), KP(proxy_));
   } else {
     ObLSRecoveryStatOperator ls_recovery;
-    palf::PalfBufferIterator iterator;
-    palf::PalfHandleGuard palf_handle_guard;
+    palf::PalfBufferIterator iterator;//can not use without palf_guard
     int tmp_ret = OB_SUCCESS;
     int64_t idle_time_us = 100 * 1000L;
     SCN start_scn;
     last_report_ts_ = OB_INVALID_TIMESTAMP;
     uint64_t thread_idx = get_thread_idx();
-    if (0 != thread_idx) {
-      if (OB_FAIL(init_palf_handle_guard_(palf_handle_guard))) {
-        LOG_WARN("failed to init palf handle guard", KR(ret));
-      }
-    }
     while (!has_set_stop() && OB_SUCC(ret)) {
       ObCurTraceId::init(GCONF.self_addr_);
       ObTenantInfoLoader *tenant_info_loader = MTL(ObTenantInfoLoader*);
@@ -200,7 +194,10 @@ void ObRecoveryLSService::do_work()
         }
       } else {
         DEBUG_SYNC(STOP_RECOVERY_LS_THREAD1);
-        if (!start_scn.is_valid()) {
+        palf::PalfHandleGuard palf_handle_guard;
+        if (OB_FAIL(init_palf_handle_guard_(palf_handle_guard))) {
+          LOG_WARN("failed to init palf handle guard", KR(ret));
+        } else if (!start_scn.is_valid()) {
           ObLSRecoveryStat ls_recovery_stat;
           if (OB_FAIL(ls_recovery.get_ls_recovery_stat(tenant_id_,
                   SYS_LS, false, ls_recovery_stat, *proxy_))) {
@@ -1066,11 +1063,11 @@ int ObRecoveryLSService::do_standby_balance_()
     LOG_WARN("sql can't null", K(ret), K(proxy_));
   } else if (OB_FAIL(get_tenant_schema(tenant_id_, tenant_schema))) {
     LOG_WARN("failed to get tenant schema", KR(ret), K(tenant_id_));
-  } else if (OB_FAIL(ObBalanceLSPrimaryZone::try_adjust_user_ls_primary_zone(tenant_schema))) {
-    LOG_WARN("failed to adjust user ls primary zone", KR(ret), K(tenant_schema));
   } else {
     ObTenantLSInfo tenant_info(proxy_, &tenant_schema, tenant_id_);
-    if (OB_FAIL(ObLSServiceHelper::balance_ls_group(tenant_info))) {
+    bool is_balanced = false;
+    bool need_execute_balance = true;
+    if (OB_FAIL(ObLSServiceHelper::balance_ls_group(need_execute_balance, tenant_info, is_balanced))) {
       LOG_WARN("failed to balance ls group", KR(ret));
     }
   }
