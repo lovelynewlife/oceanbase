@@ -431,11 +431,11 @@ int ObRawExpr::pull_relation_id()
 int ObRawExpr::add_child_flags(const ObExprInfo &flags)
 {
   int ret = OB_SUCCESS;
-  ObExprInfo tmp = flags;
-  if (INHERIT_MASK_BEGIN < tmp.bit_count()) {
-    int64_t mask_end = INHERIT_MASK_END < tmp.bit_count() ?
-                       static_cast<int64_t>(INHERIT_MASK_END) : tmp.bit_count() - 1;
-    if (tmp.do_mask(INHERIT_MASK_BEGIN, mask_end)) {
+  if (INHERIT_MASK_BEGIN < flags.bit_count()) {
+    ObExprInfo tmp(flags);
+    int64_t mask_end = INHERIT_MASK_END < flags.bit_count() ?
+                       static_cast<int64_t>(INHERIT_MASK_END) : flags.bit_count() - 1;
+    if (OB_FAIL(tmp.do_mask(INHERIT_MASK_BEGIN, mask_end))) {
       LOG_WARN("failed to do mask", K(ret));
     } else if (OB_FAIL(info_.add_members(tmp))) {
       LOG_WARN("failed to add expr info", K(ret));
@@ -845,11 +845,6 @@ int ObRawExpr::is_non_pure_sys_func_expr(bool &is_non_pure) const
           || T_FUN_SYS_LAST_INSERT_ID == type_
           || T_FUN_SYS_ROW_COUNT == type_
           || T_FUN_SYS_FOUND_ROWS == type_
-          || T_FUN_SYS_REGEXP_INSTR == type_
-          // TODO:@sean.yyj#273971, will sort out exprs not deterministic in mysql mode later,
-          // || T_FUN_SYS_REGEXP_LIKE == type_ // create table t1(c1 int, c2 int generated always as(regexp_like(1, 2))); success in mysql
-          || T_FUN_SYS_REGEXP_REPLACE == type_
-          || T_FUN_SYS_REGEXP_SUBSTR == type_
           || T_FUN_SYS_CURRENT_USER_PRIV == type_) {
       is_non_pure = true;
     }
@@ -910,7 +905,7 @@ int ObConstRawExpr::inner_deep_copy(ObIRawExprCopier &copier)
     } else if (OB_FAIL(deep_copy_obj(*inner_alloc_, value_, tmp))) {
       LOG_WARN("deep copy error", K(value_), K(ret));
     } else if (OB_FAIL(ob_write_string(*inner_alloc_, literal_prefix_, literal_prefix_))) {
-      LOG_WARN("failed to werite string", K(ret));
+      LOG_WARN("failed to write string", K(ret));
     } else {
       value_ = tmp;
     }
@@ -3672,7 +3667,9 @@ bool ObSysFunRawExpr::inner_same_as(
              T_FUN_SYS_RANDOM == get_expr_type() ||
              T_FUN_SYS_GUID == get_expr_type() ||
              T_OP_GET_USER_VAR == get_expr_type() ||
-             T_OP_GET_SYS_VAR == get_expr_type()) {
+             T_OP_GET_SYS_VAR == get_expr_type() ||
+             (has_flag(IS_STATE_FUNC) && (NULL == check_context ||
+                          (NULL != check_context && check_context->need_check_deterministic_)))) {
   } else if (get_expr_class() == expr.get_expr_class()) {
     //for EXPR_UDF and EXPR_SYS_FUNC
     const ObSysFunRawExpr *s_expr = static_cast<const ObSysFunRawExpr *>(&expr);
@@ -3934,7 +3931,7 @@ int ObSysFunRawExpr::get_name_internal(char *buf, const int64_t buf_len, int64_t
           if (get_param_count() >= 1) {
             if (OB_ISNULL(get_param_expr(i))) {
               ret = OB_ERR_UNEXPECTED;
-              LOG_WARN("poram expr is NULL", K(i), K(ret));
+              LOG_WARN("param expr is NULL", K(i), K(ret));
             } else if (OB_FAIL(get_param_expr(i)->get_name(buf, buf_len, pos, type))) {
               LOG_WARN("fail to get_name", K(ret));
             } else {}
@@ -4193,7 +4190,7 @@ int ObNormalDllUdfRawExpr::set_udf_meta(const share::schema::ObUDF &udf)
   udf_meta_.ret_ = udf.get_ret();
   udf_meta_.type_ = udf.get_type();
 
-  /* data from schame, deep copy maybe a better choices */
+  /* data from schema, deep copy maybe a better choices */
   if (OB_ISNULL(inner_alloc_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inner allocator or expr factory is NULL", K(inner_alloc_), K(ret));
@@ -4429,7 +4426,7 @@ int ObObjectConstructRawExpr::assign(const ObRawExpr &other)
       if (OB_FAIL(elem_types_.assign(tmp.elem_types_))) {
         LOG_WARN("failed to assign elem types", K(ret));
       } else if (OB_FAIL(access_names_.assign(tmp.access_names_))) {
-        LOG_WARN("failed to assgin access names", K(ret));
+        LOG_WARN("failed to assign access names", K(ret));
       }
     }
   }
@@ -5047,10 +5044,10 @@ int Bound::replace_expr(const common::ObIArray<ObRawExpr *> &other_exprs,
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObTransformUtils::replace_expr(
                 other_exprs, new_exprs, interval_expr_))) {
-    LOG_WARN("failed to repalce exprs", K(ret));
+    LOG_WARN("failed to replace exprs", K(ret));
   } else if (OB_FAIL(ObTransformUtils::replace_expr(
                 other_exprs, new_exprs, date_unit_expr_))) {
-    LOG_WARN("failed to repalce exprs", K(ret));
+    LOG_WARN("failed to replace exprs", K(ret));
   }
   for (int i = 0; OB_SUCC(ret) && i < BOUND_EXPR_MAX; ++i) {
     if (OB_ISNULL(exprs_[i])) {
@@ -5839,7 +5836,7 @@ bool ObExprParamCheckContext::compare_const(const ObConstRawExpr &left, const Ob
       const ObRawExpr *left_param = NULL;
       const ObRawExpr *right_param = NULL;
       if (OB_FAIL(get_calc_expr(left.get_value().get_unknown(), left_param))) {
-        LOG_WARN("faield to get calculable expr", K(ret));
+        LOG_WARN("failed to get calculable expr", K(ret));
       } else if (OB_FAIL(get_calc_expr(right.get_value().get_unknown(), right_param))) {
         LOG_WARN("failed to get calculable expr", K(ret));
       } else if (OB_ISNULL(left_param) || OB_ISNULL(right_param)) {

@@ -370,6 +370,7 @@ int ObCDCLobDataMerger::handle_task_(
     ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
     ObLobDataGetCtx &lob_data_get_ctx = task.host_;
     ObLobDataOutRowCtxList *lob_data_out_row_ctx_list = static_cast<ObLobDataOutRowCtxList *>(lob_data_get_ctx.host_);
+    const IStmtTask *stmt_task = lob_data_out_row_ctx_list->get_stmt_task();
     const ObLobData *new_lob_data = lob_data_get_ctx.new_lob_data_;
     const bool is_new_col = task.is_new_col_;
     ObString **fragment_cb_array= lob_data_get_ctx.get_fragment_cb_array(is_new_col);
@@ -378,19 +379,24 @@ int ObCDCLobDataMerger::handle_task_(
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("lob_data_out_row_ctx_list or new_lob_data or fragment_cb_array is nullptr", KR(ret),
           K(lob_data_out_row_ctx_list), K(new_lob_data), K(fragment_cb_array));
+    } else if (OB_ISNULL(stmt_task)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("stmt_task is nullptr", KR(ret), KPC(lob_data_out_row_ctx_list));
     } else {
+      const PartTransTask &part_trans_task = stmt_task->get_host();
+      const int64_t commit_version = part_trans_task.get_trans_commit_version();
       const uint64_t tenant_id = lob_data_out_row_ctx_list->get_tenant_id();
       const transaction::ObTransID &trans_id = lob_data_out_row_ctx_list->get_trans_id();
       const uint64_t aux_lob_meta_tid = lob_data_out_row_ctx_list->get_aux_lob_meta_table_id();
       const ObLobId &lob_id = new_lob_data->id_;
       const uint32_t idx = task.idx_;
-      LobAuxMetaKey lob_aux_meta_key(tenant_id, trans_id, aux_lob_meta_tid, lob_id, task.seq_no_);
+      LobAuxMetaKey lob_aux_meta_key(commit_version, tenant_id, trans_id, aux_lob_meta_tid, lob_id, task.seq_no_);
       const char *lob_data_ptr = nullptr;
       int64_t lob_data_len = 0;
-
+      ObIAllocator &allocator = lob_data_out_row_ctx_list->get_allocator();
       // We need retry to get the lob data based on lob_aux_meta_key when return OB_ENTRY_NOT_EXIST,
       // because LobAuxMeta table data and primary table data are processed concurrently.
-      RETRY_FUNC_ON_ERROR_WITH_USLEEP_MS(OB_ENTRY_NOT_EXIST, 1 * _MSEC_, stop_flag, lob_aux_meta_storager, get, lob_aux_meta_key,
+      RETRY_FUNC_ON_ERROR_WITH_USLEEP_MS(OB_ENTRY_NOT_EXIST, 1 * _MSEC_, stop_flag, lob_aux_meta_storager, get, allocator, lob_aux_meta_key,
           lob_data_ptr, lob_data_len);
 
       if (OB_SUCC(ret)) {
@@ -514,7 +520,8 @@ int ObCDCLobDataMerger::try_to_push_task_into_formatter_(
 {
   int ret = OB_SUCCESS;
   const bool is_ddl = lob_data_out_row_ctx_list.is_ddl();
-  DmlStmtTask *dml_stmt_task = lob_data_out_row_ctx_list.get_dml_stmt_task();
+  IStmtTask *stmt_task = lob_data_out_row_ctx_list.get_stmt_task();
+  DmlStmtTask *dml_stmt_task = nullptr;
   IObLogFormatter *formatter = TCTX.formatter_;
 
   if (is_ddl) {
@@ -523,6 +530,9 @@ int ObCDCLobDataMerger::try_to_push_task_into_formatter_(
     if (OB_ISNULL(formatter)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("formatter is nullptr", KR(ret));
+    } else if (OB_ISNULL(dml_stmt_task = static_cast<DmlStmtTask*>(stmt_task))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("dml_stmt_task is nullptr", KR(ret), K(lob_data_out_row_ctx_list));
     } else if (OB_FAIL(formatter->push_single_task(dml_stmt_task, stop_flag))) {
       LOG_ERROR("formatter push_single_task failed", KR(ret), KPC(dml_stmt_task));
     } else {

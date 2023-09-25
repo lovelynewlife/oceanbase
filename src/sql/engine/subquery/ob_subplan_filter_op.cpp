@@ -49,6 +49,7 @@ ObSubQueryIterator::ObSubQueryIterator(ObOperator &op)
     onetime_plan_(false),
     init_plan_(false),
     inited_(false),
+    store_("SpfIter"),
     mem_entity_(nullptr),
     id_(-1),
     parent_(nullptr),
@@ -435,7 +436,7 @@ ObSubPlanFilterOp::ObSubPlanFilterOp(
     max_group_size_(0),
     current_group_(0),
     das_batch_params_(),
-    left_rows_(),
+    left_rows_("SpfOp"),
     left_rows_iter_(),
     last_store_row_(),
     save_last_row_(false),
@@ -596,7 +597,7 @@ int ObSubPlanFilterOp::switch_iterator()
   } else if (OB_FAIL(child_->switch_iterator())) {
     //TODO: 目前只支持对非相关子查询做多组迭代器切换，只切换主表
     if (OB_ITER_END != ret) {
-      LOG_WARN("swtich child operator iterator failed", K(ret));
+      LOG_WARN("switch child operator iterator failed", K(ret));
     }
   }
 
@@ -918,7 +919,7 @@ int ObSubPlanFilterOp::handle_next_batch_with_px_rescan(const int64_t op_max_bat
       }
       if (left_rows_total_cnt != left_rows_.get_row_cnt()) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("left_rows row cnt is unexpectd", K(ret));
+        LOG_WARN("left_rows row cnt is unexpected", K(ret));
       }
     }
   }
@@ -1045,7 +1046,7 @@ int ObSubPlanFilterOp::handle_next_batch_with_group_rescan(const int64_t op_max_
           LOG_WARN("prepare rescan params failed", K(ret));
         } else if (left_rows_total_cnt != left_rows_.get_row_cnt()) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("left_rows row cnt is unexpectd", K(ret));
+          LOG_WARN("left_rows row cnt is unexpected", K(ret));
         }
       }
 
@@ -1383,7 +1384,7 @@ int ObSubPlanFilterOp::handle_update_set()
         }
       }
       if (OB_SUCC(ret) && OB_FAIL(row_val.store_row_->to_expr(MY_SPEC.update_set_, eval_ctx_))) {
-        LOG_WARN("failed to get expr from chunck datum store. ", K(ret));
+        LOG_WARN("failed to get expr from chunk datum store. ", K(ret));
       }
     }
   }

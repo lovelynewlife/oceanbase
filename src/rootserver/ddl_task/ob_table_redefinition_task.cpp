@@ -288,22 +288,6 @@ int ObTableRedefinitionTask::send_build_replica_request_by_sql()
   return ret;
 }
 
-int ObTableRedefinitionTask::check_build_replica_timeout()
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("ObTableRedefinitionTask has not been inited", K(ret));
-  } else if (build_replica_request_time_ > 0) {
-    const int64_t timeout = OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT;
-    const int64_t current_time = ObTimeUtility::current_time();
-    if (build_replica_request_time_ + timeout < current_time) {
-      ret = OB_TIMEOUT;
-    }
-  }
-  return ret;
-}
-
 int ObTableRedefinitionTask::check_build_replica_end(bool &is_end)
 {
   int ret = OB_SUCCESS;
@@ -389,11 +373,6 @@ int ObTableRedefinitionTask::table_redefinition(const ObDDLTaskStatus next_task_
       LOG_WARN("check build replica end failed", K(ret));
     }
   }
-  if (OB_SUCC(ret) && !is_build_replica_end) {
-    if (OB_FAIL(check_build_replica_timeout())) {
-      LOG_WARN("fail to check build replica timeout", K(ret));
-    }
-  }
 
   // overwrite ret
   if (is_build_replica_end) {
@@ -443,7 +422,7 @@ int ObTableRedefinitionTask::copy_table_indexes()
     int64_t active_task_cnt = 0;
     // check if has rebuild index
     if (has_rebuild_index_) {
-    } else if (OB_FAIL(ObDDLTaskRecordOperator::get_create_index_task_cnt(GCTX.root_service_->get_sql_proxy(), tenant_id_, object_id_, active_task_cnt))) {
+    } else if (OB_FAIL(ObDDLTaskRecordOperator::get_create_index_task_cnt(GCTX.root_service_->get_sql_proxy(), dst_tenant_id_, target_object_id_, active_task_cnt))) {
       LOG_WARN("failed to check index task cnt", K(ret));
     } else if (active_task_cnt >= MAX_ACTIVE_TASK_CNT) {
       ret = OB_EAGAIN;
@@ -835,7 +814,7 @@ int ObTableRedefinitionTask::take_effect(const ObDDLTaskStatus next_task_status)
     } else {
       LOG_WARN("sync auto increment position failed", K(ret), K(object_id_), K(target_object_id_));
     }
-  } else if (OB_FAIL(need_sync_stats && sync_stats_info())) {
+  } else if (need_sync_stats && OB_FAIL(sync_stats_info())) {
     LOG_WARN("fail to sync stats info", K(ret), K(object_id_), K(target_object_id_));
   } else if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(dst_tenant_id_, target_object_id_, ddl_rpc_timeout))) {
             LOG_WARN("get ddl rpc timeout fail", K(ret));
@@ -866,7 +845,6 @@ int ObTableRedefinitionTask::repending(const share::ObDDLTaskStatus next_task_st
     switch (task_type_) {
       case DDL_DIRECT_LOAD:
       case DDL_DIRECT_LOAD_INSERT:
-      case DDL_TABLE_RESTORE:
         if (get_is_do_finish()) {
           if (OB_FAIL(switch_status(next_task_status, true, ret))) {
             LOG_WARN("fail to switch status", K(ret));

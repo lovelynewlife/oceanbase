@@ -859,7 +859,7 @@ public:
                                           const TableItem *table,
                                           ObIArray<ObRawExpr*> &cond_exprs,
                                           UniqueCheckInfo &res_info);
-  
+  static int need_compute_fd_item_set(ObIArray<ObRawExpr*> &exprs);
   static int try_add_table_fd_for_rowid(const ObSelectStmt *stmt,
                                         ObFdItemFactory &fd_factory,
                                         ObIArray<ObFdItem *> &fd_item_set,
@@ -1825,6 +1825,9 @@ public:
                                                      const ObIArray<ObRawExpr *> &set_op_exprs,
                                                      ObIArray<ObRawExpr *> &parent_exprs,
                                                      bool &is_valid);
+  static int get_explicated_ref_columns(const uint64_t table_id,
+                                        ObDMLStmt *stmt,
+                                        ObIArray<ObRawExpr*> &table_cols);
 private:
   static int inner_get_lazy_left_join(ObDMLStmt *stmt,
                                       TableItem *table,

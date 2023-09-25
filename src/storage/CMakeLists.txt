@@ -191,7 +191,6 @@ ob_set_subtarget(ob_storage tablet
   tablet/ob_full_tablet_creator.cpp
   tablet/ob_tablet_binding_helper.cpp
   tablet/ob_tablet_binding_replay_executor.cpp
-  tablet/ob_tablet_common.cpp
   tablet/ob_tablet_complex_addr.cpp
   tablet/ob_tablet_create_delete_helper.cpp
   tablet/ob_tablet_create_replay_executor.cpp
@@ -317,6 +316,7 @@ ob_set_subtarget(ob_storage tx
   tx/ob_dup_table_tablets.cpp
   tx/ob_dup_table_ts_sync.cpp
   tx/ob_dup_table_stat.cpp
+  tx/ob_dup_table_dump.cpp
   tx/ob_xa_ctx.cpp
   tx/ob_xa_ctx_mgr.cpp
   tx/ob_xa_dblink_service.cpp

@@ -17,6 +17,7 @@
 #include "lib/ob_replica_define.h"
 #include "common/ob_store_range.h"
 #include "common/ob_member_list.h"
+#include "share/scn.h"
 #include "share/ob_tablet_autoincrement_param.h"
 #include "share/schema/ob_schema_struct.h"
 #include "share/schema/ob_table_schema.h"
@@ -25,10 +26,6 @@
 #include "storage/tablet/ob_tablet_table_store_flag.h"
 #include "storage/compaction/ob_compaction_util.h"
 #include "storage/compaction/ob_medium_compaction_mgr.h"
-#include "share/scn.h"
-#include "storage/tablet/ob_tablet_multi_source_data.h"
-#include "storage/tablet/ob_tablet_binding_helper.h"
-#include "storage/tablet/ob_tablet_binding_info.h"
 #include "storage/ddl/ob_ddl_struct.h"
 #include "storage/high_availability/ob_tablet_ha_status.h"
 
@@ -374,7 +371,7 @@ struct ObUpdateTableStoreParam
   TO_STRING_KV(KP_(sstable), K_(snapshot_version), K_(clog_checkpoint_scn), K_(multi_version_start),
                K_(need_report), KPC_(storage_schema), K_(rebuild_seq), K_(update_with_major_flag),
                K_(need_check_sstable), K_(ddl_info), K_(allow_duplicate_sstable),
-               K_(tx_data), K_(binding_info), K_(autoinc_seq), "merge_type", merge_type_to_str(merge_type_),
+               "merge_type", merge_type_to_str(merge_type_),
                K_(need_check_transfer_seq), K_(transfer_seq));
 
   const blocksstable::ObSSTable *sstable_;
@@ -390,11 +387,6 @@ struct ObUpdateTableStoreParam
   bool allow_duplicate_sstable_;
   bool need_check_transfer_seq_;
   int64_t transfer_seq_;
-
-  // msd
-  ObTabletTxMultiSourceDataUnit tx_data_;
-  ObTabletBindingInfo binding_info_;
-  share::ObTabletAutoincSeq autoinc_seq_;
   ObMergeType merge_type_; // set merge_type only when update tablet in compaction
 };
 

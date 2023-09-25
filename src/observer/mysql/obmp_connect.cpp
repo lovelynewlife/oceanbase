@@ -533,6 +533,12 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
         tenant_name_ = ObString::make_string(OB_SYS_TENANT_NAME);
         OB_LOG(INFO, "no tenant name set, use default tenant name", K_(tenant_name));
       }
+
+      if (OB_NOT_NULL(tenant_name_.find('$'))) {
+        ret = OB_ERR_INVALID_TENANT_NAME;
+        LOG_WARN("invalid tenant name. “$” is not allowed in tenant name.", K(ret), K_(tenant_name));
+      }
+
       //在oracle租户下需要转换db_name和user_name,处理双引号和大小写
       //在mysql租户下不会作任何处理,只简单拷贝下~
       if (OB_SUCC(ret)) {
@@ -1826,10 +1832,19 @@ int ObMPConnect::verify_connection(const uint64_t tenant_id) const
       LOG_WARN("failed to verify_ip_white_list", K(ret));
     } else {
       const int64_t tenant_id = conn->tenant_id_;
-      if (OB_SYS_TENANT_ID == tenant_id ||
-          0 == user_name_.compare(OB_SYS_USER_NAME)) {
-        // sys tenant or root user is considered as vip
-      } else {
+      // sys tenant or root(SYS) user is considered as vip
+      bool check_max_sess = tenant_id != OB_SYS_TENANT_ID;
+      if (check_max_sess) {
+        lib::Worker::CompatMode compat_mode = lib::Worker::CompatMode::INVALID;
+        if (OB_FAIL(ObCompatModeGetter::get_tenant_mode(tenant_id, compat_mode))) {
+          LOG_WARN("get_compat_mode failed", K(ret), K(tenant_id));
+        } else if (Worker::CompatMode::MYSQL == compat_mode) {
+          check_max_sess = user_name_.compare(OB_SYS_USER_NAME) != 0;
+        } else if (Worker::CompatMode::ORACLE == compat_mode) {
+          check_max_sess = user_name_.compare(OB_ORA_SYS_USER_NAME) != 0;
+        }
+      }
+      if (OB_SUCC(ret) && check_max_sess) {
         omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
         if (tenant_config.is_valid()) {
           int64_t max_sess_num = 0;
@@ -1848,7 +1863,7 @@ int ObMPConnect::verify_connection(const uint64_t tenant_id) const
                                                                         cur_connections))) {
               LOG_WARN("fail to get session count", K(ret));
             } else if (tenant_exists && cur_connections >= max_sess_num) {
-              ret = OB_RESOURCE_OUT;
+              ret = OB_ERR_CON_COUNT_ERROR;
               LOG_WARN("too much sessions", K(ret), K(tenant_id), K(cur_connections), K(max_sess_num),
                        K(tenant_name_), K(user_name_));
             }
@@ -1925,6 +1940,7 @@ int ObMPConnect::verify_identify(ObSMConnection &conn, ObSQLSessionInfo &session
     session.set_tenant(tenant_name_, tenant_id);
     session.set_proxy_cap_flags(conn.proxy_cap_flags_);
     session.set_login_tenant_id(tenant_id);
+    session.set_client_non_standard(common::OB_CLIENT_NON_STANDARD == conn.client_type_ ? true : false);
     // Check tenant after set tenant session is necessary!
     // Because if another client is deleting this tenant while the
     // session doesn't has been contructed completely, omt

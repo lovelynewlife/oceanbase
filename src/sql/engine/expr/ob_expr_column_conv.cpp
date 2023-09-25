@@ -20,6 +20,7 @@
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "lib/geo/ob_geo_utils.h"
+#include "sql/resolver/expr/ob_raw_expr_util.h"
 
 using namespace oceanbase::common;
 
@@ -239,7 +240,9 @@ int ObExprColumnConv::calc_result_typeN(ObExprResType &type,
   } else {
     type.set_type(types[0].get_type());
     type.set_collation_type(types[1].get_collation_type());
-    type.set_collation_level(common::CS_LEVEL_IMPLICIT);
+    // set collation level
+    ObCollationLevel coll_level = ObRawExprUtils::get_column_collation_level(types[0].get_type());
+    type.set_collation_level(coll_level);
     type.set_accuracy(types[2].get_accuracy());
     if (type.get_type() == ObUserDefinedSQLType) {
       type.set_subschema_id(types[2].get_accuracy().get_accuracy());
@@ -284,18 +287,9 @@ int ObExprColumnConv::calc_result_typeN(ObExprResType &type,
         ret = OB_ERR_INVALID_TYPE_FOR_OP;
         LOG_WARN("inconsistent datatypes", "expected", type_tc, "got", value_tc);
       } else {
-        bool is_ddl = const_cast<sql::ObSQLSessionInfo *>(type_ctx.get_session())->get_ddl_info().is_ddl();
         type_ctx.set_cast_mode(type_ctx.get_cast_mode() |
-                                  type_ctx.get_raw_expr()->get_extra() |
-                                  CM_COLUMN_CONVERT);
-        if (!is_ddl) {
-          bool is_strict = is_strict_mode(type_ctx.get_session()->get_sql_mode());
-          if (lib::is_mysql_mode() && is_strict) {
-            //do nothing
-          } else {
-            type_ctx.set_cast_mode(type_ctx.get_cast_mode() | CM_CHARSET_CONVERT_IGNORE_ERR);
-          }
-        }
+                               type_ctx.get_raw_expr()->get_extra() |
+                               CM_COLUMN_CONVERT);
         types[4].set_calc_meta(type);
       }
     }

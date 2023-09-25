@@ -4325,12 +4325,8 @@ int ObTransformUtils::add_cast_for_replace(ObRawExprFactory &expr_factory,
   } else {
     ObSysFunRawExpr *cast_expr = NULL;
     ObCastMode cm;
-    if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false,/* explicit_cast */
-                                                  0,    /* result_flag */
-                                                  session_info, cm))) {
-      LOG_WARN("failed to get default cast mode", K(ret));
-    } else if (OB_FAIL(ObSQLUtils::set_cs_level_cast_mode(from_expr->get_collation_level(), cm))) {
-      LOG_WARN("failed to set cs level cast mode", K(ret));
+    if (OB_FAIL(ObSQLUtils::get_cast_mode_for_replace(from_expr, session_info, cm))) {
+      LOG_WARN("failed to get cast mode for replace", K(ret));
     } else if (OB_FAIL(ObRawExprUtils::create_cast_expr(expr_factory,
                                                         to_expr,
                                                         from_expr->get_result_type(),
@@ -4356,10 +4352,13 @@ int ObTransformUtils::add_cast_for_replace_if_need(ObRawExprFactory &expr_factor
   } else {
     const ObExprResType &src_type = from_expr->get_result_type();
     const ObExprResType &dst_type = to_expr->get_result_type();
+    bool need_length_cast = (ob_is_string_or_lob_type(dst_type.get_type()) || ob_is_rowid_tc(dst_type.get_type()))
+                            ? (src_type.get_length() != dst_type.get_length()) : false;
     bool need_cast = (src_type.get_type() != dst_type.get_type()) ||
-                     (src_type.get_length() != dst_type.get_length()) ||
                      (src_type.get_precision() != dst_type.get_precision()) ||
-                     (src_type.get_scale() != dst_type.get_scale());
+                     (src_type.get_scale() != dst_type.get_scale()) ||
+                     from_expr->get_result_type().has_result_flag(ZEROFILL_FLAG) ||
+                     need_length_cast;
     if (ob_is_string_or_lob_type(src_type.get_type())) {
       need_cast |= (src_type.get_collation_type() != dst_type.get_collation_type()) ||
                    (src_type.get_collation_level() != dst_type.get_collation_level());
@@ -4677,6 +4676,14 @@ int ObTransformUtils::compute_basic_table_property(const ObDMLStmt *stmt,
   return ret;
 }
 
+int ObTransformUtils::need_compute_fd_item_set(ObIArray<ObRawExpr*> &exprs)
+{
+  bool need = true;
+  if (exprs.count() > 128) {
+    need = false;
+  }
+  return need;
+}
 //extract rowid in select_exprs
 //add table fd for related table.
 int ObTransformUtils::try_add_table_fd_for_rowid(const ObSelectStmt *stmt,
@@ -8066,6 +8073,29 @@ int ObTransformUtils::rebuild_select_items(ObSelectStmt &stmt,
       sel_item.expr_ = column_item->expr_;
       if (OB_FAIL(stmt.add_select_item(sel_item))) {
         LOG_WARN("failed to add select item", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformUtils::get_explicated_ref_columns(const uint64_t table_id,
+                                                 ObDMLStmt *stmt,
+                                                 ObIArray<ObRawExpr*> &table_cols) {
+  int ret = OB_SUCCESS;
+  ObSEArray<ObRawExpr*, 4> tmp_exprs;
+  if (OB_FAIL(stmt->get_column_exprs(table_id, tmp_exprs))) {
+    LOG_WARN("failed to get column exprs", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < tmp_exprs.count(); i++) {
+      ObRawExpr *expr = tmp_exprs.at(i);
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column expr is null", K(ret));
+      } else if (expr->is_explicited_reference()) {
+        if (OB_FAIL(table_cols.push_back(expr))) {
+          LOG_WARN("failed to push back into array", K(ret));
+        }
       }
     }
   }

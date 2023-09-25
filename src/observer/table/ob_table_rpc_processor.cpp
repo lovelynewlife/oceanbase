@@ -29,12 +29,15 @@
 #include "storage/tx/ob_trans_service.h"
 #include "ob_table_session_pool.h"
 #include "storage/tx/wrs/ob_weak_read_util.h"
+#include "ob_table_move_response.h"
 
 using namespace oceanbase::observer;
 using namespace oceanbase::common;
 using namespace oceanbase::table;
 using namespace oceanbase::share;
 using namespace oceanbase::obrpc;
+
+const ObString ObTableApiProcessorBase::OBKV_TRACE_INFO = ObString::make_string("OBKV Operation");
 
 int ObTableLoginP::process()
 {
@@ -80,18 +83,21 @@ int ObTableLoginP::process()
     } else if (OB_FAIL(generate_credential(result_.tenant_id_, result_.user_id_, result_.database_id_,
                                            login.ttl_us_, user_token, result_.credential_))) {
       LOG_WARN("failed to generate credential", K(ret), K(login));
-    } else if (OB_FAIL(GCTX.table_service_->get_sess_mgr().update_sess(credential_))) {
-      LOG_WARN("failed to update session pool", K(ret), K_(credential));
     } else {
+      MTL_SWITCH(credential_.tenant_id_) {
+        if (OB_FAIL(TABLEAPI_SESS_POOL_MGR->update_sess(credential_))) {
+          LOG_WARN("failed to update session pool", K(ret), K_(credential));
+        }
+      }
       result_.reserved1_ = 0;
       result_.reserved2_ = 0;
       result_.server_version_ = ObString::make_string(PACKAGE_STRING);
     }
   }
   // whether the client should refresh location cache
-  if (OB_SUCCESS != ret && is_bad_routing_err(ret)) {
-    ObRpcProcessor::bad_routing_ = true;
-    LOG_WARN("[TABLE] login bad routing", K(ret), "bad_routing", ObRpcProcessor::bad_routing_);
+  if (OB_SUCCESS != ret && ObTableRpcProcessorUtil::is_require_rerouting_err(ret)) {
+    ObRpcProcessor::require_rerouting_ = true;
+    LOG_WARN("[TABLE] login require rerouting", K(ret), "require_rerouting", ObRpcProcessor::require_rerouting_);
   }
   ObTenantStatEstGuard stat_guard(result_.tenant_id_);
 #ifndef NDEBUG
@@ -223,7 +229,7 @@ ObTableApiProcessorBase::ObTableApiProcessorBase(const ObGlobalContext &gctx)
      need_retry_in_queue_(false),
      retry_count_(0),
      trans_desc_(NULL),
-     did_async_end_trans_(false)
+     had_do_response_(false)
 {
   need_audit_ = GCONF.enable_sql_audit;
   trans_state_ptr_ = &trans_state_;
@@ -233,7 +239,7 @@ void ObTableApiProcessorBase::reset_ctx()
 {
   trans_state_ptr_->reset();
   trans_desc_ = NULL;
-  did_async_end_trans_ = false;
+  had_do_response_ = false;
 }
 
 int ObTableApiProcessorBase::get_ls_id(const ObTabletID &tablet_id, ObLSID &ls_id)
@@ -255,7 +261,7 @@ int ObTableApiProcessorBase::check_user_access(const ObString &credential_str)
   const ObTableApiCredential *sess_credetial = nullptr;
   if (OB_FAIL(serialization::decode(credential_str.ptr(), credential_str.length(), pos, credential_))) {
     LOG_WARN("failed to serialize credential", K(ret), K(pos));
-  } else if (OB_FAIL(gctx_.table_service_->get_sess_mgr().get_sess_info(credential_, guard))) {
+  } else if (OB_FAIL(TABLEAPI_SESS_POOL_MGR->get_sess_info(credential_, guard))) {
     LOG_WARN("fail to get session info", K(ret), K_(credential));
   } else if (OB_FAIL(guard.get_credential(sess_credetial))) {
     LOG_WARN("fail to get credential", K(ret));
@@ -508,11 +514,12 @@ int ObTableApiProcessorBase::end_trans(bool is_rollback, rpc::ObRequest *req, in
 
 int ObTableApiProcessorBase::sync_end_trans(bool is_rollback, int64_t timeout_ts, ObHTableLockHandle *lock_handle /*nullptr*/)
 {
-  return sync_end_trans_(is_rollback, trans_desc_, timeout_ts, lock_handle);
+  return sync_end_trans_(is_rollback, trans_desc_, timeout_ts, lock_handle, &OBKV_TRACE_INFO);
 }
 
 int ObTableApiProcessorBase::sync_end_trans_(bool is_rollback, transaction::ObTxDesc *&trans_desc,
-                                             int64_t timeout_ts, ObHTableLockHandle *lock_handle /*nullptr*/)
+                                             int64_t timeout_ts, ObHTableLockHandle *lock_handle /*nullptr*/,
+                                             const ObString *trace_info /*nullptr*/)
 {
   int ret = OB_SUCCESS;
 
@@ -522,10 +529,12 @@ int ObTableApiProcessorBase::sync_end_trans_(bool is_rollback, transaction::ObTx
     if (OB_FAIL(txs->rollback_tx(*trans_desc))) {
       LOG_WARN("fail rollback trans when session terminate", K(ret), KPC(trans_desc));
     }
-  } else if (OB_FAIL(txs->commit_tx(*trans_desc, stmt_timeout_ts))) {
+  } else {
     ACTIVE_SESSION_FLAG_SETTER_GUARD(in_committing);
-    LOG_WARN("fail commit trans when session terminate",
-              K(ret), KPC(trans_desc), K(stmt_timeout_ts));
+    if (OB_FAIL(txs->commit_tx(*trans_desc, stmt_timeout_ts, trace_info))) {
+      LOG_WARN("fail commit trans when session terminate",
+                K(ret), KPC(trans_desc), K(stmt_timeout_ts));
+    }
   }
 
   int tmp_ret = ret;
@@ -542,7 +551,8 @@ int ObTableApiProcessorBase::sync_end_trans_(bool is_rollback, transaction::ObTx
   return ret;
 }
 
-int ObTableApiProcessorBase::async_commit_trans(rpc::ObRequest *req, int64_t timeout_ts, ObHTableLockHandle *lock_handle /*nullptr*/)
+int ObTableApiProcessorBase::async_commit_trans(rpc::ObRequest *req, int64_t timeout_ts,
+                                                ObHTableLockHandle *lock_handle /*nullptr*/)
 {
   int ret = OB_SUCCESS;
   transaction::ObTransService *txs = MTL(transaction::ObTransService*);
@@ -568,7 +578,7 @@ int ObTableApiProcessorBase::async_commit_trans(rpc::ObRequest *req, int64_t tim
       callback.callback(ret);
     }
     // ignore the return code of end_trans
-    did_async_end_trans_ = true; // don't send response in this worker thread
+    had_do_response_ = true; // don't send response in this worker thread
     // @note the req_ may be freed, req_processor can not be read any more.
     // The req_has_wokenup_ MUST set to be true, otherwise req_processor will invoke req_->set_process_start_end_diff, cause memory core
     // @see ObReqProcessor::run() req_->set_process_start_end_diff(ObTimeUtility::current_time());
@@ -880,15 +890,15 @@ int ObTableRpcProcessor<T>::process()
   if (OB_FAIL(process_with_retry(RpcProcessor::arg_.credential_, get_timeout_ts()))) {
     if (OB_NOT_NULL(request_string_)) { // request_string_ has been generated if enable sql_audit
       LOG_WARN("fail to process table_api request", K(ret), K(stat_event_type_), K(request_string_));
-    } else if (did_async_end_trans()) { // req_ may be freed
+    } else if (had_do_response()) { // req_ may be freed
       LOG_WARN("fail to process table_api request", K(ret), K(stat_event_type_));
     } else {
       LOG_WARN("fail to process table_api request", K(ret), K(stat_event_type_), "request", RpcProcessor::arg_);
     }
-    // whether the client should refresh location cache
-    if (is_bad_routing_err(ret)) {
-      ObRpcProcessor<T>::bad_routing_ = true;
-      LOG_WARN("table_api request bad routing", K(ret), "bad_routing", ObRpcProcessor<T>::bad_routing_);
+    // whether the client should refresh location cache and retry
+    if (ObTableRpcProcessorUtil::is_require_rerouting_err(ret)) {
+      ObRpcProcessor<T>::require_rerouting_ = true;
+      LOG_WARN("table_api request require rerouting", K(ret), "require_rerouting", ObRpcProcessor<T>::require_rerouting_);
     }
   }
   return ret;
@@ -910,12 +920,26 @@ int ObTableRpcProcessor<T>::before_response(int error_code)
 }
 
 template<class T>
-int ObTableRpcProcessor<T>::response(const int retcode)
+int ObTableRpcProcessor<T>::response(int error_code)
 {
   int ret = OB_SUCCESS;
   // if it is waiting for retry in queue, the response can NOT be sent.
-  if (!need_retry_in_queue_) {
-    ret = RpcProcessor::response(retcode);
+  if (!need_retry_in_queue_ && !had_do_response()) {
+    const ObRpcPacket *rpc_pkt = &reinterpret_cast<const ObRpcPacket&>(this->req_->get_packet());
+    if (ObTableRpcProcessorUtil::need_do_move_response(error_code, *rpc_pkt)) {
+      // response rerouting packet
+      ObTableMoveResponseSender sender(this->req_, error_code);
+      if (OB_FAIL(sender.init(ObTableApiProcessorBase::table_id_, ObTableApiProcessorBase::tablet_id_, *gctx_.schema_service_))) {
+        LOG_WARN("fail to init move response sender", K(ret), K(RpcProcessor::arg_));
+      } else if (OB_FAIL(sender.response())) {
+        LOG_WARN("fail to do move response", K(ret));
+      }
+      if (OB_FAIL(ret)) {
+        ret = RpcProcessor::response(error_code); // do common response when do move response failed
+      }
+    } else {
+      ret = RpcProcessor::response(error_code);
+    }
   }
   return ret;
 }
@@ -977,18 +1001,4 @@ void ObTableRpcProcessor<T>::generate_sql_id()
   checksum = ob_crc64(checksum, &credential_.database_id_, sizeof(credential_.database_id_));
   snprintf(audit_record_.sql_id_, (int32_t)sizeof(audit_record_.sql_id_),
      "TABLEAPI0x%04Xvv%016lX", RpcProcessor::PCODE, checksum);
-}
-bool oceanbase::observer::is_bad_routing_err(const int err)
-{
-  // bad routing check : whether client should refresh location cache
-  // Now, following the same logic as in ../mysql/ob_query_retry_ctrl.cpp
-  return (is_master_changed_error(err)
-          || is_server_down_error(err)
-          || is_partition_change_error(err)
-          || is_server_status_error(err)
-          || is_unit_migrate(err)
-          || is_transaction_rpc_timeout_err(err)
-          || is_has_no_readable_replica_err(err)
-          || is_select_dup_follow_replic_err(err)
-          || is_trans_stmt_need_retry_error(err));
 }

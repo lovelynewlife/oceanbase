@@ -572,6 +572,20 @@ bool ObOptimizerUtil::is_expr_equivalent(const ObRawExpr *from,
   return found;
 }
 
+int ObOptimizerUtil::append_exprs_no_dup(ObIArray<ObRawExpr *> &dst, const ObIArray<ObRawExpr *> &src)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t idx = 0; OB_SUCC(ret) && idx < src.count(); ++idx) {
+    ObRawExpr *expr = src.at(idx);
+    if (find_equal_expr(dst, expr)) {
+      //do nothing
+    } else if (OB_FAIL(dst.push_back(expr))) {
+      LOG_WARN("Add var to array error", K(ret));
+    } else { } //do nothing
+  }
+  return ret;
+}
+
 bool ObOptimizerUtil::is_sub_expr(const ObRawExpr *sub_expr,
                                   const ObRawExpr *expr)
 {
@@ -3387,22 +3401,24 @@ int ObOptimizerUtil::try_add_fd_item(const ObDMLStmt *stmt,
         contain_not_null = true;
       }
     }
-    if (OB_SUCC(ret) && all_columns_used && unique_exprs.count() > 0) {
-      ObTableFdItem *fd_item = NULL;
-      if (OB_FAIL(fd_factory.create_table_fd_item(fd_item, true, unique_exprs, tables))) {
-        LOG_WARN("failed to create fd item", K(ret));
-      } else if (all_not_null ||
-                 (lib::is_oracle_mode() && contain_not_null) ||
-                 index_schema->get_table_id() == table->ref_id_) {
-        // 1. 在oracle中, unique index (c1,c2) 允许存在多个 (null, null), 但不允许存在多个 (1, null),
-        //    因此oracle模式下只要unique index中有一列是not null的, 该index中就不存在重复的值
-        // 2. the primary index must be unique even if a partition table may have a nullable part-key
-        //    wihch is a part of the primary key.
-        if (OB_FAIL(fd_item_set.push_back(fd_item))) {
+    if (OB_SUCC(ret) && ObTransformUtils::need_compute_fd_item_set(unique_exprs)) {
+      if (OB_SUCC(ret) && all_columns_used && unique_exprs.count() > 0) {
+        ObTableFdItem *fd_item = NULL;
+        if (OB_FAIL(fd_factory.create_table_fd_item(fd_item, true, unique_exprs, tables))) {
+          LOG_WARN("failed to create fd item", K(ret));
+        } else if (all_not_null ||
+                  (lib::is_oracle_mode() && contain_not_null) ||
+                  index_schema->get_table_id() == table->ref_id_) {
+          // 1. 在oracle中, unique index (c1,c2) 允许存在多个 (null, null), 但不允许存在多个 (1, null),
+          //    因此oracle模式下只要unique index中有一列是not null的, 该index中就不存在重复的值
+          // 2. the primary index must be unique even if a partition table may have a nullable part-key
+          //    wihch is a part of the primary key.
+          if (OB_FAIL(fd_item_set.push_back(fd_item))) {
+            LOG_WARN("failed to push back fd item", K(ret));
+          }
+        } else if (OB_FAIL(candi_fd_item_set.push_back(fd_item))) {
           LOG_WARN("failed to push back fd item", K(ret));
         }
-      } else if (OB_FAIL(candi_fd_item_set.push_back(fd_item))) {
-        LOG_WARN("failed to push back fd item", K(ret));
       }
     }
   }
@@ -7464,7 +7480,6 @@ int ObOptimizerUtil::check_basic_sharding_info(const ObAddr &local_addr,
 int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
                                                  const ObIArray<ObLogicalOperator *> &child_ops,
                                                  ObIAllocator &allocator,
-                                                 ObIArray<int64_t> &reselected_pos,
                                                  ObShardingInfo *&result_sharding,
                                                  int64_t &inherit_sharding_index)
 {
@@ -7485,7 +7500,6 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
   } else if (OB_FAIL(compute_basic_sharding_info(local_addr,
                                                  sharding_infos,
                                                  allocator,
-                                                 reselected_pos,
                                                  result_sharding,
                                                  inherit_sharding_index))) {
     LOG_WARN("failed to compute basic sharding info", K(ret));
@@ -7496,7 +7510,6 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
 int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
                                                  const ObIArray<ObShardingInfo*> &input_shardings,
                                                  ObIAllocator &allocator,
-                                                 ObIArray<int64_t> &reselected_pos,
                                                  ObShardingInfo *&result_sharding,
                                                  int64_t &inherit_sharding_index)
 {
@@ -7509,7 +7522,7 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
   } else {
     ObAddr basic_addr;
     bool has_duplicated = false;
-    bool can_reselect_replica = true;
+    bool is_replicas_same = true;
     ObShardingInfo *sharding = NULL;
     ObSEArray<ObAddr, 8> valid_addrs;
     ObSEArray<ObAddr, 8> intersect_addrs;
@@ -7534,9 +7547,9 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
         } else {
           if (OB_FAIL(ObOptimizerUtil::intersect(valid_addrs, intersect_addrs, candidate_addrs))) {
             LOG_WARN("failed to intersect addrs", K(ret));
-          } else if (OB_FALSE_IT(can_reselect_replica = can_reselect_replica &&
-                                                        valid_addrs.count() == candidate_addrs.count() &&
-                                                        valid_addrs.count() == intersect_addrs.count())) {
+          } else if (OB_FALSE_IT(is_replicas_same = is_replicas_same &&
+                                                    valid_addrs.count() == candidate_addrs.count() &&
+                                                    valid_addrs.count() == intersect_addrs.count())) {
             // do nothing
           } else if (OB_FAIL(intersect_addrs.assign(candidate_addrs))) {
             LOG_WARN("failed to assign addrs", K(ret));
@@ -7577,14 +7590,18 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
         /*do nothing*/
       } else if (!has_duplicated) {
         /*do nothing*/
-      } else if (OB_FAIL(compute_duplicate_table_replica_pos(basic_addr, input_shardings, reselected_pos))) {
-        LOG_WARN("failed to set duplicated table replica", K(ret));
       } else if (NULL != result_sharding) {
         /*do nothing*/
-      } else if (OB_UNLIKELY(input_shardings.count() != reselected_pos.count())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected array count", K(input_shardings.count()),
-            K(reselected_pos.count()), K(ret));
+      } else if (is_replicas_same) {
+        for (int64_t i = 0; OB_SUCC(ret) && NULL == result_sharding && i < input_shardings.count(); i++) {
+          if (OB_ISNULL(sharding = input_shardings.at(i))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("get unexpected null", K(ret));
+          } else if (sharding->get_can_reselect_replica()) {
+            result_sharding = sharding;
+            inherit_sharding_index = i;
+          }
+        }
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && NULL == result_sharding && i < input_shardings.count(); i++) {
           if (OB_ISNULL(sharding = input_shardings.at(i))) {
@@ -7592,10 +7609,10 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
             LOG_WARN("get unexpected null", K(ret));
           } else if (sharding->get_can_reselect_replica() &&
                      OB_FAIL(ObOptimizerUtil::compute_duplicate_table_sharding(local_addr,
+                                                                               basic_addr,
                                                                                allocator,
                                                                                *input_shardings.at(i),
-                                                                               reselected_pos.at(i),
-                                                                               can_reselect_replica,
+                                                                               intersect_addrs,
                                                                                result_sharding))) {
             LOG_WARN("failed to compute duplicate table sharding", K(ret));
           } else if (NULL != result_sharding) {
@@ -7606,7 +7623,7 @@ int ObOptimizerUtil::compute_basic_sharding_info(const ObAddr &local_addr,
     }
   }
   if (OB_SUCC(ret) && NULL != result_sharding) {
-    LOG_TRACE("succeed to compute basic sharding info", K(*result_sharding), K(input_shardings), K(reselected_pos));
+    LOG_TRACE("succeed to compute basic sharding info", K(*result_sharding), K(input_shardings));
   }
   return ret;
 }
@@ -7631,84 +7648,91 @@ int ObOptimizerUtil::get_duplicate_table_replica(const ObCandiTableLoc &phy_tabl
   return ret;
 }
 
-int ObOptimizerUtil::compute_duplicate_table_replica_pos(const ObAddr &addr,
-                                                         const ObIArray<ObShardingInfo*> &input_shardings,
-                                                         ObIArray<int64_t> &reselected_pos)
+int ObOptimizerUtil::compute_duplicate_table_sharding(const ObAddr &local_addr,
+                                                      const ObAddr &selected_addr,
+                                                      ObIAllocator &allocator,
+                                                      ObShardingInfo &src_sharding,
+                                                      ObIArray<ObAddr> &valid_addrs,
+                                                      ObShardingInfo *&target_sharding)
 {
   int ret = OB_SUCCESS;
-  for (int64_t i = 0; OB_SUCC(ret) && i < input_shardings.count(); i++) {
-    ObShardingInfo *sharding = NULL;
-    int64_t replica_index = OB_INVALID_INDEX;
-    if (OB_ISNULL(sharding = input_shardings.at(i))) {
+  ObCandiTableLoc *phy_table_loc = NULL;
+  int64_t replica_index = OB_INVALID_INDEX;
+  target_sharding = NULL;
+  if (OB_ISNULL(target_sharding = reinterpret_cast<ObShardingInfo*>(
+                                  allocator.alloc(sizeof(ObShardingInfo))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate memory", K(ret));
+  } else if (OB_FALSE_IT(target_sharding = new(target_sharding) ObShardingInfo())) {
+  } else if (OB_FAIL(target_sharding->copy_with_part_keys(src_sharding))) {
+    LOG_WARN("failed to copy sharding info", K(ret));
+  } else if (OB_ISNULL(src_sharding.get_phy_table_location_info()) ||
+              OB_UNLIKELY(1 != src_sharding.get_phy_table_location_info()->get_partition_cnt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected partition count", K(ret));
+  } else if (OB_FAIL(generate_duplicate_table_replicas(allocator,
+                                                        src_sharding.get_phy_table_location_info(),
+                                                        valid_addrs,
+                                                        phy_table_loc))) {
+    LOG_WARN("failed to compute duplicate table location", K(ret));
+  } else if (OB_ISNULL(phy_table_loc)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected error", K(ret));
+  } else if (OB_FALSE_IT(target_sharding->set_phy_table_location_info(phy_table_loc))) {
+  } else if (OB_UNLIKELY(1 != target_sharding->get_phy_table_location_info()->get_partition_cnt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected partition count", K(ret));
+  } else {
+    int64_t dup_table_pos = OB_INVALID_INDEX;
+    ObCandiTabletLoc &phy_part_loc =
+          phy_table_loc->get_phy_part_loc_info_list_for_update().at(0);
+    if (!phy_part_loc.is_server_in_replica(selected_addr, dup_table_pos)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected error", K(sharding), K(ret));
-    } else if (!sharding->get_can_reselect_replica()) {
-      /*do nothing*/
-    } else if (OB_ISNULL(sharding->get_phy_table_location_info()) ||
-               OB_UNLIKELY(1 != sharding->get_phy_table_location_info()->get_partition_cnt())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected error", K(ret));
+      LOG_WARN("no server in replica", K(selected_addr), K(ret));
     } else {
-      share::ObLSReplicaLocation replica_loc;
-      ObCandiTabletLoc &phy_part_loc =
-          sharding->get_phy_table_location_info()->get_phy_part_loc_info_list_for_update().at(0);
-      if (!phy_part_loc.is_server_in_replica(addr, replica_index)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("no replica in this server", K(addr), K(ret));
-      } else if (OB_UNLIKELY(replica_index == OB_INVALID_INDEX)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("invalid replica index", K(ret));
-      } else { /*do nothing*/ }
-    }
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(reselected_pos.push_back(replica_index))) {
-        LOG_WARN("failed to push back replica index", K(ret));
-      } else { /*do nothing*/ }
+      phy_part_loc.set_selected_replica_idx(dup_table_pos);
+      if (local_addr == selected_addr) {
+        target_sharding->set_local();
+      } else {
+        target_sharding->set_remote();
+      }
     }
   }
   return ret;
 }
 
-int ObOptimizerUtil::compute_duplicate_table_sharding(const ObAddr &local_addr,
-                                                      ObIAllocator &allocator,
-                                                      const ObShardingInfo &src_sharding,
-                                                      const int64_t reselected_pos,
-                                                      bool can_reselect_replica,
-                                                      ObShardingInfo *&target_sharding)
+int ObOptimizerUtil::generate_duplicate_table_replicas(ObIAllocator &allocator,
+                                                       const ObCandiTableLoc *source_table_loc,
+                                                       ObIArray<ObAddr> &valid_addrs,
+                                                       ObCandiTableLoc *&target_table_loc)
 {
   int ret = OB_SUCCESS;
-  ObCandiTableLoc *phy_table_loc = NULL;
-  if (OB_ISNULL(target_sharding = reinterpret_cast<ObShardingInfo*>(
-                                  allocator.alloc(sizeof(ObShardingInfo))))) {
+  if (OB_ISNULL(source_table_loc)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_UNLIKELY(1 != source_table_loc->get_partition_cnt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected partition count", K(ret),
+             K(source_table_loc->get_partition_cnt()));
+  } else if (OB_ISNULL(target_table_loc = static_cast<ObCandiTableLoc*>(
+                       allocator.alloc(sizeof(ObCandiTableLoc))))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate memory", K(ret));
-  } else if (OB_ISNULL(phy_table_loc = reinterpret_cast<ObCandiTableLoc*>(
-                                       allocator.alloc(sizeof(ObCandiTableLoc))))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to allocate memory", K(ret));
+  } else if (OB_FALSE_IT(target_table_loc = new(target_table_loc) ObCandiTableLoc())) {
+    // do nothing
+  } else if (OB_FAIL(target_table_loc->assign(*source_table_loc))) {
+    LOG_WARN("failed to assign table location", K(ret));
   } else {
-    target_sharding = new(target_sharding) ObShardingInfo();
-    phy_table_loc = new(phy_table_loc) ObCandiTableLoc();
-    if (OB_FAIL(target_sharding->copy_with_part_keys(src_sharding))) {
-      LOG_WARN("failed to copy sharding info", K(ret));
-    } else if (OB_FAIL(phy_table_loc->assign(*src_sharding.get_phy_table_location_info()))) {
-      LOG_WARN("failed to assign table location", K(ret));
-    } else if (OB_UNLIKELY(1 != phy_table_loc->get_partition_cnt())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected partition count", K(ret));
-    } else {
-      share::ObLSReplicaLocation replica_loc;
-      ObCandiTabletLoc &phy_part_loc =
-          phy_table_loc->get_phy_part_loc_info_list_for_update().at(0);
-      phy_part_loc.set_selected_replica_idx(reselected_pos);
-      target_sharding->set_phy_table_location_info(phy_table_loc);
-      target_sharding->set_can_reselect_replica(can_reselect_replica);
-      if (OB_FAIL(phy_part_loc.get_selected_replica(replica_loc))) {
-        LOG_WARN("failed to get selected replica", K(ret));
-      } else if (replica_loc.get_server() == local_addr) {
-        target_sharding->set_local();
-      } else {
-        target_sharding->set_remote();
+    ObCandiTabletLoc &phy_part_loc =
+          target_table_loc->get_phy_part_loc_info_list_for_update().at(0);
+    ObOptTabletLoc &opt_tablet_loc = phy_part_loc.get_partition_location();
+    ObIArray<ObRoutePolicy::CandidateReplica> &replica_loc_list = opt_tablet_loc.get_replica_locations();
+    for (int64_t i = replica_loc_list.count() - 1; OB_SUCC(ret) && i >= 0; --i) {
+      if (ObOptimizerUtil::find_item(valid_addrs,
+                                     replica_loc_list.at(i).get_server())) {
+        // do nothing
+      } else if (OB_FAIL(replica_loc_list.remove(i))) {
+        LOG_WARN("failed to remove relica loc list", K(ret));
       }
     }
   }
@@ -8915,7 +8939,7 @@ int ObOptimizerUtil::split_or_filter_into_subquery(const ObDMLStmt &parent_stmt,
                                               check_match_index))) {
       LOG_WARN("failed to split or fitler", K(ret));
     }
-    for (int64_t i = 0; OB_SUCC(ret) && i < or_filter_params.count(); i ++) {
+    for (int64_t i = 0; i < or_filter_params.count(); i ++) {
       if (OB_NOT_NULL(or_filter_params.at(i))) {
         or_filter_params.at(i)->~ObIArray();
       }
@@ -9014,6 +9038,140 @@ int ObOptimizerUtil::split_or_filter_into_subquery(ObIArray<const ObDMLStmt *> &
     }
   }
 
+  return ret;
+}
+
+/**
+ * If every appearance of cte is accompanied by some filter,
+ * We can combine these filters to reduce the data materialized by cte.
+ * We try to push these filters to where condition.
+ * If all filters can be push to where condition, nonwhere_filter will be NULL.
+ * Otherwise, we might have both where_filter and nonwhere_filter.
+ * e.g.
+ *   with cte as (select a,count(*) as cnt from t1 group by a)
+ *    select * from cte where a = 1 and cnt = 1 union all select * from cte where a = 2 and cnt = 2;
+ *   nonwhere_filter :  (a = 1 and cnt = 1) or (a = 2 and cnt = 2)
+ *   where_filter : (a = 1) or (a = 2)
+*/
+int ObOptimizerUtil::try_push_down_temp_table_filter(ObOptimizerContext &opt_ctx,
+                                                     ObSqlTempTableInfo &info,
+                                                     ObRawExpr *&nonwhere_filter,
+                                                     ObRawExpr *&where_filter)
+{
+  int ret = OB_SUCCESS;
+  bool have_filter = true;
+  nonwhere_filter = NULL;
+  where_filter = NULL;
+  ObSEArray<ObIArray<ObRawExpr *> *, 4> temp_table_filters;
+  ObSEArray<const ObDMLStmt *, 4> parent_stmts;
+  ObSEArray<const ObSelectStmt *, 4> subqueries;
+  ObSEArray<int64_t, 4> table_ids;
+  ObSelectStmt *temp_table_query = info.table_query_;
+  for (int64_t i = 0; OB_SUCC(ret) && have_filter && i < info.table_infos_.count(); ++i) {
+    TableItem *table =  info.table_infos_.at(i).table_item_;
+    ObDMLStmt *stmt = info.table_infos_.at(i).upper_stmt_;
+    if (OB_ISNULL(table) || OB_ISNULL(stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (info.table_infos_.at(i).table_filters_.empty()) {
+      have_filter = false;
+    } else if (OB_FAIL(temp_table_filters.push_back(&info.table_infos_.at(i).table_filters_))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(parent_stmts.push_back(stmt))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(subqueries.push_back(temp_table_query))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (OB_FAIL(table_ids.push_back(table->table_id_))) {
+      LOG_WARN("failed to push back", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret) && have_filter) {
+    OPT_TRACE("pushdown filter into temp table:", info.table_query_);
+    bool can_push_all = false;
+    if (OB_FAIL(ObOptimizerUtil::split_or_filter_into_subquery(parent_stmts,
+                                                               subqueries,
+                                                               table_ids,
+                                                               temp_table_filters,
+                                                               opt_ctx,
+                                                               where_filter,
+                                                               can_push_all,
+                                                               /*check_match_index = */false))) {
+      LOG_WARN("failed to split filter", K(ret));
+    } else if (can_push_all) {
+      // do nothing
+    } else if (OB_FAIL(push_down_temp_table_filter(opt_ctx.get_expr_factory(), opt_ctx.get_session_info(),
+                                                   info, nonwhere_filter))) {
+      LOG_WARN("failed to push down remain temp table filter", K(ret));
+    }
+    if (NULL != where_filter) {
+      OPT_TRACE("succeed to pushdown filter to where:", where_filter);
+    }
+    if (NULL != nonwhere_filter) {
+      OPT_TRACE("succeed to pushdown filter into the top of temp table:", nonwhere_filter);
+    }
+  }
+  return ret;
+}
+
+int ObOptimizerUtil::push_down_temp_table_filter(ObRawExprFactory &expr_factory,
+                                                 ObSQLSessionInfo *session_info,
+                                                 ObSqlTempTableInfo &info,
+                                                 ObRawExpr *&temp_table_filter,
+                                                 ObSelectStmt *temp_table_query)
+{
+  int ret = OB_SUCCESS;
+  temp_table_filter = NULL;
+  ObSEArray<ObRawExpr *, 8> and_exprs;
+  ObRawExpr *or_expr = NULL;
+  bool have_temp_table_filter = true;
+  temp_table_query = (NULL == temp_table_query) ? info.table_query_ : temp_table_query;
+  if (OB_ISNULL(temp_table_query)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpect null param", K(info), K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
+    have_temp_table_filter &= !info.table_infos_.at(i).table_filters_.empty();
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
+    ObDMLStmt *upper_stmt = info.table_infos_.at(i).upper_stmt_;
+    TableItem *table = info.table_infos_.at(i).table_item_;
+    ObIArray<ObRawExpr *> &table_filters = info.table_infos_.at(i).table_filters_;
+    ObSEArray<ObRawExpr *, 8> rename_exprs;
+    ObRawExpr *and_expr = NULL;
+    if (table_filters.empty() || OB_ISNULL(upper_stmt) ||
+        OB_ISNULL(table)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpect null table info", K(ret));
+    } else if (OB_FAIL(ObOptimizerUtil::rename_pushdown_filter(*upper_stmt,
+                                                               *temp_table_query,
+                                                               table->table_id_,
+                                                               session_info,
+                                                               expr_factory,
+                                                               table_filters,
+                                                               rename_exprs))) {
+      LOG_WARN("failed to rename push down preds", K(ret));
+    } else if (OB_FAIL(ObRawExprUtils::build_and_expr(expr_factory,
+                                                      rename_exprs,
+                                                      and_expr))) {
+      LOG_WARN("failed to build and expr", K(ret));
+    }
+    if (OB_SUCC(ret) && OB_FAIL(and_exprs.push_back(and_expr))) {
+      LOG_WARN("failed to push back expr", K(ret));
+    }
+  }
+  if (OB_FAIL(ret) || !have_temp_table_filter) {
+  } else if (OB_FAIL(ObRawExprUtils::build_or_exprs(expr_factory,
+                                                    and_exprs,
+                                                    or_expr))) {
+    LOG_WARN("failed to build or expr", K(ret));
+  } else if (OB_FAIL(or_expr->formalize(session_info))) {
+    LOG_WARN("failed to formalize expr", K(ret));
+  } else if (OB_FAIL(or_expr->pull_relation_id())) {
+    LOG_WARN("failed to pull relation id and levels", K(ret));
+  } else {
+    temp_table_filter = or_expr;
+  }
   return ret;
 }
 

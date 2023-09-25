@@ -2272,6 +2272,43 @@ int ObRootUtils::is_first_priority_primary_zone_changed(
   return ret;
 }
 
+int ObRootUtils::check_ls_balance_and_commit_rs_job(
+    const uint64_t tenant_id,
+    const int64_t rs_job_id,
+    const ObRsJobType rs_job_type)
+{
+  int ret = OB_SUCCESS;
+  int check_ret = OB_NEED_WAIT;
+  const char* rs_job_type_str = NULL;
+  if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("GCTX.sql_proxy_ is null", KR(ret), KP(GCTX.sql_proxy_));
+  } else if (OB_UNLIKELY(!ObRsJobTableOperator::is_valid_job_type(rs_job_type)
+      || NULL == (rs_job_type_str = ObRsJobTableOperator::get_job_type_str(rs_job_type))
+      || rs_job_id < 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid job type", KR(ret), K(rs_job_type), KP(rs_job_type_str), K(rs_job_id));
+  } else if (OB_FAIL(ObRootUtils::check_tenant_ls_balance(tenant_id, check_ret))) {
+    LOG_WARN("fail to execute check_tenant_ls_balance", KR(ret), K(tenant_id));
+  } else if (OB_NEED_WAIT != check_ret) {
+    DEBUG_SYNC(BEFORE_FINISH_UNIT_NUM);
+    if (OB_SUCC(RS_JOB_COMPLETE(rs_job_id, check_ret, *GCTX.sql_proxy_))) {
+      FLOG_INFO("[COMMIT_RS_JOB NOTICE] complete an inprogress rs job",
+          KR(ret), K(tenant_id), K(rs_job_id), K(check_ret), K(rs_job_type), K(rs_job_type_str));
+    } else {
+      LOG_WARN("fail to complete rs job", KR(ret), K(tenant_id), K(rs_job_id), K(check_ret),
+          K(rs_job_type), K(rs_job_type_str));
+      if (OB_EAGAIN == ret) {
+        FLOG_WARN("[COMMIT_RS_JOB NOTICE] the specified rs job might has "
+            "been already completed due to a new job or deleted in table manually",
+            KR(ret), K(tenant_id), K(rs_job_id), K(check_ret), K(rs_job_type), K(rs_job_type_str));
+        ret = OB_SUCCESS; // no need to return the error code
+      }
+    }
+  }
+  return ret;
+}
+
 ///////////////////////////////
 
 ObClusterRole ObClusterInfoGetter::get_cluster_role_v2()

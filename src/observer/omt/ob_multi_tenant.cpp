@@ -137,6 +137,7 @@
 #include "share/errsim_module/ob_tenant_errsim_event_mgr.h"
 #endif
 #include "observer/table/ob_htable_lock_mgr.h"
+#include "observer/table/ob_table_session_pool.h"
 
 using namespace oceanbase;
 using namespace oceanbase::lib;
@@ -424,7 +425,7 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, ObStorageLogger::mtl_init, ObStorageLogger::mtl_start, ObStorageLogger::mtl_stop, ObStorageLogger::mtl_wait, mtl_destroy_default);
     MTL_BIND2(ObTenantMetaMemMgr::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTransService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-    MTL_BIND2(mtl_new_default, ObLogService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, ObLogService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, ObLogService::mtl_destroy);
     MTL_BIND2(mtl_new_default, logservice::ObGarbageCollector::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObLSService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTenantCheckpointSlogHandler::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
@@ -531,6 +532,7 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, ObSharedTimer::mtl_init, ObSharedTimer::mtl_start, ObSharedTimer::mtl_stop, ObSharedTimer::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObOptStatMonitorManager::mtl_init, ObOptStatMonitorManager::mtl_start, ObOptStatMonitorManager::mtl_stop, ObOptStatMonitorManager::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTenantSrs::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, table::ObTableApiSessPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
   }
 
   if (OB_SUCC(ret)) {
@@ -681,14 +683,26 @@ int ObMultiTenant::create_hidden_sys_tenant()
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = OB_SYS_TENANT_ID;
+  omt::ObTenant *tenant;
   ObTenantMeta meta;
-
   if (OB_FAIL(construct_meta_for_hidden_sys(meta))) {
     LOG_ERROR("fail to construct meta", K(ret));
-  } else if (OB_FAIL(create_tenant(meta, true/* write_slog*/))) {
-    LOG_ERROR("create hidden sys tenant failed", K(ret));
+  } else {
+    if (OB_FAIL(get_tenant(tenant_id, tenant))) {
+      ret = OB_SUCCESS;
+      if (OB_FAIL(create_tenant(meta, true/* write_slog */))) {
+        LOG_ERROR("create hidden sys tenant failed", K(ret));
+      }
+      LOG_INFO("finish create hidden sys", KR(ret));
+    } else if(tenant->is_hidden()){
+      if (OB_SUCC(ret) && !(meta.unit_ == tenant->get_unit())) {
+        if (OB_FAIL(GCTX.omt_->update_tenant_unit_no_lock(meta.unit_))) {
+          LOG_WARN("fail to update tenant unit", K(ret), K(tenant_id));
+        }
+      }
+      LOG_INFO("sys tenant has been created, no need create hidden sys");
+    }
   }
-
   return ret;
 }
 
@@ -853,7 +867,11 @@ int ObMultiTenant::create_tenant(const ObTenantMeta &meta, bool write_slog, cons
       tenant_allocator_created = true;
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(update_tenant_memory(tenant_id, meta.unit_.config_.memory_size(), allowed_mem_limit))) {
+      int64_t memory_size = meta.unit_.config_.memory_size();
+      if (is_sys_tenant(tenant_id) && !meta.super_block_.is_hidden_) {
+        memory_size += GMEMCONF.get_extra_memory();
+      }
+      if (OB_FAIL(update_tenant_memory(tenant_id, memory_size, allowed_mem_limit))) {
         LOG_WARN("fail to update tenant memory", K(ret), K(tenant_id));
       }
     }
@@ -1641,14 +1659,6 @@ int ObMultiTenant::remove_tenant(const uint64_t tenant_id, bool &remove_tenant_s
   }
 
   if (OB_SUCC(ret)) {
-    ObTenantMutilAllocator *allocator = nullptr;
-    if (OB_FAIL(TMA_MGR_INSTANCE.get_tenant_mutil_allocator(tenant_id, allocator))) {
-      LOG_ERROR("failed to get multi allocator", K(ret));
-    } else {
-      allocator->try_purge();
-    }
-  }
-  if (OB_SUCC(ret)) {
     if (is_virtual_tenant_id(tenant_id) &&
         OB_FAIL(ObVirtualTenantManager::get_instance().del_tenant(tenant_id))) {
       if (OB_ENTRY_NOT_EXIST == ret) {
@@ -2432,7 +2442,7 @@ void ObSharedTimer::mtl_wait(ObSharedTimer *&st)
   if (st != NULL) {
     int &tg_id = st->tg_id_;
     if (tg_id > 0) {
-      TG_WAIT(tg_id);
+      TG_WAIT_ONLY(tg_id);
     }
   }
 }

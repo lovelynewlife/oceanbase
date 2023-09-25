@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2021 OceanBase
+ * Copyright (c) 2023 OceanBase
  * OceanBase CE is licensed under Mulan PubL v2.
  * You can use this software according to the terms and conditions of the Mulan PubL v2.
  * You may obtain a copy of Mulan PubL v2 at:
@@ -10,20 +10,19 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#ifndef OCEANBASE_LOGSERVICE_LOG_IO_UTILS_
-#define OCEANBASE_LOGSERVICE_LOG_IO_UTILS_
-namespace oceanbase
-{
-namespace palf
-{
+#ifndef OCEANBASE_SHARE_CONFIG_OB_CONFIG_MODE_NAME_DEF_H_
+#define OCEANBASE_SHARE_CONFIG_OB_CONFIG_MODE_NAME_DEF_H_
+// _obkv_feature_mode
+#define MODE_NAME_TTL "ttl"
+#define MODE_NAME_REROUTING "rerouting"
+#define MODE_NAME_HOTKEY "hotkey"
 
-int openat_with_retry(const int dir_fd,
-                      const char *block_path,
-                      const int flag,
-                      const int mode,
-                      int &fd);
-int close_with_ret(const int fd);
+#define MODE_DEFAULT_VAL_TTL true
+#define MODE_DEFAULT_VAL_REROUTING false
+#define MODE_DEFAULT_VAL_HOTKEY false
 
-} // end namespace palf
-} // end namespace oceanbase
-#endif
+// mode value
+#define MODE_VAL_ON "on"
+#define MODE_VAL_OFF "off"
+
+#endif //

@@ -1654,28 +1654,33 @@ int ObPL::parameter_anonymous_block(ObExecContext &ctx,
       trans_ctx.raw_anonymous_off_ = block->pl_str_off_;
       trans_ctx.params_ = &params;
       trans_ctx.buf_ = (char *)trans_ctx.allocator_->alloc(sql.length());
-      trans_ctx.buf_size_ = sql.length();
-      trans_ctx.p_list_ = parse_result.param_nodes_;
-      CK (T_STMT_LIST == parse_result.result_tree_->type_ && 1 == parse_result.result_tree_->num_child_);
-      CK (OB_NOT_NULL(block_node = parse_result.result_tree_->children_[0]));
-      CK (T_SP_ANONYMOUS_BLOCK == block_node->type_);
-      CK (OB_NOT_NULL(block_node = block_node->children_[0]));
-      CK (T_SP_BLOCK_CONTENT == block_node->type_ || T_SP_LABELED_BLOCK == block_node->type_);
-      OZ (transform_tree(trans_ctx, const_cast<ParseNode *>(block), block_node, ctx, parse_result));
-      if (OB_SUCC(ret)) {
-        if (trans_ctx.buf_size_ < trans_ctx.buf_len_ + trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_ ||
-            trans_ctx.raw_sql_.length() < trans_ctx.copied_idx_) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected error about trans_ctx.buf", K(ret));
-        } else {
-          MEMCPY(trans_ctx.buf_ + trans_ctx.buf_len_,
-                  trans_ctx.raw_sql_.ptr() + trans_ctx.copied_idx_,
-                  trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_);
-          trans_ctx.buf_len_ += trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_;
+      if (OB_ISNULL(trans_ctx.buf_)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("allocate failed", K(sql), K(ret));
+      } else {
+        trans_ctx.buf_size_ = sql.length();
+        trans_ctx.p_list_ = parse_result.param_nodes_;
+        CK (T_STMT_LIST == parse_result.result_tree_->type_ && 1 == parse_result.result_tree_->num_child_);
+        CK (OB_NOT_NULL(block_node = parse_result.result_tree_->children_[0]));
+        CK (T_SP_ANONYMOUS_BLOCK == block_node->type_);
+        CK (OB_NOT_NULL(block_node = block_node->children_[0]));
+        CK (T_SP_BLOCK_CONTENT == block_node->type_ || T_SP_LABELED_BLOCK == block_node->type_);
+        OZ (transform_tree(trans_ctx, const_cast<ParseNode *>(block), block_node, ctx, parse_result));
+        if (OB_SUCC(ret)) {
+          if (trans_ctx.buf_size_ < trans_ctx.buf_len_ + trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_ ||
+              trans_ctx.raw_sql_.length() < trans_ctx.copied_idx_) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected error about trans_ctx.buf", K(ret));
+          } else {
+            MEMCPY(trans_ctx.buf_ + trans_ctx.buf_len_,
+                    trans_ctx.raw_sql_.ptr() + trans_ctx.copied_idx_,
+                    trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_);
+            trans_ctx.buf_len_ += trans_ctx.raw_sql_.length() - trans_ctx.copied_idx_;
+          }
         }
+        pc_key.assign_ptr(trans_ctx.buf_, trans_ctx.buf_len_);
+        OZ (get_pl_function(ctx, params, OB_INVALID_ID, pc_key, cacheobj_guard));
       }
-      pc_key.assign_ptr(trans_ctx.buf_, trans_ctx.buf_len_);
-      OZ (get_pl_function(ctx, params, OB_INVALID_ID, pc_key, cacheobj_guard));
     }
   }
   return ret;
@@ -2672,6 +2677,7 @@ int ObPLExecState::final(int ret)
         int64_t cursor_id = NULL == cursor ? -1 : cursor->get_id();
         if (OB_SUCCESS == tmp_ret && NULL != cursor && cursor->is_session_cursor()
             && NULL != ctx_.exec_ctx_->get_my_session()) {
+          // when execute fail. should use session close cursor
           ObSQLSessionInfo *session = ctx_.exec_ctx_->get_my_session();
           tmp_ret = session->close_cursor(cursor_id);
         }
@@ -2706,15 +2712,23 @@ int ObPLExecState::final(int ret)
         LOG_WARN("failed to destruct pl object", K(i), K(tmp_ret));
       }
     } else if (func_.get_variables().at(i).is_cursor_type()) {
-      // 函数结束这儿还需要close cursor，因为如果有异常，block结束除的close cursor就走不到，这儿还需要关闭
-      if (OB_FAIL(ret)) {
-        ObPLCursorInfo *cursor = NULL;
-        ObObjParam param;
-        ObSPIService::ObCusorDeclareLoc loc;
-        tmp_ret = ObSPIService::spi_get_cursor_info(&ctx_, func_.get_package_id(),
-                                          func_.get_routine_id(),
-                                          i, cursor, param, loc);
-        if (OB_SUCCESS == tmp_ret) {
+      int tmp_ret = OB_SUCCESS;
+      ObPLCursorInfo *cursor = NULL;
+      ObObjParam param;
+      ObSPIService::ObCusorDeclareLoc loc;
+      ObSQLSessionInfo *session = ctx_.exec_ctx_->get_my_session();
+      tmp_ret = ObSPIService::spi_get_cursor_info(&ctx_, func_.get_package_id(),
+                                        func_.get_routine_id(),
+                                        i, cursor, param, loc);
+      if (OB_SUCCESS == tmp_ret && NULL != cursor) {
+        if (0 == cursor->get_ref_count() && (cursor->is_session_cursor() || cursor->is_ref_by_refcursor())) {
+          // when refcount is 0. should use session close cursor
+          ObSQLSessionInfo *session = ctx_.exec_ctx_->get_my_session();
+          tmp_ret = session->close_cursor(cursor->get_id());
+          ret = OB_SUCCESS == ret ? tmp_ret : ret;
+          LOG_INFO("close session cursor after pl exec.", K(ret), K(tmp_ret), K(cursor->get_id()));
+        } else if (OB_FAIL(ret)) {
+          // 函数结束这儿还需要close cursor，因为如果有异常，block结束除的close cursor就走不到，这儿还需要关闭
           // 这儿为啥可能为null
           /*
           *
@@ -2738,38 +2752,20 @@ int ObPLExecState::final(int ret)
           * 上例中c1 调用了cursor init，但是c2没有调用，因为被execption打断，这个时候在final函数里面调用cursor close
           * 函数，这个obj就是null，因为c2没有调用cursor init。 另外goto也可能导致执行流变动，没有open就去close
           */
-          if (OB_NOT_NULL(cursor)) {
-            tmp_ret = ObSPIService::spi_cursor_close(
-            &ctx_, func_.get_package_id(), func_.get_routine_id(), i, true);
+          if (OB_SUCCESS != ObSPIService::spi_cursor_close(&ctx_, func_.get_package_id(),
+                                                  func_.get_routine_id(), i, true)) {
+            LOG_WARN("failed to get cursor info", K(tmp_ret),
+              K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
           }
         } else {
-          LOG_WARN("failed to get cursor info", K(tmp_ret),
-             K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
-        }
-        if (OB_SUCCESS != tmp_ret) {
-          LOG_WARN("failed to close cursor", K(tmp_ret),
-             K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
-        }
-      } else {
-        // local cursor must be closed.
-        ObPLCursorInfo *cursor = NULL;
-        ObObjParam param;
-        ObSPIService::ObCusorDeclareLoc loc;
-        tmp_ret = ObSPIService::spi_get_cursor_info(&ctx_, func_.get_package_id(),
-                                          func_.get_routine_id(),
-                                          i, cursor, param, loc);
-        if (OB_SUCCESS == tmp_ret) {
-          if (OB_NOT_NULL(cursor) && (!cursor->is_session_cursor()
-                                   && !cursor->is_ref_by_refcursor())) {
-            tmp_ret = ObSPIService::spi_cursor_close(&ctx_, func_.get_package_id(),
-                                                     func_.get_routine_id(), i, true);
-          } else {
-            LOG_WARN("failed to close cursor info", K(tmp_ret),
-             K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
+          // local cursor must be closed.
+          if (!cursor->is_session_cursor() && !cursor->is_ref_by_refcursor()) {
+            if (OB_SUCCESS != ObSPIService::spi_cursor_close(&ctx_, func_.get_package_id(),
+                                                    func_.get_routine_id(), i, true)) {
+              LOG_WARN("failed to close cursor info", K(tmp_ret),
+              K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
+            }
           }
-        } else {
-          LOG_WARN("failed to get cursor info", K(tmp_ret),
-             K(func_.get_package_id()), K(func_.get_routine_id()), K(i));
         }
       }
     }
@@ -3331,11 +3327,12 @@ int ObPLExecState::init(const ParamStore *params, bool is_anonymous)
     OZ(func_.get_frame_info().pre_alloc_exec_memory(*ctx_.exec_ctx_, ctx_.allocator_));
   }
 
+  // init params may use exec stack, need append to pl context first
+  CK (OB_NOT_NULL(top_context_ = ctx_.exec_ctx_->get_my_session()->get_pl_context()));
+  OZ (top_context_->get_exec_stack().push_back(this));
 
   OZ (init_params(params, is_anonymous));
 
-  CK (OB_NOT_NULL(top_context_ = ctx_.exec_ctx_->get_my_session()->get_pl_context()));
-  OZ (top_context_->get_exec_stack().push_back(this));
   OX (top_context_->set_has_output_arguments(!func_.get_out_args().is_empty()));
 
   if (OB_SUCC(ret)) {

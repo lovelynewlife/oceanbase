@@ -101,7 +101,7 @@ void ObTxLoopWorker::run1()
       last_tx_gc_ts_ = common::ObClockGenerator::getClock();
       can_gc_tx = true;
     }
-    
+
     //retain ctx gc, interval = 5s
     if (common::ObClockGenerator::getClock() - last_retain_ctx_gc_ts_ > TX_RETAIN_CTX_GC_INTERVAL) {
       TRANS_LOG(INFO, "try gc retain ctx");

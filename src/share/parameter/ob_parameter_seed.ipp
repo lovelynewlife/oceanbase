@@ -138,6 +138,12 @@ DEF_TIME(schema_history_expire_time, OB_CLUSTER_PARAMETER, "7d", "[1m, 30d]",
          "with default 7days. Range: [1h, 30d]",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
+DEF_STR_WITH_CHECKER(_publish_schema_mode, OB_TENANT_PARAMETER, "BEST_EFFORT",
+                     common::ObConfigPublishSchemaModeChecker,
+                     "specify the inspection of schema synchronous status after ddl transaction commits"
+                     "values: BEST_EFFORT, ASYNC",
+                     ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+
 DEF_STR_WITH_CHECKER(default_compress_func, OB_CLUSTER_PARAMETER, "zstd_1.3.8",
                      common::ObConfigCompressFuncChecker,
                      "default compress function name for create new table, "
@@ -262,6 +268,9 @@ DEF_INT(_max_malloc_sample_interval, OB_CLUSTER_PARAMETER, "256", "[1, 10000]",
         "which is not less than _min_malloc_sample_interval. "
         "1 means to sample all malloc, Range: [1, 10000]",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_BOOL(_enable_values_table_folding, OB_CLUSTER_PARAMETER, "True",
+         "whether enable values statement folds self params",
+         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 //// tenant config
 DEF_TIME_WITH_CHECKER(max_stale_time_for_weak_consistency, OB_TENANT_PARAMETER, "5s",
                       common::ObConfigStaleTimeChecker,
@@ -272,13 +281,13 @@ DEF_TIME_WITH_CHECKER(max_stale_time_for_weak_consistency, OB_TENANT_PARAMETER, 
 DEF_BOOL(enable_monotonic_weak_read, OB_TENANT_PARAMETER, "false",
          "specifies observer supportting atomicity and monotonic order read",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_DBL(server_cpu_quota_min, OB_CLUSTER_PARAMETER, "1", "[1,16]",
+DEF_DBL(server_cpu_quota_min, OB_CLUSTER_PARAMETER, "0", "[0,16]",
         "the number of minimal vCPUs allocated to the server tenant"
-        "(a special internal tenant that exists on every observer). Range: [1, 16]",
+        "(a special internal tenant that exists on every observer). 0 stands for adaptive. Range: [0, 16]",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
-DEF_DBL(server_cpu_quota_max, OB_CLUSTER_PARAMETER, "1", "[1,16]",
+DEF_DBL(server_cpu_quota_max, OB_CLUSTER_PARAMETER, "0", "[0,16]",
         "the number of maximal vCPUs allocated to the server tenant"
-        "(a special internal tenant that exists on every observer). Range: [1, 16]",
+        "(a special internal tenant that exists on every observer). 0 stands for adaptive. Range: [0, 16]",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
 DEF_CAP_WITH_CHECKER(_hidden_sys_tenant_memory, OB_CLUSTER_PARAMETER, "0M",
         common::ObConfigTenantMemoryChecker, "[0M,)",
@@ -474,9 +483,9 @@ DEF_TIME(tablet_meta_table_check_interval, OB_CLUSTER_PARAMETER, "30m", "[1m,)",
          "the time interval that observer compares tablet meta table with local ls replica info "
          "and make adjustments to ensure the correctness of tablet meta table. Range: [1m,+∞)",
          ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "4.2.1.0", "the min observer version",
+DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "4.3.0.0", "the min observer version",
         ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_VERSION(compatible, OB_TENANT_PARAMETER, "4.2.1.0", "compatible version for persisted data",
+DEF_VERSION(compatible, OB_TENANT_PARAMETER, "4.3.0.0", "compatible version for persisted data",
             ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_BOOL(enable_ddl, OB_CLUSTER_PARAMETER, "True", "specifies whether DDL operation is turned on. "
          "Value:  True:turned on;  False: turned off",
@@ -848,6 +857,12 @@ DEF_BOOL(_enable_parallel_minor_merge, OB_TENANT_PARAMETER, "True",
 DEF_BOOL(_enable_adaptive_compaction, OB_TENANT_PARAMETER, "True",
          "specifies whether allow adaptive compaction schedule and information collection",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_INT(compaction_dag_cnt_limit, OB_TENANT_PARAMETER, "15000", "[10000,200000]",
+        "the compaction dag count limit. Range: [10000,200000] in integer. default value is 15000",
+        ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_INT(compaction_schedule_tablet_batch_cnt, OB_TENANT_PARAMETER, "50000", "[10000,200000]",
+        "the batch size when scheduling tablet to execute compaction task. Range: [10000,200000] in integer. default value is 50000",
+        ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT(compaction_low_thread_score, OB_TENANT_PARAMETER, "0", "[0,100]",
         "the current work thread score of low priority compaction. Range: [0,100] in integer. Especially, 0 means default value",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -944,6 +959,12 @@ DEF_INT(_migrate_block_verify_level, OB_CLUSTER_PARAMETER, "1", "[0,2]",
 
 DEF_TIME(_cache_wash_interval, OB_CLUSTER_PARAMETER, "200ms", "[1ms, 3s]",
         "specify interval of cache background wash",
+        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+
+DEF_INT(_max_ls_cnt_per_server, OB_TENANT_PARAMETER, "0", "[0, 1024]",
+        "specify max ls count of one tenant on one observer."
+        "WARNING: Modifying this can potentially destabilize the cluster. It is strongly advised to avoid making such changes as they are unlikely to be necessary."
+        "0: the cluster will adapt the max ls number according to the memory size of tenant itself",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
 // TODO bin.lb: to be remove
@@ -1207,8 +1228,8 @@ DEF_STR_WITH_CHECKER(_audit_mode, OB_TENANT_PARAMETER, "NONE",
         "MYSQL: use mysql audit"
         "ORACLE: use oracle audit",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT(_max_schema_slot_num, OB_CLUSTER_PARAMETER, "128", "[2,256]",
-        "the max schema slot number for each tenant, "
+DEF_INT(_max_schema_slot_num, OB_TENANT_PARAMETER, "128", "[2,256]",
+        "the max schema slot number for multi-version schema memory management, "
         "Range: [2, 256] in integer",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT_WITH_CHECKER(_ob_query_rate_limit, OB_TENANT_PARAMETER, "-1",
@@ -1557,8 +1578,8 @@ DEF_BOOL(_xsolapi_generate_with_clause, OB_TENANT_PARAMETER, "True",
 DEF_BOOL(_optimizer_group_by_placement, OB_TENANT_PARAMETER, "True",
         "enable group by placement transform rule",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_TIME(_wait_interval_after_truncate, OB_CLUSTER_PARAMETER, "30s", "[0s,)",
-        "time interval for waiting other servers to refresh schema after truncate",
+DEF_TIME(_wait_interval_after_parallel_ddl, OB_TENANT_PARAMETER, "30s", "[0s,)",
+        "time interval for waiting other servers to refresh schema after parallel ddl is done",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_CAP(_rebuild_replica_log_lag_threshold, OB_TENANT_PARAMETER, "0M", "[0M,)",
         "size of clog files that a replica lag behind leader to trigger rebuild, 0 means never trigger rebuild on purpose. Range: [0, +∞)",
@@ -1583,6 +1604,9 @@ DEF_BOOL(_enable_system_tenant_memory_limit, OB_CLUSTER_PARAMETER, "True",
          "specifies whether allowed to limit the memory of tenant 500",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 #endif
+DEF_BOOL(_force_malloc_for_absent_tenant, OB_CLUSTER_PARAMETER, "False",
+         "force malloc even if tenant does not exist in observer",
+         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 ERRSIM_DEF_TIME(errsim_transfer_backfill_error_time, OB_TENANT_PARAMETER, "0", "[0s,1h]",
         "the duration of the error happened to transfer backfill. "
         "Range: [0s, 1h] in duration",
@@ -1590,8 +1614,11 @@ ERRSIM_DEF_TIME(errsim_transfer_backfill_error_time, OB_TENANT_PARAMETER, "0", "
 DEF_TIME(_stall_threshold_for_dynamic_worker, OB_TENANT_PARAMETER, "3ms", "[0ms,)",
         "threshold of dynamic worker works",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_BOOL(_optimizer_better_inlist_costing, OB_TENANT_PARAMETER, "False",
+DEF_BOOL(_optimizer_better_inlist_costing, OB_TENANT_PARAMETER, "True",
         "enable improved costing of index access using in-list(s)",
+        ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_BOOL(_optimizer_skip_scan_enabled, OB_TENANT_PARAMETER, "False",
+        "enable/disable index skip scan",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_TIME(_ls_migration_wait_completing_timeout, OB_TENANT_PARAMETER, "30m", "[60s,)",
         "the wait timeout in ls complete migration phase",
@@ -1623,8 +1650,16 @@ DEF_TIME(kv_ttl_history_recycle_interval, OB_TENANT_PARAMETER, "7d", "[1d, 180d]
 DEF_BOOL(enable_kv_ttl, OB_TENANT_PARAMETER, "False",
     "specifies whether ttl task is enbled",
     ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_INT(ttl_thread_score, OB_TENANT_PARAMETER, "0", "[0,100]",
+        "the current work thread score of ttl thread. Range: [0,100] in integer. Especially, 0 means default value",
+        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+
 DEF_STR_WITH_CHECKER(sql_protocol_min_tls_version, OB_CLUSTER_PARAMETER, "none",
                      common::ObConfigSQLTlsVersionChecker,
                      "SQL SSL control options, used to specify the minimum SSL/TLS version number. "
                      "values: none, TLSv1, TLSv1.1, TLSv1.2, TLSv1.3",
                      ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+// obkv
+DEF_MODE_WITH_PARSER(_obkv_feature_mode, OB_CLUSTER_PARAMETER, "", common::ObKvFeatureModeParser,
+    "_obkv_feature_mode is a option list to control specified OBKV features on/off.",
+    ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));

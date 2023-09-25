@@ -10185,21 +10185,9 @@ int ObPLResolver::mock_self_param(bool need_rotate,
 {
   int ret = OB_SUCCESS;
   uint64_t acc_cnt = obj_access_idents.count();
-  const ObUserDefinedType *user_type = NULL;
-  bool need_mock = true;
   ObRawExpr *self_arg = NULL;
-  if (OB_SUCC(ret) && acc_cnt > 1 && !obj_access_idents.at(acc_cnt - 2).has_brackets_) {
-    OZ (current_block_->get_namespace().get_pl_data_type_by_name(resolve_ctx_,
-                                    acc_cnt > 2 ? obj_access_idents.at(acc_cnt - 3).access_name_ : ObString(""),
-                                    ObString(""),
-                                    obj_access_idents.at(acc_cnt - 2).access_name_,
-                                    user_type), ret, obj_access_idents);
-    if (OB_SUCC(ret) && OB_NOT_NULL(user_type)) {
-      need_mock = false;
-    }
-    ret = OB_SUCCESS;
-  }
-  if (need_mock) {
+  if (!(self_access_idxs.count() > 0 &&
+        ObObjAccessIdx::IS_UDT_NS == self_access_idxs.at(self_access_idxs.count() - 1).access_type_)) {
     if (self_access_idxs.at(self_access_idxs.count() - 1).is_udf_type()) {
       OX (self_arg = self_access_idxs.at(self_access_idxs.count() - 1).get_sysfunc_);
       CK (OB_NOT_NULL(self_arg));
@@ -11357,7 +11345,7 @@ int ObPLResolver::resolve_udf_without_brackets(
   OX (access_ident.set_pl_udf());
   OZ (expr_factory_.create_raw_expr(T_FUN_UDF, udf_expr), K(q_name));
   CK (OB_NOT_NULL(udf_expr));
-  OX (udf_expr->set_func_name(q_name.col_name_));
+  OX (udf_expr->set_func_name(access_ident.access_name_));
   OX (udf_info.ref_expr_ = udf_expr);
   OX (udf_info.udf_name_ = access_ident.access_name_);
   OZ (resolve_name(q_name, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, access_idxs, unit_ast),
@@ -11608,6 +11596,7 @@ int ObPLResolver::add_udt_self_argument(const ObIRoutineInfo *routine_info,
                                     expr_factory_,
                                     current_block_->get_namespace(),
                                     self_argument));
+      CK (OB_NOT_NULL(self_argument));
       OZ (self_argument->formalize(&resolve_ctx_.session_info_));
       OX (udf_info.set_is_udf_udt_cons());
       OZ (func.add_expr(self_argument));
@@ -11750,13 +11739,24 @@ int ObPLResolver::resolve_udf_info(
           && (ObPLBlockNS::BlockType::BLOCK_PACKAGE_BODY == current_block_->get_namespace().get_block_type()
               || ObPLBlockNS::BlockType::BLOCK_OBJECT_BODY == current_block_->get_namespace().get_block_type()
               || ObPLBlockNS::BlockType::BLOCK_ROUTINE == current_block_->get_namespace().get_block_type());
+      int64_t cur_pkg_version = current_block_->get_namespace().get_package_version();
+      if (OB_SUCC(ret)
+          && OB_INVALID_ID != package_routine_info->get_pkg_id()
+          && package_routine_info->get_pkg_id() != current_block_->get_namespace().get_package_id()) {
+        share::schema::ObSchemaType schema_type = OB_MAX_SCHEMA;
+        schema_type = package_routine_info->is_udt_routine() ? UDT_SCHEMA : PACKAGE_SCHEMA;
+        OZ (resolve_ctx_.schema_guard_.get_schema_version(schema_type,
+                                                          package_routine_info->get_tenant_id(),
+                                                          package_routine_info->get_pkg_id(),
+                                                          cur_pkg_version));
+      }
       OZ (ObRawExprUtils::resolve_udf_common_info(db_name,
                                                   package_name,
                                                   package_routine_info->get_id(),
                                                   package_routine_info->get_pkg_id(),
                                                   package_routine_info->get_subprogram_path(),
                                                   common::OB_INVALID_VERSION, /*udf_schema_version*/
-                                                  current_block_->get_namespace().get_package_version(),
+                                                  cur_pkg_version,
                                                   package_routine_info->is_deterministic(),
                                                   package_routine_info->is_parallel_enable(),
                                                   is_package_body_udf,
@@ -13338,7 +13338,9 @@ ObPLMockSelfArg::~ObPLMockSelfArg()
   int ret = OB_SUCCESS;
   if (mocked_) {
     if (mark_only_) {
-      expr_params_.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM);
+      if (OB_FAIL(expr_params_.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM))) {
+        LOG_WARN("failed to clear flag", K(ret));
+      }
     } else {
       std::rotate(expr_params_.begin(), expr_params_.begin() + 1, expr_params_.end());
       if (!expr_params_.at(expr_params_.count() - 1)->has_flag(IS_UDT_UDF_SELF_PARAM)) {
@@ -13478,12 +13480,16 @@ int ObPLResolver::check_routine_callable(const ObPLBlockNS &ns,
       if (expr_params.count() > 0
           && expr_params.at(0)->get_result_type().get_udt_id()
               == access_idxs.at(access_idxs.count() - 1).var_index_) {
-        expr_params.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM);
+        if (OB_FAIL(expr_params.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM))) {
+          LOG_WARN("failed to clear flag", K(ret));
+        }
       } else if (expr_params.count() > 0
                  && expr_params.at(0)->get_result_type().is_xml_sql_type()
                  && (T_OBJ_XML == access_idxs.at(access_idxs.count() - 1).var_index_)) {
         // select 'head' || xmlparse(document '<a>123</a>').getclobval() into a from dual;
-        expr_params.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM);
+        if (OB_FAIL(expr_params.at(0)->clear_flag(IS_UDT_UDF_SELF_PARAM))) {
+          LOG_WARN("failed to clear flag", K(ret));
+        }
       } /*else if (expr_params.count() > 0
                  && expr_params.at(0)->get_expr_type() == T_QUESTIONMARK) {
         // do nothing ...
@@ -13593,7 +13599,6 @@ int ObPLResolver::resolve_construct(ObObjAccessIdent &access_ident,
   const ObUserDefinedType *user_type = NULL;
   ObObjAccessIdx access_idx;
   OV (access_ident.is_pl_udf(), OB_ERR_UNEXPECTED, K(access_ident));
-  OZ (q_name.access_idents_.push_back(access_ident));
   OZ (ns.get_pl_data_type_by_id(user_type_id, user_type));
   CK (OB_NOT_NULL(user_type));
   OZ (get_names_by_access_ident(access_ident,
@@ -13601,6 +13606,16 @@ int ObPLResolver::resolve_construct(ObObjAccessIdent &access_ident,
                                 access_ident.udf_info_.udf_database_,
                                 access_ident.udf_info_.udf_package_,
                                 access_ident.udf_info_.udf_name_));
+
+  if (OB_SUCC(ret) &&
+      !access_ident.udf_info_.udf_database_.empty() &&
+      access_ident.udf_info_.udf_database_.case_compare(OB_SYS_DATABASE_NAME) != 0) {
+    OZ (q_name.access_idents_.push_back(access_ident.udf_info_.udf_database_));
+  }
+  if (OB_SUCC(ret) && !access_ident.udf_info_.udf_package_.empty()) {
+    OZ (q_name.access_idents_.push_back(access_ident.udf_info_.udf_package_));
+  }
+  OZ (q_name.access_idents_.push_back(access_ident));
   OZ (resolve_construct(q_name, access_ident.udf_info_, *user_type, expr));
   CK (OB_NOT_NULL(expr));
   OZ (func.add_expr(expr));
@@ -16813,27 +16828,21 @@ int ObPLResolver::replace_map_or_order_expr(
   if (OB_FAIL(ret)) {
   } else if (OB_NOT_NULL(routine_info)) {
     const ObString &routine_name = routine_info->get_routine_name();
-    ObObjAccessIdent access_ident(routine_name);
+    ObObjAccessIdent left_access_ident(routine_name);
     ObSEArray<ObObjAccessIdx, 1> left_idxs;
-    ObSEArray<ObObjAccessIdx, 1> right_idxs;
     OZ (left_idxs.push_back(ObObjAccessIdx(*user_type,
                                            ObObjAccessIdx::AccessType::IS_EXPR,
                                            ObString(""),
                                            *user_type,
                                            reinterpret_cast<int64_t>(left))));
-    OZ (right_idxs.push_back(ObObjAccessIdx(*user_type,
-                                            ObObjAccessIdx::AccessType::IS_EXPR,
-                                            ObString(""),
-                                            *user_type,
-                                            reinterpret_cast<int64_t>(right))));
-    OX (access_ident.set_pl_udf());
-    OX (access_ident.access_name_ = routine_name);
+    OX (left_access_ident.set_pl_udf());
+    OX (left_access_ident.access_name_ = routine_name);
     if (routine_info->is_udt_order()) {
-      OZ (access_ident.params_.push_back(std::make_pair(right, 0)));
+      OZ (left_access_ident.params_.push_back(std::make_pair(right, 0)));
     }
     CK (OB_NOT_NULL(current_block_));
-    OZ (init_udf_info_of_accessident(access_ident));
-    OZ (resolve_access_ident(access_ident, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, left_idxs, func, true));
+    OZ (init_udf_info_of_accessident(left_access_ident));
+    OZ (resolve_access_ident(left_access_ident, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, left_idxs, func, true));
     CK (left_idxs.at(left_idxs.count() - 1).is_udf_type());
     OX (left = left_idxs.at(left_idxs.count() - 1).get_sysfunc_);
     if (OB_FAIL(ret)) {
@@ -16849,7 +16858,17 @@ int ObPLResolver::replace_map_or_order_expr(
       }
       OX (right = const_expr);
     } else {
-      OZ (resolve_access_ident(access_ident, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, right_idxs, func, true));
+      ObObjAccessIdent right_access_ident(routine_name);
+      ObSEArray<ObObjAccessIdx, 1> right_idxs;
+      OX (right_access_ident.set_pl_udf());
+      OX (right_access_ident.access_name_ = routine_name);
+      OZ (init_udf_info_of_accessident(right_access_ident));
+      OZ (right_idxs.push_back(ObObjAccessIdx(*user_type,
+                               ObObjAccessIdx::AccessType::IS_EXPR,
+                               ObString(""),
+                               *user_type,
+                               reinterpret_cast<int64_t>(right))));
+      OZ (resolve_access_ident(right_access_ident, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, right_idxs, func, true));
       CK (right_idxs.at(right_idxs.count() - 1).is_udf_type());
       OX (right = right_idxs.at(right_idxs.count() - 1).get_sysfunc_);
     }

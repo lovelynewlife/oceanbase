@@ -598,6 +598,8 @@ int ObTableQuerySyncP::try_process()
   } else if (OB_FAIL(get_query_session(query_session_id_, query_session_))) {
     LOG_WARN("fail to get query session", K(ret), K(query_session_id_));
   } else if (FALSE_IT(timeout_ts_ = get_timeout_ts())) {
+  } else if (FALSE_IT(table_id_ = arg_.table_id_)) {
+  } else if (FALSE_IT(tablet_id_ = arg_.tablet_id_)) {
   } else {
     if (ObQueryOperationType::QUERY_START == arg_.query_type_) {
       ret = process_query_start();
@@ -641,6 +643,7 @@ int ObTableQuerySyncP::destory_query_session(bool need_rollback_trans)
   } else if (OB_FAIL(ObQuerySyncMgr::get_instance().get_query_session_map()->erase_refactored(query_session_id_))) {
     LOG_WARN("fail to erase query session from query sync mgr", K(ret));
   } else {
+    ObTableQueryUtils::destroy_result_iterator(query_session_->get_result_iter());
     OB_DELETE(ObTableQuerySyncSession, ObModIds::TABLE_PROC, query_session_);
     LOG_DEBUG("destory query session success", K(ret), K(query_session_id_));
   }

@@ -719,6 +719,96 @@ int ObDRWorker::LocalityAlignment::do_generate_locality_task_from_encryption_log
   return ret;
 }
 
+int ObDRWorker::LocalityAlignment::try_generate_type_transform_task_for_readonly_replica_(
+    ReplicaDescArray &zone_replica_desc_in_locality,
+    ReplicaStatDesc &replica_stat_desc,
+    const int64_t index,
+    bool &task_generated)
+{
+  int ret = OB_SUCCESS;
+  task_generated = false;
+  if (OB_UNLIKELY(0 > index)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(index));
+  } else {
+    for (int64_t i = zone_replica_desc_in_locality.count() - 1; !task_generated && OB_SUCC(ret) && i >= 0; --i) {
+      ReplicaDesc &replica_desc = zone_replica_desc_in_locality.at(i);
+      if (REPLICA_TYPE_READONLY == replica_desc.replica_type_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("replica type unexpected", KR(ret), K(dr_ls_info_));
+      } else if (REPLICA_TYPE_FULL == replica_desc.replica_type_) {
+        if (OB_ISNULL(replica_stat_desc.unit_stat_info_)) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("invalid argument", KR(ret), K(replica_stat_desc));
+        } else {
+          const share::ObUnitInfo &unit_info = replica_stat_desc.unit_stat_info_->get_unit_info();
+          bool server_is_active = false;
+          if (!unit_info.unit_.is_active_status()) {
+            FLOG_INFO("unit status is not normal, can not generate type transform task", K(unit_info));
+          } else if (OB_FAIL(SVR_TRACER.check_server_active(unit_info.unit_.server_, server_is_active))) {
+            LOG_WARN("fail to check server is active", KR(ret), K(unit_info));
+          } else if (!server_is_active) {
+            FLOG_INFO("server status is not active, can not generate type transform task", K(unit_info));
+          } else if (OB_FAIL(generate_type_transform_task(
+                  replica_stat_desc,
+                  replica_desc.replica_type_,
+                  replica_desc.memstore_percent_))) {
+            LOG_WARN("fail to generate type transform task", KR(ret), K(replica_stat_desc));
+          } else if (OB_FAIL(zone_replica_desc_in_locality.remove(i))) {
+            LOG_WARN("fail to remove", KR(ret), K(i), K(replica_stat_desc), K(zone_replica_desc_in_locality));
+          } else if (OB_FAIL(replica_stat_map_.remove(index))) {
+            LOG_WARN("fail to remove", KR(ret), K(index), K(replica_stat_desc), K(replica_stat_map_));
+          } else {
+            task_generated = true;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDRWorker::LocalityAlignment::try_generate_remove_readonly_task_for_duplicate_log_stream_(
+    ReplicaStatDesc &replica_stat_desc,
+    share::ObLSReplica &replica,
+    const int64_t index)
+{
+  int ret = OB_SUCCESS;
+  ObUnitTableOperator unit_operator;
+  common::ObArray<share::ObUnit> unit_info_array;
+  if (OB_ISNULL(GCTX.sql_proxy_) || OB_UNLIKELY(0 > index)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(index));
+  } else if (OB_FAIL(unit_operator.init(*GCTX.sql_proxy_))) {
+    LOG_WARN("unit operator init failed", KR(ret));
+  } else if (OB_FAIL(unit_operator.get_units_by_tenant(gen_user_tenant_id(replica.get_tenant_id()), unit_info_array))) {
+    LOG_WARN("fail to get unit info array", KR(ret), K(replica));
+  } else {
+    bool replica_need_delete = true;
+    for (int64_t j = 0; OB_SUCC(ret) && j < unit_info_array.count(); ++j) {
+      if (unit_info_array.at(j).server_ == replica.get_server()) {
+        replica_need_delete = false;
+        break;
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (replica_need_delete) {
+      // this R-replica need to be deleted
+      if (OB_FAIL(generate_remove_replica_task(replica_stat_desc))) {
+        LOG_WARN("fail to generate remove replica task", KR(ret), K(replica_stat_desc));
+      } else if (OB_FAIL(replica_stat_map_.remove(index))) {
+        LOG_WARN("fail to remove", KR(ret), K(index), K(replica), K(replica_stat_map_));
+      }
+    } else {
+      // delete this R-replica from memory to avoid removing this replca
+      if (OB_FAIL(replica_stat_map_.remove(index))) {
+        LOG_WARN("fail to remove", KR(ret), K(replica_stat_map_), K(index));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDRWorker::LocalityAlignment::do_generate_locality_task_from_readonly_replica(
     ReplicaStatDesc &replica_stat_desc,
     share::ObLSReplica &replica,
@@ -733,61 +823,34 @@ int ObDRWorker::LocalityAlignment::do_generate_locality_task_from_readonly_repli
     ReplicaDescArray *zone_replica_desc = nullptr;
     int tmp_ret = locality_map_.get_refactored(zone, zone_replica_desc);
     if (OB_HASH_NOT_EXIST == tmp_ret) {
+      // zone has been shrinked, generate remove replica task
       if (OB_FAIL(generate_remove_replica_task(replica_stat_desc))) {
         LOG_WARN("fail to generate remove replica task", KR(ret));
       } else if (OB_FAIL(replica_stat_map_.remove(index))) {
         LOG_WARN("fail to remove", KR(ret));
       }
-    } else if (OB_SUCCESS == tmp_ret && nullptr != zone_replica_desc) {
-      bool found = false;
+    } else if (OB_SUCCESS == tmp_ret && OB_NOT_NULL(zone_replica_desc)) {
+      bool task_generated = false;
       std::sort(zone_replica_desc->begin(), zone_replica_desc->end());
-      for (int64_t i = zone_replica_desc->count() - 1; !found && OB_SUCC(ret) && i >= 0; --i) {
-        ReplicaDesc &replica_desc = zone_replica_desc->at(i);
-        if (REPLICA_TYPE_READONLY == replica_desc.replica_type_) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("replica type unexpected", KR(ret), K(dr_ls_info_));
-        } else if (REPLICA_TYPE_FULL == replica_desc.replica_type_) {
-          if (OB_ISNULL(replica_stat_desc.unit_stat_info_)) {
-            ret = OB_INVALID_ARGUMENT;
-            LOG_WARN("invalid argument", KR(ret), K(replica_stat_desc));
-          } else {
-            const share::ObUnitInfo &unit_info = replica_stat_desc.unit_stat_info_->get_unit_info();
-            bool server_is_active = false;
-            if (!unit_info.unit_.is_active_status()) {
-              FLOG_INFO("unit status is not normal, can not generate type transform task", K(unit_info));
-            } else if (OB_FAIL(SVR_TRACER.check_server_active(unit_info.unit_.server_, server_is_active))) {
-              LOG_WARN("fail to check server is active", KR(ret), K(unit_info));
-            } else if (!server_is_active) {
-              FLOG_INFO("server status is not active, can not generate type transform task", K(unit_info));
-            } else if (OB_FAIL(generate_type_transform_task(
-                    replica_stat_desc,
-                    replica_desc.replica_type_,
-                    replica_desc.memstore_percent_))) {
-              LOG_WARN("fail to generate type transform task", KR(ret), K(replica_stat_desc));
-            } else if (OB_FAIL(zone_replica_desc->remove(i))) {
-              LOG_WARN("fail to remove", KR(ret), K(i), K(replica), K(zone_replica_desc));
-            } else if (OB_FAIL(replica_stat_map_.remove(index))) {
-              LOG_WARN("fail to remove", KR(ret), K(index), K(replica), K(replica_stat_map_));
-            } else {
-              found = true;
-            }
-          }
-        }
-      }
-      // process not found
-      if (OB_FAIL(ret)) {
-        // failed
-      } else if (found) {
-        // found, bypass
+      // try to generate type_transform task if needed
+      if (OB_FAIL(try_generate_type_transform_task_for_readonly_replica_(
+                      *zone_replica_desc, replica_stat_desc, index, task_generated))) {
+        LOG_WARN("fail to try generate type transform task", KR(ret),
+                 KPC(zone_replica_desc), K(replica_stat_desc), K(index), K(task_generated));
+      } else if (task_generated) {
+        // a type transform task generated, bypass
       } else if (zone_replica_desc->is_readonly_all_server_) {
-        if (OB_FAIL(replica_stat_map_.remove(index))) {
-          LOG_WARN("fail to remove", KR(ret), K(index), K(replica), K(replica_stat_map_));
+        // for duplicate log stream, try to remove redudant R-replicas
+        if (OB_FAIL(try_generate_remove_readonly_task_for_duplicate_log_stream_(replica_stat_desc, replica, index))) {
+          LOG_WARN("fail to generate remove replica task for duplicate log stream",
+                   KR(ret), K(replica_stat_desc), K(replica), K(index));
         }
       } else {
+        // for common log stream, just generate remove replica task
         if (OB_FAIL(generate_remove_replica_task(replica_stat_desc))) {
-          LOG_WARN("fail to generate remove replica task", KR(ret));
+          LOG_WARN("fail to generate remove replica task", KR(ret), K(replica_stat_desc));
         } else if (OB_FAIL(replica_stat_map_.remove(index))) {
-          LOG_WARN("fail to remove", KR(ret));
+          LOG_WARN("fail to remove", KR(ret), K(replica_stat_map_), K(index));
         }
       }
     } else {
@@ -2447,8 +2510,8 @@ int ObDRWorker::do_single_replica_permanent_offline_(
   } else if (is_offline) {
     FLOG_INFO("found ls replica need to permanent offline", K(tenant_id), K(ls_id), K(member_to_remove), K(replica_type), K(dr_ls_info));
     share::ObTaskId task_id;
-    int64_t new_paxos_replica_number;
-    int64_t old_paxos_replica_number;
+    int64_t new_paxos_replica_number = 0;
+    int64_t old_paxos_replica_number = 0;
     common::ObAddr leader_addr;
     const common::ObAddr source_server; // not useful
     const bool need_check_has_leader_while_remove_replica = ObReplicaTypeCheck::is_paxos_replica_V2(replica_type);
@@ -2745,14 +2808,14 @@ int ObDRWorker::generate_migrate_ls_task(
   } else {
     ObDRTaskKey task_key;
     bool task_exist = false;
-    uint64_t tenant_id;
+    uint64_t tenant_id = 0;
     share::ObLSID ls_id;
     share::ObTaskId task_id;
     ObReplicaMember data_source;
     int64_t data_size = 0;
     bool skip_change_member_list = false;
     ObDstReplica dst_replica;
-    int64_t old_paxos_replica_number;
+    int64_t old_paxos_replica_number = 0;
     const bool need_check_has_leader_while_remove_replica = false;
     const bool is_high_priority_task = true;
     bool can_generate = false;
@@ -3559,8 +3622,8 @@ int ObDRWorker::try_remove_readonly_replica_for_deleting_unit_(
     LOG_WARN("invalid argument", KR(ret), K(ls_replica));
   } else {
     share::ObTaskId task_id;
-    int64_t new_paxos_replica_number;
-    int64_t old_paxos_replica_number;
+    int64_t new_paxos_replica_number = 0;
+    int64_t old_paxos_replica_number = 0;
     common::ObAddr leader_addr;
     const common::ObAddr source_server; // not useful
     const bool need_check_has_leader_while_remove_replica = false;
@@ -3734,7 +3797,7 @@ int ObDRWorker::try_type_transform_for_deleting_unit_(
     // try to generate type transform task
     share::ObTaskId task_id;
     ObDRTaskKey task_key;
-    uint64_t tenant_id;
+    uint64_t tenant_id = 0;
     share::ObLSID ls_id;
     common::ObAddr leader_addr;
     int64_t old_paxos_replica_number = 0;
@@ -4191,7 +4254,7 @@ int ObDRWorker::try_cancel_unit_migration(
         LOG_WARN("fail to check need generate cancel unit migration task", KR(ret));
       } else if (need_generate) {
         share::ObTaskId task_id;
-        uint64_t tenant_id;
+        uint64_t tenant_id = 0;
         share::ObLSID ls_id;
         common::ObAddr leader_addr;
         int64_t old_paxos_replica_number = 0;
@@ -4491,14 +4554,14 @@ int ObDRWorker::try_migrate_to_unit(
                       is_unit_in_group_related))) {
         LOG_WARN("fail to check need generate migrate to unit task", KR(ret));
       } else if (need_generate) {
-        uint64_t tenant_id;
+        uint64_t tenant_id = 0;
         share::ObLSID ls_id;
         share::ObTaskId task_id;
         ObReplicaMember data_source;
         int64_t data_size = 0;
         ObDstReplica dst_replica;
         bool skip_change_member_list = false;
-        int64_t old_paxos_replica_number;
+        int64_t old_paxos_replica_number = 0;
         bool can_generate = false;
         const bool need_check_has_leader_while_remove_replica = false;
         const bool is_high_priority_task = false;
@@ -4656,7 +4719,10 @@ int ObDRWorker::generate_disaster_recovery_paxos_replica_number(
       if (locality_paxos_replica_number >= member_list_cnt_after) {
         new_paxos_replica_number = curr_paxos_replica_number;
         found = true;
-      } else {} // new member cnt greater than paxos_replica_number, not good
+      } else if (locality_paxos_replica_number + 1 == member_list_cnt_after) {
+        new_paxos_replica_number = curr_paxos_replica_number + 1;
+        found = true;
+      }
     } else if (curr_paxos_replica_number > locality_paxos_replica_number) {
       if (curr_paxos_replica_number >= member_list_cnt_after) {
         new_paxos_replica_number = curr_paxos_replica_number;

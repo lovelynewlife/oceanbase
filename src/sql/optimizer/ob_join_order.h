@@ -140,7 +140,7 @@ namespace sql
     ObRelIds R_TES_;
     //left degenerate set，用于检查join condition为退化谓词的合法性，存放的是左子树的所有表集
     ObRelIds L_DS_;
-    //right degnerate set，存放的是右子树的所有表集
+    //right degenerate set，存放的是右子树的所有表集
     ObRelIds R_DS_;
     bool is_degenerate_pred_;
     //当前join是否可交换左右表
@@ -627,11 +627,9 @@ struct EstimateCostInfo {
     const ObCostTableScanInfo &get_cost_table_scan_info() const
     { return est_cost_info_; }
     ObCostTableScanInfo &get_cost_table_scan_info() { return est_cost_info_; }
-    int compute_parallel_degree(const int64_t parallel_degree_limit,
-                                const int64_t micro_block_threshold,
+    int compute_parallel_degree(const int64_t cur_min_parallel_degree,
                                 int64_t &parallel) const;
-    int check_and_prepare_estimate_parallel_params(const int64_t input_parallel_degree_limit,
-                                                   const double cost_threshold_ms,
+    int check_and_prepare_estimate_parallel_params(const int64_t cur_min_parallel_degree,
                                                    int64_t &px_part_gi_min_part_per_dop,
                                                    double &cost_threshold_us,
                                                    int64_t &server_cnt,
@@ -741,8 +739,6 @@ struct EstimateCostInfo {
       use_hybrid_hash_dm_(false),
       join_type_(UNKNOWN_JOIN),
       need_mat_(false),
-      left_dup_table_pos_(OB_INVALID_ID),
-      right_dup_table_pos_(OB_INVALID_ID),
       left_need_sort_(false),
       left_prefix_pos_(0),
       right_need_sort_(false),
@@ -778,8 +774,6 @@ struct EstimateCostInfo {
         use_hybrid_hash_dm_(false),
         join_type_(join_type),
         need_mat_(need_mat),
-        left_dup_table_pos_(OB_INVALID_INDEX),
-        right_dup_table_pos_(OB_INVALID_INDEX),
         left_need_sort_(false),
         left_prefix_pos_(0),
         right_need_sort_(false),
@@ -909,8 +903,6 @@ struct EstimateCostInfo {
       }
       return sm_type;
     }
-    inline int64_t get_left_dup_table_pos() { return left_dup_table_pos_; }
-    inline int64_t get_right_dup_table_pos() { return right_dup_table_pos_; }
     bool contain_normal_nl() const { return contain_normal_nl_; }
     void set_contain_normal_nl(bool contain) { contain_normal_nl_ = contain; }
     int check_is_contain_normal_nl();
@@ -983,8 +975,6 @@ struct EstimateCostInfo {
                  K_(is_slave_mapping),
                  K_(join_type),
                  K_(need_mat),
-                 K_(left_dup_table_pos),
-                 K_(right_dup_table_pos),
                  K_(left_need_sort),
                  K_(left_prefix_pos),
                  K_(right_need_sort),
@@ -1010,9 +1000,6 @@ struct EstimateCostInfo {
     bool use_hybrid_hash_dm_; // if use hybrid hash distribution method for hash-hash dm
     ObJoinType join_type_;
     bool need_mat_;
-    // for duplicated table
-    int64_t left_dup_table_pos_;
-    int64_t right_dup_table_pos_;
     // for merge joins only
     bool left_need_sort_;
     int64_t left_prefix_pos_;
@@ -1574,6 +1561,7 @@ struct NullAwareAntiJoinInfo {
                            const uint64_t index_id,
                            const ObIndexInfoCache &index_info_cache,
                            PathHelper &helper,
+                           ObSQLSessionInfo *session_info,
                            OptSkipScanState &use_skip_scan);
 
     int get_access_path_ordering(const uint64_t table_id,
@@ -1603,7 +1591,10 @@ struct NullAwareAntiJoinInfo {
     int extract_preliminary_query_range(const common::ObIArray<ColumnItem> &range_columns,
                                         const common::ObIArray<ObRawExpr*> &predicates,
                                         ObIArray<ObExprConstraint> &expr_constraints,
+                                        int64_t table_id,
                                         ObQueryRange* &range);
+
+    int check_enable_better_inlist(int64_t table_id, bool &enable);
 
     int get_candi_range_expr(const ObIArray<ColumnItem> &range_columns,
                             const ObIArray<ObRawExpr*> &predicates,
@@ -1674,7 +1665,7 @@ struct NullAwareAntiJoinInfo {
                       bool &sort_match);
 
     /**
-     * 检查是否是intersting order
+     * 检查是否是interesting order
      * @keys 索引列
      * @stmt
      * @interest_column_ids 匹配的索引列的id

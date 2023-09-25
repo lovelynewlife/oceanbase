@@ -327,6 +327,12 @@ public:
   static int check_and_convert_table_name(const common::ObCollationType cs_type,
                                           const bool preserve_lettercase,
                                           common::ObString &name,
+                                          const bool is_oracle_mode,
+                                          const stmt::StmtType stmt_type = stmt::T_NONE,
+                                          const bool is_index_table = false);
+  static int check_and_convert_table_name(const common::ObCollationType cs_type,
+                                          const bool preserve_lettercase,
+                                          common::ObString &name,
                                           const stmt::StmtType stmt_type = stmt::T_NONE,
                                           const bool is_index_table = false);
   static int check_index_name(const common::ObCollationType cs_type, common::ObString &name);
@@ -369,6 +375,9 @@ public:
                                    const bool ret_error = false);
   static void set_insert_update_scope(common::ObCastMode &cast_mode);
   static bool is_insert_update_scope(common::ObCastMode &cast_mode);
+  static int get_cast_mode_for_replace(const ObRawExpr *expr,
+                                       const ObSQLSessionInfo *session,
+                                       ObCastMode &cast_mode);
   static common::ObCollationLevel transform_cs_level(const common::ObCollationLevel cs_level);
   static int set_cs_level_cast_mode(const common::ObCollationLevel cs_level,
                                     common::ObCastMode &cast_mode);
@@ -568,6 +577,7 @@ public:
   static bool is_support_batch_exec(ObItemType type);
   static bool is_pl_nested_sql(ObExecContext *cur_ctx);
   static bool is_fk_nested_sql(ObExecContext *cur_ctx);
+  static bool is_iter_uncommitted_row(ObExecContext *cur_ctx);
   static bool is_nested_sql(ObExecContext *cur_ctx);
   static bool is_select_from_dual(ObExecContext &ctx);
 
@@ -653,9 +663,9 @@ public:
   static int64_t combine_server_id(int64_t ts, uint64_t server_id) {
     return (ts & ((1LL << 43) - 1LL)) | ((server_id & 0xFFFF) << 48);
   }
-private:
   static int check_ident_name(const common::ObCollationType cs_type, common::ObString &name,
                               const bool check_for_path_char, const int64_t max_ident_len);
+private:
   static bool check_mysql50_prefix(common::ObString &db_name);
   struct SessionInfoCtx
   {

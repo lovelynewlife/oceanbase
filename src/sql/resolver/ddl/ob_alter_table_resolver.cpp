@@ -1460,6 +1460,8 @@ int ObAlterTableResolver::resolve_add_index(const ParseNode &node)
                           index_name,
                           create_index_arg->index_name_))) {
                     LOG_WARN("fail to wirte string", K(ret), K(index_name), K(first_column_name));
+                  } else {
+                    create_index_arg->index_schema_.set_name_generated_type(GENERATED_TYPE_SYSTEM);
                   }
                 }
               }
@@ -1478,6 +1480,8 @@ int ObAlterTableResolver::resolve_add_index(const ParseNode &node)
                   LOG_WARN("fail to get collation connection", K(ret));
                 } else if (OB_FAIL(ObSQLUtils::check_index_name(cs_type, create_index_arg->index_name_))) {
                   LOG_WARN("fail to check index name", K(ret), K(create_index_arg->index_name_));
+                } else {
+                  create_index_arg->index_schema_.set_name_generated_type(GENERATED_TYPE_USER);
                 }
               }
             }
@@ -1764,7 +1768,7 @@ int ObAlterTableResolver::inner_add_partition(ParseNode *part_elements_node,
       LOG_WARN("failed to resolve reange partition elements", K(ret));
     }
   } else if (part_option.is_list_part()) {
-    if (T_RANGE_SUBPARTITION_LIST == part_elements_node->type_) {
+    if (T_RANGE_PARTITION_LIST == part_elements_node->type_) {
       ret = OB_ERR_PARTITION_NOT_EXPECT_VALUES_LESS_THAN;
       LOG_WARN("VALUES LESS THAN or AT clause cannot be used with List partitioned tables", K(ret));
     } else if (OB_FAIL(resolve_list_partition_elements(alter_stmt,
@@ -3012,6 +3016,7 @@ int ObAlterTableResolver::resolve_add_primary(const ParseNode &node)
             && node.children_[1]->str_len_ != 0) {
           create_index_arg->index_name_.assign_ptr(node.children_[1]->str_value_,
                                                    static_cast<int32_t>(node.children_[1]->str_len_));
+          create_index_arg->index_schema_.set_name_generated_type(GENERATED_TYPE_USER);
         }
       } else {
         create_index_arg->index_name_.assign_ptr(common::OB_PRIMARY_INDEX_NAME,
@@ -3656,6 +3661,7 @@ int ObAlterTableResolver::resolve_modify_foreign_key_state(const ParseNode *node
       ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
       const ObDatabaseSchema *parent_db_schema = NULL;
       const ObTableSchema *parent_table_schema = NULL;
+      foreign_key_arg.name_generated_type_ = foreign_key_info->name_generated_type_;
       if (OB_ISNULL(schema_guard)) {
         ret = OB_ERR_UNEXPECTED;
         SQL_RESV_LOG(WARN, "schema_guard is null", K(ret));
@@ -4602,7 +4608,7 @@ int ObAlterTableResolver::add_udt_hidden_column(ObAlterTableStmt *alter_table_st
         // convert to xml binary
         ObXmlDocument *xml_doc = NULL;
         ObMulModeMemCtx* mem_ctx = nullptr;
-        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "XMLCodeGen"));
+        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "XMLModule"));
         if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(allocator_, mem_ctx))) {
           LOG_WARN("fail to create tree memory context", K(ret));
         } else if (OB_FAIL(ObXmlParserUtils::parse_document_text(mem_ctx,
@@ -5904,6 +5910,12 @@ int ObAlterTableResolver::check_mysql_rename_column(const AlterColumnSchema &alt
                        alter_column_schema.get_origin_column_name().length(),
                        alter_column_schema.get_origin_column_name().ptr());
         LOG_WARN("alter column has generated column deps", K(ret), K(alter_column_schema));
+      } else if (column->is_func_idx_column()) { // renname column with func index deps is forbidden
+        ret = OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX;
+        LOG_USER_ERROR(OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX,
+                       alter_column_schema.get_origin_column_name().length(),
+                       alter_column_schema.get_origin_column_name().ptr());
+        LOG_WARN("alter column has function index deps", K(ret), K(alter_column_schema));
       }
     }
   }

@@ -558,7 +558,8 @@ public:
                                     common::ObIAllocator &allocator,
                                     const ObColumnRefRawExpr &col_expr,
                                     ObRawExpr *&expr,
-                                    const ObSQLSessionInfo *session_info);
+                                    const ObSQLSessionInfo *session_info,
+                                    bool is_generated_column = false);
   static int build_column_conv_expr(const ObSQLSessionInfo *session_info,
                                     ObRawExprFactory &expr_factory,
                                     const common::ObObjType &type,
@@ -568,7 +569,8 @@ public:
                                     const common::ObString *column_conv_info,
                                     const common::ObIArray<common::ObString> *type_infos,
                                     ObRawExpr *&expr,
-                                    bool is_in_pl = false);
+                                    bool is_in_pl = false,
+                                    bool is_generated_column = false);
   static int build_var_int_expr(ObRawExprFactory &expr_factory,
                                 ObConstRawExpr *&expr);
   static int build_default_expr(ObRawExprFactory &expr_factory,
@@ -796,6 +798,7 @@ public:
                                     int64_t project_index,
                                     ObAliasRefRawExpr *&alias_expr);
   static int init_column_expr(const share::schema::ObColumnSchemaV2 &column_schema, ObColumnRefRawExpr &column_expr);
+  static ObCollationLevel get_column_collation_level(const common::ObObjType &type);
   /* 计算基本列的flag */
   static uint32_t calc_column_result_flag(const share::schema::ObColumnSchemaV2 &column_schema);
   static int expr_is_order_consistent(const ObRawExpr *from, const ObRawExpr *to, bool &is_consistent);

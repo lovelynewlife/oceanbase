@@ -597,6 +597,7 @@ int ObLS::stop_()
   }
   ls_migration_handler_.stop();
   ls_tablet_svr_.stop();
+  tablet_ttl_mgr_.stop();
   is_stopped_ = true;
 
   if (OB_SUCC(ret)) {
@@ -687,6 +688,7 @@ bool ObLS::safe_to_destroy()
   bool is_dup_table_handler_safe = false;
   bool is_log_handler_safe = false;
   bool is_transfer_handler_safe = false;
+  bool is_ttl_mgr_safe = false;
 
   if (OB_FAIL(ls_tablet_svr_.safe_to_destroy(is_tablet_service_safe))) {
     LOG_WARN("ls tablet service check safe to destroy failed", K(ret), KPC(this));
@@ -706,6 +708,9 @@ bool ObLS::safe_to_destroy()
   } else if (OB_FAIL(transfer_handler_.safe_to_destroy(is_transfer_handler_safe))) {
     LOG_WARN("transfer_handler_ check safe to destroy failed", K(ret), KPC(this));
   } else if (!is_transfer_handler_safe) {
+  } else if (OB_FAIL(tablet_ttl_mgr_.safe_to_destroy(is_ttl_mgr_safe))) {
+    LOG_WARN("tablet_ttl_mgr_ check safe to destroy failed", K(ret), KPC(this));
+  } else if (!is_ttl_mgr_safe) {
   } else {
     if (1 == ref_mgr_.get_total_ref_cnt()) { // only has one ref at the safe destroy task
       is_safe = true;
@@ -721,6 +726,7 @@ bool ObLS::safe_to_destroy()
                  K(is_dup_table_handler_safe),
                  K(is_ls_restore_handler_safe), K(is_log_handler_safe),
                  K(is_transfer_handler_safe),
+                 K(is_ttl_mgr_safe),
                  "ls_ref", ref_mgr_.get_total_ref_cnt(),
                  K(ret), KP(this), KPC(this));
         ref_mgr_.print();
@@ -1389,6 +1395,25 @@ int ObLS::block_tx_start()
     // transfer in must use this lock too.
     if (OB_FAIL(block_tx())) {
       LOG_WARN("block_tx failed", K(ret), K(get_ls_id()));
+    }
+  }
+  return ret;
+}
+
+int ObLS::block_all()
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ls is not inited", K(ret));
+  } else {
+    int64_t read_lock = 0;
+    int64_t write_lock = LSLOCKSTORAGE | LSLOCKTX;
+    ObLSLockGuard lock_myself(this, lock_, read_lock, write_lock);
+    // protect with lock_ to make sure there is no tablet transfer in process doing.
+    // transfer in must use this lock too.
+    if (OB_FAIL(ls_tx_svr_.block_all())) {
+      LOG_WARN("block_all failed", K(get_ls_id()));
     }
   }
   return ret;
@@ -2297,6 +2322,24 @@ int ObLS::set_restore_status(
     ls_tablet_svr_.enable_to_read();
   } else {
     ls_tablet_svr_.disable_to_read();
+  }
+  return ret;
+}
+
+int ObLS::set_gc_state(const logservice::LSGCState &gc_state)
+{
+  SCN invalid_scn;
+  return set_gc_state(gc_state, invalid_scn);
+}
+
+int ObLS::set_gc_state(const logservice::LSGCState &gc_state, const share::SCN &offline_scn)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ls is not inited", K(ret), K(ls_meta_));
+  } else {
+    ret = ls_meta_.set_gc_state(gc_state, offline_scn);
   }
   return ret;
 }

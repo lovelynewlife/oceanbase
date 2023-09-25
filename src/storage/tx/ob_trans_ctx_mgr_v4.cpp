@@ -173,7 +173,7 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(ls_tx_ctx_map_.init(lib::ObMemAttr(tenant_id, "LSTxCtxMgr")))) {
     TRANS_LOG(WARN, "ctx_map_mgr init fail", KR(ret));
-  } else if (OB_ISNULL(log_adapter) && OB_FAIL(log_adapter_def_.init(param))) {
+  } else if (OB_ISNULL(log_adapter) && OB_FAIL(log_adapter_def_.init(param, tx_table))) {
     TRANS_LOG(WARN, "tx log adapter init error", KR(ret));
   } else if (OB_NOT_NULL(log_adapter) && OB_FALSE_IT(tx_log_adapter_ = log_adapter)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2340,6 +2340,7 @@ int ObTxCtxMgr::remove_ls(const ObLSID &ls_id, const bool graceful)
       // if ls_id has been removed, OB_SUCCESS is returned.
       if (OB_SUCC(get_ls_tx_ctx_mgr(ls_id, ls_tx_ctx_mgr))) {
         // remove ls_id transaction context from map
+        ls_tx_ctx_mgr->get_ls_log_adapter()->reset();
         if (OB_FAIL(ls_tx_ctx_mgr_map_.del(ls_id, ls_tx_ctx_mgr))) {
           TRANS_LOG(WARN, "remove ls error", KR(ret), K(ls_id));
         } else {

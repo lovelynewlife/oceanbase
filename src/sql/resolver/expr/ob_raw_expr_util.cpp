@@ -895,7 +895,7 @@ int ObRawExprUtils::resolve_udf_param_exprs(ObResolverParams &params,
   // 通过名字指定参数统一记录在param_names_和param_exprs里面, 所以这里一定相等
   if (udf_info.param_names_.count() != udf_info.param_exprs_.count()) {
     ret = OB_ERR_UNEXPECTED;
-    SQL_LOG(WARN, "names array not equle to exprs array count",
+    SQL_LOG(WARN, "names array not equal to exprs array count",
              K(ret), K(udf_info.param_names_.count()), K(udf_info.param_exprs_.count()));
   } else if ((udf_info.udf_param_num_ + udf_info.param_names_.count()) > func_info->get_param_count()) {
     ret = OB_ERR_SP_WRONG_ARG_NUM;
@@ -1701,7 +1701,7 @@ int ObRawExprUtils::build_seq_nextval_expr(ObRawExpr *&expr,
     } else if (OB_FAIL(func_expr->add_flag(IS_SEQ_EXPR))) {
       LOG_WARN("failed to add flag", K(ret));
     } else if (OB_FAIL(func_expr->add_param_expr(col_id_expr))) {
-      LOG_WARN("set funcation param expr failed", K(ret));
+      LOG_WARN("set function param expr failed", K(ret));
     } else if (OB_FAIL(func_expr->formalize(session_info))) {
       LOG_WARN("failed to extract info", K(ret));
     } else if (NULL != stmt && OB_FAIL(stmt->get_pseudo_column_like_exprs().push_back(func_expr))) {
@@ -4547,7 +4547,8 @@ int ObRawExprUtils::build_column_conv_expr(ObRawExprFactory &expr_factory,
                                            common::ObIAllocator &allocator,
                                            const ObColumnRefRawExpr &col_ref,
                                            ObRawExpr *&expr,
-                                           const ObSQLSessionInfo *session_info)
+                                           const ObSQLSessionInfo *session_info,
+                                           bool is_generated_column)
 {
   int ret = OB_SUCCESS;
   ObString column_conv_info;
@@ -4584,7 +4585,7 @@ int ObRawExprUtils::build_column_conv_expr(ObRawExprFactory &expr_factory,
                                               !col_ref.is_not_null_for_write(),
                                               &column_conv_info,
                                               &col_ref.get_enum_set_values(),
-                                              expr))) {
+                                              expr, false, is_generated_column))) {
       LOG_WARN("fail to build column convert expr", K(ret));
     }
   }
@@ -4600,7 +4601,8 @@ int ObRawExprUtils::build_column_conv_expr(const ObSQLSessionInfo *session_info,
                                            const common::ObString *column_conv_info,
                                            const ObIArray<ObString> *type_infos,
                                            ObRawExpr *&expr,
-                                           bool is_in_pl)
+                                           bool is_in_pl,
+                                           bool is_generated_column)
 {
   int ret = OB_SUCCESS;
   ObObjType dest_type = type;
@@ -4681,12 +4683,17 @@ int ObRawExprUtils::build_column_conv_expr(const ObSQLSessionInfo *session_info,
   stmt::StmtType stmt_type_bak = stmt::T_NONE;
   if (OB_SUCC(ret)) {
     stmt_type_bak = session_info->get_stmt_type();
+    bool is_ddl = const_cast<sql::ObSQLSessionInfo *>(session_info)->get_ddl_info().is_ddl();
+    bool is_strict = lib::is_mysql_mode() && is_strict_mode(session_info->get_sql_mode());
+    bool ignore_charset_error = is_generated_column && stmt_type_bak==stmt::T_SELECT;
     (const_cast<ObSQLSessionInfo *>(session_info))->set_stmt_type(stmt::T_NONE);
     if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false,/* explicit_cast */
                                                   0,    /* result_flag */
                                                   session_info,
                                                   def_cast_mode))) {
       LOG_WARN("fail to get_default_cast_mode", K(ret));
+    } else if ((!is_ddl && !is_strict) || ignore_charset_error ) {
+        def_cast_mode |= CM_CHARSET_CONVERT_IGNORE_ERR;
     }
   }
   if (OB_SUCC(ret)) {
@@ -6201,6 +6208,19 @@ bool ObRawExprUtils::is_same_column_ref(const ObRawExpr *column_ref1, const ObRa
   return bret;
 }
 
+
+ObCollationLevel ObRawExprUtils::get_column_collation_level(const common::ObObjType &type)
+{
+  if (ob_is_string_type(type)
+      || ob_is_enumset_tc(type)
+      || ob_is_json_tc(type)
+      || ob_is_geometry_tc(type)) {
+    return CS_LEVEL_IMPLICIT;
+  } else {
+    return CS_LEVEL_NUMERIC;
+  }
+}
+
 int ObRawExprUtils::init_column_expr(const ObColumnSchemaV2 &column_schema, ObColumnRefRawExpr &column_expr)
 {
   int ret = OB_SUCCESS;
@@ -6221,11 +6241,11 @@ int ObRawExprUtils::init_column_expr(const ObColumnSchemaV2 &column_schema, ObCo
       || ob_is_json_tc(column_schema.get_data_type())
       || ob_is_geometry_tc(column_schema.get_data_type())) {
     column_expr.set_collation_type(column_schema.get_collation_type());
-    column_expr.set_collation_level(CS_LEVEL_IMPLICIT);
   } else {
     column_expr.set_collation_type(CS_TYPE_BINARY);
-    column_expr.set_collation_level(CS_LEVEL_NUMERIC);
   }
+  // extract set collation level for reuse
+  column_expr.set_collation_level(get_column_collation_level(column_schema.get_data_type()));
 
   if (OB_SUCC(ret)) {
     column_expr.set_accuracy(accuracy);
@@ -7123,7 +7143,7 @@ int ObRawExprUtils::build_dup_data_expr(ObRawExprFactory &factory,
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(name = (char *)factory.get_allocator().alloc(pos + 2))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("falied to allocate memory", K(ret));
+      LOG_WARN("failed to allocate memory", K(ret));
     } else {
       memcpy(name, name_buf, pos);
       name[pos] = ')';

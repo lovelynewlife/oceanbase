@@ -56,7 +56,7 @@ namespace sql
      */
     PROJECT_PRUNING,
     /**
-     * Exchange allocation is also known as parallel optimzation. Though there
+     * Exchange allocation is also known as parallel optimization. Though there
      * are multiple possible optimization that can happen in this step, at the
      * moment we just perform simple check on table location and insert pairs of
      * exchange nodes at places where data exchange needs to happen(local
@@ -222,12 +222,6 @@ namespace sql
     int check_whether_contain_nested_sql(const ObDMLStmt &stmt);
     int check_force_default_stat();
     int calc_link_stmt_count(const ObDMLStmt &stmt, int64_t &count);
-
-    int try_push_down_temp_table_filter(ObSqlTempTableInfo &temp_table_info,
-                                        ObRawExpr *&temp_table_filter,
-                                        ObRawExpr *&where_filter);
-    int push_down_temp_table_filter(ObSqlTempTableInfo &temp_table_info,
-                                    ObRawExpr *&temp_table_filter);
 
   private:
     ObOptimizerContext &ctx_;

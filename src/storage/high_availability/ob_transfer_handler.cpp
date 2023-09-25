@@ -52,6 +52,7 @@ ERRSIM_POINT_DEF(EN_UPDATE_ALL_TABLET_TO_LS_FAILED);
 ERRSIM_POINT_DEF(EN_UPDATE_TRANSFER_TASK_FAILED);
 ERRSIM_POINT_DEF(EN_START_CAN_NOT_RETRY);
 ERRSIM_POINT_DEF(EN_MAKE_SRC_LS_REBUILD);
+ERRSIM_POINT_DEF(EN_INSERT_TRANSFER_START_FAILED);
 
 ObTransferHandler::ObTransferHandler()
   : is_inited_(false),
@@ -170,7 +171,7 @@ int ObTransferHandler::get_transfer_task_from_inner_table_(
   if (! task_id.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid arg", K(ret), K(task_id));
-  } else if (OB_FAIL(ObTransferTaskOperator::get(trans, tenant_id, task_id, for_update, task))) {
+  } else if (OB_FAIL(ObTransferTaskOperator::get(trans, tenant_id, task_id, for_update, task, share::OBCG_STORAGE_HA_LEVEL1))) {
     LOG_WARN("failed to get transfer task", K(ret), K(tenant_id), K(task_id));
   } else if (OB_FAIL(task_info.convert_from(tenant_id, task))) {
     LOG_WARN("failed to convert from transfer task", K(ret), K(task));
@@ -218,7 +219,7 @@ int ObTransferHandler::fetch_transfer_task_from_inner_table_by_src_ls_(
   const ObLSID &src_ls_id = ls_->get_ls_id();
   ObTransferTask task;
   if (OB_FAIL(ObTransferTaskOperator::get_by_src_ls(
-      *sql_proxy_, tenant_id, src_ls_id, task))) {
+      *sql_proxy_, tenant_id, src_ls_id, task, share::OBCG_STORAGE_HA_LEVEL2))) {
     LOG_WARN("failed to get transfer task", K(ret), K(tenant_id), K(src_ls_id));
   } else if (OB_FAIL(task_info.convert_from(tenant_id, task))) {
     LOG_WARN("failed to convert from transfer task", K(ret), K(task));
@@ -246,7 +247,7 @@ int ObTransferHandler::fetch_transfer_task_from_inner_table_by_dest_ls_(
   const ObLSID &dest_ls_id = ls_->get_ls_id();
   ObTransferTask task;
   if (OB_FAIL(ObTransferTaskOperator::get_by_dest_ls(
-      *sql_proxy_, tenant_id, dest_ls_id, task))) {
+      *sql_proxy_, tenant_id, dest_ls_id, task, share::OBCG_STORAGE_HA_LEVEL2))) {
     LOG_WARN("failed to get transfer task by dest ls", K(ret), K(tenant_id), K(dest_ls_id));
   } else if (OB_FAIL(task_info.convert_from(tenant_id, task))) {
     LOG_WARN("failed to convert from transfer task", K(ret), K(task));
@@ -466,6 +467,8 @@ int ObTransferHandler::do_with_start_status_(const share::ObTransferTaskInfo &ta
     } else if (!is_leader) {
       ret = OB_NOT_MASTER;
       LOG_WARN("transfer src is not leader", K(ret), K(task_info));
+    } else if (OB_FAIL(precheck_ls_replay_scn_(task_info))) {
+      LOG_WARN("failed to precheck ls replay scn", K(ret), K(task_info));
     } else if (OB_FAIL(stop_ls_schedule_medium_(task_info.src_ls_id_, succ_stop_medium))) {
       LOG_WARN("failed to stop ls schedule medium", K(ret), K(task_info));
     } else if (OB_FAIL(check_start_status_transfer_tablets_(task_info))) {
@@ -479,6 +482,14 @@ int ObTransferHandler::do_with_start_status_(const share::ObTransferTaskInfo &ta
     } else if (OB_FAIL(do_trans_transfer_start_(task_info, config_version, timeout_ctx, trans))) {
       LOG_WARN("failed to do trans transfer start", K(ret), K(task_info));
     } else {
+#ifdef ERRSIM
+  if (OB_SUCC(ret)) {
+    ret = EN_INSERT_TRANSFER_START_FAILED ? : OB_SUCCESS;
+    if (OB_FAIL(ret)) {
+      SERVER_EVENT_SYNC_ADD("transfer_errsim", "transfer_start_failed", "result", ret);
+    }
+  }
+#endif
       DEBUG_SYNC(BEFORE_TRANSFER_START_COMMIT);
     }
 
@@ -565,7 +576,7 @@ int ObTransferHandler::lock_src_and_dest_ls_member_list_(
   } else if (OB_FAIL(lock_ls_list.push_back(dest_ls_id))) {
     LOG_WARN("failed to push back", K(ret), K(dest_ls_id));
   } else if (OB_FAIL(ObMemberListLockUtils::batch_lock_ls_member_list(tenant_id, task_id,
-      lock_ls_list, member_list, status, *sql_proxy_))) {
+      lock_ls_list, member_list, status, share::OBCG_STORAGE_HA_LEVEL2, *sql_proxy_))) {
     LOG_WARN("failed to batch lock ls member list", K(ret));
   } else if (OB_FAIL(check_ls_member_list_same_(src_ls_id, dest_ls_id, member_list, is_same))) {
     LOG_WARN("failed to check ls member listsame", K(ret), K(src_ls_id), K(dest_ls_id));
@@ -647,7 +658,7 @@ int ObTransferHandler::inner_unlock_ls_member_list_(
   const int64_t task_id = task_info.task_id_.id();
   const ObTransferLockStatus status(ObTransferLockStatus::START);
   if (OB_FAIL(ObMemberListLockUtils::unlock_ls_member_list(
-      tenant_id, ls_id, task_id, member_list, status, *sql_proxy_))) {
+      tenant_id, ls_id, task_id, member_list, status, share::OBCG_STORAGE_HA_LEVEL2, *sql_proxy_))) {
     LOG_WARN("failed to lock ls member list", K(ret), K(task_info), K(ls_id), K(member_list));
   }
   return ret;
@@ -926,6 +937,8 @@ int ObTransferHandler::start_trans_(
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
   int64_t stmt_timeout = 10_s;
   const int64_t LOCK_MEMBER_LIST_TIMEOUT = 10_s;
+  const bool with_snapshot = false;
+  const int32_t group_id = share::OBCG_STORAGE_HA_LEVEL1;
   if (tenant_config.is_valid()) {
     stmt_timeout = tenant_config->_transfer_start_trans_timeout + LOCK_MEMBER_LIST_TIMEOUT;
     if (tenant_config->_enable_balance_kill_transaction) {
@@ -941,7 +954,7 @@ int ObTransferHandler::start_trans_(
     LOG_WARN("fail to set trx timeout", K(ret), K(stmt_timeout));
   } else if (OB_FAIL(timeout_ctx.set_timeout(stmt_timeout))) {
     LOG_WARN("set timeout context failed", K(ret));
-  } else if (OB_FAIL(trans.start(sql_proxy_, tenant_id))) {
+  } else if (OB_FAIL(trans.start(sql_proxy_, tenant_id, with_snapshot, group_id))) {
     LOG_WARN("failed to start trans", K(ret));
   }
   return ret;
@@ -1199,17 +1212,9 @@ int ObTransferHandler::wait_src_ls_replay_to_start_scn_(
     ObTimeoutCtx &timeout_ctx)
 {
   int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-
-  const int64_t cluster_id = GCONF.cluster_id;
-  const uint64_t tenant_id = MTL_ID();
-  const int64_t OB_CHECK_START_SCN_READY_INTERVAL = 200 * 1000; //200ms
-  bool is_all_replica_reach = false;
-  bool is_is_majority_reach = false;
-  hash::ObHashSet<ObAddr> replica_addr_set;
   common::ObMemberList member_list;
   ObArray<ObAddr> member_addr_list;
-  const int64_t start_ts = ObTimeUtil::current_time();
+  const ObTransferWaitEventType event_type = ObTransferWaitEventType::WAIT_LS_REPLAY_PASS_START_SCN;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
@@ -1217,74 +1222,181 @@ int ObTransferHandler::wait_src_ls_replay_to_start_scn_(
   } else if (!task_info.is_valid() || !start_scn.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("wait src ls replay to start scn get invalid argument", K(ret), K(task_info), K(start_scn));
-  } else if (OB_FAIL(replica_addr_set.create(OB_DEFAULT_REPLICA_NUM))) {
-    LOG_WARN("failed to create replica addr set", K(ret), K(task_info));
-  } else if (OB_FAIL(get_ls_member_list_(task_info.dest_ls_id_, member_list))) {
-    LOG_WARN("failed to get dest ls member list", K(ret), K(task_info));
+  } else if (OB_FAIL(get_ls_member_list_(task_info.src_ls_id_, member_list))) {
+    LOG_WARN("failed to get src ls member list", K(ret), K(task_info));
   } else if (OB_FAIL(member_list.get_addr_array(member_addr_list))) {
     LOG_WARN("failed to get addr array", K(ret), K(task_info), K(member_list));
-  } else {
-
-    while (OB_SUCC(ret)) {
-      int64_t replica_count = 0;
-      if (timeout_ctx.is_timeouted()) {
-        ret = OB_TIMEOUT;
-        LOG_WARN("already timeout", K(ret), K(task_info));
-        break;
-      } else {
-        for (int64_t i = 0; OB_SUCC(ret) && i < member_addr_list.count(); ++i) {
-          const ObAddr &replica_addr = member_addr_list.at(i);
-          const int32_t hash_ret = replica_addr_set.exist_refactored(replica_addr);
-          SCN replica_scn;
-          if (OB_HASH_EXIST == hash_ret) {
-            replica_count++;
-          } else if (OB_HASH_NOT_EXIST) {
-            ObStorageHASrcInfo src_info;
-            src_info.cluster_id_ = cluster_id;
-            src_info.src_addr_ = replica_addr;
-            if (OB_SUCCESS != (tmp_ret = storage_rpc_->get_transfer_start_scn(task_info.tenant_id_, src_info,
-                task_info.src_ls_id_, task_info.tablet_list_, replica_scn))) {
-              LOG_WARN("failed to get transfer start scn", K(tmp_ret), K(task_info));
-            } else if (replica_scn >= start_scn) {
-              if (OB_FAIL(replica_addr_set.set_refactored(replica_addr))) {
-                LOG_WARN("failed to set replica into hash set", K(ret), K(replica_addr));
-              } else {
-                replica_count++;
-              }
-            }
-          } else {
-            ret = OB_SUCC(hash_ret) ? OB_ERR_UNEXPECTED : hash_ret;
-            LOG_WARN("failed to get replica server from hash set", K(ret), K(task_info));
-          }
-        }
-      }
-
-      if (OB_SUCC(ret)) {
-        if (replica_count == member_addr_list.count()) {
-          FLOG_INFO("[TRANSFER] src ls all replicas replay reach start_scn", "src_ls", task_info.src_ls_id_,
-              K(start_scn), K(member_addr_list), "cost", ObTimeUtil::current_time() - start_ts);
-          break;
-        }
-      }
-
-      if (OB_FAIL(ret)) {
-        //TODO(muwei.ym) check need retry in 4.2 RC3
-      }
-
-      ob_usleep(OB_CHECK_START_SCN_READY_INTERVAL);
-    }
+  } else if (OB_FAIL(wait_ls_replay_event_(task_info, event_type, member_addr_list, start_scn, timeout_ctx))) {
+    LOG_WARN("failed to wait ls replay event", K(ret), K(task_info), K(event_type), K(member_list), K(start_scn));
   }
 
   DEBUG_SYNC(AFTER_START_TRANSFER_WAIT_REPLAY_TO_START_SCN);
 #ifdef ERRSIM
-    if (OB_SUCC(ret)) {
-      ret = EN_WAIT_SRC_REPALY_TO_START_SCN_FAILED ? : OB_SUCCESS;
-      if (OB_FAIL(ret)) {
-        STORAGE_LOG(ERROR, "fake EN_WAIT_SRC_REPALY_TO_START_SCN_FAILED", K(ret));
-      }
+  if (OB_SUCC(ret)) {
+    ret = EN_WAIT_SRC_REPALY_TO_START_SCN_FAILED ? : OB_SUCCESS;
+    if (OB_FAIL(ret)) {
+      STORAGE_LOG(ERROR, "fake EN_WAIT_SRC_REPALY_TO_START_SCN_FAILED", K(ret));
     }
+  }
 #endif
 
+  return ret;
+}
+
+int ObTransferHandler::precheck_ls_replay_scn_(const share::ObTransferTaskInfo &task_info)
+{
+  int ret = OB_SUCCESS;
+  common::ObMemberList member_list;
+  ObArray<ObAddr> member_addr_list;
+  const ObTransferWaitEventType event_type = ObTransferWaitEventType::PRECHECK_LS_REPLAY_SCN;
+  share::SCN check_scn;
+  ObTimeoutCtx timeout_ctx;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+  if (tenant_config.is_valid()) {
+    const int64_t timeout = tenant_config->_transfer_start_trans_timeout * 0.8;
+    if (OB_FAIL(timeout_ctx.set_timeout(timeout))) {
+      LOG_WARN("set timeout context failed", K(ret));
+    }
+  }
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("transfer handler do not init", K(ret));
+  } else if (!task_info.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("wait src ls replay to start scn get invalid argument", K(ret), K(task_info));
+  } else if (OB_FAIL(get_ls_member_list_(task_info.src_ls_id_, member_list))) {
+    LOG_WARN("failed to get src ls member list", K(ret), K(task_info));
+  } else if (OB_FAIL(member_list.get_addr_array(member_addr_list))) {
+    LOG_WARN("failed to get addr array", K(ret), K(task_info), K(member_list));
+  } else if (OB_FAIL(get_max_decided_scn_(task_info.tenant_id_, task_info.src_ls_id_, check_scn))) {
+    LOG_WARN("failed to get max decided scn", K(ret), K(task_info));
+  } else if (OB_FAIL(wait_ls_replay_event_(task_info, event_type, member_addr_list, check_scn, timeout_ctx))) {
+    LOG_WARN("failed to wait ls replay event", K(ret), K(task_info), K(event_type), K(member_list), K(check_scn));
+  }
+  return ret;
+}
+
+int ObTransferHandler::get_max_decided_scn_(
+    const uint64_t tenant_id,
+    const share::ObLSID &ls_id,
+    share::SCN &check_scn)
+{
+  int ret = OB_SUCCESS;
+  check_scn.reset();
+  MTL_SWITCH(tenant_id) {
+    ObLS *ls = NULL;
+    ObLSHandle ls_handle;
+    ObLSService *ls_service = NULL;
+    SCN max_decided_scn;
+    if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "ls service should not be null", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("fail to get log stream", KR(ret), K(ls_id));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("log stream should not be NULL", KR(ret), KP(ls));
+    } else if (OB_FAIL(ls->get_max_decided_scn(max_decided_scn))) {
+      LOG_WARN("failed to max decided scn", K(ret), K(tenant_id), K(ls_id));
+    } else {
+      check_scn = max_decided_scn;
+    }
+  }
+  return ret;
+}
+
+int ObTransferHandler::wait_ls_replay_event_(
+    const share::ObTransferTaskInfo &task_info,
+    const ObTransferWaitEventType &event_type,
+    const common::ObArray<ObAddr> &member_addr_list,
+    const share::SCN &check_scn,
+    ObTimeoutCtx &timeout_ctx)
+{
+  int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
+  const int64_t OB_CHECK_START_SCN_READY_INTERVAL = 5 * 1000; //5ms
+  const int64_t start_ts = ObTimeUtil::current_time();
+  hash::ObHashSet<ObAddr> replica_addr_set;
+  if (OB_FAIL(replica_addr_set.create(OB_DEFAULT_REPLICA_NUM))) {
+    LOG_WARN("failed to create replica addr set", K(ret), K(task_info));
+  }
+  while (OB_SUCC(ret)) {
+    int64_t replica_count = 0;
+    if (timeout_ctx.is_timeouted()) {
+      ret = OB_TIMEOUT;
+      LOG_WARN("already timeout", K(ret), K(task_info));
+      break;
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < member_addr_list.count(); ++i) {
+        const ObAddr &replica_addr = member_addr_list.at(i);
+        const int32_t hash_ret = replica_addr_set.exist_refactored(replica_addr);
+        SCN replica_scn;
+        if (OB_HASH_EXIST == hash_ret) {
+          replica_count++;
+        } else if (OB_HASH_NOT_EXIST == hash_ret) {
+          ObStorageHASrcInfo src_info;
+          src_info.cluster_id_ = GCONF.cluster_id;
+          src_info.src_addr_ = replica_addr;
+          if (OB_TMP_FAIL(inner_get_scn_for_wait_event_(task_info, src_info, event_type, replica_scn))) {
+            LOG_WARN("failed to inner get scn for wait event", K(tmp_ret), K(event_type));
+          } else if (replica_scn >= check_scn) {
+            if (OB_FAIL(replica_addr_set.set_refactored(replica_addr))) {
+              LOG_WARN("failed to set replica into hash set", K(ret), K(replica_addr));
+            } else {
+              replica_count++;
+            }
+          }
+        } else {
+          ret = OB_SUCC(hash_ret) ? OB_ERR_UNEXPECTED : hash_ret;
+          LOG_WARN("failed to get replica server from hash set", K(ret), K(task_info));
+        }
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      if (replica_count == member_addr_list.count()) {
+        FLOG_INFO("[TRANSFER] src ls all replicas replay reach check_scn", "src_ls", task_info.src_ls_id_,
+            K(check_scn), K(member_addr_list), "cost", ObTimeUtil::current_time() - start_ts);
+        break;
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+      //TODO(muwei.ym) check need retry in 4.2 RC3
+    }
+    ob_usleep(OB_CHECK_START_SCN_READY_INTERVAL);
+  }
+  return ret;
+}
+
+int ObTransferHandler::inner_get_scn_for_wait_event_(
+    const share::ObTransferTaskInfo &task_info,
+    const ObStorageHASrcInfo &src_info,
+    const ObTransferWaitEventType &wait_event,
+    share::SCN &replica_scn)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = task_info.tenant_id_;
+  if (OB_ISNULL(storage_rpc_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("storage rpc should not be null", K(ret));
+  } else if (ObTransferWaitEventType::WAIT_LS_REPLAY_PASS_START_SCN == wait_event) {
+    const share::ObLSID &src_ls_id = task_info.src_ls_id_;
+    if (OB_FAIL(storage_rpc_->get_transfer_start_scn(tenant_id, src_info,
+          src_ls_id, task_info.tablet_list_, replica_scn))) {
+      LOG_WARN("failed to get transfer start scn", K(ret), K(task_info), K(src_info));
+    }
+  } else if (ObTransferWaitEventType::PRECHECK_LS_REPLAY_SCN == wait_event) {
+    const share::ObLSID &src_ls_id = task_info.src_ls_id_;
+    if (OB_FAIL(storage_rpc_->fetch_ls_replay_scn(tenant_id, src_info, src_ls_id, replica_scn))) {
+      LOG_WARN("failed to fetch ls replay scn", K(ret), K(tenant_id), K(src_info));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid wait event type", K(ret), K(wait_event));
+  }
   return ret;
 }
 
@@ -1508,7 +1620,7 @@ int ObTransferHandler::update_all_tablet_to_ls_(
       const ObTransferTabletInfo &tablet_info = task_info.tablet_list_.at(i);
       if (OB_FAIL(ObTabletToLSTableOperator::update_ls_id_and_transfer_seq(trans, task_info.tenant_id_,
           tablet_info.tablet_id_, tablet_info.transfer_seq_, task_info.src_ls_id_,
-          tablet_info.transfer_seq_ + 1, task_info.dest_ls_id_))) {
+          tablet_info.transfer_seq_ + 1, task_info.dest_ls_id_, share::OBCG_STORAGE_HA_LEVEL1))) {
         LOG_WARN("failed to update ls id and transfer seq", K(ret), K(tablet_info), K(task_info));
       }
     }
@@ -1577,7 +1689,7 @@ int ObTransferHandler::update_transfer_status_(
   } else if (!task_info.is_valid() || !next_status.is_valid()) {
     LOG_WARN("update transfer status get invalid argument", K(ret), K(task_info), K(next_status));
   } else {
-    if (OB_FAIL(ObTransferTaskOperator::get(trans, tenant_id, task_id, for_update, transfer_task))) {
+    if (OB_FAIL(ObTransferTaskOperator::get(trans, tenant_id, task_id, for_update, transfer_task, share::OBCG_STORAGE_HA_LEVEL1))) {
       LOG_WARN("failed to get transfer task", K(ret), K(task_id), K(tenant_id));
     } else if (task_info.status_ != transfer_task.get_status()
         || task_info.src_ls_id_ != transfer_task.get_src_ls()
@@ -1586,10 +1698,10 @@ int ObTransferHandler::update_transfer_status_(
       LOG_WARN("task info in not equal to inner table transfer task, unexpected", K(ret),
           K(task_info), K(transfer_task));
     } else if (start_scn.is_valid() && OB_FAIL(ObTransferTaskOperator::update_start_scn(
-                   trans, tenant_id, task_id, transfer_task.get_status(), start_scn))) {
+                   trans, tenant_id, task_id, transfer_task.get_status(), start_scn, share::OBCG_STORAGE_HA_LEVEL1))) {
       LOG_WARN("failed to update finish scn", K(ret), K(tenant_id), K(task_id), K(start_scn));
     } else if (OB_FAIL(ObTransferTaskOperator::update_status_and_result(
-                   trans, tenant_id, task_id, transfer_task.get_status(), next_status, result))) {
+                   trans, tenant_id, task_id, transfer_task.get_status(), next_status, result, share::OBCG_STORAGE_HA_LEVEL1))) {
       LOG_WARN("failed to finish task", K(ret), K(tenant_id), K(task_id));
     } else {
 #ifdef ERRSIM

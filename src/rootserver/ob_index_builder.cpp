@@ -19,6 +19,7 @@
 #include "lib/container/ob_array_iterator.h"
 #include "share/ob_srv_rpc_proxy.h"
 #include "lib/mysqlclient/ob_mysql_proxy.h"
+#include "share/ob_ddl_common.h"
 #include "share/ob_debug_sync.h"
 #include "share/ob_common_rpc_proxy.h"
 #include "share/schema/ob_table_schema.h"
@@ -133,7 +134,7 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
   } else if (is_db_in_recyclebin) {
     ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
     LOG_WARN("Can not drop index of db in recyclebin", K(ret), K(arg));
-  } else if (OB_FAIL(ddl_service_.check_fk_related_table_ddl(*table_schema))) {
+  } else if (OB_FAIL(ddl_service_.check_fk_related_table_ddl(*table_schema, ObDDLType::DDL_DROP_INDEX))) {
     LOG_WARN("check whether foreign key related table executes ddl failed", K(ret));
   }
   if (OB_SUCC(ret)) {
@@ -305,7 +306,7 @@ int ObIndexBuilder::do_create_global_index(
         }
       } else {
         if (OB_FAIL(ddl_service_.create_global_inner_expr_index(
-              trans, new_arg, table_schema, new_table_schema, gen_columns, index_schema))) {
+              trans, table_schema, new_table_schema, gen_columns, index_schema))) {
           LOG_WARN("fail to create global inner expr index", K(ret));
         }
       }
@@ -487,8 +488,7 @@ int ObIndexBuilder::do_create_local_index(
                                                          table_schema,
                                                          new_table_schema,
                                                          gen_columns,
-                                                         index_schema,
-                                                         &my_arg.ddl_stmt_str_))) {
+                                                         index_schema))) {
           LOG_WARN("fail to create inner expr index", K(ret));
         }
       }
@@ -578,7 +578,7 @@ int ObIndexBuilder::do_create_index(
     LOG_USER_ERROR(OB_ERR_TOO_MANY_KEYS, OB_MAX_INDEX_PER_TABLE);
     int64_t index_count = table_schema->get_index_tid_count();
     LOG_WARN("too many index for table", K(OB_MAX_INDEX_PER_TABLE), K(index_count), K(ret));
-  } else if (OB_FAIL(ddl_service_.check_fk_related_table_ddl(*table_schema))) {
+  } else if (OB_FAIL(ddl_service_.check_fk_related_table_ddl(*table_schema, ObDDLType::DDL_CREATE_INDEX))) {
     LOG_WARN("check whether the foreign key related table is executing ddl failed", K(ret));
   } else if (INDEX_TYPE_NORMAL_LOCAL == arg.index_type_
              || INDEX_TYPE_UNIQUE_LOCAL == arg.index_type_
@@ -797,6 +797,7 @@ int ObIndexBuilder::generate_schema(
       } else if (OB_FAIL(set_index_table_options(arg, data_schema, schema))) {
         LOG_WARN("set_index_table_options failed", K(arg), K(data_schema), K(ret));
       } else {
+        schema.set_name_generated_type(arg.index_schema_.get_name_generated_type());
         LOG_INFO("finish generate index schema", K(schema));
       }
     }
@@ -855,6 +856,7 @@ int ObIndexBuilder::set_basic_infos(const ObCreateIndexArg &arg,
     } else if (OB_FAIL(schema.set_table_name(index_table_name))) {
       LOG_WARN("set_table_name failed", K(index_table_name), K(arg), K(ret));
     } else {
+      schema.set_name_generated_type(arg.index_schema_.get_name_generated_type());
       schema.set_table_id(arg.index_table_id_);
       schema.set_table_type(USER_INDEX);
       schema.set_index_type(arg.index_type_);

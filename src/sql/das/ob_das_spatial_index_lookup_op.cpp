@@ -28,7 +28,7 @@ bool ObRowKeyCompare::operator()(const ObRowkey *left, const ObRowkey *right)
   } else if (OB_UNLIKELY(NULL == left)
              || OB_UNLIKELY(NULL == right)) {
     result_code_ = common::OB_INVALID_ARGUMENT;
-    LOG_WARN_RET(result_code_, "Invaid argument, ", KP(left), KP(right), K_(result_code));
+    LOG_WARN_RET(result_code_, "Invalid argument, ", KP(left), KP(right), K_(result_code));
   } else {
     bool_ret = (*left) < (*right);
   }
@@ -64,6 +64,17 @@ ObSpatialIndexLookupOp::~ObSpatialIndexLookupOp()
 {
   sorter_.clean_up();
   sorter_.~ObExternalSort();
+}
+
+int ObSpatialIndexLookupOp::revert_iter()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObLocalIndexLookupOp::revert_iter())) {
+    LOG_WARN("revert local index lookup iter from spatial fail.", K(ret));
+  }
+  sorter_.clean_up();
+  sorter_.~ObExternalSort();
+  return ret;
 }
 
 int ObSpatialIndexLookupOp::reset_lookup_state()

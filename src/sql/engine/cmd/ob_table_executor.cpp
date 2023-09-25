@@ -568,8 +568,8 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
           LOG_WARN("rpc proxy create table failed", KR(ret), "dst", common_rpc_proxy->get_server());
         } else {
           int64_t refresh_time = ObTimeUtility::current_time();
-          if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(ctx,
-              tenant_id, res.schema_version_, GCONF._wait_interval_after_truncate))) {
+          if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
+              ctx, tenant_id, res.schema_version_))) {
             LOG_WARN("fail to check paralleld ddl schema in sync", KR(ret), K(res));
           }
           int64_t end_time = ObTimeUtility::current_time();
@@ -598,7 +598,7 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
       }
     }
 
-    // only CTAS or create temperary table will make session_id != 0. If such table detected, set
+    // only CTAS or create temporary table will make session_id != 0. If such table detected, set
     // need ctas cleanup task anyway to do some cleanup jobs
     if (0 != table_schema.get_session_id()) {
       LOG_TRACE("CTAS or temporary table create detected", K(table_schema));
@@ -2172,7 +2172,7 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       bool use_parallel_truncate = false;
       const uint64_t tenant_id = truncate_table_arg.tenant_id_;
       if (OB_FAIL(check_use_parallel_truncate(truncate_table_arg, use_parallel_truncate))) {
-        LOG_WARN("fail to check use parallel trunate", KR(ret), K(truncate_table_arg));
+        LOG_WARN("fail to check use parallel truncate", KR(ret), K(truncate_table_arg));
       } else if (!use_parallel_truncate) {
         if (OB_FAIL(common_rpc_proxy->truncate_table(truncate_table_arg, res))) {
           LOG_WARN("rpc proxy alter table failed", K(ret));
@@ -2208,8 +2208,8 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
           } else if (!res.is_valid()) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("truncate invalid ddl_res", KR(ret), K(res));
-          } else if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(ctx,
-                     tenant_id, res.task_id_, GCONF._wait_interval_after_truncate))) {
+          } else if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
+                     ctx, tenant_id, res.task_id_))) {
             LOG_WARN("fail to check parallel ddl schema in sync", KR(ret), K(res));
           }
           int64_t end_time = ObTimeUtility::current_time();
@@ -2371,7 +2371,7 @@ int ObFlashBackTableToScnExecutor::execute(ObExecContext &ctx, ObFlashBackTableT
       LOG_WARN("get common rpc proxy failed", K(ret));
     } else if (OB_ISNULL(common_rpc_proxy)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("cmmon rpc proxy should not be null", K(ret));
+      LOG_WARN("common rpc proxy should not be null", K(ret));
     } else if (OB_FAIL(common_rpc_proxy->flashback_table_to_time_point(arg))) {
       LOG_WARN("rpc proxy flashback table failed", K(ret));
     }

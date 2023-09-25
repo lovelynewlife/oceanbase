@@ -6509,6 +6509,10 @@ int ObDMLResolver::resolve_order_item(const ParseNode &sort_node, OrderItem &ord
     SQL_RESV_LOG(WARN, "index order item not support in update");
   } else if (OB_FAIL(resolve_sql_expr(*(sort_node.children_[0]), expr))) {
     SQL_RESV_LOG(WARN, "resolve sql expression failed", K(ret));
+  } else if (expr->has_flag(CNT_ASSIGN_EXPR)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("Not supported variable assignment in order by item", K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "Variable assignment in order by item");
   } else {
     order_item.expr_ = expr;
   }
@@ -7524,7 +7528,7 @@ int ObDMLResolver::resolve_generated_column_expr(const ObString &expr_str,
       LOG_WARN("formailize column reference expr failed", K(ret));
     } else if (ObRawExprUtils::need_column_conv(column.get_result_type(), *ref_expr)) {
       if (OB_FAIL(ObRawExprUtils::build_column_conv_expr(*expr_factory, *allocator_,
-                                                         column, ref_expr, session_info))) {
+                                                         column, ref_expr, session_info, used_for_generated_column))) {
         LOG_WARN("build column convert expr failed", K(ret));
       }
     }
@@ -11156,16 +11160,45 @@ int ObDMLResolver::resolve_external_name(ObQualifiedName &q_name,
                                                        udf_expr->get_database_name().empty() ? session_info_->get_database_name() : udf_expr->get_database_name(),
                                                        database_id))) {
         LOG_WARN("failed to get database id", K(ret));
-      } else if (udf_expr->need_add_dependency()) {
-        uint64_t dep_obj_id = view_ref_id_;
-        uint64_t dep_db_id = database_id;
-        OZ (udf_expr->get_schema_object_version(udf_version));
-        OZ (stmt->add_global_dependency_table(udf_version));
-        OZ (stmt->add_ref_obj_version(dep_obj_id, dep_db_id, ObObjectType::VIEW, udf_version, *allocator_));
-        //for udf without params, we just set called_in_sql = true,
-        //if this expr go through pl :: build_raw_expr later,
-        //the flag will change to false;
-        OX (expr->set_is_called_in_sql(true));
+      } else {
+        bool exist = false;
+        uint64_t object_db_id = OB_INVALID_ID;
+        ObSynonymChecker synonym_checker;
+        ObString object_name;
+        OZ (ObResolverUtils::resolve_synonym_object_recursively(*params_.schema_checker_,
+                                                                synonym_checker,
+                                                                session_info_->get_effective_tenant_id(),
+                                                                database_id,
+                                                                udf_expr->get_func_name(),
+                                                                object_db_id, object_name, exist));
+        if (OB_SUCC(ret) && exist) {
+          for (int64_t i = 0; OB_SUCC(ret) && i < synonym_checker.get_synonym_ids().count(); ++i) {
+            int64_t schema_version = OB_INVALID_VERSION;
+            uint64_t obj_id = synonym_checker.get_synonym_ids().at(i);
+            uint64_t dep_db_id = synonym_checker.get_database_ids().at(i);
+            ObSchemaObjVersion syn_version;
+            OZ (schema_guard->get_schema_version(SYNONYM_SCHEMA,
+                                                  session_info_->get_effective_tenant_id(),
+                                                  obj_id,
+                                                  schema_version));
+            OX (syn_version.object_id_ = obj_id);
+            OX (syn_version.version_ = schema_version);
+            OX (syn_version.object_type_ = DEPENDENCY_SYNONYM);
+            OZ (stmt->add_global_dependency_table(syn_version));
+            OZ (stmt->add_ref_obj_version(obj_id, dep_db_id, ObObjectType::SYNONYM, syn_version, *allocator_));
+          }
+        }
+        if (OB_SUCC(ret) && udf_expr->need_add_dependency()) {
+          uint64_t dep_obj_id = view_ref_id_;
+          uint64_t dep_db_id = database_id;
+          OZ (udf_expr->get_schema_object_version(udf_version));
+          OZ (stmt->add_global_dependency_table(udf_version));
+          OZ (stmt->add_ref_obj_version(dep_obj_id, dep_db_id, ObObjectType::VIEW, udf_version, *allocator_));
+          //for udf without params, we just set called_in_sql = true,
+          //if this expr go through pl :: build_raw_expr later,
+          //the flag will change to false;
+          OX (expr->set_is_called_in_sql(true));
+        }
       }
 
       OZ (ObResolverUtils::set_parallel_info(*params_.session_info_,
@@ -12395,7 +12428,9 @@ int ObDMLResolver::convert_udf_to_agg_expr(ObRawExpr *&expr,
       }
     }
 
-    ctx.parents_expr_info_.del_member(IS_AGG);
+    if (OB_SUCC(ret) && OB_FAIL(ctx.parents_expr_info_.del_member(IS_AGG))) {
+      LOG_WARN("failed to del member", K(ret));
+    }
   }
   return ret;
 }
@@ -12613,11 +12648,12 @@ int ObDMLResolver::inner_resolve_hints(const ParseNode &node,
       cur_hints.reuse();
       if (OB_ISNULL(hint_node = node.children_[i])) {
         /* do nothing */
-      } else if (T_QB_NAME == hint_node->type_ && !qb_name_conflict) {
+      } else if (T_QB_NAME == hint_node->type_) {
         ObString tmp_qb_name;
         if (OB_FAIL(resolve_qb_name_node(hint_node, tmp_qb_name))) {
           LOG_WARN("failed to resolve qb name node", K(ret));
-        } else if (OB_UNLIKELY(!qb_name.empty() && !tmp_qb_name.empty())) {
+        } else if (OB_UNLIKELY(qb_name_conflict || (!qb_name.empty() && !tmp_qb_name.empty()))) {
+          LOG_TRACE("conflict qb_name hint.", K(tmp_qb_name), K(qb_name));
           qb_name_conflict = true;
           qb_name.reset();
         } else if (!tmp_qb_name.empty()) {

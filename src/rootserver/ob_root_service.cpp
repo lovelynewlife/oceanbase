@@ -2705,14 +2705,13 @@ int ObRootService::create_tenant(const ObCreateTenantArg &arg, UInt64 &tenant_id
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   const ObString &tenant_name = arg.tenant_schema_.get_tenant_name_str();
+  // when recovering table, it needs to create tmp tenant
+  const bool tmp_tenant = arg.is_tmp_tenant_for_recover_;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret));
-  } else if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(tenant_name))) {
-    LOG_WARN("since 4.2.1, naming a tenant as all/all_user/all_meta is not supported",
-             KR(ret), K(tenant_name));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "since 4.2.1, naming a tenant as all/all_user/all_meta is");
+  } else if (!tmp_tenant && OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(tenant_name))) {
+    LOG_WARN("unsupported tenant name", KR(ret), K(tenant_name));
   } else if (OB_FAIL(ddl_service_.create_tenant(arg, tenant_id))) {
     LOG_WARN("fail to create tenant", KR(ret), K(arg));
     if (OB_TMP_FAIL(submit_reload_unit_manager_task())) {
@@ -2788,10 +2787,7 @@ int ObRootService::flashback_tenant(const ObFlashBackTenantArg &arg)
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(arg), K(ret));
   } else if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(arg.new_tenant_name_))) {
-    LOG_WARN("since 4.2.1, renaming a tenant to all/all_user/all_meta is not supported",
-             KR(ret), "new_tenant_name", arg.new_tenant_name_);
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "since 4.2.1, renaming a tenant to all/all_user/all_meta is");
+    LOG_WARN("unsupported tenant name", KR(ret), "new_tenant_name", arg.new_tenant_name_);
   } else if (OB_FAIL(ddl_service_.flashback_tenant(arg))) {
     LOG_WARN("failed to flash back tenant", K(ret));
   }
@@ -2826,10 +2822,7 @@ int ObRootService::modify_tenant(const ObModifyTenantArg &arg)
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(arg), K(ret));
   } else if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(arg.new_tenant_name_))) {
-    LOG_WARN("since 4.2.1, renaming a tenant to all/all_user/all_meta is not supported",
-             KR(ret), "new_tenant_name", arg.new_tenant_name_);
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "since 4.2.1, renaming a tenant to all/all_user/all_meta is");
+    LOG_WARN("unsupported tenant name", KR(ret), "new_tenant_name", arg.new_tenant_name_);
   } else if (OB_FAIL(ddl_service_.modify_tenant(arg))) {
     LOG_WARN("ddl service modify tenant failed", K(arg), K(ret));
   } else {
@@ -3449,6 +3442,7 @@ int ObRootService::create_table(const ObCreateTableArg &arg, ObCreateTableRes &r
             foreign_key_info.validate_flag_ = foreign_key_arg.validate_flag_;
             foreign_key_info.rely_flag_ = foreign_key_arg.rely_flag_;
             foreign_key_info.is_parent_table_mock_ = foreign_key_arg.is_parent_table_mock_;
+            foreign_key_info.name_generated_type_ = foreign_key_arg.name_generated_type_;
           }
           // add foreign key info.
           if (OB_SUCC(ret)) {
@@ -3818,23 +3812,23 @@ int ObRootService::execute_ddl_task(const obrpc::ObAlterTableArg &arg,
   } else {
     switch (arg.ddl_task_type_) {
       case share::REBUILD_INDEX_TASK: {
-        if (OB_FAIL(ddl_service_.rebuild_hidden_table_index(
+        if (OB_FAIL(ddl_service_.rebuild_hidden_table_index_in_trans(
             const_cast<obrpc::ObAlterTableArg &>(arg), obj_ids))) {
-          LOG_WARN("failed to rebuild hidden table index", K(ret));
+          LOG_WARN("failed to rebuild hidden table index in trans", K(ret));
         }
         break;
       }
       case share::REBUILD_CONSTRAINT_TASK: {
-        if (OB_FAIL(ddl_service_.rebuild_hidden_table_constraints(
+        if (OB_FAIL(ddl_service_.rebuild_hidden_table_constraints_in_trans(
             const_cast<obrpc::ObAlterTableArg &>(arg), obj_ids))) {
-          LOG_WARN("failed to rebuild hidden table constraints", K(ret));
+          LOG_WARN("failed to rebuild hidden table constraints in trans", K(ret));
         }
         break;
       }
       case share::REBUILD_FOREIGN_KEY_TASK: {
-        if (OB_FAIL(ddl_service_.rebuild_hidden_table_foreign_key(
+        if (OB_FAIL(ddl_service_.rebuild_hidden_table_foreign_key_in_trans(
             const_cast<obrpc::ObAlterTableArg &>(arg), obj_ids))) {
-          LOG_WARN("failed to rebuild hidden table foreign key", K(ret));
+          LOG_WARN("failed to rebuild hidden table foreign key in trans", K(ret));
         }
         break;
       }
@@ -8492,10 +8486,7 @@ int ObRootService::physical_restore_tenant(const obrpc::ObPhysicalRestoreTenantA
     LOG_WARN("restore tenant when restore_concurrency is 0 not allowed", KR(ret));
     LOG_USER_ERROR(OB_OP_NOT_ALLOW, "restore tenant when restore_concurrency is 0");
   } else if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(arg.tenant_name_))) {
-    LOG_WARN("since 4.2.1, naming a tenant as all/all_user/all_meta is not supported",
-             KR(ret), "tenant_name", arg.tenant_name_);
-    LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "since 4.2.1, naming a tenant as all/all_user/all_meta is");
+    LOG_WARN("unsupported tenant name", KR(ret), "tenant_name", arg.tenant_name_);
   } else if (OB_FAIL(ddl_service_.get_tenant_schema_guard_with_version_in_inner_table(
                      OB_SYS_TENANT_ID, schema_guard))) {
     LOG_WARN("fail to get sys tenant's schema guard", KR(ret));
@@ -10186,10 +10177,14 @@ int ObRootService::purge_recyclebin_objects(int64_t purge_each_time)
       arg.exec_tenant_id_ = tenant_id;
       LOG_INFO("start purge recycle objects of tenant", K(arg), K(purge_sum));
       while (OB_SUCC(ret) && in_service() && purge_sum > 0) {
+        int64_t cal_timeout = 0;
         int64_t start_time = ObTimeUtility::current_time();
         arg.purge_num_ = purge_sum > PURGE_EACH_RPC ? PURGE_EACH_RPC : purge_sum;
-        // replcace timeout from hardcode 9s to 10 * GCONF.rpc_timeout
-        if (OB_FAIL(common_proxy_.timeout(10 * GCONF.rpc_timeout).purge_expire_recycle_objects(arg, affected_rows))) {
+        if (OB_FAIL(schema_service_->cal_purge_need_timeout(arg, cal_timeout))) {
+          LOG_WARN("fail to cal purge need timeout", KR(ret), K(arg));
+        } else if (0 == cal_timeout) {
+          purge_sum = 0;
+        } else if (OB_FAIL(common_proxy_.timeout(cal_timeout).purge_expire_recycle_objects(arg, affected_rows))) {
           LOG_WARN("purge reyclebin objects failed", KR(ret),
               K(current_time), K(expire_time), K(affected_rows), K(arg));
         } else {
@@ -10572,10 +10567,26 @@ int ObRootService::get_root_key_from_obs(const obrpc::ObRootKeyArg &arg,
   ObZone empty_zone;
   ObArray<ObAddr> active_server_list;
   ObArray<ObAddr> inactive_server_list;
-  if (OB_FAIL(SVR_TRACER.get_servers_by_status(empty_zone, active_server_list,
-                                               inactive_server_list))) {
+  const ObSimpleTenantSchema *simple_tenant = NULL;
+  ObSchemaGetterGuard guard;
+  const uint64_t tenant_id = arg.tenant_id_;
+  bool enable_default = false;
+  if (OB_ISNULL(schema_service_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema_serviece_ is null", KR(ret));
+  } else if (OB_FAIL(schema_service_->get_tenant_schema_guard(OB_SYS_TENANT_ID, guard))) {
+    LOG_WARN("fail to get sys schema guard", KR(ret));
+  } else if (OB_FAIL(guard.get_tenant_info(tenant_id, simple_tenant))) {
+    LOG_WARN("fail to get simple tenant schema", KR(ret), K(tenant_id));
+  } else if (OB_NOT_NULL(simple_tenant) && simple_tenant->is_normal()) {
+    enable_default = true;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(SVR_TRACER.get_servers_by_status(empty_zone, active_server_list,
+                                                      inactive_server_list))) {
     LOG_WARN("get alive servers failed", K(ret));
-  } else if (OB_FAIL(ObDDLService::notify_root_key(rpc_proxy_, arg, active_server_list, result))) {
+  } else if (OB_FAIL(ObDDLService::notify_root_key(rpc_proxy_, arg, active_server_list, result,
+                                                   enable_default))) {
     LOG_WARN("failed to notify root key");
   }
   return ret;

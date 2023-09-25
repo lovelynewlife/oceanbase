@@ -219,7 +219,7 @@ int ObIDiagnoseInfoMgr::init(bool with_map,
     seq_num_ = 1;
     is_inited_ = true;
   } else {
-    destroy();
+    reset();
   }
   return ret;
 }
@@ -227,15 +227,19 @@ int ObIDiagnoseInfoMgr::init(bool with_map,
 void ObIDiagnoseInfoMgr::destroy()
 {
   if (IS_INIT) {
-    common::SpinWLockGuard guard(lock_);
-    common::SpinWLockGuard WLockGuard(rwlock_);
-    clear_with_no_lock();
-    if (info_map_.created()) {
-      info_map_.destroy();
-    }
-    allocator_.reset();
-    is_inited_ = false;
+    reset();
   }
+}
+void ObIDiagnoseInfoMgr::reset()
+{
+  common::SpinWLockGuard guard(lock_);
+  common::SpinWLockGuard WLockGuard(rwlock_);
+  clear_with_no_lock();
+  if (info_map_.created()) {
+    info_map_.destroy();
+  }
+  allocator_.reset();
+  is_inited_ = false;
 }
 
 void ObIDiagnoseInfoMgr::clear()
@@ -1148,7 +1152,10 @@ int ObCompactionDiagnoseMgr::diagnose_tablet_major_and_medium(
     LOG_WARN("fail to fetch table store", K(ret));
   } else if (OB_ISNULL(last_major_sstable =
       table_store_wrapper.get_member()->get_major_sstables().get_boundary_table(true/*last*/))) {
-  } else if (OB_FAIL(tablet.get_max_sync_medium_scn(max_sync_medium_scn))){
+  } else if (OB_FAIL(tablet.read_medium_info_list(allocator, medium_list))) {
+    LOG_WARN("failed to load medium info list", K(ret), K(tablet));
+  } else if (OB_FAIL(ObMediumCompactionScheduleFunc::get_max_sync_medium_scn(
+      tablet, *medium_list, max_sync_medium_scn))){
     LOG_WARN("failed to get max sync medium scn", K(ret), K(ls_id), K(tablet_id));
   } else {
     // diagnose medium

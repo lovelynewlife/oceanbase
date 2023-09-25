@@ -682,6 +682,8 @@ int ObPXServerAddrUtil::alloc_by_child_distribution(const ObDfo &child, ObDfo &p
   ObArray<const ObPxSqcMeta *> sqcs;
   if (OB_FAIL(child.get_sqcs(sqcs))) {
     LOG_WARN("fail get sqcs", K(ret));
+  } else if (OB_FAIL(generate_dh_map_info(parent))) {
+    LOG_WARN("fail to generate dh map info", K(ret));
   } else {
     for (int64_t i = 0; i < sqcs.count() && OB_SUCC(ret); ++i) {
       const ObPxSqcMeta &child_sqc = *sqcs.at(i);
@@ -703,7 +705,13 @@ int ObPXServerAddrUtil::alloc_by_child_distribution(const ObDfo &child, ObDfo &p
         sqc.set_qc_server_id(parent.get_qc_server_id());
         sqc.set_parent_dfo_id(parent.get_parent_dfo_id());
         sqc.get_monitoring_info().assign(child_sqc.get_monitoring_info());
-        if (OB_FAIL(parent.add_sqc(sqc))) {
+        if (!parent.get_p2p_dh_map_info().is_empty()) {
+          if (OB_FAIL(sqc.get_p2p_dh_map_info().assign(parent.get_p2p_dh_map_info()))) {
+            LOG_WARN("fail to assign p2p dh map info", K(ret));
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(parent.add_sqc(sqc))) {
           LOG_WARN("fail add sqc", K(sqc), K(ret));
         }
       }
@@ -1187,7 +1195,7 @@ int ObPXServerAddrUtil::reorder_all_partitions(int64_t table_location_key,
     ObTabletIdxMap tablet_order_map;
     if (OB_FAIL(dst_locations.reserve(src_locations.size()))) {
       LOG_WARN("fail reserve locations", K(ret), K(src_locations.size()));
-    // virtual table is list parttion now,
+    // virtual table is list parition now,
     // no actual partition define, can't traverse
     // table schema for partition info
     } else if (!is_virtual_table(ref_table_id) &&
@@ -1321,7 +1329,7 @@ int ObPXServerAddrUtil::split_parallel_into_task(const int64_t parallel,
     /// 把剩下的线程安排出去
     thread_remain = parallel - total_thread_count;
     if (thread_remain <= 0) {
-      // 这种情况是正常的，paralllel < sqc count的时候就会出现这种情况。
+      // 这种情况是正常的，parallel < sqc count的时候就会出现这种情况。
     } else if (thread_remain > sqc_task_metas.count()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("Thread remain is invalid", K(ret), K(thread_remain), K(sqc_task_metas.count()));
@@ -1452,7 +1460,7 @@ int ObPXServerAddrUtil::build_tablet_idx_map(
   } else if (is_virtual_table(table_schema->get_table_id())) {
     // In observer 4.2, the table schema of a distributed virtual table will show all_part_num as 1,
     // whereas in lower versions it would display as 65536.
-    // For a distrubuted virtual table, we may encounter a situation where part_id is 1 in sqc1,
+    // For a distributed virtual table, we may encounter a situation where part_id is 1 in sqc1,
     // part_id is 2 in sqc2 and so on, but the idx_map only contains one item with key=1.
     // Hence, if we seek with part_id=2, the idx_map will return -4201 (OB_HASH_NOT_EXIST)
     // will return -4201(OB_HASH_NOT_EXIST). In such cases, we can directly obtain the value that equals part_id + 1.
@@ -2599,7 +2607,6 @@ int ObPxChannelUtil::sqcs_channles_asyn_wait(ObIArray<ObPxSqcMeta *> &sqcs)
 int ObPxAffinityByRandom::add_partition(int64_t tablet_id,
                                         int64_t tablet_idx,
                                         int64_t worker_cnt,
-                                        uint64_t tenant_id,
                                         ObPxTabletInfo &partition_row_info)
 {
   int ret = OB_SUCCESS;
@@ -2608,8 +2615,7 @@ int ObPxAffinityByRandom::add_partition(int64_t tablet_id,
     LOG_WARN("The worker cnt is invalid", K(ret), K(worker_cnt));
   } else {
     TabletHashValue part_hash_value;
-    uint64_t value = (tenant_id << 32 | tablet_idx);
-    part_hash_value.hash_value_ = common::murmurhash(&value, sizeof(value), worker_cnt);
+    part_hash_value.hash_value_ = 0;
     part_hash_value.tablet_idx_ = tablet_idx;
     part_hash_value.tablet_id_ = tablet_id;
     part_hash_value.partition_info_ = partition_row_info;
@@ -2621,7 +2627,7 @@ int ObPxAffinityByRandom::add_partition(int64_t tablet_id,
   return ret;
 }
 
-int ObPxAffinityByRandom::do_random(bool use_partition_info)
+int ObPxAffinityByRandom::do_random(bool use_partition_info, uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   common::ObArray<int64_t> workers_load;
@@ -2642,12 +2648,31 @@ int ObPxAffinityByRandom::do_random(bool use_partition_info)
         && (tablet_hash_values_.at(0).tablet_idx_ > tablet_hash_values_.at(1).tablet_idx_)) {
       asc_order = false;
     }
+    // in partition wise affinity scenario, partition_idx of a pair of partitions may be different.
+    // for example, T1 consists of p0, p1, p2 and T2 consists of p1, p2
+    // T1.p1 <===> T2.p1  and T1.p2 <===> T2.p2
+    // The partition_idx of T1.p1 is 1 and the partition_idx of T2.p1 is 0.
+    // If we calculate hash value of partition_idx and sort partitions by the hash value,
+    // T1.p1 and T2.p1 may be assigned to different worker.
+    // So we sort partitions by partition_idx and generate a relative_idx which starts from zero.
+    // Then calculate hash value with the relative_idx
+    auto part_idx_compare_fun = [](TabletHashValue a, TabletHashValue b) -> bool { return a.tablet_idx_ > b.tablet_idx_; };
+    std::sort(tablet_hash_values_.begin(),
+              tablet_hash_values_.end(),
+              part_idx_compare_fun);
+    int64_t relative_idx = 0;
+    for (int64_t i = 0; i < tablet_hash_values_.count(); i++) {
+      uint64_t value = ((tenant_id << 32) | relative_idx);
+      tablet_hash_values_.at(i).hash_value_ = common::murmurhash(&value, sizeof(value), worker_cnt_);
+      relative_idx++;
+    }
 
     // 先打乱所有的序
     auto compare_fun = [](TabletHashValue a, TabletHashValue b) -> bool { return a.hash_value_ > b.hash_value_; };
     std::sort(tablet_hash_values_.begin(),
               tablet_hash_values_.end(),
               compare_fun);
+    LOG_TRACE("after sort partition_hash_values randomly", K(tablet_hash_values_));
 
     // 如果没有partition的统计信息则将它们round放置
     if (!use_partition_info) {
@@ -2886,7 +2911,7 @@ int ObPxEstimateSizeUtil::get_px_size(
     }
   }
   if (ret_size > total_size || OB_FAIL(ret)) {
-    LOG_WARN("unpexpect status: estimate size is greater than total size",
+    LOG_WARN("unexpect status: estimate size is greater than total size",
       K(ret_size), K(total_size), K(ret));
     ret_size = total_size;
     ret = OB_SUCCESS;
@@ -3224,7 +3249,7 @@ int ObSlaveMapUtil::build_pkey_affinitized_ch_mn_map(ObDfo &parent,
     LOG_WARN("unexpected dfo", K(ret), K(parent));
   } else if (ObPQDistributeMethod::PARTITION_HASH == child.get_dist_method()
       || ObPQDistributeMethod::PARTITION_RANGE == child.get_dist_method()) {
-    LOG_TRACE("build pkey affinitiezed channel map",
+    LOG_TRACE("build pkey affinitized channel map",
       K(parent.get_dfo_id()), K(parent.get_sqcs_count()),
       K(child.get_dfo_id()), K(child.get_sqcs_count()));
       //  .....
@@ -3398,13 +3423,13 @@ int ObSlaveMapUtil::build_ppwj_ch_mn_map(ObExecContext &ctx, ObDfo &parent, ObDf
         } else if (OB_FAIL(affinitize_rule.add_partition(location.tablet_id_.id(),
                 tablet_idx,
                 sqc.get_task_count(),
-                ctx.get_my_session()->get_effective_tenant_id(),
                 partition_row_info))) {
           LOG_WARN("fail calc task_id", K(location.tablet_id_), K(sqc), K(ret));
         }
       }
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(affinitize_rule.do_random(!sqc.get_partitions_info().empty()))) {
+      } else if (OB_FAIL(affinitize_rule.do_random(!sqc.get_partitions_info().empty(),
+                         ctx.get_my_session()->get_effective_tenant_id()))) {
         LOG_WARN("failed to do random", K(ret));
       } else {
         const ObIArray<ObPxAffinityByRandom::TabletHashValue> &partition_worker_pairs =

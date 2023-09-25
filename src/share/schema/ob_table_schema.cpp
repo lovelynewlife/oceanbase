@@ -1430,7 +1430,8 @@ ObTableSchema::ObTableSchema(ObIAllocator *allocator)
     depend_mock_fk_parent_table_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
     rls_policy_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
     rls_group_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
-    rls_context_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator))
+    rls_context_ids_(SCHEMA_SMALL_MALLOC_BLOCK_SIZE, ModulePageAllocator(*allocator)),
+    name_generated_type_(GENERATED_TYPE_UNKNOWN)
 {
   reset();
 }
@@ -1503,6 +1504,7 @@ int ObTableSchema::assign(const ObTableSchema &src_schema)
       aux_lob_piece_tid_ = src_schema.aux_lob_piece_tid_;
       compressor_type_ = src_schema.compressor_type_;
       table_flags_ = src_schema.table_flags_;
+      name_generated_type_ = src_schema.name_generated_type_;
       if (OB_FAIL(deep_copy_str(src_schema.tablegroup_name_, tablegroup_name_))) {
         LOG_WARN("Fail to deep copy tablegroup_name", K(ret));
       } else if (OB_FAIL(deep_copy_str(src_schema.comment_, comment_))) {
@@ -2524,6 +2526,22 @@ int ObTableSchema::create_cons_name_automatically_with_dup_check(ObString &cst_n
   return ret;
 }
 
+bool ObTableSchema::is_sys_generated_name(bool check_unknown) const
+{
+  bool bret = false;
+  if (GENERATED_TYPE_SYSTEM == name_generated_type_) {
+    bret = true;
+  } else if (GENERATED_TYPE_UNKNOWN == name_generated_type_ && check_unknown) {
+    const char *cst_type_name = is_unique_index() ? "_OBUNIQUE_" : "_OBIDX_";
+    const int64_t cst_type_name_len = static_cast<int64_t>(strlen(cst_type_name));
+    bret = (0 != ObCharset::instr(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+              table_name_.ptr(), table_name_.length(), cst_type_name, cst_type_name_len));
+  } else {
+    bret = false;
+  }
+  return bret;
+}
+
 // description: oracle mode, When the user flashbacks an indexed table, the system will automatically generate a new index name
 //  for the index on the table
 //              Generation rules: idx_name_flashback_auto = RECYCLE_OBIDX_timestamp
@@ -3210,6 +3228,7 @@ void ObTableSchema::reset()
   external_file_pattern_.reset();
   ttl_definition_.reset();
   kv_attributes_.reset();
+  name_generated_type_ = GENERATED_TYPE_UNKNOWN;
   ObSimpleTableSchemaV2::reset();
 }
 
@@ -5949,7 +5968,8 @@ int64_t ObTableSchema::to_string(char *buf, const int64_t buf_len) const
     "aux_vp_tid_array", aux_vp_tid_array_,
     K_(define_user_id),
     K_(aux_lob_meta_tid),
-    K_(aux_lob_piece_tid));
+    K_(aux_lob_piece_tid),
+    K_(name_generated_type));
   J_OBJ_END();
 
   return pos;
@@ -6213,6 +6233,11 @@ OB_DEF_SERIALIZE(ObTableSchema)
   if (OB_SUCC(ret)) {
     OB_UNIS_ENCODE(kv_attributes_);
   }
+
+  if (OB_SUCC(ret)) {
+    LST_DO_CODE(OB_UNIS_ENCODE,
+                name_generated_type_);
+  }
   return ret;
 }
 
@@ -6304,7 +6329,7 @@ bool ObTableSchema::has_lob_column() const
 {
   bool bool_ret = false;
 
-  bool_ret = (aux_lob_meta_tid_ != OB_INVALID_ID && aux_lob_piece_tid_ != OB_INVALID_ID);
+  bool_ret = has_lob_aux_table();
   for (int64_t i = 0; !bool_ret && i < column_cnt_; ++i) {
     ObColumnSchemaV2& col = *column_array_[i];
     if (is_lob_storage(col.get_data_type())) {
@@ -6578,6 +6603,10 @@ OB_DEF_DESERIALIZE(ObTableSchema)
       LOG_WARN("deep_copy_str failed", K(ret), K(kv_attributes));
     }
   }
+  if (OB_SUCC(ret)) {
+    LST_DO_CODE(OB_UNIS_DECODE,
+                name_generated_type_);
+  }
   return ret;
 }
 
@@ -6717,6 +6746,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
   OB_UNIS_ADD_LEN(external_file_pattern_);
   OB_UNIS_ADD_LEN(ttl_definition_);
   OB_UNIS_ADD_LEN(kv_attributes_);
+  OB_UNIS_ADD_LEN(name_generated_type_);
   return len;
 }
 

@@ -1125,6 +1125,8 @@ public:
   ObDBlinkSequenceIdMap  &get_dblink_sequence_id_map() { return dblink_sequence_id_map_; }
   void set_current_dblink_sequence_id(int64_t id) { current_dblink_sequence_id_ = id; }
   int64_t get_current_dblink_sequence_id() const { return current_dblink_sequence_id_; }
+  void set_client_non_standard(bool client_non_standard) { client_non_standard_ = client_non_standard; }
+  bool client_non_standard() { return client_non_standard_; }
   int get_mem_ctx_alloc(common::ObIAllocator *&alloc);
   int update_sess_sync_info(const SessionSyncInfoType sess_sync_info_type,
                                 const char *buf, const int64_t length, int64_t &pos);
@@ -1147,6 +1149,7 @@ public:
   int is_groupby_placement_transformation_enabled(bool &transformation_enabled) const;
   bool is_in_range_optimization_enabled() const;
   int is_better_inlist_enabled(bool &enabled) const;
+  bool is_index_skip_scan_enabled() const;
 
   ObSessionDDLInfo &get_ddl_info() { return ddl_info_; }
   void set_ddl_info(const ObSessionDDLInfo &ddl_info) { ddl_info_ = ddl_info; }
@@ -1506,6 +1509,7 @@ private:
   int64_t out_bytes_;
   int64_t current_dblink_sequence_id_;
   common::ObSEArray<ObSequenceSchema*, 2> dblink_sequence_schemas_;
+  bool client_non_standard_;
 };
 
 inline bool ObSQLSessionInfo::is_terminate(int &ret) const

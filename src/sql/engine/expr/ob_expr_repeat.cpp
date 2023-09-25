@@ -46,7 +46,9 @@ int ObExprRepeat::calc_result_type2(ObExprResType &type,
                                     ObExprTypeCtx &type_ctx) const
 {
   int ret = OB_SUCCESS;
-  if (!ob_is_text_tc(text.get_type()) && !text.is_null()) {
+  if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_2_0_0) {
+    text.set_calc_type(common::ObVarcharType);
+  } else if (!ob_is_text_tc(text.get_type()) && !text.is_null()) {
     text.set_calc_type(common::ObVarcharType);
   }
   if (!count.is_null()) {
@@ -210,6 +212,9 @@ int ObExprRepeat::repeat_text(ObObjType res_type,
       int64_t tot_length = length * count;
       int64_t buffer_len = 0;
       char *buf = NULL;
+      if (tot_length >= MEM_WARN_THRESHOLD) {
+        LOG_INFO("once repeat cost over 100M", K(ret), K(tot_length), K(length), K(count));
+      }
       ObTextStringResult result_buffer(res_type, has_lob_header, &allocator);
       if (OB_FAIL(result_buffer.init(tot_length))) {
         LOG_WARN("init result failed", K(ret), K(tot_length));

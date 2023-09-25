@@ -16,6 +16,7 @@
 #include "share/ob_max_id_fetcher.h"
 #include "share/table/ob_ttl_util.h"
 #include "lib/oblog/ob_log_module.h"
+#include "share/table/ob_table_config_util.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -30,9 +31,14 @@ void ObClearTTLHistoryTask::runTimerTask()
 {
   ObCurTraceId::init(GCONF.self_addr_);
   int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
+  if (!ObKVFeatureModeUitl::is_ttl_enable()) {
+    // do nothing
+    LOG_DEBUG("ttl is disable");
+  } else if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ob clear ttl history task is not init", KR(ret));
+  } else if (is_paused_) {
+    // timer paused, do nothing
   } else if (ObTTLUtil::check_can_do_work()) {
     int ret = OB_SUCCESS;
     const int64_t now = ObTimeUtility::current_time();
@@ -80,6 +86,16 @@ int ObClearTTLHistoryTask::init(const uint64_t tenant_id, common::ObMySQLProxy &
     is_inited_ = true;
   }
   return ret;
+}
+
+void ObClearTTLHistoryTask::resume()
+{
+  is_paused_ = false;
+}
+
+void ObClearTTLHistoryTask::pause()
+{
+  is_paused_ = true;
 }
 
 int ObTTLTaskScheduler::init(const uint64_t tenant_id, common::ObMySQLProxy &sql_proxy)
@@ -188,7 +204,7 @@ int ObTTLTaskScheduler::calc_next_task_state(ObTTLTaskType user_cmd_type,
     next_state = ObTTLTaskStatus::OB_RS_TTL_TASK_CANCEL;
   } else {
     ret = OB_STATE_NOT_MATCH;
-    LOG_WARN("fail to modify ttl tasks status, the state is not mismatch",
+    LOG_WARN("fail to modify ttl tasks status, the state is mismatch. Maybe previous tasks is running",
       KR(ret), K(curr_state), K(user_cmd_type));
     LOG_USER_WARN(OB_NOT_SUPPORTED, "Change the current TTL task state to the destination state");
   }
@@ -515,6 +531,16 @@ void ObTTLTaskScheduler::reset_local_tenant_task()
   tenant_task_.reset();
 }
 
+void ObTTLTaskScheduler::resume()
+{
+  is_paused_ = false;
+}
+
+void ObTTLTaskScheduler::pause()
+{
+  is_paused_ = true;
+}
+
 int ObTenantTTLManager::init(const uint64_t tenant_id, ObMySQLProxy &sql_proxy)
 {
   int ret = OB_SUCCESS;
@@ -581,9 +607,14 @@ void ObTTLTaskScheduler::runTimerTask()
 {
   int ret = OB_SUCCESS;
   ObCurTraceId::init(GCONF.self_addr_);
-  if (IS_NOT_INIT) {
+  if (!ObKVFeatureModeUitl::is_ttl_enable()) {
+    // do nothing
+    LOG_DEBUG("ttl is disable");
+  } else if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ttl task mgr not init", KR(ret));
+  } else if (is_paused_) {
+    // timer paused, do nothing
   } else if (OB_FAIL(reload_tenant_task())) {
     LOG_WARN("fail to process tenant task", KR(ret), K_(tenant_id));
   } else if (OB_FAIL(try_add_periodic_task())) {
@@ -654,6 +685,18 @@ int ObTTLTaskScheduler::move_all_task_to_history_table()
   }
 
   return ret;
+}
+
+void ObTenantTTLManager::resume()
+{
+  clear_ttl_history_task_.resume();
+  task_scheduler_.resume();
+  task_scheduler_.set_need_reload(true);}
+
+void ObTenantTTLManager::pause()
+{
+  clear_ttl_history_task_.pause();
+  task_scheduler_.pause();
 }
 
 int ObTTLTaskScheduler::check_task_need_move(bool &need_move)

@@ -510,7 +510,7 @@ public:
     : ObDDLArg(), tenant_schema_(), pool_list_(), if_not_exist_(false),
       sys_var_list_(), name_case_mode_(common::OB_NAME_CASE_INVALID), is_restore_(false),
       palf_base_info_(), compatible_version_(0), recovery_until_scn_(share::SCN::min_scn()),
-      is_creating_standby_(false), log_restore_source_() {}
+      is_creating_standby_(false), log_restore_source_(), is_tmp_tenant_for_recover_(false) {}
   virtual ~ObCreateTenantArg() {};
   bool is_valid() const;
   int check_valid() const;
@@ -538,6 +538,7 @@ public:
   share::SCN recovery_until_scn_;
   bool is_creating_standby_;
   common::ObString log_restore_source_; // for create standby tenant
+  bool is_tmp_tenant_for_recover_; //tmp tenant for recover table
 };
 
 struct ObCreateTenantEndArg : public ObDDLArg
@@ -2465,7 +2466,8 @@ public:
     need_validate_data_(true),
     is_parent_table_mock_(false),
     parent_database_id_(common::OB_INVALID_ID),
-    parent_table_id_(common::OB_INVALID_ID)
+    parent_table_id_(common::OB_INVALID_ID),
+    name_generated_type_(GENERATED_TYPE_UNKNOWN)
   {}
   virtual ~ObCreateForeignKeyArg()
   {}
@@ -2493,6 +2495,7 @@ public:
     is_parent_table_mock_ = false;
     parent_database_id_ = common::OB_INVALID_ID;
     parent_table_id_ = common::OB_INVALID_ID;
+    name_generated_type_ = GENERATED_TYPE_UNKNOWN;
   }
   bool is_valid() const;
   int assign(const ObCreateForeignKeyArg &other) {
@@ -2522,6 +2525,7 @@ public:
       is_parent_table_mock_ = other.is_parent_table_mock_;
       parent_database_id_ = other.parent_database_id_;
       parent_table_id_ = other.parent_table_id_;
+      name_generated_type_ = other.name_generated_type_;
     }
     return ret;
   }
@@ -2548,6 +2552,7 @@ public:
   bool is_parent_table_mock_;
   uint64_t parent_database_id_;  // used in ddl_service to store related object_id
   uint64_t parent_table_id_;     // used in ddl_service to store related object_id
+  ObNameGeneratedType name_generated_type_;
 };
 
 struct ObDropForeignKeyArg : public ObIndexArg
@@ -4375,10 +4380,17 @@ struct ObSwitchSchemaArg
 {
   OB_UNIS_VERSION(1);
 public:
-  explicit ObSwitchSchemaArg() : schema_info_(), force_refresh_(false) {}
-  explicit ObSwitchSchemaArg(const share::schema::ObRefreshSchemaInfo &schema_info,
-                             bool force_refresh)
-          : schema_info_(schema_info), force_refresh_(force_refresh) {}
+  explicit ObSwitchSchemaArg()
+    : schema_info_(),
+      force_refresh_(false),
+      is_async_(false) {}
+  explicit ObSwitchSchemaArg(
+       const share::schema::ObRefreshSchemaInfo &schema_info,
+       const bool force_refresh,
+       const bool is_async)
+    : schema_info_(schema_info),
+      force_refresh_(force_refresh),
+      is_async_(is_async) {}
   ~ObSwitchSchemaArg() {}
   void reset();
   bool is_valid() const { return schema_info_.get_schema_version() > 0; }
@@ -4387,6 +4399,7 @@ public:
 
   share::schema::ObRefreshSchemaInfo schema_info_;
   bool force_refresh_;
+  bool is_async_;
 };
 
 struct ObLSTabletPair final

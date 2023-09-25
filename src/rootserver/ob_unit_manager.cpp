@@ -1936,7 +1936,7 @@ int ObUnitManager::get_to_be_deleted_unit_group(
           }
         } else {
           ret = OB_OP_NOT_ALLOW;
-          LOG_USER_ERROR(OB_OP_NOT_ALLOW, "delete unit group which is not belong to this tenant");
+          LOG_USER_ERROR(OB_OP_NOT_ALLOW, "delete unit group which does not belong to this tenant");
         }
       }
     } else {
@@ -4198,10 +4198,7 @@ int ObUnitManager::get_all_unit_infos_by_tenant(const uint64_t tenant_id,
   return ret;
 }
 
-int ObUnitManager::commit_shrink_tenant_resource_pool(
-    const uint64_t tenant_id,
-    const int64_t job_id,
-    const int check_ret)
+int ObUnitManager::commit_shrink_tenant_resource_pool(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   SpinWLockGuard guard(lock_);
@@ -4222,8 +4219,6 @@ int ObUnitManager::commit_shrink_tenant_resource_pool(
     LOG_WARN("pool ptr is null", KR(ret), KP(pools));
   } else if (OB_FAIL(trans.start(proxy_, OB_SYS_TENANT_ID))) {
     LOG_WARN("start transaction failed", KR(ret));
-  } else if (OB_FAIL(complete_shrink_tenant_pool_unit_num_rs_job_(tenant_id, job_id, check_ret, trans))) {
-    LOG_WARN("fail to complete rs job", KR(ret), K(tenant_id), K(job_id), K(check_ret));
   } else if (OB_FAIL(commit_shrink_resource_pool_in_trans_(*pools, trans, resource_units))) {
     LOG_WARN("failed to shrink in trans", KR(ret), KPC(pools));
   }

@@ -113,14 +113,18 @@ int ObExprUpdateXml::eval_update_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
   ObIMulModeBase *xml_tree = NULL;
   bool has_namespace_str = false;
   int64_t num_child = expr.arg_cnt_;
-  ObPathVarObject *prefix_ns = NULL;
+  ObPathVarObject prefix_ns(allocator);
   ObString default_ns;
   ObCollationType cs_type = CS_TYPE_INVALID;
   ObMulModeMemCtx* xml_mem_ctx = nullptr;
   bool input_is_doc = false;
   ObMulModeNodeType node_type = M_MAX_TYPE;
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "XMLCodeGen"));
-  if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, xml_mem_ctx))) {
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ObXMLExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session()), "XMLModule"));
+
+  if (OB_ISNULL(ctx.exec_ctx_.get_my_session())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get session failed.", K(ret));
+  } else if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, xml_mem_ctx))) {
     LOG_WARN("fail to create tree memory context", K(ret));
   } else if (num_child < 3) {
     ret = OB_ERR_PARAM_SIZE;
@@ -157,8 +161,8 @@ int ObExprUpdateXml::eval_update_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
       } else if (xpath_str.empty()) {
         ret = OB_ERR_INVALID_XPATH_EXPRESSION;
         LOG_WARN("xpath is empty", K(ret));
-      } else if (OB_FAIL(update_xml_tree(xml_mem_ctx,  expr.args_[i+1], ctx, xpath_str, default_ns, prefix_ns, xml_tree))) {
-        LOG_WARN("fail to do update in xml tree", K(ret), K(xml_tree), K(xpath_str), K(default_ns), K(prefix_ns), K(i+1));
+      } else if (OB_FAIL(update_xml_tree(xml_mem_ctx,  expr.args_[i+1], ctx, xpath_str, default_ns, &prefix_ns, xml_tree))) {
+        LOG_WARN("fail to do update in xml tree", K(ret), K(xml_tree), K(xpath_str), K(default_ns), K(i+1));
       }
     }
     // set result

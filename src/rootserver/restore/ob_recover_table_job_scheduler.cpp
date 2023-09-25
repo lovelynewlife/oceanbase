@@ -15,6 +15,7 @@
 #include "ob_recover_table_job_scheduler.h"
 #include "rootserver/ob_rs_event_history_table_operator.h"
 #include "rootserver/restore/ob_recover_table_initiator.h"
+#include "rootserver/restore/ob_restore_service.h"
 #include "share/backup/ob_backup_data_table_operator.h"
 #include "share/ob_primary_standby_service.h"
 #include "share/location_cache/ob_location_service.h"
@@ -35,8 +36,11 @@ void ObRecoverTableJobScheduler::reset()
   tenant_id_ = OB_INVALID_TENANT_ID;
 }
 
-int ObRecoverTableJobScheduler::init(share::schema::ObMultiVersionSchemaService &schema_service,
-    common::ObMySQLProxy &sql_proxy, obrpc::ObCommonRpcProxy &rs_rpc_proxy, obrpc::ObSrvRpcProxy &srv_rpc_proxy)
+int ObRecoverTableJobScheduler::init(
+    share::schema::ObMultiVersionSchemaService &schema_service,
+    common::ObMySQLProxy &sql_proxy,
+    obrpc::ObCommonRpcProxy &rs_rpc_proxy,
+    obrpc::ObSrvRpcProxy &srv_rpc_proxy)
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = gen_user_tenant_id(MTL_ID());
@@ -56,6 +60,16 @@ int ObRecoverTableJobScheduler::init(share::schema::ObMultiVersionSchemaService 
   return ret;
 }
 
+void ObRecoverTableJobScheduler::wakeup_()
+{
+  ObRestoreService *restore_service = nullptr;
+  if (OB_ISNULL(restore_service = MTL(ObRestoreService *))) {
+    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "restore service must not be null");
+  } else {
+    restore_service->wakeup();
+  }
+}
+
 void ObRecoverTableJobScheduler::do_work()
 {
   int ret = OB_SUCCESS;
@@ -68,6 +82,7 @@ void ObRecoverTableJobScheduler::do_work()
   } else if (OB_FAIL(helper_.get_all_recover_table_job(*sql_proxy_, jobs))) {
     LOG_WARN("failed to get recover all recover table job", K(ret));
   } else {
+    ObCurTraceId::init(GCTX.self_addr());
     ARRAY_FOREACH(jobs, i) {
       ObRecoverTableJob &job = jobs.at(i);
       if (!job.is_valid()) {
@@ -139,6 +154,7 @@ int ObRecoverTableJobScheduler::try_advance_status_(share::ObRecoverTableJob &jo
   } else if (need_advance_status && OB_FAIL(helper_.advance_status(*sql_proxy_, job, next_status))) {
     LOG_WARN("failed to advance statsu", K(ret), K(job), K(next_status));
   } else {
+    wakeup_();
     ROOTSERVICE_EVENT_ADD("recover_table", "advance_status", K(tenant_id), K(job_id), K(next_status));
   }
   return ret;
@@ -148,6 +164,37 @@ void ObRecoverTableJobScheduler::sys_process_(share::ObRecoverTableJob &job)
 {
   int ret = OB_SUCCESS;
   LOG_INFO("ready to schedule sys recover table job", K(job));
+  switch(job.get_status()) {
+    case ObRecoverTableStatus::Status::PREPARE: {
+      if (OB_FAIL(sys_prepare_(job))) {
+        LOG_WARN("failed to do sys prepare work", K(ret), K(job));
+      }
+      break;
+    }
+    case ObRecoverTableStatus::Status::RECOVERING: {
+      if (OB_FAIL(recovering_(job))) {
+        LOG_WARN("failed to do sys recovering work", K(ret), K(job));
+      }
+      break;
+    }
+    case ObRecoverTableStatus::Status::COMPLETED:
+    case ObRecoverTableStatus::Status::FAILED: {
+      if (OB_FAIL(sys_finish_(job))) {
+        LOG_WARN("failed to do sys finish work", K(ret), K(job));
+      }
+      break;
+    }
+    default: {
+      ret = OB_ERR_SYS;
+      LOG_WARN("invalid sys recover job status", K(ret), K(job));
+      break;
+    }
+  }
+}
+
+int ObRecoverTableJobScheduler::check_target_tenant_version_(share::ObRecoverTableJob &job)
+{
+  int ret = OB_SUCCESS;
   uint64_t data_version = 0;
   const uint64_t target_tenant_id = job.get_target_tenant_id();
   // check data version
@@ -161,34 +208,19 @@ void ObRecoverTableJobScheduler::sys_process_(share::ObRecoverTableJob &job)
   } else if (data_version < DATA_VERSION_4_2_1_0) {
     ret = OB_OP_NOT_ALLOW;
     LOG_WARN("min data version is smaller than v4.2.1", K(ret), K(target_tenant_id), K(data_version));
-  } else {
-    switch(job.get_status()) {
-      case ObRecoverTableStatus::Status::PREPARE: {
-        if (OB_FAIL(sys_prepare_(job))) {
-          LOG_WARN("failed to do sys prepare work", K(ret), K(job));
-        }
-        break;
+  }
+
+  if (OB_FAIL(ret)) {
+    int tmp_ret = OB_SUCCESS;
+    schema::ObSchemaGetterGuard guard;
+    if (OB_TMP_FAIL(ObImportTableUtil::get_tenant_schema_guard(*schema_service_, job.get_target_tenant_id(), guard))) {
+      if (OB_TENANT_NOT_EXIST == tmp_ret) {
+        ret = tmp_ret;
       }
-      case ObRecoverTableStatus::Status::RECOVERING: {
-        if (OB_FAIL(recovering_(job))) {
-          LOG_WARN("failed to do sys recovering work", K(ret), K(job));
-        }
-        break;
-      }
-      case ObRecoverTableStatus::Status::COMPLETED:
-      case ObRecoverTableStatus::Status::FAILED: {
-        if (OB_FAIL(sys_finish_(job))) {
-          LOG_WARN("failed to do sys finish work", K(ret), K(job));
-        }
-        break;
-      }
-      default: {
-        ret = OB_ERR_SYS;
-        LOG_WARN("invalid sys recover job status", K(ret), K(job));
-        break;
-      }
+      LOG_WARN("failed to get tenant schema guard", K(tmp_ret));
     }
   }
+  return ret;
 }
 
 int ObRecoverTableJobScheduler::sys_prepare_(share::ObRecoverTableJob &job)
@@ -197,7 +229,9 @@ int ObRecoverTableJobScheduler::sys_prepare_(share::ObRecoverTableJob &job)
   ObRecoverTableJob target_job;
   share::ObRecoverTablePersistHelper helper;
   DEBUG_SYNC(BEFORE_INSERT_UERR_RECOVER_TABLE_JOB);
-  if (OB_FAIL(helper.init(job.get_target_tenant_id()))) {
+  if (OB_FAIL(check_target_tenant_version_(job))) {
+    LOG_WARN("failed to check target tenant version", K(ret));
+  } else if (OB_FAIL(helper.init(job.get_target_tenant_id()))) {
     LOG_WARN("failed to init recover table persist helper", K(ret));
   } else if (OB_FAIL(helper.get_recover_table_job_by_initiator(*sql_proxy_, job, target_job))) {
     if (OB_ENTRY_NOT_EXIST == ret) {
@@ -514,11 +548,31 @@ int ObRecoverTableJobScheduler::restore_aux_tenant_(share::ObRecoverTableJob &jo
       job.get_result().set_result(false, restore_history_info.comment_);
     } else if (OB_FAIL(check_aux_tenant_(job, aux_tenant_id))) {
       LOG_WARN("failed to check aux tenant", K(ret), K(aux_tenant_id));
+    } else if (OB_FAIL(failover_to_leader_(job, aux_tenant_id))) {
+      LOG_WARN("failed to failover to leader", K(ret));
     }
 
     int tmp_ret = OB_SUCCESS;
     if (OB_SUCCESS != (tmp_ret = try_advance_status_(job, ret))) {
       LOG_WARN("failed to advance status", K(tmp_ret), K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObRecoverTableJobScheduler::failover_to_leader_(
+    share::ObRecoverTableJob &job, const uint64_t aux_tenant_id)
+{
+  int ret = OB_SUCCESS;
+  common::ObAddr leader;
+  obrpc::ObSwitchTenantArg switch_tenant_arg;
+  MTL_SWITCH(OB_SYS_TENANT_ID) {
+    if (OB_FAIL(switch_tenant_arg.init(aux_tenant_id, obrpc::ObSwitchTenantArg::OpType::FAILOVER_TO_PRIMARY, "", false))) {
+      LOG_WARN("failed to init switch tenant arg", K(ret), K(aux_tenant_id));
+    } else if (OB_FAIL(OB_PRIMARY_STANDBY_SERVICE.switch_tenant(switch_tenant_arg))) {
+      LOG_WARN("failed to switch_tenant", KR(ret), K(switch_tenant_arg));
+    } else {
+      LOG_INFO("[RECOVER_TABLE]succeed to switch aux tenant role to primary", K(aux_tenant_id), K(job));
     }
   }
   return ret;

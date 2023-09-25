@@ -318,7 +318,7 @@ public:
   {
   public:
     explicit GroupConcatExtraResult(common::ObIAllocator &alloc, ObMonitorNode &op_monitor_info)
-      : ExtraResult(alloc, op_monitor_info), row_count_(0), iter_idx_(0), sort_op_(NULL), separator_datum_(NULL), bool_mark_(alloc)
+      : ExtraResult(alloc, op_monitor_info), row_count_(0), iter_idx_(0), row_store_(ObModIds::OB_SQL_AGGR_FUN_GROUP_CONCAT), sort_op_(NULL), separator_datum_(NULL), bool_mark_(alloc)
     {
     }
     virtual ~GroupConcatExtraResult();
@@ -446,6 +446,7 @@ public:
       flags_(0),
       collect_buf_(NULL),
       collect_buf_len_(0),
+      need_advance_collect_(false),
       advance_collect_result_()
     {
       iter_result_.set_null();
@@ -515,12 +516,12 @@ public:
       struct {
         int32_t is_tiny_num_used_ : 1;
         int32_t is_evaluated_ : 1;
-        int32_t need_advance_collect_ : 1;
         int32_t is_advance_evaluated_ : 1;
       };
     };
     char *collect_buf_;
     int64_t collect_buf_len_;
+    bool need_advance_collect_;
     ObDatum advance_collect_result_;
   };
 

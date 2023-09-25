@@ -1134,6 +1134,11 @@ public:
   const ObString &get_external_file_location_access_info() const { return external_file_location_access_info_; }
   const ObString &get_external_file_format() const { return external_file_format_; }
   const ObString &get_external_file_pattern() const { return external_file_pattern_; }
+  inline void set_name_generated_type(const ObNameGeneratedType is_sys_generated) {
+    name_generated_type_ = is_sys_generated;
+  }
+  inline ObNameGeneratedType get_name_generated_type() const { return name_generated_type_; }
+  bool is_sys_generated_name(bool check_unknown) const;
   inline bool is_index_visible() const
   {
     return 0 == (index_attributes_set_ & ((uint64_t)(1) << INDEX_VISIBILITY));
@@ -1439,6 +1444,7 @@ public:
   uint64_t get_aux_lob_meta_tid() const { return aux_lob_meta_tid_; }
   uint64_t get_aux_lob_piece_tid() const { return aux_lob_piece_tid_; }
   bool has_lob_column() const;
+  bool has_lob_aux_table() const { return (aux_lob_meta_tid_ != OB_INVALID_ID && aux_lob_piece_tid_ != OB_INVALID_ID); }
   inline void add_table_flag(uint64_t flag) { table_flags_ |= flag; }
   inline void del_table_flag(uint64_t flag) { table_flags_ &= ~flag; }
   inline void add_or_del_table_flag(uint64_t flag, bool is_add)
@@ -1641,6 +1647,8 @@ protected:
 
   // kv attributes
   common::ObString kv_attributes_;
+
+  ObNameGeneratedType name_generated_type_;
 };
 
 class ObPrintableTableSchema final : public ObTableSchema
@@ -1869,6 +1877,7 @@ int ObTableSchema::add_column(const ColumnType &column)
              && OB_FAIL(check_if_oracle_compat_mode(is_oracle_mode))) {
     // When deserialize column in physical restore, tenant id is wrong. We need to use lib::is_oracle_mode() to do this check.
     SHARE_SCHEMA_LOG(WARN, "check if_oracle_compat_mode failed", K(ret), K(tenant_id_), K(table_id_));
+    is_oracle_mode = lib::is_oracle_mode();
     ret = OB_SUCCESS;
     SHARE_SCHEMA_LOG(WARN, "replace error code to OB_SUCCESS, because tenant_id is invalid in physical restore",
                      K(ret), K(tenant_id_), K(table_id_), K(is_oracle_mode));

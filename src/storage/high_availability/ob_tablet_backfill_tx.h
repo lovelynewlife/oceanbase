@@ -19,7 +19,6 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "ob_storage_ha_dag.h"
 #include "storage/compaction/ob_tablet_merge_ctx.h"
-#include "storage/memtable/ob_multi_source_data.h"
 
 namespace oceanbase
 {
@@ -149,10 +148,6 @@ private:
   int do_backfill_tx_();
   int prepare_partition_merge_();
   int update_merge_sstable_();
-  int read_msd_from_memtable_(ObUpdateTableStoreParam &param);
-  int traverse_frozen_memtable_(
-      const memtable::MultiSourceDataUnitType &type,
-      memtable::ObIMultiSourceDataUnit *msd);
 
 private:
   bool is_inited_;

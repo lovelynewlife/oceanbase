@@ -346,7 +346,7 @@ int ObStorageHATabletsBuilder::update_pending_tablets_with_remote()
 
       const ObTabletID tablet_id = tablet_info.tablet_id_;
       if (OB_FAIL(ls->ha_get_tablet(tablet_id, tablet_handle))) {
-        if (OB_TABLET_NOT_EXIST) {
+        if (OB_TABLET_NOT_EXIST == ret) {
           LOG_INFO("tablet is not exist", K(tablet_id));
           ret = OB_SUCCESS;
           continue;
@@ -532,6 +532,8 @@ int ObStorageHATabletsBuilder::create_or_update_tablet_(
   } else if (ObCopyTabletStatus::TABLET_NOT_EXIST == tablet_info.status_ && tablet_info.tablet_id_.is_ls_inner_tablet()) {
     ret = OB_TABLET_NOT_EXIST;
     LOG_WARN("src ls inner tablet is not exist, src ls is maybe deleted", K(ret), K(tablet_info));
+  } else if (OB_FAIL(ObTabletCreateMdsHelper::check_create_new_tablets(1LL))) {
+    LOG_WARN("failed to check create new tablet", K(ret), K(tablet_info));
   } else if (OB_FAIL(hold_local_reuse_sstable_(tablet_info.tablet_id_, local_tablet_hdl, major_tables, storage_schema, medium_info_list, allocator))) {
     LOG_WARN("failed to hold local reuse sstable", K(ret), K(tablet_info));
   } else if (OB_FAIL(ls->rebuild_create_tablet(tablet_info.param_, keep_old))) {
@@ -1075,7 +1077,7 @@ int ObStorageHATabletsBuilder::hold_local_reuse_sstable_(
       } else if (OB_FAIL(hold_local_complete_tablet_sstable_(tablet, tables_handle))) {
         LOG_WARN("failed to hold local complete tablet sstable", K(ret), KP(tablet));
       } else {
-        if (!storage_schema.is_valid()
+        if (!storage_schema.is_inited()
           || storage_schema.compare_schema_newer(*tablet_storage_schema)) {
           storage_schema.reset();
           if (OB_FAIL(storage_schema.init(allocator, *tablet_storage_schema))) {
@@ -1380,7 +1382,7 @@ int ObStorageHATabletsBuilder::update_local_tablet_(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet should not be NULL", K(ret), K(tablet_info), KP(tablet));
   } else if (tablet->get_tablet_meta().ha_status_.is_none()) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_STATE_NOT_MATCH; // TODO(chongrong.th) restore task mgr think about transfer scn later, rollback to OB_ERR_UNEXPECTED later.
     LOG_WARN("local exist tablet data is complete, no need update local tablet", K(ret), KPC(tablet));
   } else if (tablet->get_tablet_meta().start_scn_ == tablet_info.param_.start_scn_) {
     //do nothing
@@ -2406,12 +2408,12 @@ int ObStorageHATabletBuilderUtil::inner_update_tablet_table_store_with_major_(
                             true/*need_check_sstable*/,
                             true/*allow_duplicate_sstable*/,
                             ObMergeType::MEDIUM_MERGE/*merge_type*/);
-    if (tablet_storage_schema->get_version() < storage_schema.get_version()) {
+    if (tablet_storage_schema->get_schema_version() < storage_schema.get_schema_version()) {
       SERVER_EVENT_ADD("storage_ha", "schema_change_need_merge_tablet_meta",
                       "tenant_id", MTL_ID(),
                       "tablet_id", tablet_id.id(),
-                      "old_schema_version", tablet_storage_schema->get_version(),
-                      "new_schema_version", storage_schema.get_version());
+                      "old_schema_version", tablet_storage_schema->get_schema_version(),
+                      "new_schema_version", storage_schema.get_schema_version());
     }
 #ifdef ERRSIM
     SERVER_EVENT_ADD("storage_ha", "update_major_tablet_table_store",

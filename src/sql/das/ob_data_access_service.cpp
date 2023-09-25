@@ -182,7 +182,7 @@ OB_NOINLINE int ObDataAccessService::execute_dist_das_task(
       LOG_WARN("failed to copy das task", K(ret));
     } else if (task_arg.is_local_task()) {
       if (OB_FAIL(do_local_das_task(das_ref, task_arg))) {
-        LOG_WARN("do local das task failed", K(ret), K(task_arg));
+        LOG_WARN("do local das task failed", K(ret));
       }
     } else if (OB_FAIL(das_ref.acquire_task_execution_resource())) {
       LOG_WARN("failed to acquire execution resource", K(ret));
@@ -258,16 +258,16 @@ int ObDataAccessService::retry_das_task(ObDASRef &das_ref, ObIDASTaskOp &task_op
       bool need_retry = false;
       retry_func(das_ref, task_op, need_retry);
       LOG_INFO("[DAS RETRY] check if need tablet level retry",
-               KR(task_op.errcode_), K(need_retry),
+               KR(task_op.errcode_), K(need_retry), K(task_op.task_flag_),
                "retry_cnt", location_router.get_retry_cnt(),
                KPC(task_op.get_tablet_loc()));
       if (need_retry &&
-          task_op.get_gi_above_and_rescan() &&
+          task_op.get_inner_rescan() &&
           location_router.get_retry_cnt() > 100) { //hard code retry 100 times.
-        //When das scan under px gi with transfor case, we need to disable das retry.
+        // disable das retry for rescan.
         need_retry = false;
         retry_continue = false;
-        LOG_INFO("[DAS RETRY] The PX task has retried too many times and has exited the DAS retry process");
+        LOG_INFO("[DAS RETRY] The rescan task has retried too many times and has exited the DAS retry process");
       }
       if (need_retry) {
         task_op.in_part_retry_ = true;

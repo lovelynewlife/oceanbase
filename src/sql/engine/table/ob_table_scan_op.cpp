@@ -608,6 +608,7 @@ ObTableScanOp::ObTableScanOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOp
     range_buffer_idx_(0),
     group_size_(0),
     max_group_size_(0),
+    in_rescan_(false),
     global_index_lookup_op_(NULL),
     spat_index_()
 {
@@ -659,6 +660,7 @@ OB_INLINE int ObTableScanOp::create_one_das_task(ObDASTabletLoc *tablet_loc)
     scan_op->set_scan_rtdef(&tsc_rtdef_.scan_rtdef_);
     scan_op->set_can_part_retry(nullptr == tsc_rtdef_.scan_rtdef_.sample_info_
                                 && can_partition_retry());
+    scan_op->set_inner_rescan(in_rescan_);
     tsc_rtdef_.scan_rtdef_.table_loc_->is_reading_ = true;
     if (!MY_SPEC.is_index_global_ && MY_CTDEF.lookup_ctdef_ != nullptr) {
       //is local index lookup, need to set the lookup ctdef to the das scan op
@@ -890,7 +892,9 @@ OB_INLINE int ObTableScanOp::init_das_scan_rtdef(const ObDASScanCtDef &das_ctdef
   das_rtdef.scan_flag_.is_show_seed_ = plan_ctx->get_show_seed();
   if(is_foreign_check_nested_session()) {
     das_rtdef.is_for_foreign_check_ = true;
-    das_rtdef.scan_flag_.set_for_foreign_key_check();
+    if (plan_ctx->get_phy_plan()->has_for_update() && ObSQLUtils::is_iter_uncommitted_row(&ctx_)) {
+      das_rtdef.scan_flag_.set_iter_uncommitted_row();
+    }
   }
   if (MY_SPEC.batch_scan_flag_ || is_lookup) {
     das_rtdef.scan_flag_.scan_order_ = ObQueryFlag::KeepOrder;
@@ -1494,6 +1498,7 @@ int ObTableScanOp::fill_storage_feedback_info()
 int ObTableScanOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
+  in_rescan_ = true;
   if (OB_FAIL(ObOperator::inner_rescan())) {
     LOG_WARN("failed to exec inner rescan");
   } else if (MY_SPEC.is_global_index_back()) {
@@ -1596,9 +1601,6 @@ int ObTableScanOp::local_iter_rescan()
         }
       }
       if (OB_SUCC(ret)) {
-        if (MY_SPEC.gi_above_) {
-          scan_op->set_gi_above_and_rescan(true);
-        }
         if (OB_FAIL(cherry_pick_range_by_tablet_id(scan_op))) {
           LOG_WARN("prune query range by partition id failed", K(ret));
         } else if (OB_FAIL(init_das_group_range(0, group_size_))) {
@@ -2678,7 +2680,7 @@ int ObTableScanOp::report_ddl_column_checksum()
       item.table_id_ = table_id;
       item.ddl_task_id_ = MY_SPEC.plan_->get_ddl_task_id();
       item.column_id_ = MY_SPEC.ddl_output_cids_.at(i) & VIRTUAL_GEN_FIXED_LEN_MASK;
-      item.task_id_ = ctx_.get_px_sqc_id() << 48 | ctx_.get_px_task_id() << 32 | curr_scan_task_id;
+      item.task_id_ = ctx_.get_px_sqc_id() << ObDDLChecksumItem::PX_SQC_ID_OFFSET | ctx_.get_px_task_id() << ObDDLChecksumItem::PX_TASK_ID_OFFSET | curr_scan_task_id;
       item.checksum_ = i < column_checksum_.count() ? column_checksum_[i] : 0;
     #ifdef ERRSIM
       if (OB_SUCC(ret)) {

@@ -102,7 +102,6 @@ class ObDDLKVHandle;
 class ObStorageSchema;
 class ObTabletTableIterator;
 class ObMetaDiskAddr;
-class ObTabletMdsDumpStruct;
 class ObTabletCreateDeleteMdsUserData;
 class ObTabletBindingMdsUserData;
 class ObMemtableArray;
@@ -728,6 +727,7 @@ private:
   int wait_release_memtables_();
   int mark_mds_table_switched_to_empty_shell_();
   int fetch_autoinc_seq(ObTabletMemberWrapper<share::ObTabletAutoincSeq> &wrapper) const;
+  int handle_transfer_replace_(const ObBatchUpdateTableStoreParam &param);
 private:
   // ObTabletDDLKvMgr::MAX_DDL_KV_CNT_IN_STORAGE
   // Array size is too large, need to shrink it if possible

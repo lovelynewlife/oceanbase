@@ -47,6 +47,8 @@ struct ObLSMeta;
 class ObLSService
 {
   static const int64_t DEFAULT_LOCK_TIMEOUT = 60_s;
+  static const int64_t SMALL_TENANT_MEMORY_LIMIT = 4 * 1024 * 1024 * 1024L; // 4G
+  static const int64_t TENANT_MEMORY_PER_LS_NEED = 200 * 1024 * 1024L; // 200MB
 public:
   ObLSService();
   ~ObLSService();
@@ -154,6 +156,9 @@ private:
       CREATE_STATE_PALF_ENABLED = 4, // enable_palf succ
       CREATE_STATE_FINISH
   };
+  // the tenant smaller than 5G can only create 8 ls.
+  // other tenant can create 100 ls.
+  int check_tenant_ls_num_();
   int inner_create_ls_(const share::ObLSID &lsid,
                        const ObMigrationStatus &migration_status,
                        const share::ObLSRestoreStatus &restore_status,

@@ -62,7 +62,7 @@ common_hint_begin (\/\*\+({space}*hint{space}+)?)
 c_cmt_begin      \/\*
 c_cmt_end        \*+\/
 comment          ({sql_comment})
-identifier        (([A-Za-z0-9$_]|{UTF8_GB_CHAR})*)
+identifier        (([A-Za-z0-9$_]|{UTF8_GB_CHAR})+)
 system_variable  (@@[A-Za-z_][A-Za-z0-9_]*)|(@@[`][`A-Za-z_][`A-Za-z_]*)
 user_variable    (@[A-Za-z0-9_\.$]*)|(@[`'\"][`'\"A-Za-z0-9_\.$/%]*)
 version_num      ([0-9]+\.+[0-9]*)
@@ -1511,8 +1511,10 @@ BEGIN(in_c_comment);
       node->children_[1] = target_node;
       return REMAP_TABLE_VAL;
     }
+
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 
@@ -1547,7 +1549,8 @@ BEGIN(in_c_comment);
       return REMAP_TABLE_VAL;
     }
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 
@@ -1589,7 +1592,8 @@ BEGIN(in_c_comment);
       return REMAP_TABLE_VAL;
     }
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 
@@ -1621,7 +1625,8 @@ BEGIN(in_c_comment);
       return REMAP_TABLE_VAL;
     }
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 
@@ -1671,7 +1676,8 @@ BEGIN(in_c_comment);
       return REMAP_TABLE_VAL;
     }
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 
@@ -1714,7 +1720,8 @@ BEGIN(in_c_comment);
       return REMAP_TABLE_VAL;
     }
   } else {
-    YY_UNEXPECTED_ERROR("Named binding is only for remap\n");
+    yyerror(yylloc, yyextra, "Named binding is only for remap\n");
+    return PARSER_SYNTAX_ERROR;
   }
 }
 

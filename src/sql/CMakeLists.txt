@@ -64,6 +64,7 @@ ob_set_subtarget(ob_sql das
   das/ob_das_task_result.cpp
   das/ob_das_spatial_index_lookup_op.cpp
   das/ob_das_retry_ctrl.cpp
+  das/ob_das_simple_op.cpp
 )
 
 ob_set_subtarget(ob_sql dtl
@@ -431,6 +432,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_name_const.cpp
   engine/expr/ob_expr_neg.cpp
   engine/expr/ob_expr_nlssort.cpp
+  engine/expr/ob_expr_align_date4cmp.cpp
   engine/expr/ob_expr_not.cpp
   engine/expr/ob_expr_not_between.cpp
   engine/expr/ob_expr_not_equal.cpp

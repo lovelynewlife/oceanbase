@@ -62,6 +62,7 @@ public:
   virtual void set_timeout(const uint64_t timeout) = 0;
   virtual int register_timer_task() = 0;
   virtual void unregister_timer_task() = 0;
+  virtual void dec_count_down_allow_detect() = 0;
   virtual int64_t to_string(char *buffer, const int64_t length) const = 0;// for debugging
   virtual const ObDetectorPriority &get_priority() const = 0;// return detector's priority
   // build a directed dependency relationship to other
@@ -107,6 +108,8 @@ class ObDetectorUserReportInfo
   OB_UNIS_VERSION(1);
 public:
   ObDetectorUserReportInfo();
+  ObDetectorUserReportInfo &operator=(const ObDetectorUserReportInfo &) = delete;
+  int assign(const ObDetectorUserReportInfo &rhs);
   bool is_valid() const;
   int set_module_name(const common::ObSharedGuard<char> &module_name);
   int set_visitor(const common::ObSharedGuard<char> &visitor);
@@ -173,6 +176,8 @@ class ObDetectorInnerReportInfo
   OB_UNIS_VERSION(1);
 public:
   ObDetectorInnerReportInfo();
+  ObDetectorInnerReportInfo &operator=(const ObDetectorInnerReportInfo &) = delete;
+  int assign(const ObDetectorInnerReportInfo &rhs);
   int set_args(const UserBinaryKey &binary_key,
                const common::ObAddr &addr, const uint64_t detector_id,
                const int64_t report_time, const int64_t created_time,

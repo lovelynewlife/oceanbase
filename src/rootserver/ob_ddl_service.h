@@ -99,7 +99,6 @@ class ObDDLService
 {
 public:
   typedef std::pair<share::ObLSID, common::ObTabletID> LSTabletID;
-  typedef ObFixedLengthString<OB_ROOT_KEY_LEN + 1> RootKeyValue;
 public:
   friend class ObTableGroupHelp;
   friend class ObStandbyClusterSchemaProcessor;
@@ -145,12 +144,12 @@ public:
                               const share::schema::ObTableSchema &orig_table_schema,
                               share::schema::ObTableSchema &new_table_schema,
                               common::ObIArray<share::schema::ObColumnSchemaV2*> &new_columns,
-                              share::schema::ObTableSchema &index_schema,
-                              const common::ObString *ddl_stmt_str);
+                              share::schema::ObTableSchema &index_schema);
   // check whether the foreign key related table is executing offline ddl, creating index, and constrtaint task.
   // And ddl should be refused if the foreign key related table is executing above ddl.
   int check_fk_related_table_ddl(
-      const share::schema::ObTableSchema &data_table_schema);
+      const share::schema::ObTableSchema &data_table_schema,
+      const share::ObDDLType &ddl_type);
   int create_global_index(
       ObMySQLTransaction &trans,
       const obrpc::ObCreateIndexArg &arg,
@@ -158,7 +157,6 @@ public:
       share::schema::ObTableSchema &index_schema);
   int create_global_inner_expr_index(
       ObMySQLTransaction &trans,
-      const obrpc::ObCreateIndexArg &arg,
       const share::schema::ObTableSchema &orig_table_schema,
       share::schema::ObTableSchema &new_table_schema,
       common::ObIArray<share::schema::ObColumnSchemaV2*> &new_columns,
@@ -544,8 +542,8 @@ public:
    * @param [in] alter_table_arg
    * @param [out] cst_ids: new foreign key id
    */
-  int rebuild_hidden_table_foreign_key(obrpc::ObAlterTableArg &alter_table_arg,
-                                       common::ObSArray<uint64_t> &cst_ids);
+  int rebuild_hidden_table_foreign_key_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
+                                                common::ObSArray<uint64_t> &cst_ids);
   /**
    * This function is called by the storage layer in the second stage of offline ddl
    * For each constraint object in the original table, if it is a check constraint, need to
@@ -554,8 +552,8 @@ public:
    * @param [in] alter_table_arg
    * @param [out] cst_ids: new constraint id
    */
-  int rebuild_hidden_table_constraints(obrpc::ObAlterTableArg &alter_table_arg,
-                                       common::ObSArray<uint64_t> &cst_ids);
+  int rebuild_hidden_table_constraints_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
+                                                common::ObSArray<uint64_t> &cst_ids);
   /**
    * This function is called by the storage layer in the second stage of offline ddl
    * For each index object of the original table, a related hidden index can be created in
@@ -566,8 +564,8 @@ public:
    * @param [in] frozen_version
    * @param [out] index_ids: new index table id
    */
-  int rebuild_hidden_table_index(obrpc::ObAlterTableArg &alter_table_arg,
-                                 common::ObSArray<uint64_t> &index_ids);
+  int rebuild_hidden_table_index_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
+                                          common::ObSArray<uint64_t> &index_ids);
   /**
    * This function is called by the storage layer in the fourth stage of offline ddl
    * If successful, the original table and dependent objects related to the original table need to be cleaned up
@@ -1534,7 +1532,7 @@ private:
       const ObTableSchema &orig_table_schema,
       const bool rebuild_child_table_fk,
       ObArray<ObForeignKeyInfo> &rebuild_fk_infos);
-  int rebuild_hidden_table_foreign_key_in_trans(
+  int rebuild_hidden_table_foreign_key(
       obrpc::ObAlterTableArg &alter_table_arg,
       const share::schema::ObTableSchema &orig_table_schema,
       const share::schema::ObTableSchema &hidden_table_schema,
@@ -1564,13 +1562,13 @@ private:
       const ObTableSchema &orig_table_schema,
       const ObTableSchema &new_table_schema,
       ObIArray<ObConstraint> &rebuild_constraints);
-  int rebuild_hidden_table_constraints_in_trans(
+  int rebuild_hidden_table_constraints(
       const obrpc::ObAlterTableArg &alter_table_arg,
       const share::schema::ObTableSchema &orig_table_schema,
       const share::schema::ObTableSchema &hidden_table_schema,
       common::ObMySQLTransaction &trans,
       common::ObSArray<uint64_t> &cst_ids);
-  int rebuild_hidden_table_index_in_trans(
+  int rebuild_hidden_table_index(
       const uint64_t tenant_id,
       share::schema::ObSchemaGetterGuard &schema_guard,
       ObDDLOperator &ddl_operator,
@@ -1924,14 +1922,8 @@ public:
   int check_need_create_root_key(const obrpc::ObCreateTenantArg &arg, bool &need_create);
   int get_root_key_from_primary(const obrpc::ObCreateTenantArg &arg,
   const uint64_t tenant_id, obrpc::RootKeyType &key_type,
-  RootKeyValue &key_value);
-  static int get_root_key_from_obs(
-             const uint64_t &cluster_id,
-             obrpc::ObSrvRpcProxy &rpc_proxy,
-             const obrpc::ObRootKeyArg &arg,
-             const common::ObIArray<common::ObAddr> &addrs,
-             obrpc::RootKeyType &key_type,
-             RootKeyValue &key_value);
+  common::ObString &key_value,
+  common::ObIAllocator &allocator);
   int standby_create_root_key(
              const uint64_t tenant_id,
              const obrpc::ObCreateTenantArg &arg,
@@ -1944,7 +1936,10 @@ public:
              obrpc::ObSrvRpcProxy &rpc_proxy,
              const obrpc::ObRootKeyArg &arg,
              const common::ObIArray<common::ObAddr> &addrs,
-             obrpc::ObRootKeyResult &result);
+             obrpc::ObRootKeyResult &result,
+             const bool enable_default = true,
+             const uint64_t &cluster_id = OB_INVALID_CLUSTER_ID,
+             common::ObIAllocator *allocator = NULL);
 #endif
 private:
   int handle_security_audit_for_stmt(const obrpc::ObSecurityAuditArg &arg,
@@ -2242,6 +2237,9 @@ private:
 
   virtual int publish_schema(const uint64_t tenant_id,
                              const common::ObAddrIArray &addrs);
+
+  int check_tenant_has_been_dropped_(const uint64_t tenant_id, bool &is_dropped);
+
   int get_zone_region(
       const common::ObZone &zone,
       const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
@@ -2613,7 +2611,8 @@ public:
                     bool with_snapshot = false) override;
   virtual int start(ObISQLClient *proxy,
                     const uint64_t tenant_id,
-                    bool with_snapshot = false) override;
+                    bool with_snapshot = false,
+                    const int32_t group_id = 0) override;
   static int lock_all_ddl_operation(
       common::ObMySQLTransaction &trans,
       const uint64_t tenant_id);

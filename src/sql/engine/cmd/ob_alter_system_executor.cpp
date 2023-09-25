@@ -73,7 +73,9 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
   } else {
     if (!stmt.is_major_freeze()) {
       const uint64_t local_tenant_id = MTL_ID();
-      bool freeze_all = (stmt.is_freeze_all_user() || stmt.is_freeze_all_meta());
+      bool freeze_all = (stmt.is_freeze_all() ||
+                         stmt.is_freeze_all_user() ||
+                         stmt.is_freeze_all_meta());
       ObRootMinorFreezeArg arg;
       if (OB_FAIL(arg.tenant_ids_.assign(stmt.get_tenant_ids()))) {
         LOG_WARN("failed to assign tenant_ids", K(ret));
@@ -90,29 +92,41 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
           if (OB_ISNULL(GCTX.schema_service_)) {
             ret = OB_INVALID_ARGUMENT;
             LOG_WARN("invalid GCTX", KR(ret));
-          } else if (stmt.is_freeze_all_user() == stmt.is_freeze_all_meta()) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("freeze_all_user and freeze_all_meta cannot be true together",
-                     KR(ret), "freeze_all_user", stmt.is_freeze_all_user(),
-                     "freeze_all_meta", stmt.is_freeze_all_meta());
           } else {
-            common::ObSArray<uint64_t> tmp_tenant_ids;
-            if (OB_FAIL(GCTX.schema_service_->get_tenant_ids(tmp_tenant_ids))) {
-              LOG_WARN("fail to get all tenant ids", KR(ret));
-            } else {
-              using FUNC_TYPE = bool (*) (const uint64_t);
-              FUNC_TYPE func = nullptr;
-              if (stmt.is_freeze_all_user()) {
-                func = is_user_tenant;
-              } else {
-                func = is_meta_tenant;
+            // if min_cluster_version < 4.2.1.0，disable all_user/all_meta,
+            // and make tenant=all effective for all tenants.
+            if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_2_1_0) {
+              if (stmt.is_freeze_all_user() || stmt.is_freeze_all_meta()) {
+                ret = OB_NOT_SUPPORTED;
+                LOG_WARN("all_user/all_meta are not supported when min_cluster_version is less than 4.2.1.0",
+                         KR(ret), "freeze_all_user", stmt.is_freeze_all_user(),
+                         "freeze_all_meta", stmt.is_freeze_all_meta());
+              } else if (stmt.is_freeze_all()) {
+                if (OB_FAIL(GCTX.schema_service_->get_tenant_ids(arg.tenant_ids_))) {
+                  LOG_WARN("fail to get all tenant ids", KR(ret));
+                }
               }
-              arg.tenant_ids_.reset();
-              for (int64_t i = 0; OB_SUCC(ret) && (i < tmp_tenant_ids.count()); ++i) {
-                uint64_t tmp_tenant_id = tmp_tenant_ids.at(i);
-                if (func(tmp_tenant_id)) {
-                  if (OB_FAIL(arg.tenant_ids_.push_back(tmp_tenant_id))) {
-                    LOG_WARN("failed to push back tenant_id", KR(ret));
+            } else {
+              common::ObSArray<uint64_t> tmp_tenant_ids;
+              if (OB_FAIL(GCTX.schema_service_->get_tenant_ids(tmp_tenant_ids))) {
+                LOG_WARN("fail to get all tenant ids", KR(ret));
+              } else {
+                using FUNC_TYPE = bool (*) (const uint64_t);
+                FUNC_TYPE func = nullptr;
+                // caller guarantees that at most one of
+                // freeze_all/freeze_all_user/freeze_all_meta is true.
+                if (stmt.is_freeze_all() || stmt.is_freeze_all_user()) {
+                  func = is_user_tenant;
+                } else {
+                  func = is_meta_tenant;
+                }
+                arg.tenant_ids_.reset();
+                for (int64_t i = 0; OB_SUCC(ret) && (i < tmp_tenant_ids.count()); ++i) {
+                  uint64_t tmp_tenant_id = tmp_tenant_ids.at(i);
+                  if (func(tmp_tenant_id)) {
+                    if (OB_FAIL(arg.tenant_ids_.push_back(tmp_tenant_id))) {
+                      LOG_WARN("failed to push back tenant_id", KR(ret));
+                    }
                   }
                 }
               }
@@ -156,6 +170,7 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
       }
     } else {
       rootserver::ObMajorFreezeParam param;
+      param.freeze_all_ = stmt.is_freeze_all();
       param.freeze_all_user_ = stmt.is_freeze_all_user();
       param.freeze_all_meta_ = stmt.is_freeze_all_meta();
       param.transport_ = GCTX.net_frame_->get_req_transport();
@@ -274,7 +289,7 @@ int ObFlushCacheExecutor::execute(ObExecContext &ctx, ObFlushCacheStmt &stmt)
               int64_t t_id = stmt.flush_cache_arg_.tenant_ids_.at(i);
               MTL_SWITCH(t_id) {
                 ObPlanCache* plan_cache = MTL(ObPlanCache*);
-                // not specified db_name, evcit all dbs
+                // not specified db_name, evict all dbs
                 if (db_num == 0) {
                   ret = plan_cache->flush_plan_cache_by_sql_id(OB_INVALID_ID, sql_id);
                 } else { // evict db by db
@@ -922,7 +937,7 @@ int ObAdminZoneExecutor::construct_servers_in_zone_(
   } else if (OB_FAIL(st_operator.init(&sql_proxy))) {
     LOG_WARN("fail to init ObServerTableOperator", KR(ret));
   } else if (OB_FAIL(st_operator.get(server_statuses))) {
-    LOG_WARN("build server statused from __all_server failed", KR(ret));
+    LOG_WARN("build server statuses from __all_server failed", KR(ret));
   } else {
     for (int64_t idx = 0; OB_SUCC(ret) && idx < server_statuses.count(); ++idx) {
       if (arg.zone_ == server_statuses.at(idx).zone_) {
@@ -1023,6 +1038,7 @@ int ObAdminMergeExecutor::execute(ObExecContext &ctx, ObAdminMergeStmt &stmt)
 {
   int ret = OB_SUCCESS;
   ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  const obrpc::ObAdminMergeArg &arg = stmt.get_rpc_arg();
   obrpc::ObCommonRpcProxy *common_rpc = NULL;
   if (OB_ISNULL(task_exec_ctx)) {
     ret = OB_NOT_INIT;
@@ -1030,9 +1046,14 @@ int ObAdminMergeExecutor::execute(ObExecContext &ctx, ObAdminMergeStmt &stmt)
   } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
     ret = OB_NOT_INIT;
     LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-  } else if (OB_FAIL(common_rpc->admin_merge(
-                         stmt.get_rpc_arg()))) {
-    LOG_WARN("admin merge rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
+  } else if ((GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_2_1_0) &&
+             (arg.affect_all_user_ || arg.affect_all_meta_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("all_user/all_meta are not supported when min_cluster_version is less than 4.2.1.0",
+             KR(ret), "affect_all_user", arg.affect_all_user_,
+             "affect_all_meta", arg.affect_all_meta_);
+  } else if (OB_FAIL(common_rpc->admin_merge(arg))) {
+    LOG_WARN("admin merge rpc failed", K(ret), "rpc_arg", arg);
   }
   return ret;
 }
@@ -1149,7 +1170,21 @@ int ObSetConfigExecutor::execute(ObExecContext &ctx, ObSetConfigStmt &stmt)
   int ret = OB_SUCCESS;
   ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
   obrpc::ObCommonRpcProxy *common_rpc = NULL;
-  if (OB_ISNULL(task_exec_ctx)) {
+
+  if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_2_1_0) {
+    const ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1> all_user("all_user");
+    const ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1> all_meta("all_meta");
+    FOREACH_X(item, stmt.get_rpc_arg().items_, OB_SUCCESS == ret) {
+      if (item->tenant_name_ == all_user || item->tenant_name_ == all_meta) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("all_user/all_meta are not supported when min_cluster_version is less than 4.2.1.0",
+                 KR(ret), "tenant_name", item->tenant_name_);
+      }
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(task_exec_ctx)) {
     ret = OB_NOT_INIT;
     LOG_WARN("get task executor context failed");
   } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
@@ -1390,6 +1425,7 @@ int ObClearMergeErrorExecutor::execute(ObExecContext &ctx, ObClearMergeErrorStmt
 	int ret = OB_SUCCESS;
 	UNUSED(stmt);
 	ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  const obrpc::ObAdminMergeArg &arg = stmt.get_rpc_arg();
 	obrpc::ObCommonRpcProxy *common_rpc = NULL;
 	if (OB_ISNULL(task_exec_ctx)) {
 		ret = OB_NOT_INIT;
@@ -1397,8 +1433,13 @@ int ObClearMergeErrorExecutor::execute(ObExecContext &ctx, ObClearMergeErrorStmt
 	} else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
 		ret = OB_NOT_INIT;
 		LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-	} else if (OB_FAIL(common_rpc->admin_clear_merge_error(stmt.get_rpc_arg()))) {
-		LOG_WARN("clear merge error rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
+	} else if ((GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_2_1_0) && (arg.affect_all_user_ || arg.affect_all_meta_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("all_user/all_meta are not supported when min_cluster_version is less than 4.2.1.0",
+             KR(ret), "affect_all_user", arg.affect_all_user_,
+             "affect_all_meta", arg.affect_all_meta_);
+  } else if (OB_FAIL(common_rpc->admin_clear_merge_error(arg))) {
+		LOG_WARN("clear merge error rpc failed", K(ret), "rpc_arg", arg);
 	}
   return ret;
 }
@@ -1826,7 +1867,7 @@ int ObClearBalanceTaskExecutor::execute(ObExecContext &ctx, ObClearBalanceTaskSt
 }
 
 /*
- * change tenant should statisfy the following factors:
+ * change tenant should satisfy the following factors:
  * 0. can't change tenant by proxy.
  * 1. login tenant is sys.
  * 2. session is not in trans.
@@ -2108,7 +2149,7 @@ int ObBackupDatabaseExecutor::execute(ObExecContext &ctx, ObBackupDatabaseStmt &
   ObString passwd;
   ObObj value;
   obrpc::ObBackupDatabaseArg arg;
-  //rs会尝试更新冻结点的schema_version的intervale 5s
+  //rs会尝试更新冻结点的schema_version的interval 5s
   const int64_t SECOND = 1* 1000 * 1000; //1s
   const int64_t MAX_RETRY_NUM = UPDATE_SCHEMA_ADDITIONAL_INTERVAL / SECOND + 1;
   if (OB_ISNULL(task_exec_ctx)) {
@@ -2472,7 +2513,7 @@ int ObSetRegionBandwidthExecutor::execute(ObExecContext &ctx, ObSetRegionBandwid
   } else if (OB_FAIL(sql_proxy->write(session_info->get_effective_tenant_id()/*get_priv_tenant_id ???*/,
                                         sql_str.ptr(),
                                         affected_rows))) {
-    LOG_WARN("failed to excutet sql write", K(ret), K(sql_str));
+    LOG_WARN("failed to execute sql write", K(ret), K(sql_str));
   } else {
     LOG_INFO("ObSetRegionBandwidthExecutor::execute", K(stmt), K(ctx), K(sql_str));
   }

@@ -75,6 +75,7 @@ public:
   ~ObTableQuerySyncSession();
 
   void set_result_iterator(table::ObTableQueryResultIterator* iter);
+  table::ObTableQueryResultIterator *get_result_iter() { return result_iterator_; };
   void set_in_use(bool in_use) {in_use_ = in_use;}
   bool is_in_use() {return in_use_;}
   int init();
@@ -186,7 +187,6 @@ public:
   explicit ObTableQuerySyncP(const ObGlobalContext &gctx);
   virtual ~ObTableQuerySyncP() {}
   virtual int deserialize() override;
-
 protected:
   virtual int check_arg() override;
   virtual int try_process() override;
@@ -194,6 +194,7 @@ protected:
   virtual void audit_on_finish() override;
   virtual uint64_t get_request_checksum() override;
   virtual table::ObTableAPITransCb *new_callback(rpc::ObRequest *req) override;
+
 
 private:
   int process_query_start();

@@ -88,6 +88,7 @@ public:
   int64_t get_redo_filled_count() const { return redo_filled_cnt_; }
   int64_t get_redo_sync_succ_count() const { return redo_sync_succ_cnt_; }
   int64_t get_redo_sync_fail_count() const { return redo_sync_fail_cnt_; }
+  void print_first_mvcc_callback();
 private:
   int fill_row_redo(ObITransCallbackIterator &cursor,
                     ObMutatorWriter &mmw,
@@ -101,6 +102,7 @@ private:
                            const bool log_for_lock_node,
                            bool &fake_fill);
   bool check_dup_tablet_(const ObITransCallback * callback_ptr) const;
+  void bug_detect_for_logging_blocked_();
 private:
   DISALLOW_COPY_AND_ASSIGN(ObRedoLogGenerator);
   bool is_inited_;
@@ -111,6 +113,9 @@ private:
   ObTransCallbackMgr *callback_mgr_;
   ObIMemtableCtx *mem_ctx_;
   transaction::ObTxEncryptMeta *clog_encrypt_meta_;
+
+  // logging block bug detector
+  int64_t last_logging_blocked_time_;
 };
 }; // end namespace memtable
 }; // end namespace oceanbase

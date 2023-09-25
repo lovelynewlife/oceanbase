@@ -146,6 +146,9 @@ static const int64_t SCHEMA_MALLOC_BLOCK_SIZE = 128;
 static const int64_t SCHEMA_MID_MALLOC_BLOCK_SIZE = 256;
 static const int64_t SCHEMA_BIG_MALLOC_BLOCK_SIZE = 1024;
 
+static const char* PUBLISH_SCHEMA_MODE_BEST_EFFORT = "BEST_EFFORT";
+static const char* PUBLISH_SCHEMA_MODE_ASYNC   = "ASYNC";
+
 //-------enum defenition
 enum ObTableLoadType
 {
@@ -4630,6 +4633,13 @@ enum ObPrivLevel
   OB_PRIV_MAX_LEVEL,
 };
 
+enum ObPrivCheckType
+{
+  OB_PRIV_CHECK_ALL,
+  OB_PRIV_CHECK_ANY,
+  OB_PRIV_CHECK_OTHER,
+};
+
 const char *ob_priv_level_str(const ObPrivLevel grant_level);
 
 struct ObNeedPriv
@@ -4638,14 +4648,15 @@ struct ObNeedPriv
              const common::ObString &table,
              ObPrivLevel priv_level,
              ObPrivSet priv_set,
-             const bool is_sys_table)
-      : db_(db), table_(table), priv_level_(priv_level),
-        priv_set_(priv_set), is_sys_table_(is_sys_table)
+             const bool is_sys_table,
+             const bool is_for_update = false,
+             ObPrivCheckType priv_check_type = OB_PRIV_CHECK_ALL)
+      : db_(db), table_(table), priv_level_(priv_level), priv_set_(priv_set),
+        is_sys_table_(is_sys_table), is_for_update_(is_for_update), priv_check_type_(priv_check_type)
   { }
   ObNeedPriv()
-      : db_(), table_(),
-        priv_level_(OB_PRIV_INVALID_LEVEL),
-        priv_set_(0), is_sys_table_(false)
+      : db_(), table_(), priv_level_(OB_PRIV_INVALID_LEVEL), priv_set_(0), is_sys_table_(false),
+        is_for_update_(false), priv_check_type_(OB_PRIV_CHECK_ALL)
   { }
   int deep_copy(const ObNeedPriv &other, common::ObIAllocator &allocator);
   common::ObString db_;
@@ -4653,7 +4664,10 @@ struct ObNeedPriv
   ObPrivLevel priv_level_;
   ObPrivSet priv_set_;
   bool is_sys_table_; // May be used to represent the table of schema metadata
-  TO_STRING_KV(K_(db), K_(table), K_(priv_set), K_(priv_level), K_(is_sys_table));
+  bool is_for_update_;
+  ObPrivCheckType priv_check_type_;
+  TO_STRING_KV(K_(db), K_(table), K_(priv_set), K_(priv_level), K_(is_sys_table), K_(is_for_update),
+               K_(priv_check_type));
 };
 
 struct ObStmtNeedPrivs
@@ -6184,6 +6198,13 @@ enum ObConstraintType
   CONSTRAINT_TYPE_MAX,
 };
 
+enum ObNameGeneratedType
+{
+  GENERATED_TYPE_UNKNOWN = 0,
+  GENERATED_TYPE_USER = 1,
+  GENERATED_TYPE_SYSTEM = 2
+};
+
 enum ObReferenceAction
 {
   ACTION_INVALID = 0,
@@ -6228,7 +6249,8 @@ public:
       ref_cst_type_(CONSTRAINT_TYPE_INVALID),
       ref_cst_id_(common::OB_INVALID_ID),
       is_modify_fk_name_flag_(false),
-      is_parent_table_mock_(false)
+      is_parent_table_mock_(false),
+      name_generated_type_(GENERATED_TYPE_UNKNOWN)
   {}
   ObForeignKeyInfo(common::ObIAllocator *allocator);
   virtual ~ObForeignKeyInfo() {}
@@ -6267,6 +6289,11 @@ public:
 
   int get_child_column_id(const uint64_t parent_column_id, uint64_t &child_column_id) const;
   int get_parent_column_id(const uint64_t child_column_id, uint64_t &parent_column_id) const;
+  inline void set_name_generated_type(const ObNameGeneratedType is_sys_generated) {
+    name_generated_type_ = is_sys_generated;
+  }
+  inline ObNameGeneratedType get_name_generated_type() const { return name_generated_type_; }
+  bool is_sys_generated_name(bool check_unknown) const;
   inline void reset()
   {
     table_id_ = common::OB_INVALID_ID;
@@ -6289,6 +6316,7 @@ public:
     ref_cst_id_ = common::OB_INVALID_ID;
     is_modify_fk_name_flag_ = false;
     is_parent_table_mock_ = false;
+    name_generated_type_ = GENERATED_TYPE_UNKNOWN;
   }
   int assign(const ObForeignKeyInfo &other);
   inline int64_t get_convert_size() const
@@ -6306,7 +6334,8 @@ public:
                K_(foreign_key_name), K_(enable_flag), K_(is_modify_enable_flag),
                K_(validate_flag), K_(is_modify_validate_flag),
                K_(rely_flag), K_(is_modify_rely_flag), K_(is_modify_fk_state),
-               K_(ref_cst_type), K_(ref_cst_id), K_(is_modify_fk_name_flag), K_(is_parent_table_mock));
+               K_(ref_cst_type), K_(ref_cst_id), K_(is_modify_fk_name_flag), K_(is_parent_table_mock),
+               K_(name_generated_type));
 
 public:
   uint64_t table_id_;   // table_id is not in __all_foreign_key.
@@ -6329,6 +6358,7 @@ public:
   uint64_t ref_cst_id_;
   bool is_modify_fk_name_flag_;
   bool is_parent_table_mock_;
+  ObNameGeneratedType name_generated_type_;
 private:
   static const char *reference_action_str_[ACTION_MAX + 1];
 };

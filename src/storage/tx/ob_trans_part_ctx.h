@@ -253,7 +253,8 @@ private:
                 K_(prev_rec_log_ts),
                 K_(lastest_snapshot),
                 K_(state_info_array),
-                K_(last_request_ts));
+                K_(last_request_ts),
+                KP_(block_frozen_memtable));
 public:
   static const int64_t OP_LOCAL_NUM = 16;
   static const int64_t RESERVED_MEM_SIZE = 256;
@@ -733,8 +734,7 @@ public:
    * @data_seq: the sequence_no of current access
    *            new created data will marked with this seq no
    */
-  int start_access(const ObTxDesc &tx_desc,
-                   const ObTxSEQ data_seq);
+  int start_access(const ObTxDesc &tx_desc, ObTxSEQ &data_seq);
   /*
    * end_access - end of txn protected resources access
    */
@@ -757,6 +757,7 @@ private:
   int get_ls_replica_readable_scn_(const ObLSID &ls_id, SCN &snapshot_version);
   int check_and_submit_redo_log_(bool &try_submit);
   int submit_redo_log_for_freeze_(bool &try_submit);
+  void print_first_mvcc_callback_();
 protected:
   // for xa
   virtual bool is_sub2pc() const override

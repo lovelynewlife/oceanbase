@@ -44,6 +44,7 @@
 #include "observer/mysql/ob_query_response_time.h"
 #include "rootserver/ob_rs_job_table_operator.h"  //ObRsJobType
 #include "sql/resolver/cmd/ob_kill_stmt.h"
+#include "share/table/ob_table_config_util.h"
 
 namespace oceanbase
 {
@@ -547,7 +548,9 @@ int ObFreezeResolver::resolve_major_freeze_(ObFreezeStmt *freeze_stmt, ParseNode
           LOG_USER_ERROR(OB_NOT_SUPPORTED,
                          "all/all_user/all_meta in combination with other names is");
         } else {
-          if (affect_all || affect_all_user) {
+          if (affect_all) {
+            freeze_stmt->set_freeze_all();
+          } else if (affect_all_user) {
             freeze_stmt->set_freeze_all_user();
           } else {
             freeze_stmt->set_freeze_all_meta();
@@ -659,7 +662,9 @@ int ObFreezeResolver::resolve_tenant_ls_tablet_(ObFreezeStmt *freeze_stmt,
         LOG_USER_ERROR(OB_NOT_SUPPORTED,
                        "all/all_user/all_meta in combination with other names is");
       } else {
-        if (affect_all || affect_all_user) {
+        if (affect_all) {
+          freeze_stmt->set_freeze_all();
+        } else if (affect_all_user) {
           freeze_stmt->set_freeze_all_user();
         } else {
           freeze_stmt->set_freeze_all_meta();
@@ -1544,7 +1549,9 @@ int ObAdminMergeResolver::resolve(const ParseNode &parse_tree)
                 LOG_USER_ERROR(OB_NOT_SUPPORTED,
                                "all/all_user/all_meta in combination with other names is");
               } else {
-                if (affect_all || affect_all_user) {
+                if (affect_all) {
+                  stmt->get_rpc_arg().affect_all_ = true;
+                } else if (affect_all_user) {
                   stmt->get_rpc_arg().affect_all_user_ = true;
                 } else {
                   stmt->get_rpc_arg().affect_all_meta_ = true;
@@ -2481,7 +2488,9 @@ int ObClearMergeErrorResolver::resolve(const ParseNode &parse_tree)
                 LOG_USER_ERROR(OB_NOT_SUPPORTED,
                                "all/all_user/all_meta in combination with other names is");
               } else {
-                if (affect_all || affect_all_user) {
+                if (affect_all) {
+                  stmt->get_rpc_arg().affect_all_ = true;
+                } else if (affect_all_user) {
                   stmt->get_rpc_arg().affect_all_user_ = true;
                 } else {
                   stmt->get_rpc_arg().affect_all_meta_ = true;
@@ -2771,10 +2780,7 @@ int ObPhysicalRestoreTenantResolver::resolve(const ParseNode &parse_tree)
       } else {
         const ObString &tenant_name = stmt->get_rpc_arg().tenant_name_;
         if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(tenant_name))) {
-          LOG_WARN("since 4.2.1, naming a tenant as all/all_user/all_meta is not supported",
-                   KR(ret), K(tenant_name));
-          LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                         "since 4.2.1, naming a tenant as all/all_user/all_meta is");
+          LOG_WARN("unsupported tenant name", KR(ret), K(tenant_name));
         } else if (OB_NOT_NULL(parse_tree.children_[1])) {
           if (session_info_->user_variable_exists(OB_RESTORE_SOURCE_NAME_SESSION_STR)) {
             ret = OB_NOT_SUPPORTED;
@@ -4327,6 +4333,10 @@ int ObTableTTLResolver::resolve(const ParseNode& parse_tree)
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("TTL command is not supported in data version less than 4.2.1", K(ret), K(tenant_data_version));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "TTL command is not supported in data version less than 4.2.1");
+  } else if (!ObKVFeatureModeUitl::is_ttl_enable()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("ttl is disable", K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "ttl is disable, set by config item _obkv_feature_mode");
   } else if (OB_UNLIKELY(T_TABLE_TTL != parse_tree.type_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("type is not T_TABLE_TTL", "type", get_type_name(parse_tree.type_));
@@ -4990,7 +5000,7 @@ int ObRecoverTableResolver::resolve(const ParseNode &parse_tree)
     } else if (OB_NOT_NULL(parse_tree.children_[8])
         && OB_FAIL(Util::resolve_string(parse_tree.children_[8], stmt->get_rpc_arg().restore_tenant_arg_.description_))) {
       LOG_WARN("failed to resolve desc", K(ret));
-#ifndef OB_BUILD_TDE_SECURITY
+#ifdef OB_BUILD_TDE_SECURITY
     } else if (OB_FAIL(resolve_kms_info_(
         stmt->get_rpc_arg().restore_tenant_arg_.restore_option_, stmt->get_rpc_arg().restore_tenant_arg_.kms_info_))) {
       LOG_WARN("failed to resolve kms info", K(ret));
@@ -5207,6 +5217,7 @@ int ObRecoverTableResolver::resolve_remap_tables_(
     share::ObRemapTableItem remap_table_item;
     ObCollationType cs_type = CS_TYPE_INVALID;
     bool perserve_lettercase = Worker::CompatMode::ORACLE == compat_mode ? true : (case_mode != OB_LOWERCASE_AND_INSENSITIVE);
+    bool is_oracle_mode = Worker::CompatMode::ORACLE == compat_mode;
     // No matter what name case mode is of target tenant, the names of remap tables are case sensitive.
     const ObNameCaseMode sensitive_case_mode = OB_ORIGIN_AND_SENSITIVE;
     for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
@@ -5244,11 +5255,11 @@ int ObRecoverTableResolver::resolve_remap_tables_(
 
         if (!src_db_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_db_name(cs_type, perserve_lettercase, src_db_name))) {
           LOG_WARN("failed to check and convert db name", K(ret), K(cs_type), K(perserve_lettercase), K(src_db_name));
-        } else if (!src_tb_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, src_tb_name))) {
+        } else if (!src_tb_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, src_tb_name, is_oracle_mode))) {
           LOG_WARN("failed to check and convert table name", K(ret), K(cs_type), K(perserve_lettercase), K(src_tb_name));
         } else if (!dst_db_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_db_name(cs_type, perserve_lettercase, dst_db_name))) {
           LOG_WARN("failed to check and convert db name", K(ret), K(cs_type), K(perserve_lettercase), K(dst_db_name));
-        } else if (!dst_tb_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, dst_tb_name))) {
+        } else if (!dst_tb_name.empty() && OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, dst_tb_name, is_oracle_mode))) {
           LOG_WARN("failed to check and convert table name", K(ret), K(cs_type), K(perserve_lettercase), K(dst_tb_name));
         } else if (!src_pt_name.empty() && src_pt_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
           ret = OB_ERR_WRONG_VALUE;
@@ -5322,7 +5333,7 @@ int ObRecoverTableResolver::resolve_backup_set_pwd_(common::ObString &pwd)
   return ret;
 }
 
-#ifndef OB_BUILD_TDE_SECURITY
+#ifdef OB_BUILD_TDE_SECURITY
 int ObRecoverTableResolver::resolve_kms_info_(const common::ObString &restore_option, common::ObString &kms_info)
 {
   int ret = OB_SUCCESS;
@@ -5362,6 +5373,7 @@ int ObRecoverTableResolver::resolve_recover_tables_(
   int ret = OB_SUCCESS;
   ObCollationType cs_type = CS_TYPE_INVALID;
   bool perserve_lettercase = Worker::CompatMode::ORACLE == compat_mode ? true : (case_mode != OB_LOWERCASE_AND_INSENSITIVE);
+  bool is_oracle_mode = Worker::CompatMode::ORACLE == compat_mode;
   // No matter what name case mode is of target tenant, the names of recover tables are case sensitive.
     const ObNameCaseMode sensitive_case_mode = OB_ORIGIN_AND_SENSITIVE;
   if (OB_ISNULL(node)) {
@@ -5399,7 +5411,7 @@ int ObRecoverTableResolver::resolve_recover_tables_(
       } else if (OB_NOT_NULL(db_node) && OB_NOT_NULL(tb_node) && OB_ISNULL(pt_node)) {
         // db_name.tb_name recover tb_name of db_name
         ObString db_name(db_node->str_len_, db_node->str_value_), tb_name(tb_node->str_len_, tb_node->str_value_);
-        if (OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, tb_name))) {
+        if (OB_FAIL(ObSQLUtils::check_and_convert_table_name(cs_type, perserve_lettercase, tb_name, is_oracle_mode))) {
           LOG_WARN("failed to check and convert table name", K(ret), K(cs_type), K(perserve_lettercase), K(tb_name));
         } else if (OB_FAIL(ObSQLUtils::check_and_convert_db_name(cs_type, perserve_lettercase, db_name))) {
           LOG_WARN("failed to check and convert db name", K(ret), K(cs_type), K(perserve_lettercase), K(db_name));

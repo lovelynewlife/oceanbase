@@ -5,14 +5,14 @@ include(cmake/Env.cmake)
 
 if(OB_BUILD_OPENSOURCE)
   project("OceanBase_CE"
-    VERSION 4.2.1.0
+    VERSION 4.3.0.0
     DESCRIPTION "OceanBase distributed database system"
     HOMEPAGE_URL "https://open.oceanbase.com/"
     LANGUAGES CXX C ASM)
   message(STATUS "open source build enabled")
 else()
   project(OceanBase
-    VERSION 4.2.1.0
+    VERSION 4.3.0.0
     DESCRIPTION "OceanBase distributed database system"
     HOMEPAGE_URL "https://www.oceanbase.com/"
     LANGUAGES CXX C ASM)
@@ -97,6 +97,11 @@ if (ENABLE_SANITY)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DENABLE_SANITY")
 endif()
 
+if (OB_BUILD_RPM)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DOB_BUILD_RPM")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOB_BUILD_RPM")
+endif()
+
 message(STATUS "This is BINARY dir " ${PROJECT_BINARY_DIR})
 message(STATUS "This is SOURCE dir " ${PROJECT_SOURCE_DIR})
 
@@ -179,3 +184,8 @@ elseif (OB_INCLUDE_TOOLS)
 endif()
 
 include(cmake/RPM.cmake)
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/sensitive_test)
+  message(STATUS "will add sensitive_test sub directory")
+  add_subdirectory(sensitive_test)
+endif()

@@ -98,14 +98,17 @@ int ObExprExtractValue::eval_extract_value(const ObExpr &expr, ObEvalCtx &ctx, O
   ObIMulModeBase *xml_doc = NULL;
   ObPathExprIter xpath_iter(&allocator);
   ObString default_ns;
-  ObPathVarObject *prefix_ns = NULL;
+  ObPathVarObject prefix_ns(allocator);
   ObNodeMemType expect_type = ObNodeMemType::BINARY_TYPE;
   ObString xml_res;
   ObCollationType cs_type = CS_TYPE_INVALID;
   ObMulModeMemCtx* xml_mem_ctx = nullptr;
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "XMLCodeGen"));
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ObXMLExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session()), "XMLModule"));
 
-  if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, xml_mem_ctx))) {
+  if (OB_ISNULL(ctx.exec_ctx_.get_my_session())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get session failed.", K(ret));
+  } else if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, xml_mem_ctx))) {
     LOG_WARN("fail to create tree memory context", K(ret));
   } else if (OB_UNLIKELY(expr.arg_cnt_ != 2 && expr.arg_cnt_ != 3)) {
     ret = OB_ERR_PARAM_SIZE;
@@ -129,7 +132,7 @@ int ObExprExtractValue::eval_extract_value(const ObExpr &expr, ObEvalCtx &ctx, O
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObXMLExprHelper::get_xml_base(xml_mem_ctx, xml_datum, cs_type, expect_type, xml_doc))) {
     LOG_WARN("fail to parse xml doc", K(ret));
-  } else if (OB_FAIL(extract_xpath_result(xml_mem_ctx, xpath_str, default_ns, xml_doc, prefix_ns, xml_res))) {
+  } else if (OB_FAIL(extract_xpath_result(xml_mem_ctx, xpath_str, default_ns, xml_doc, &prefix_ns, xml_res))) {
     LOG_WARN("fail to extract xpath result", K(ret), K(xpath_str));
   } else if (xml_res.empty()) {
     res.set_null();

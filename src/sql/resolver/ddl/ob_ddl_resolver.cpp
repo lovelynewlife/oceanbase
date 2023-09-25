@@ -112,7 +112,8 @@ ObDDLResolver::ObDDLResolver(ObResolverParams &params)
     hash_subpart_num_(-1),
     is_external_table_(false),
     ttl_definition_(),
-    kv_attributes_()
+    kv_attributes_(),
+    name_generated_type_(GENERATED_TYPE_UNKNOWN)
 {
   table_mode_.reset();
 }
@@ -2771,21 +2772,19 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
 
       }
 
-      if (OB_SUCC(ret) && (column.is_string_type() || column.is_json() || column.is_geometry())
-          && stmt::T_ALTER_TABLE == stmt_->get_stmt_type()) {
-        if (OB_DDL_ADD_COLUMN == static_cast<AlterColumnSchema&>(column).alter_type_) {
+      if (OB_SUCC(ret) && (column.is_string_type() || column.is_json() || column.is_geometry())) {
+        ObCharsetType charset_type = charset_type_;
+        ObCollationType collation_type = collation_type_;
+        if (stmt::T_ALTER_TABLE == stmt_->get_stmt_type()) {
           ObTableSchema &table_schema = static_cast<ObAlterTableStmt *>(stmt_)->get_alter_table_arg().alter_table_schema_;
-          if (OB_FAIL(check_and_fill_column_charset_info(column,
-                                                         table_schema.get_charset_type(),
-                                                         table_schema.get_collation_type()))) {
-            SQL_RESV_LOG(WARN, "fail to check and fill column charset info", K(ret));
+          if (CHARSET_INVALID == charset_type) {
+            charset_type = table_schema.get_charset_type();
+          }
+          if (CS_TYPE_INVALID == collation_type) {
+            collation_type = table_schema.get_collation_type();
           }
         }
-      }
-
-      if (OB_SUCC(ret) && (column.is_string_type() || column.is_json() || column.is_geometry())
-          && stmt::T_CREATE_TABLE == stmt_->get_stmt_type()) {
-        if (OB_FAIL(check_and_fill_column_charset_info(column, charset_type_, collation_type_))) {
+        if (OB_FAIL(check_and_fill_column_charset_info(column, charset_type, collation_type))) {
           SQL_RESV_LOG(WARN, "fail to check and fill column charset info", K(ret));
         } else if (data_type.get_meta_type().is_lob() || data_type.get_meta_type().is_json()
                    || data_type.get_meta_type().is_geometry()) {
@@ -4765,29 +4764,19 @@ int ObDDLResolver::resolve_list_partition_elements(const ObDDLStmt *stmt,
           || OB_ISNULL(element_node->children_[PARTITION_ELEMENT_NODE])) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("partition expr list node is null", K(ret), K(element_node));
-      } else if ((OB_ISNULL(element_node->children_[PARTITION_NAME_NODE])
-                  || OB_ISNULL(element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE]))
-                 && !is_oracle_mode()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("partition expr list node is null", K(ret), K(element_node));
       } else {
         ObString partition_name;
-        if (OB_NOT_NULL(element_node->children_[PARTITION_NAME_NODE])) {
-          ParseNode *partition_name_node = element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE];
-          partition_name.assign_ptr(partition_name_node->str_value_,
-                                    static_cast<int32_t>(partition_name_node->str_len_));
-        } else if (is_subpartition) {
-          subpartition.set_is_empty_partition_name(true);
-          has_empty_name = true;
-        } else {
-          partition.set_is_empty_partition_name(true);
+        ObBasePartition *target_partition = is_subpartition ?
+            static_cast<ObBasePartition*>(&subpartition) : static_cast<ObBasePartition*>(&partition);
+        if (OB_FAIL(resolve_partition_name(element_node->children_[PARTITION_NAME_NODE],
+                                           partition_name,
+                                           *target_partition))) {
+          LOG_WARN("failed to resolve partition name", K(ret));
+        } else if (target_partition->is_empty_partition_name()) {
           has_empty_name = true;
         }
         ParseNode *expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE];
-        if (partition_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
-          ret = OB_ERR_TOO_LONG_IDENT;
-          LOG_WARN("partition name is too long", KR(ret), K(partition_name.length()));
-        } else if (T_EXPR_LIST != expr_list_node->type_ && T_DEFAULT != expr_list_node->type_) { //也有可能等于default
+        if (T_EXPR_LIST != expr_list_node->type_ && T_DEFAULT != expr_list_node->type_) { //也有可能等于default
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("expr_list_node->type_ is not T_EXPR_LIST or T_DEFAULT", K(ret),
                    "expr_list_node type", expr_list_node->type_);
@@ -4823,20 +4812,14 @@ int ObDDLResolver::resolve_list_partition_elements(const ObDDLStmt *stmt,
         if (OB_SUCC(ret)) {
           if (is_subpartition) {
             subpartition.set_tablespace_id(tablespace_id);
-            if (OB_FAIL(subpartition.set_part_name(partition_name))) {
-              LOG_WARN("Failed to set part name", K(ret));
-            } else if (OB_FAIL(subpartitions.push_back(subpartition))) {
+            if (OB_FAIL(subpartitions.push_back(subpartition))) {
               LOG_WARN("fail to push back subpartition", KR(ret), K(subpartition));
             }
-          }
-        }
-
-        if (OB_SUCC(ret)) {
-          partition.set_tablespace_id(tablespace_id);
-          if (OB_FAIL(partition.set_part_name(partition_name))) {
-            LOG_WARN("Failed to set part name", K(ret));
-          } else if (OB_FAIL(partitions.push_back(partition))) {
-            LOG_WARN("Failed to push back partition", KR(ret), K(partition));
+          } else {
+            partition.set_tablespace_id(tablespace_id);
+            if (OB_FAIL(partitions.push_back(partition))) {
+              LOG_WARN("Failed to push back partition", KR(ret), K(partition));
+            }
           }
         }
         if (OB_SUCC(ret)) {
@@ -4888,28 +4871,19 @@ int ObDDLResolver::resolve_range_partition_elements(const ObDDLStmt *stmt,
           || OB_ISNULL(element_node->children_[PARTITION_ELEMENT_NODE])) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("partition expr list node is null", K(ret), K(element_node));
-      } else if ((OB_ISNULL(element_node->children_[PARTITION_NAME_NODE])
-                  || OB_ISNULL(element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE]))
-                 && !is_oracle_mode()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("partition expr list node is null", K(ret), K(element_node));
       } else {
         ObString partition_name;
-        if (OB_NOT_NULL(element_node->children_[PARTITION_NAME_NODE])) {
-          ParseNode *partition_name_node = element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE];
-          partition_name.assign_ptr(partition_name_node->str_value_,
-                                    static_cast<int32_t>(partition_name_node->str_len_));
-        } else if (is_subpartition) {
-          subpartition.set_is_empty_partition_name(true);
-          has_empty_name = true;
-        } else {
-          partition.set_is_empty_partition_name(true);
+        ObBasePartition *target_partition = is_subpartition ?
+            static_cast<ObBasePartition*>(&subpartition) : static_cast<ObBasePartition*>(&partition);
+        if (OB_FAIL(resolve_partition_name(element_node->children_[PARTITION_NAME_NODE],
+                                           partition_name,
+                                           *target_partition))) {
+          LOG_WARN("failed to resolve partition name", K(ret));
+        } else if (target_partition->is_empty_partition_name()) {
           has_empty_name = true;
         }
         ParseNode *expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE];
-        if (partition_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
-          ret = OB_ERR_TOO_LONG_IDENT;
-        } else if (T_EXPR_LIST != expr_list_node->type_) {
+        if (T_EXPR_LIST != expr_list_node->type_) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("expr_list_node->type_ is not T_EXPR_LIST", K(ret));
         } else if (part_func_exprs.count() != expr_list_node->num_child_) {
@@ -4944,16 +4918,12 @@ int ObDDLResolver::resolve_range_partition_elements(const ObDDLStmt *stmt,
           if (OB_SUCC(ret)) {
             if (is_subpartition) {
               subpartition.set_tablespace_id(tablespace_id);
-              if (OB_FAIL(subpartition.set_part_name(partition_name))) {
-                LOG_WARN("Failed to set part name", K(ret));
-              } else if (OB_FAIL(subpartitions.push_back(subpartition))) {
+              if (OB_FAIL(subpartitions.push_back(subpartition))) {
                 LOG_WARN("fail to push back subpartition", KR(ret), K(subpartition));
               }
             } else {
               partition.set_tablespace_id(tablespace_id);
-              if (OB_FAIL(partition.set_part_name(partition_name))) {
-                LOG_WARN("Failed to set part name", K(ret));
-              } else if (OB_FAIL(partitions.push_back(partition))) {
+              if (OB_FAIL(partitions.push_back(partition))) {
                 LOG_WARN("fail to push back partition", KR(ret), K(partition));
               } else if (OB_NOT_NULL(element_node->children_[PART_ID_NODE])) {
                 // PART_ID is deprecated in 4.0, we just ignore and show warnings here.
@@ -5332,6 +5302,9 @@ int ObDDLResolver::init_empty_session(const common::ObTimeZoneInfoWrap &tz_info_
   } else if (OB_FAIL(table_schema.check_if_oracle_compat_mode(is_oracle_compat_mode))) {
     LOG_WARN("failed to get table compatibility mode", K(ret));
   } else {
+    ObSessionDDLInfo ddl_info;
+    ddl_info.set_ddl_check_default_value(true);
+    empty_session.set_ddl_info(ddl_info);
     empty_session.set_nls_formats(nls_formats);
     empty_session.set_compatibility_mode(
       is_oracle_compat_mode ? ObCompatibilityMode::ORACLE_MODE : ObCompatibilityMode::MYSQL_MODE);
@@ -5634,6 +5607,8 @@ int ObDDLResolver::calc_default_value(share::schema::ObColumnSchemaV2 &column,
       uint64_t tenant_id = column.get_tenant_id();
       const ObTenantSchema *tenant_schema = NULL;
       ObSchemaGetterGuard guard;
+      ObSessionDDLInfo ddl_info;
+      ddl_info.set_ddl_check_default_value(true);
       ParamStore empty_param_list( (ObWrapperAllocator(allocator)) );
       params.expr_factory_ = &expr_factory;
       params.allocator_ = &allocator;
@@ -5658,6 +5633,8 @@ int ObDDLResolver::calc_default_value(share::schema::ObColumnSchemaV2 &column,
           lib::is_oracle_mode() ? ObCompatibilityMode::ORACLE_MODE : ObCompatibilityMode::MYSQL_MODE))) {
       } else if (FALSE_IT(empty_session.set_sql_mode(
           lib::is_oracle_mode() ? DEFAULT_ORACLE_MODE : DEFAULT_MYSQL_MODE))) {
+      } else if (FALSE_IT(empty_session.set_ddl_info(ddl_info))) {
+        LOG_WARN("fail to set ddl_info", K(ret));
       } else if (OB_FAIL(default_value.get_string(expr_str))) {
         LOG_WARN("get expr string from default value failed", K(ret), K(default_value));
       } else if (OB_FAIL(ObResolverUtils::resolve_default_expr_v2_column_expr(params, expr_str,
@@ -6018,29 +5995,19 @@ int ObDDLResolver::resolve_range_partition_elements(ParseNode *node,
           || OB_ISNULL(element_node->children_[PARTITION_ELEMENT_NODE])) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("partition expr list node is null", K(ret), K(element_node));
-      } else if ((OB_ISNULL(element_node->children_[PARTITION_NAME_NODE])
-                  || OB_ISNULL(element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE]))
-                  && !is_oracle_mode()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("partition expr list node is null", K(ret), K(element_node));
       } else {
         ObString partition_name;
-        if (OB_NOT_NULL(element_node->children_[PARTITION_NAME_NODE])) {
-          ParseNode *partition_name_node = element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE];
-          partition_name.assign_ptr(partition_name_node->str_value_,
-                                    static_cast<int32_t>(partition_name_node->str_len_));
-        } else if (is_subpartition) {
-          subpartition.set_is_empty_partition_name(true);
-          has_empty_name = true;
-        } else {
-          partition.set_is_empty_partition_name(true);
+        ObBasePartition *target_partition = is_subpartition ?
+            static_cast<ObBasePartition*>(&subpartition) : static_cast<ObBasePartition*>(&partition);
+        if (OB_FAIL(resolve_partition_name(element_node->children_[PARTITION_NAME_NODE],
+                                           partition_name,
+                                           *target_partition))) {
+          LOG_WARN("failed to resolve partition name", K(ret));
+        } else if (target_partition->is_empty_partition_name()) {
           has_empty_name = true;
         }
         ParseNode *expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE];
-        if (partition_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
-          ret = OB_ERR_TOO_LONG_IDENT;
-          LOG_WARN("partition_name is too long", KR(ret), K(partition_name.length()));
-        } else if (T_EXPR_LIST != expr_list_node->type_) {
+        if (T_EXPR_LIST != expr_list_node->type_) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("expr_list_node->type_ is not T_EXPR_LIST", K(ret));
         } else if (expr_num != expr_list_node->num_child_) {
@@ -6052,15 +6019,11 @@ int ObDDLResolver::resolve_range_partition_elements(ParseNode *node,
             LOG_USER_WARN_ONCE(OB_NOT_SUPPORTED, "specify part_id");
           }
           if (is_subpartition) {
-            if (OB_FAIL(subpartition.set_part_name(partition_name))) {
-              LOG_WARN("Failed to set part name", K(ret));
-            } else if (OB_FAIL(subpartitions.push_back(subpartition))) {
+            if (OB_FAIL(subpartitions.push_back(subpartition))) {
               LOG_WARN("fail to push back subpartition", KR(ret), K(subpartition));
             }
           } else {
-            if (OB_FAIL(partition.set_part_name(partition_name))) {
-              LOG_WARN("Failed to set part name", K(ret));
-            } else if (OB_FAIL(partitions.push_back(partition))) {
+            if (OB_FAIL(partitions.push_back(partition))) {
               LOG_WARN("fail to push back partition", KR(ret), K(partition));
             }
           }
@@ -6320,33 +6283,23 @@ int ObDDLResolver::resolve_list_partition_elements(ParseNode *node,
       } else if (element_node->type_ != T_PARTITION_LIST_ELEMENT) {
         ret = OB_ERR_PARSER_SYNTAX;
         LOG_WARN("not a valid list partition define", K(element_node->type_));
-      } else if ((OB_ISNULL(element_node->children_[PARTITION_NAME_NODE])
-                  || OB_ISNULL(element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE]))
-                 && !is_oracle_mode()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("partition expr list node is null", K(ret), K(element_node));
       } else if (is_subpartition
                  && OB_NOT_NULL(element_node->children_[PART_ID_NODE])) {
         ret = OB_ERR_PARSE_SQL;
         LOG_WARN("subpartition can not specify part id", K(ret), K(i), K(is_subpartition), K(in_tablegroup));
       } else {
         ObString partition_name;
-        if (OB_NOT_NULL(element_node->children_[PARTITION_NAME_NODE])) {
-          ParseNode *partition_name_node = element_node->children_[PARTITION_NAME_NODE]->children_[NAMENODE];
-          partition_name.assign_ptr(partition_name_node->str_value_,
-                                    static_cast<int32_t>(partition_name_node->str_len_));
-        } else if (is_subpartition) {
-          subpartition.set_is_empty_partition_name(true);
-          has_empty_name = true;
-        } else {
-          partition.set_is_empty_partition_name(true);
+        ObBasePartition *target_partition = is_subpartition ?
+            static_cast<ObBasePartition*>(&subpartition) : static_cast<ObBasePartition*>(&partition);
+        if (OB_FAIL(resolve_partition_name(element_node->children_[PARTITION_NAME_NODE],
+                                           partition_name,
+                                           *target_partition))) {
+          LOG_WARN("failed to resolve partition name", K(ret));
+        } else if (target_partition->is_empty_partition_name()) {
           has_empty_name = true;
         }
         ParseNode *expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE];
-        if (partition_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
-          ret = OB_ERR_TOO_LONG_IDENT;
-          LOG_WARN("partition name is too long", KR(ret), K(partition_name.length()));
-        } else if (T_EXPR_LIST != expr_list_node->type_ && T_DEFAULT != expr_list_node->type_) { //也有可能等于default
+        if (T_EXPR_LIST != expr_list_node->type_ && T_DEFAULT != expr_list_node->type_) { //也有可能等于default
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("expr_list_node->type_ is not T_EXPR_LIST or T_DEFAULT", K(ret));
         }
@@ -6357,15 +6310,11 @@ int ObDDLResolver::resolve_list_partition_elements(ParseNode *node,
             LOG_USER_WARN_ONCE(OB_NOT_SUPPORTED, "specify part_id");
           }
           if (is_subpartition) {
-            if (OB_FAIL(subpartition.set_part_name(partition_name))) {
-              LOG_WARN("Failed to set part name", K(ret));
-            } else if (OB_FAIL(subpartitions.push_back(subpartition))) {
+            if (OB_FAIL(subpartitions.push_back(subpartition))) {
               LOG_WARN("fail to push back subpartition", KR(ret), K(subpartition));
             }
           } else {
-            if (OB_FAIL(partition.set_part_name(partition_name))) {
-              LOG_WARN("Failed to set part name", K(ret));
-            } else if (OB_FAIL(partitions.push_back(partition))) {
+            if (OB_FAIL(partitions.push_back(partition))) {
               LOG_WARN("fail to push back partition", KR(ret), K(partition));
             }
           }
@@ -6858,6 +6807,18 @@ int ObDDLResolver::check_index_name_duplicate(const ObTableSchema &table_schema,
     }
   }
 
+  if (is_oracle_mode() && !has_same_index_name) {
+    //in oracle mode, names of index and primary key can't be same
+    ObTableSchema::const_constraint_iterator iter = table_schema.constraint_begin();
+    for (; !has_same_index_name && iter != table_schema.constraint_end(); ++iter) {
+      if (CONSTRAINT_TYPE_PRIMARY_KEY == (*iter)->get_constraint_type()) {
+        if (0 == create_index_arg.index_name_.compare((*iter)->get_constraint_name_str())) {
+          has_same_index_name = true;
+        }
+      }
+    }
+  }
+
   return ret;
 }
 
@@ -7172,6 +7133,7 @@ int ObDDLResolver::resolve_check_constraint_node(
                                                            column_schema))) {
             LOG_WARN("resolver constraint expr failed", K(ret));
           } else {
+            cst.set_name_generated_type(is_sys_generated_cst_name ? GENERATED_TYPE_SYSTEM : GENERATED_TYPE_USER);
             // resolve constranit_state in oracle mode
             if (lib::is_oracle_mode()) {
               if (OB_FAIL(resolve_check_cst_state_node_oracle(cst_check_state_node, cst))) {
@@ -7311,7 +7273,7 @@ int ObDDLResolver::resolve_pk_constraint_node(const ParseNode &pk_cst_node,
 {
   int ret = OB_SUCCESS;
   ObString cst_name;
-
+  bool is_sys_generated_cst_name = false;
   if ((T_PRIMARY_KEY != pk_cst_node.type_) && (T_COLUMN_DEFINITION != pk_cst_node.type_)) {
     ret = OB_ERR_UNEXPECTED;
     SQL_RESV_LOG(WARN, "node type is wrong.", K(ret), K(pk_cst_node.type_));
@@ -7326,6 +7288,8 @@ int ObDDLResolver::resolve_pk_constraint_node(const ParseNode &pk_cst_node,
         // 用户没有显式为主键命名时，系统为主键约束命名
         if (OB_FAIL(ObTableSchema::create_cons_name_automatically(cst_name, table_name_, *allocator_, CONSTRAINT_TYPE_PRIMARY_KEY, lib::is_oracle_mode()))) {
           SQL_RESV_LOG(WARN, "create cons name automatically failed", K(ret));
+        } else {
+          is_sys_generated_cst_name = true;
         }
       } else if (NULL == cst_name_node->str_value_ || 0 == cst_name_node->str_len_) {
         ret = OB_ERR_ZERO_LENGTH_IDENTIFIER;
@@ -7338,6 +7302,8 @@ int ObDDLResolver::resolve_pk_constraint_node(const ParseNode &pk_cst_node,
     if (NULL == pk_name.ptr()) {
       if (OB_FAIL(ObTableSchema::create_cons_name_automatically(cst_name, table_name_, *allocator_, CONSTRAINT_TYPE_PRIMARY_KEY, lib::is_oracle_mode()))) {
         SQL_RESV_LOG(WARN, "create cons name automatically failed", K(ret));
+      } else {
+        is_sys_generated_cst_name = true;
       }
     } else {
       cst_name.assign_ptr(pk_name.ptr(), pk_name.length());
@@ -7358,6 +7324,7 @@ int ObDDLResolver::resolve_pk_constraint_node(const ParseNode &pk_cst_node,
         LOG_WARN("duplicate constraint name", K(ret), K(cst_name));
       } else if (OB_FAIL(cst.set_constraint_name(cst_name))) {
       } else {
+        cst.set_name_generated_type(is_sys_generated_cst_name ? GENERATED_TYPE_SYSTEM : GENERATED_TYPE_USER);
         cst.set_constraint_type(CONSTRAINT_TYPE_PRIMARY_KEY);
         ret = csts.push_back(cst);
       }
@@ -7736,7 +7703,7 @@ int ObDDLResolver::resolve_foreign_key_node(const ParseNode *node,
         LOG_WARN("failed to resolve foreign key parent columns", K(ret));
       } else if (OB_FAIL(resolve_foreign_key_options(reference_options, arg.update_action_, arg.delete_action_))) {
         LOG_WARN("failed to resolve foreign key options", K(ret));
-      } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_))) {
+      } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_, arg.name_generated_type_))) {
         LOG_WARN("failed to resolve foreign key name", K(ret));
       } else if (OB_FAIL(check_foreign_key_reference(arg, is_alter_table, NULL))) {
         LOG_WARN("failed to check reference columns", K(ret));
@@ -7784,7 +7751,7 @@ int ObDDLResolver::resolve_foreign_key_node(const ParseNode *node,
             LOG_WARN("failed to resolve foreign key parent columns in oracle mode", K(ret));
           } else if (OB_FAIL(resolve_foreign_key_option(reference_options, arg.update_action_, arg.delete_action_))) {
             LOG_WARN("failed to resolve foreign key options", K(ret));
-          } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_))) {
+          } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_, arg.name_generated_type_))) {
             LOG_WARN("failed to resolve foreign key name", K(ret));
           } else if (OB_FAIL(check_foreign_key_reference(arg, is_alter_table, NULL))) {
             LOG_WARN("failed to check reference columns", K(ret));
@@ -7832,7 +7799,7 @@ int ObDDLResolver::resolve_foreign_key_node(const ParseNode *node,
             LOG_WARN("failed to resolve foreign key parent columns", K(ret));
           } else if (OB_FAIL(resolve_foreign_key_option(reference_options, arg.update_action_, arg.delete_action_))) {
             LOG_WARN("failed to resolve foreign key options", K(ret));
-          } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_))) {
+          } else if (OB_FAIL(resolve_foreign_key_name(constraint_name, arg.foreign_key_name_, arg.name_generated_type_))) {
             LOG_WARN("failed to resolve foreign key name", K(ret));
           } else if (OB_FAIL(check_foreign_key_reference(arg, is_alter_table, column))) {
             LOG_WARN("failed to check reference columns", K(ret));
@@ -8118,10 +8085,12 @@ int ObDDLResolver::resolve_foreign_key_option(const ParseNode *option_node,
 // @param [out] foreign_key_name
 // @return oceanbase error code defined in lib/ob_errno.def
 int ObDDLResolver::resolve_foreign_key_name(const ParseNode *constraint_node,
-                                            ObString &foreign_key_name)
+                                            ObString &foreign_key_name,
+                                            ObNameGeneratedType &name_generated_type)
 {
   int ret = OB_SUCCESS;
   foreign_key_name.reset();
+  name_generated_type = GENERATED_TYPE_USER;
 
   if (OB_NOT_NULL(constraint_node)) {
     if (!is_oracle_mode()) {
@@ -8151,6 +8120,8 @@ int ObDDLResolver::resolve_foreign_key_name(const ParseNode *constraint_node,
         }
       } else if (OB_FAIL(create_fk_cons_name_automatically(foreign_key_name))) {
         SQL_RESV_LOG(WARN, "create cons name automatically failed", K(ret));
+      } else {
+        name_generated_type = GENERATED_TYPE_SYSTEM;
       }
     } else {
       // oracle mode
@@ -8175,6 +8146,8 @@ int ObDDLResolver::resolve_foreign_key_name(const ParseNode *constraint_node,
     }
   } else if (OB_FAIL(create_fk_cons_name_automatically(foreign_key_name))) {
     SQL_RESV_LOG(WARN, "create cons name automatically failed", K(ret));
+  } else {
+    name_generated_type = GENERATED_TYPE_SYSTEM;
   }
 
   return ret;
@@ -8592,12 +8565,14 @@ int ObDDLResolver::resolve_not_null_constraint_node(
   } else {
     ParseNode *cst_name_node = is_oracle_mode() && NULL != cst_node ? cst_node->children_[0] : NULL;
     ParseNode *cst_check_state_node = is_oracle_mode() && NULL != cst_node ? cst_node->children_[1] : NULL;
-
+    bool is_sys_generate_name = false;
     if (NULL == cst_name_node) {
       if (OB_FAIL(ObTableSchema::create_cons_name_automatically(cst_name, table_name_, *allocator_,
                                                                 CONSTRAINT_TYPE_NOT_NULL,
                                                                 lib::is_oracle_mode()))) {
         SQL_RESV_LOG(WARN, "create cons name automatically failed", K(ret));
+      } else {
+        is_sys_generate_name = true;
       }
     } else if (NULL == cst_name_node->str_value_ || 0 == cst_name_node->str_len_) {
       ret = OB_ERR_ZERO_LENGTH_IDENTIFIER;
@@ -8624,7 +8599,7 @@ int ObDDLResolver::resolve_not_null_constraint_node(
         } else {
           // do nothing if alter table modify identity_column not null
         }
-      } else if (OB_FAIL(add_not_null_constraint(column, cst_name, cst, *allocator_, stmt_))) {
+      } else if (OB_FAIL(add_not_null_constraint(column, cst_name, is_sys_generate_name, cst, *allocator_, stmt_))) {
         LOG_WARN("add not null constraint", K(ret));
       } else {
         LOG_DEBUG("before column set not null", K(column), K(cst));
@@ -8651,7 +8626,7 @@ int ObDDLResolver::add_default_not_null_constraint(ObColumnSchemaV2 &column,
                                                                 CONSTRAINT_TYPE_NOT_NULL,
                                                                 lib::is_oracle_mode()))) {
     LOG_WARN("create cons name automatically failed", K(ret));
-  } else if (OB_FAIL(add_not_null_constraint(column, cst_name, cst, allocator, stmt))) {
+  } else if (OB_FAIL(add_not_null_constraint(column, cst_name, true, cst, allocator, stmt))) {
     LOG_WARN("add not null constraint", K(ret));
   } else {
     column.add_not_null_cst();
@@ -8662,6 +8637,7 @@ int ObDDLResolver::add_default_not_null_constraint(ObColumnSchemaV2 &column,
 
 int ObDDLResolver::add_not_null_constraint(ObColumnSchemaV2 &column,
                                            const ObString &cst_name,
+                                           bool is_sys_generate_name,
                                            ObConstraint &cst,
                                            ObIAllocator &allocator,
                                            ObStmt *stmt)
@@ -8689,10 +8665,12 @@ int ObDDLResolver::add_not_null_constraint(ObColumnSchemaV2 &column,
     LOG_WARN("constraint_name length overflow", K(ret), K(cst_name.length()));
   } else if (OB_FAIL(cst.assign_not_null_cst_column_id(column.get_column_id()))) {
     LOG_WARN("assign column ids failed", K(ret));
+  } else if (OB_FAIL(cst.set_constraint_name(cst_name))) {
+    LOG_WARN("failed to set constraint name", K(ret));
   } else {
     cst.set_tenant_id(column.get_tenant_id());
     cst.set_table_id(column.get_table_id());
-    cst.set_constraint_name(cst_name);
+    cst.set_name_generated_type(is_sys_generate_name ? GENERATED_TYPE_SYSTEM : GENERATED_TYPE_USER);
     cst.set_constraint_type(CONSTRAINT_TYPE_NOT_NULL);
     cst.set_check_expr(column.get_column_name_str());
     const ObString &column_name = column.get_column_name_str();
@@ -8843,9 +8821,26 @@ int ObDDLResolver::resolve_partition_name(ParseNode *partition_name_node,
   } else {
     ParseNode *name_node = partition_name_node->children_[NAMENODE];
     partition_name.assign_ptr(name_node->str_value_, static_cast<int32_t>(name_node->str_len_));
-    if (partition_name.length() > OB_MAX_PARTITION_NAME_LENGTH) {
-      ret = OB_ERR_TOO_LONG_IDENT;
-    } else if (OB_FAIL(partition.set_part_name(partition_name))) {
+    if (OB_FAIL(ObSQLUtils::check_ident_name(CS_TYPE_UTF8MB4_GENERAL_CI,
+                                             partition_name,
+                                             false, //check_for_path_chars
+                                             OB_MAX_PARTITION_NAME_LENGTH))) {
+      if (OB_ERR_WRONG_IDENT_NAME == ret) {
+        if (lib::is_oracle_mode()) {
+          // It allows the last char of partition name is space in oracle mode
+          ret = OB_SUCCESS;
+        } else {
+          ret = OB_WRONG_PARTITION_NAME;
+          LOG_WARN("get wrong partition name", K(partition_name), K(ret));
+          LOG_USER_ERROR(OB_WRONG_PARTITION_NAME, partition_name.length(), partition_name.ptr());
+        }
+      } else if (OB_ERR_TOO_LONG_IDENT == ret) {
+        LOG_WARN("partition name is too long", K(partition_name.length()), K(ret));
+      } else {
+        LOG_WARN("fail to check ident name", K(partition_name), K(ret));
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(partition.set_part_name(partition_name))) {
       LOG_WARN("failed to set part name", K(ret));
     }
   }
@@ -10196,10 +10191,15 @@ int ObDDLResolver::resolve_list_partition_elements(ObPartitionedStmt *stmt,
       ObString partition_name;
       int64_t tablespace_id = OB_INVALID_ID;
       bool current_spec = false;
-      if (OB_ISNULL(element_node = node->children_[i]) ||
-          OB_ISNULL(expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE])) {
+      if (OB_ISNULL(element_node = node->children_[i])) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpect node", K(ret), K(element_node), K(expr_list_node));
+        LOG_WARN("get unexpect node", K(ret), K(element_node));
+      } else if (element_node->type_ != T_PARTITION_LIST_ELEMENT) {
+        ret = OB_ERR_PARSER_SYNTAX;
+        LOG_WARN("not a valid range partition define", K(element_node->type_));
+      } else if (OB_ISNULL(expr_list_node = element_node->children_[PARTITION_ELEMENT_NODE])) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpect node", K(ret), K(expr_list_node));
       } else if (T_EXPR_LIST != expr_list_node->type_ && T_DEFAULT != expr_list_node->type_) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected node type", K(ret), K(expr_list_node->type_));

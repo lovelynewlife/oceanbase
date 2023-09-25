@@ -44,7 +44,8 @@ OB_DEF_SERIALIZE(ObDASDMLBaseRtDef)
     timeout_ts_,
     sql_mode_,
     prelock_,
-    tenant_schema_version_);
+    tenant_schema_version_,
+    is_for_foreign_key_check_);
   return ret;
 }
 
@@ -55,7 +56,8 @@ OB_DEF_DESERIALIZE(ObDASDMLBaseRtDef)
     timeout_ts_,
     sql_mode_,
     prelock_,
-    tenant_schema_version_);
+    tenant_schema_version_,
+    is_for_foreign_key_check_);
   if (OB_SUCC(ret)) {
     (void)ObSQLUtils::adjust_time_by_ntp_offset(timeout_ts_);
   }
@@ -69,7 +71,8 @@ OB_DEF_SERIALIZE_SIZE(ObDASDMLBaseRtDef)
     timeout_ts_,
     sql_mode_,
     prelock_,
-    tenant_schema_version_);
+    tenant_schema_version_,
+    is_for_foreign_key_check_);
   return len;
 }
 
@@ -129,7 +132,7 @@ int ObDASDMLIterator::get_next_spatial_index_row(ObNewRow *&row)
         }
       } else if (OB_ISNULL(spatial_rows)) {
         if (OB_FAIL(create_spatial_index_store())) {
-          LOG_WARN("create spatila index rows store failed", K(ret));
+          LOG_WARN("create spatial index rows store failed", K(ret));
         } else {
           spatial_rows = get_spatial_index_rows();
         }
@@ -519,7 +522,7 @@ OB_NOINLINE int ObDASWriteBuffer::create_datum_store()
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("allocate chunk datum store failed", K(ret));
   } else {
-    datum_store_ = new(buf) ObChunkDatumStore();
+    datum_store_ = new(buf) ObChunkDatumStore(mem_attr_.label_);
     if (OB_FAIL(datum_store_->init(UINT64_MAX,
                                    mem_attr_.tenant_id_,
                                    mem_attr_.ctx_id_,
@@ -734,7 +737,7 @@ OB_DEF_DESERIALIZE(ObDASWriteBuffer)
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate chunk row store failed", K(ret));
     } else {
-      datum_store_ = new(buffer) ObChunkDatumStore();
+      datum_store_ = new(buffer) ObChunkDatumStore(mem_attr_.label_);
       OB_UNIS_DECODE(*datum_store_);
     }
   }

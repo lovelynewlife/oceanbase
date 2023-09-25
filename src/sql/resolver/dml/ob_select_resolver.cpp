@@ -1069,7 +1069,9 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
   OZ( resolve_with_clause(parse_tree.children_[PARSE_SELECT_WITH]) );
 
   /* normal select */
-  select_stmt->assign_set_op(ObSelectStmt::NONE);
+  if (OB_SUCC(ret)) {
+    select_stmt->assign_set_op(ObSelectStmt::NONE);
+  }
   OZ( resolve_query_options(parse_tree.children_[PARSE_SELECT_DISTINCT]) );
   if (OB_SUCC(ret) && is_only_full_group_by_on(session_info_->get_sql_mode())) {
     OZ( standard_group_checker_.init() );
@@ -1763,6 +1765,11 @@ int ObSelectResolver::resolve_order_item(const ParseNode &sort_node, OrderItem &
       ret = OB_ERR_ORDER_BY_ITEM_NOT_IN_SELECT_LIST;
       LOG_WARN("ORDER BY item must be the number of a SELECT-list expression", K(ret));
     }
+  }
+  if (OB_SUCC(ret) && OB_NOT_NULL(order_item.expr_) && order_item.expr_->has_flag(CNT_ASSIGN_EXPR)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("Not supported variable assignment in order by item", K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "Variable assignment in order by item");
   }
   return ret;
 }
@@ -3181,8 +3188,8 @@ int ObSelectResolver::resolve_cycle_pseudo(const ParseNode *cycle_set_clause,
                K(ret),
                K(cycle_value->text_len_),
                K(cycle_default_value->text_len_));
-  } else if (cycle_value->type_ == T_VARCHAR
-             && cycle_default_value->type_ == T_VARCHAR) {
+  } else if ((cycle_value->type_ == T_VARCHAR || cycle_value->type_ == T_INT)
+             && (cycle_default_value->type_ == T_VARCHAR || cycle_default_value->type_ == T_INT)) {
     if (cycle_value->str_len_ > 0 && cycle_default_value->str_len_ > 0) {
       if (OB_FAIL(resolve_sql_expr(*cycle_value, expr_v))) {
         LOG_WARN("resolve sql expr failed", K(ret));

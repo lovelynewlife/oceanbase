@@ -864,7 +864,8 @@ int select_sysstat(lua_State* L)
     GCTX.omt_->get_tenant_ids(ids);
     LuaVtableGenerator gen(L, columns);
     for (int64_t i = 0; i < ids.size() && !gen.is_end(); ++i) {
-      HEAP_VAR(ObDiagnoseTenantInfo, diag_info) {
+      ObArenaAllocator diag_allocator;
+      HEAP_VAR(ObDiagnoseTenantInfo, diag_info, &diag_allocator) {
         if (OB_FAIL(ObDIGlobalTenantCache::get_instance().get_the_diag_info(ids.at(i), diag_info))) {
           OB_LOG(ERROR, "failed to get_the_diag_info", K(ids.at(i)), K(ret));
         } else if (OB_FAIL(observer::ObAllVirtualSysStat::update_all_stats(ids.at(i), diag_info.get_set_stat_stats()))) {
@@ -1902,7 +1903,7 @@ int dump_thread_info(lua_State *L)
           struct iovec remote_iov = {thread_base + rpc_dest_addr_offset, sizeof(ObAddr)};
           wait_event[0] = '\0';
           if (0 != join_addr) {
-            IGNORE_RETURN snprintf(wait_event, BUF_LEN, "thread %u %ld", *(uint32_t*)(thread_base + tid_offset), tid_offset);
+            IGNORE_RETURN snprintf(wait_event, BUF_LEN, "thread %u %ld", *(uint32_t*)(join_addr + tid_offset), tid_offset);
           } else if (OB_NOT_NULL(wait_addr)) {
             uint32_t val = 0;
             struct iovec local_iov = {&val, sizeof(val)};
@@ -2016,7 +2017,8 @@ int enable_system_tenant_memory_limit(lua_State* L)
 int get_tenant_sysstat(int64_t tenant_id, int64_t statistic, int64_t &value)
 {
   int ret = OB_SUCCESS;
-  HEAP_VAR(ObDiagnoseTenantInfo, diag_info) {
+  ObArenaAllocator diag_allocator;
+  HEAP_VAR(ObDiagnoseTenantInfo, diag_info, &diag_allocator) {
     if (statistic < 0
         || statistic >= ObStatEventIds::STAT_EVENT_SET_END
         || ObStatEventIds::STAT_EVENT_ADD_END == statistic) {

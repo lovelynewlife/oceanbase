@@ -363,7 +363,7 @@ int ObDtlBasicChannel::mock_eof_buffer(int64_t timeout_ts)
   int64_t min_buf_size = ObChunkDatumStore::Block::min_buf_size(0);
   ObDtlLinkedBuffer *buffer = NULL;
   MTL_SWITCH(tenant_id_) {
-    ObChunkDatumStore row_store;
+    ObChunkDatumStore row_store("MockDtlStore");
     ObChunkDatumStore::Block* block = NULL;
     if (OB_ISNULL(buffer = alloc_buf(min_buf_size))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -833,6 +833,7 @@ int ObDtlBasicChannel::wait_unblocking()
       int64_t print_log_t = 10 * 60 * 1000000;
       block_proc_.set_ch_idx_var(&idx);
       LOG_TRACE("wait unblocking", K(ret), K(dfc_->is_block()), KP(id_), K(peer_));
+      oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_PX_MSG);
       do {
         int64_t got_channel_idx = idx;
         if (is_drain()) {

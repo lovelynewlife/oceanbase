@@ -957,7 +957,7 @@ int ObLogJoin::allocate_granule_post(AllocGIContext &ctx)
     // 并且 nlj 向左支 request 一个 part id
     // 通知 GI 在迭代 partition granule 时进入 partition pruning 模式
     if (OB_FAIL(build_gi_partition_pruning())) {
-      LOG_WARN("fail deterimine right child partition id", K(ret));
+      LOG_WARN("fail determine right child partition id", K(ret));
     }
   }
 	return ret;
@@ -1356,7 +1356,7 @@ int ObLogJoin::allocate_startup_expr_post(int64_t child_idx)
       }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(append_array_no_dup(get_startup_exprs(), new_startup_exprs))) {
+      if (OB_FAIL(ObOptimizerUtil::append_exprs_no_dup(get_startup_exprs(), new_startup_exprs))) {
         LOG_WARN("failed to add startup exprs", K(ret));
       } else if (OB_FAIL(child->get_startup_exprs().assign(non_startup_exprs))) {
         LOG_WARN("failed to assign exprs", K(ret));

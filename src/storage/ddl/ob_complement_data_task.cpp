@@ -616,7 +616,6 @@ int ObComplementPrepareTask::process()
   ObComplementDataDag *dag = nullptr;
   ObComplementWriteTask *write_task = nullptr;
   ObComplementMergeTask *merge_task = nullptr;
-  LOG_WARN("start to process ObComplementPrepareTask", K(ret));
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObComplementPrepareTask has not been inited", K(ret));
@@ -630,8 +629,16 @@ int ObComplementPrepareTask::process()
     FLOG_INFO("major sstable exists, all task should finish", K(ret), K(*param_));
   } else if (OB_FAIL(context_->write_start_log(*param_))) {
     LOG_WARN("write start log failed", K(ret), KPC(param_));
+  } else if (OB_FAIL(ObDDLChecksumOperator::delete_checksum(param_->dest_tenant_id_,
+                                                            param_->execution_id_,
+                                                            param_->orig_table_id_,
+                                                            0/*use 0 just to avoid clearing target table chksum*/,
+                                                            param_->task_id_,
+                                                            *GCTX.sql_proxy_,
+                                                            param_->tablet_task_id_))) {
+    LOG_WARN("failed to delete checksum", K(ret), KPC(param_));
   } else {
-    LOG_INFO("finish the complement prepare task", K(ret));
+    LOG_INFO("finish the complement prepare task", K(ret), KPC(param_));
   }
 
   if (OB_FAIL(ret)) {
@@ -1241,7 +1248,7 @@ int ObComplementWriteTask::append_row(ObScan *scan)
                                                               report_col_checksums,
                                                               report_col_ids,
                                                               1/*execution_id*/,
-                                                              param_->tablet_task_id_ << 48 | task_id_,
+                                                              param_->tablet_task_id_ << ObDDLChecksumItem::PX_SQC_ID_OFFSET | task_id_,
                                                               *GCTX.sql_proxy_))) {
       LOG_WARN("fail to report origin table checksum", K(ret));
     } else {
@@ -2156,16 +2163,17 @@ int ObRemoteScan::prepare_iter(const ObSqlString &sql_string, common::ObCommonSq
 {
   int ret = OB_SUCCESS;
   ObSessionParam session_param;
-  ObSQLMode sql_mode = SMO_STRICT_ALL_TABLES | SMO_PAD_CHAR_TO_FULL_LENGTH;
+  ObSQLMode sql_mode = SMO_STRICT_ALL_TABLES;
   session_param.sql_mode_ = reinterpret_cast<int64_t *>(&sql_mode);
   session_param.tz_info_wrap_ = nullptr;
   session_param.ddl_info_.set_is_ddl(true);
   session_param.ddl_info_.set_source_table_hidden(false);
   session_param.ddl_info_.set_dest_table_hidden(false);
+  const int64_t sql_total_timeout = ObDDLUtil::calc_inner_sql_execute_timeout();
   if (OB_ISNULL(sql_proxy)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret));
-  } else if (OB_FAIL(sql_proxy->read(res_, tenant_id_, sql_string.ptr(), &session_param))) {
+  } else if (OB_FAIL(sql_proxy->read(res_, tenant_id_, sql_string.ptr(), &session_param, sql_total_timeout))) {
     LOG_WARN("fail to execute sql", K(ret), K_(tenant_id), K(sql_string));
   } else if (OB_ISNULL(result_ = res_.get_result())) {
     ret = OB_ERR_UNEXPECTED;

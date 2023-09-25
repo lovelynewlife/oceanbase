@@ -1123,6 +1123,7 @@ int ObCreateTenantArg::assign(const ObCreateTenantArg &other)
     compatible_version_ = other.compatible_version_;
     is_creating_standby_ = other.is_creating_standby_;
     log_restore_source_ = other.log_restore_source_;
+    is_tmp_tenant_for_recover_ = other.is_tmp_tenant_for_recover_;
   }
   return ret;
 }
@@ -1140,6 +1141,7 @@ void ObCreateTenantArg::reset()
   compatible_version_ = 0;
   is_creating_standby_ = false;
   log_restore_source_.reset();
+  is_tmp_tenant_for_recover_ = false;
 }
 
 int ObCreateTenantArg::init(const share::schema::ObTenantSchema &tenant_schema,
@@ -1177,7 +1179,8 @@ DEF_TO_STRING(ObCreateTenantArg)
        K_(recovery_until_scn),
        K_(compatible_version),
        K_(is_creating_standby),
-       K_(log_restore_source));
+       K_(log_restore_source),
+       K_(is_tmp_tenant_for_recover));
   return pos;
 }
 
@@ -1192,7 +1195,8 @@ OB_SERIALIZE_MEMBER((ObCreateTenantArg, ObDDLArg),
                     compatible_version_,
                     recovery_until_scn_,
                     is_creating_standby_,
-                    log_restore_source_);
+                    log_restore_source_,
+                    is_tmp_tenant_for_recover_);
 
 bool ObCreateTenantEndArg::is_valid() const
 {
@@ -2927,7 +2931,8 @@ DEF_TO_STRING(ObCreateForeignKeyArg)
        K_(is_modify_rely_flag),
        K_(is_modify_fk_state),
        K_(parent_database_id),
-       K_(parent_table_id));
+       K_(parent_table_id),
+       K_(name_generated_type));
   J_OBJ_END();
   return pos;
 }
@@ -2952,7 +2957,8 @@ OB_SERIALIZE_MEMBER((ObCreateForeignKeyArg, ObIndexArg),
                     need_validate_data_,
                     is_parent_table_mock_,
                     parent_database_id_,
-                    parent_table_id_);
+                    parent_table_id_,
+                    name_generated_type_);
 
 bool ObDropForeignKeyArg::is_valid() const
 {
@@ -3782,17 +3788,19 @@ void ObSwitchSchemaArg::reset()
 {
   schema_info_.reset();
   force_refresh_ = false;
+  is_async_ = false;
 }
 
 DEF_TO_STRING(ObSwitchSchemaArg)
 {
   int64_t pos = 0;
   J_KV(K_(schema_info),
-       K_(force_refresh));
+       K_(force_refresh),
+       K_(is_async));
   return pos;
 }
 
-OB_SERIALIZE_MEMBER(ObSwitchSchemaArg, schema_info_, force_refresh_);
+OB_SERIALIZE_MEMBER(ObSwitchSchemaArg, schema_info_, force_refresh_, is_async_);
 
 DEF_TO_STRING(ObSwitchLeaderArg)
 {

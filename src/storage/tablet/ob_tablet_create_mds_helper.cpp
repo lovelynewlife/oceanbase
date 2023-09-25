@@ -105,7 +105,7 @@ int ObTabletCreateMdsHelper::on_register(
   } else if (arg.is_old_mds_) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, arg is old mds", K(ret), K(arg));
-  } else if (CLICK_FAIL(check_create_new_tablets(arg))) {
+  } else if (CLICK_FAIL(check_create_new_tablets(arg, false/*is_replay*/))) {
     LOG_WARN("failed to check crate new tablets", K(ret), "arg", PRETTY_ARG(arg));
   } else if (CLICK_FAIL(register_process(arg, ctx))) {
     LOG_WARN("fail to register_process", K(ret), "arg", PRETTY_ARG(arg));
@@ -167,11 +167,6 @@ int ObTabletCreateMdsHelper::on_replay(
   int ret = OB_SUCCESS;
   ObBatchCreateTabletArg arg;
   int64_t pos = 0;
-  common::ObSArray<ObTabletID> tablet_id_array;
-  const ObLSID &ls_id = arg.id_;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-  share::SCN tablet_change_checkpoint_scn;
 
   if (OB_ISNULL(buf) || OB_UNLIKELY(len <= 0) || OB_UNLIKELY(!scn.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -187,7 +182,7 @@ int ObTabletCreateMdsHelper::on_replay(
     // Should not fail the replay process when tablet count excceed recommended value
     // Only print ERROR log to notice user scale up the unit memory
     int tmp_ret = OB_SUCCESS;
-    if (OB_TMP_FAIL(check_create_new_tablets(arg))) {
+    if (OB_TMP_FAIL(check_create_new_tablets(arg, true/*is_replay*/))) {
       if (OB_TOO_MANY_PARTITIONS_ERROR == tmp_ret) {
         LOG_ERROR("tablet count is too big, consider scale up the unit memory", K(tmp_ret));
       } else {
@@ -207,7 +202,7 @@ int ObTabletCreateMdsHelper::on_replay(
   return ret;
 }
 
-int ObTabletCreateMdsHelper::check_create_new_tablets(const int64_t inc_tablet_cnt)
+int ObTabletCreateMdsHelper::check_create_new_tablets(const int64_t inc_tablet_cnt, const bool is_soft_limit)
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = MTL_ID();
@@ -222,6 +217,7 @@ int ObTabletCreateMdsHelper::check_create_new_tablets(const int64_t inc_tablet_c
       LOG_ERROR("get invalid tenant config", K(ret));
     } else {
       tablet_cnt_per_gb = tenant_config->_max_tablet_cnt_per_gb;
+      tablet_cnt_per_gb = !is_soft_limit ? tablet_cnt_per_gb : MAX(tablet_cnt_per_gb, 30000);
     }
   }
 
@@ -237,35 +233,56 @@ int ObTabletCreateMdsHelper::check_create_new_tablets(const int64_t inc_tablet_c
     const int64_t max_tablet_cnt = memory_limit / (1 << 30) * tablet_cnt_per_gb;
     const int64_t cur_tablet_cnt = t3m->get_total_tablet_cnt();
 
-    if (OB_UNLIKELY(cur_tablet_cnt + inc_tablet_cnt >= max_tablet_cnt)) {
+    if (OB_UNLIKELY(cur_tablet_cnt + inc_tablet_cnt > max_tablet_cnt)) {
       ret = OB_TOO_MANY_PARTITIONS_ERROR;
-      LOG_WARN("too many partitions of tenant", K(ret), K(tenant_id), K(memory_limit), K(tablet_cnt_per_gb),
+      LOG_WARN("too many partitions of tenant", K(ret), K(tenant_id), K(is_soft_limit), K(memory_limit), K(tablet_cnt_per_gb),
           K(max_tablet_cnt), K(cur_tablet_cnt), K(inc_tablet_cnt));
     }
   }
-
   return ret;
 }
 
-int ObTabletCreateMdsHelper::check_create_new_tablets(const obrpc::ObBatchCreateTabletArg &arg)
+int ObTabletCreateMdsHelper::check_create_new_tablets(const obrpc::ObBatchCreateTabletArg &arg, const bool is_replay)
 {
   int ret = OB_SUCCESS;
   bool skip_check = !arg.need_check_tablet_cnt_;
+  bool is_truncate = false;
 
-  // skip hidden tablet creation or truncate tablet creation
+  // skip hidden tablet creation
   for (int64_t i = 0; OB_SUCC(ret) && !skip_check && i < arg.table_schemas_.count(); ++i) {
-    if (arg.table_schemas_[i].is_user_hidden_table()
-      || OB_INVALID_VERSION != arg.table_schemas_[i].get_truncate_version()) {
+    if (arg.table_schemas_[i].is_user_hidden_table()) {
       skip_check = true;
+    } else if (OB_INVALID_VERSION != arg.table_schemas_[i].get_truncate_version()) {
+      is_truncate = true;
     }
   }
 
   if (OB_FAIL(ret)) {
   } else if (skip_check) {
+  } else if (is_truncate) {
+    bool need_wait = false;
+    const int64_t timeout = THIS_WORKER.get_timeout_remain();
+    const int64_t start_time = ObTimeUtility::fast_current_time();
+    do {
+      if (need_wait) {
+        ob_usleep(1000 * 1000L); // sleep 1s
+      }
+      need_wait = false;
+      if (ObTimeUtility::fast_current_time() - start_time >= timeout) {
+        ret = OB_TIMEOUT;
+        LOG_WARN("too many partitions, retry timeout", K(ret));
+        break;
+      } else if (OB_FAIL(check_create_new_tablets(arg.get_tablet_count(), true/*is_soft_limit*/))) {
+        if (OB_TOO_MANY_PARTITIONS_ERROR != ret) {
+          LOG_WARN("fail to check create new tablets", K(ret));
+        } else {
+          need_wait = true;
+        }
+      }
+    } while (need_wait && !is_replay); /* only retry for on_register truncate */
   } else if (OB_FAIL(check_create_new_tablets(arg.get_tablet_count()))) {
-    LOG_WARN("check create new tablet fail", K(ret));
+    LOG_WARN("fail to create new tablets", K(ret));
   }
-
   return ret;
 }
 
@@ -322,8 +339,6 @@ int ObTabletCreateMdsHelper::create_tablets(
 {
   MDS_TG(10_ms);
   int ret = OB_SUCCESS;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
 
   for (int64_t i = 0; OB_SUCC(ret) && i < arg.tablets_.count(); ++i) {
     const ObCreateTabletInfo &info = arg.tablets_.at(i);
@@ -618,7 +633,7 @@ int ObTabletCreateMdsHelper::build_mixed_tablets(
     mds::BufferCtx &ctx,
     common::ObIArray<common::ObTabletID> &tablet_id_array)
 {
-  MDS_TG(500_ms);
+  MDS_TG(10_ms);
   int ret = OB_SUCCESS;
   const ObLSID &ls_id = arg.id_;
   const ObTabletID &data_tablet_id = info.data_tablet_id_;
@@ -710,7 +725,7 @@ int ObTabletCreateMdsHelper::build_pure_aux_tablets(
     mds::BufferCtx &ctx,
     common::ObIArray<common::ObTabletID> &tablet_id_array)
 {
-  MDS_TG(500_ms);
+  MDS_TG(10_ms);
   int ret = OB_SUCCESS;
   const ObLSID &ls_id = arg.id_;
   const ObTabletID &data_tablet_id = info.data_tablet_id_;
@@ -780,7 +795,7 @@ int ObTabletCreateMdsHelper::build_hidden_tablets(
     mds::BufferCtx &ctx,
     common::ObIArray<common::ObTabletID> &tablet_id_array)
 {
-  MDS_TG(500_ms);
+  MDS_TG(10_ms);
   int ret = OB_SUCCESS;
   const ObLSID &ls_id = arg.id_;
   const ObTabletID &data_tablet_id = info.data_tablet_id_;

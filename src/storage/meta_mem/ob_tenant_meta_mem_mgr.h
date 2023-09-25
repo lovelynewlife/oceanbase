@@ -128,9 +128,9 @@ public:
 
   static const int64_t MAX_TABLET_CNT_IN_OBJ_POOL = 50000;
   static const int64_t MAX_MEMTABLE_CNT_IN_OBJ_POOL = 2 * MAX_TABLET_CNT_IN_OBJ_POOL;
-  static const int64_t MAX_TX_DATA_MEMTABLE_CNT_IN_OBJ_POOL = MAX_MEMSTORE_CNT * OB_MINI_MODE_MAX_LS_NUM_PER_TENANT_PER_SERVER;
-  static const int64_t MAX_TX_CTX_MEMTABLE_CNT_IN_OBJ_POOL = OB_MINI_MODE_MAX_LS_NUM_PER_TENANT_PER_SERVER;
-  static const int64_t MAX_LOCK_MEMTABLE_CNT_IN_OBJ_POOL = OB_MINI_MODE_MAX_LS_NUM_PER_TENANT_PER_SERVER;
+  static const int64_t MAX_TX_DATA_MEMTABLE_CNT_IN_OBJ_POOL = MAX_MEMSTORE_CNT * OB_MAX_LS_NUM_PER_TENANT_PER_SERVER_FOR_SMALL_TENANT;
+  static const int64_t MAX_TX_CTX_MEMTABLE_CNT_IN_OBJ_POOL = OB_MAX_LS_NUM_PER_TENANT_PER_SERVER_FOR_SMALL_TENANT;
+  static const int64_t MAX_LOCK_MEMTABLE_CNT_IN_OBJ_POOL = OB_MAX_LS_NUM_PER_TENANT_PER_SERVER_FOR_SMALL_TENANT;
   static const int64_t MAX_DDL_KV_IN_OBJ_POOL = 5000;
   static const int64_t TABLET_TRANSFORM_INTERVAL_US = 2 * 1000 * 1000L; // 2s
 
@@ -476,6 +476,7 @@ private:
   void destroy_gc_tablets_queue();
   int push_memtable_into_gc_map_(memtable::ObMemtable *memtable);
   void batch_gc_memtable_();
+  void batch_destroy_memtable_(memtable::ObMemtableSet *memtable_set);
 
 private:
   common::SpinRWLock wash_lock_;

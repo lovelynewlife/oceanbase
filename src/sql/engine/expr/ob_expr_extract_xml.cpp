@@ -92,7 +92,7 @@ int ObExprExtractXml::eval_extract_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   ObIMulModeBase *xml_doc = NULL;
   ObPathExprIter xpath_iter(&allocator);
   ObString default_ns;
-  ObPathVarObject *prefix_ns = NULL;
+  ObPathVarObject prefix_ns(allocator);
   ObString xml_res;
   ObXmlDocument *root = nullptr;
   ObMulModeNodeType node_type = M_MAX_TYPE;
@@ -101,8 +101,12 @@ int ObExprExtractXml::eval_extract_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   // eval arg
 
   ObMulModeMemCtx* mem_ctx = nullptr;
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(MTL_ID(), "XMLCodeGen"));
-  if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, mem_ctx))) {
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ObXMLExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session()), "XMLModule"));
+
+  if (OB_ISNULL(ctx.exec_ctx_.get_my_session())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get session failed.", K(ret));
+  } else if (OB_FAIL(ObXmlUtil::create_mulmode_tree_context(&allocator, mem_ctx))) {
     LOG_WARN("fail to create tree memory context", K(ret));
   } else if (OB_UNLIKELY(expr.arg_cnt_ != 3)) {
     ret = OB_ERR_UNEXPECTED;
@@ -124,7 +128,7 @@ int ObExprExtractXml::eval_extract_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObXMLExprHelper::get_xml_base(mem_ctx, xml_datum, cs_type, expect_type, xml_doc))) {
     LOG_WARN("fail to parse xml doc", K(ret));
-  } else if (OB_FAIL(xpath_iter.init(mem_ctx, xpath_str, default_ns, xml_doc, prefix_ns))) {
+  } else if (OB_FAIL(xpath_iter.init(mem_ctx, xpath_str, default_ns, xml_doc, &prefix_ns))) {
     LOG_WARN("fail to init xpath iterator", K(xpath_str), K(default_ns), K(ret));
     ObXMLExprHelper::replace_xpath_ret_code(ret);
   } else if (OB_FAIL(concat_xpath_result(xpath_iter, cs_type, root, node_type, mem_ctx))) {

@@ -511,16 +511,22 @@ if ((OB_FAIL(ret) || 0 == routines.count())   \
         TRY_SYNONYM(package_name);
         if (OB_SUCC(ret) && need_try_synonym) {
           if (OB_FAIL(schema_checker.get_package_id( // try synonym user package now!
-              is_sys_database_id(object_db_id) ? OB_SYS_TENANT_ID : tenant_id,
-              object_db_id, object_name, compatible_mode, package_id))
+              tenant_id, object_db_id, object_name, compatible_mode, package_id))
               || OB_INVALID_ID == package_id) {
-            if (OB_FAIL(schema_checker.get_udt_id( // try synonym user type now!
-                  tenant_id, object_db_id, OB_INVALID_ID, object_name, package_id))
+            if ((is_sys_database_id(object_db_id)
+                  && OB_FAIL(schema_checker.get_package_id(OB_SYS_TENANT_ID, object_db_id, object_name, compatible_mode, package_id)))
                 || OB_INVALID_ID == package_id) {
-              LOG_WARN("failed to get package id", K(ret));
-            } else { // it`s user udt, get udt routines
-              OZ (schema_checker.get_udt_routine_infos(
-                tenant_id, object_db_id, package_id, routine_name, routine_type, routines));
+              if (OB_FAIL(schema_checker.get_udt_id( // try synonym user type now!
+                    tenant_id, object_db_id, OB_INVALID_ID, object_name, package_id))
+                  || OB_INVALID_ID == package_id) {
+                LOG_WARN("failed to get package id", K(ret));
+              } else { // it`s user udt, get udt routines
+                OZ (schema_checker.get_udt_routine_infos(
+                  tenant_id, object_db_id, package_id, routine_name, routine_type, routines));
+              }
+            } else { // it`s user pacakge, get package routines
+              OZ (schema_checker.get_package_routine_infos(
+                tenant_id, package_id, object_db_id, routine_name, routine_type, routines));
             }
           } else { // it`s user pacakge, get package routines
             OZ (schema_checker.get_package_routine_infos(
@@ -746,7 +752,7 @@ int ObResolverUtils::check_type_match(const pl::ObPLResolveCtx &resolve_ctx,
         CK (OB_NOT_NULL(src_composite = reinterpret_cast<const ObPLComposite *>(param.get_ext())));
         if (OB_FAIL(ret)) {
         } else if (!dst_pl_type.is_collection_type()) {
-          ret = OB_INVALID_ARGUMENT;
+          ret = OB_ERR_EXPRESSION_WRONG_TYPE;
           LOG_WARN("incorrect argument type", K(ret));
         } else {
           const pl::ObPLCollection *src_coll = NULL;
@@ -905,11 +911,16 @@ int ObResolverUtils::check_match(const pl::ObPLResolveCtx &resolve_ctx,
   OX (match_info.routine_info_ = routine_info);
   // MatchInfo初始化
   for (int64_t i = 0; OB_SUCC(ret) && i < routine_info->get_param_count(); ++i) {
-    match_info.match_info_.push_back(ObRoutineMatchInfo::MatchInfo());
+    OZ (match_info.match_info_.push_back(ObRoutineMatchInfo::MatchInfo()));
   }
 
   int64_t offset = 0;
-  if(OB_SUCC(ret) && expr_params.count() > 0 && OB_NOT_NULL(expr_params.at(0))) {
+  if (OB_FAIL(ret)) {
+  } else if (0 == expr_params.count() && routine_info->is_udt_routine() && !routine_info->is_udt_static_routine()) {
+    // set first param matched
+    OX (match_info.match_info_.at(0) = (ObRoutineMatchInfo::MatchInfo(false, ObExtendType, ObExtendType)));
+    OX (offset = 1);
+  } else if(expr_params.count() > 0 && OB_NOT_NULL(expr_params.at(0))) {
     ObRawExpr *first_arg = expr_params.at(0);
     if (first_arg->has_flag(IS_UDT_UDF_SELF_PARAM)) {
       // do nothing, may be we can check if routine is static or not
@@ -1054,16 +1065,10 @@ int ObResolverUtils::match_vacancy_parameters(
       CK (OB_NOT_NULL(routine_param));
       if (OB_FAIL(ret)) {
       } else if (routine_param->get_default_value().empty()) {
-        if (routine_info.is_udt_routine()
-               && !routine_info.is_udt_static_routine()
-               && routine_param->is_self_param()) {
-          // do nothing
-        } else {
-          ret = OB_ERR_SP_WRONG_ARG_NUM;
-          LOG_WARN("argument count not match",
-                 K(ret),
-                 K(routine_info.get_param_count()), K(i));
-        }
+        ret = OB_ERR_SP_WRONG_ARG_NUM;
+        LOG_WARN("argument count not match",
+               K(ret),
+               K(routine_info.get_param_count()), K(i));
       } else {
         OX (match_info.match_info_.at(i) =
           ObRoutineMatchInfo::MatchInfo(routine_param->is_default_cast(),
@@ -8032,9 +8037,11 @@ int ObResolverUtils::check_encryption_name(ObString &encryption_name, bool &need
              0 == encryption_name.case_compare("aes-256") ||
              0 == encryption_name.case_compare("aes-128-gcm") ||
              0 == encryption_name.case_compare("aes-192-gcm") ||
-             0 == encryption_name.case_compare("aes-256-gcm") ||
+#ifdef OB_USE_BABASSL
              0 == encryption_name.case_compare("sm4-cbc") ||
-             0 == encryption_name.case_compare("sm4-gcm")) {
+             0 == encryption_name.case_compare("sm4-gcm") ||
+#endif
+             0 == encryption_name.case_compare("aes-256-gcm")) {
     need_encrypt = true;
   } else if (!is_oracle && 0 == encryption_name.case_compare("y")) {
     need_encrypt = true;
@@ -8053,10 +8060,22 @@ int ObResolverUtils::check_encryption_name(ObString &encryption_name, bool &need
 int ObResolverUtils::check_not_supported_tenant_name(const ObString &tenant_name)
 {
   int ret = OB_SUCCESS;
-  if (0 == tenant_name.case_compare("all") ||
-      0 == tenant_name.case_compare("all_user") ||
-      0 == tenant_name.case_compare("all_meta")) {
+  if (OB_NOT_NULL(tenant_name.find('$'))) {
     ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "since 4.2.1, manually creating a tenant name containing '$' is");
+  }
+  if (OB_SUCC(ret)) {
+    const char *const forbid_list[] = {"all", "all_user", "all_meta"};
+    int64_t list_len = ARRAYSIZEOF(forbid_list);
+    for (int64_t i = 0; OB_SUCC(ret) && (i < list_len); ++i) {
+      if (0 == tenant_name.case_compare(forbid_list[i])) {
+        ret = OB_NOT_SUPPORTED;
+        char err_info[128] = {'\0'};
+        snprintf(err_info, sizeof(err_info), "since 4.2.1, using \"%s\" (case insensitive) "
+            "as a tenant name is", forbid_list[i]);
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, err_info);
+      }
+    }
   }
   return ret;
 }
@@ -8101,7 +8120,12 @@ int ObResolverUtils::handle_varchar_charset(ObCharsetType charset_type,
   if ((T_HEX_STRING == node->type_ || T_VARCHAR == node->type_)
       && CHARSET_INVALID != charset_type) {
     ParseNode *charset_node = new_node(&allocator, T_CHARSET, 0);
-    ParseNode *varchar_node = new_non_terminal_node(&allocator, T_VARCHAR, 2, charset_node, node);
+    ParseNode *varchar_node = NULL;
+    if (T_HEX_STRING == node->type_) {
+      varchar_node = new_non_terminal_node(&allocator, T_VARCHAR, 1, charset_node);
+    } else if (T_VARCHAR == node->type_) {
+      varchar_node = new_non_terminal_node(&allocator, T_VARCHAR, 2, charset_node, node);
+    }
 
     if (OB_ISNULL(charset_node) || OB_ISNULL(varchar_node)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;

@@ -168,6 +168,7 @@ struct DiagnoseInfo
 class ObIComponentFactory;
 enum class ObInnerLSStatus;
 
+// sizeof(ObLS): 77248
 class ObLS : public common::ObLink
 {
 public:
@@ -322,6 +323,7 @@ public:
   // for ls gc
   int block_tablet_transfer_in();
   int block_tx_start();
+  int block_all();
   // for tablet transfer
   // this function is used for tablet transfer in
   // it will check if it is allowed to transfer in and then
@@ -380,7 +382,8 @@ public:
   int set_ls_rebuild();
   // protect in ls lock
   // int set_gc_state(const logservice::LSGCState &gc_state);
-  DELEGATE_WITH_RET(ls_meta_, set_gc_state, int);
+  int set_gc_state(const logservice::LSGCState &gc_state);
+  int set_gc_state(const logservice::LSGCState &gc_state, const share::SCN &offline_scn);
   // int set_clog_checkpoint(const palf::LSN &clog_checkpoint_lsn,
   //                         const share::SCN &clog_checkpoint_scn,
   //                         const bool write_slog = true);
@@ -414,10 +417,6 @@ public:
   // @param [in] gc state.
   // int get_gc_state(LSGCState &status);
   DELEGATE_WITH_RET(ls_meta_, get_gc_state, int);
-  // set offline ts
-  // @param [in] offline ts.
-  // int set_offline_scn(const int64_t offline_scn);
-  DELEGATE_WITH_RET(ls_meta_, set_offline_scn, int);
   // get offline ts
   // @param [in] offline ts.
   // int get_offline_scn(const share::SCN &offline_scn);
@@ -767,6 +766,7 @@ public:
 
   DELEGATE_WITH_RET(ls_tx_svr_, get_tx_ctx_count, int);
   DELEGATE_WITH_RET(ls_tx_svr_, get_active_tx_count, int);
+  DELEGATE_WITH_RET(ls_tx_svr_, print_all_tx_ctx, int);
   //dup table ls meta interface
   CONST_DELEGATE_WITH_RET(dup_table_ls_handler_, get_dup_table_ls_meta, int);
   DELEGATE_WITH_RET(dup_table_ls_handler_, set_dup_table_ls_meta, int);

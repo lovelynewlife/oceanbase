@@ -866,6 +866,7 @@ constexpr int OB_ERR_WINDOW_RANGE_BOUND_NOT_CONSTANT = -5510;
 constexpr int OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS = -5511;
 constexpr int OB_ERR_FK_COLUMN_NOT_NULL = -5512;
 constexpr int OB_ERR_UNSUPPORTED_FK_SET_NULL_ON_GENERATED_COLUMN = -5513;
+constexpr int OB_JSON_PROCESSING_ERROR = -5514;
 constexpr int OB_ERR_TABLE_WITHOUT_ALIAS = -5515;
 constexpr int OB_ERR_SP_ALREADY_EXISTS = -5541;
 constexpr int OB_ERR_SP_DOES_NOT_EXIST = -5542;
@@ -1778,6 +1779,7 @@ constexpr int OB_ERR_FORALL_ON_REMOTE_TABLE = -9752;
 constexpr int OB_ERR_SEQUENCE_NOT_DEFINE = -9753;
 constexpr int OB_ERR_VALUES_CLAUSE_NEED_HAVE_COLUMN = -11000;
 constexpr int OB_ERR_VALUES_CLAUSE_CANNOT_USE_DEFAULT_VALUES = -11001;
+constexpr int OB_WRONG_PARTITION_NAME = -11002;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR = -20000;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR_NUM = -21000;
 constexpr int OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN = -22998;
@@ -2808,7 +2810,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_RENAME_SUBPARTITION_NAME_DUPLICATE__USER_ERROR_MSG "Duplicate partition name %.*s"
 #define OB_ERR_INVALID_WAIT_INTERVAL__USER_ERROR_MSG "missing or invalid WAIT interval"
 #define OB_ERR_FUNCTIONAL_INDEX_REF_AUTO_INCREMENT__USER_ERROR_MSG "Functional index '%.*s' cannot refer to an auto-increment column."
-#define OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX__USER_ERROR_MSG "Column '%.*s' has a functional index dependency and cannot be dropped."
+#define OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX__USER_ERROR_MSG "Column '%.*s' has a functional index dependency and cannot be dropped or renamed."
 #define OB_ERR_FUNCTIONAL_INDEX_ON_LOB__USER_ERROR_MSG "Cannot create a functional index on an expression that returns a BLOB or TEXT. Please consider using CAST."
 #define OB_ERR_FUNCTIONAL_INDEX_ON_FIELD__USER_ERROR_MSG "Functional index on a column is not supported. Consider using a regular index instead."
 #define OB_ERR_GENCOL_LEGIT_CHECK_FAILED__USER_ERROR_MSG "Legitimacy check failed for generated columns."
@@ -2825,6 +2827,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS__USER_ERROR_MSG "Explicit column default is not supported for modifying views"
 #define OB_ERR_FK_COLUMN_NOT_NULL__USER_ERROR_MSG "Column \'%s\' cannot be NOT NULL: needed in a foreign key constraint \'%s\' SET NULL"
 #define OB_ERR_UNSUPPORTED_FK_SET_NULL_ON_GENERATED_COLUMN__USER_ERROR_MSG " Cannot define foreign key with ON DELETE SET NULL clause on a generated column"
+#define OB_JSON_PROCESSING_ERROR__USER_ERROR_MSG " JSON processing error"
 #define OB_ERR_TABLE_WITHOUT_ALIAS__USER_ERROR_MSG "Every table function must have an alias"
 #define OB_ERR_SP_ALREADY_EXISTS__USER_ERROR_MSG "%s %.*s already exists"
 #define OB_ERR_SP_DOES_NOT_EXIST__USER_ERROR_MSG "%s %.*s.%.*s does not exist"
@@ -3154,7 +3157,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_NOT_COMPOSITE_PARTITION__USER_ERROR_MSG "table is not partitioned by composite partition method"
 #define OB_ERR_SUBPARTITION_NOT_EXPECT_VALUES_IN__USER_ERROR_MSG "VALUES IN (<value list>) cannot be used for Range subpartitioned tables"
 #define OB_ERR_SUBPARTITION_EXPECT_VALUES_IN__USER_ERROR_MSG "VALUES IN (<value list>) clause expected"
-#define OB_ERR_PARTITION_NOT_EXPECT_VALUES_LESS_THAN__USER_ERROR_MSG "VALUES LESS THAN or AT clause cannot be used with List partitioned tables"
+#define OB_ERR_PARTITION_NOT_EXPECT_VALUES_LESS_THAN__USER_ERROR_MSG "Only RANGE PARTITIONING can use VALUES LESS THAN in partition definition"
 #define OB_ERR_PARTITION_EXPECT_VALUES_LESS_THAN__USER_ERROR_MSG "Expecting VALUES LESS THAN  or AT clause"
 #define OB_ERR_PROGRAM_UNIT_NOT_EXIST__USER_ERROR_MSG "Procedure, function, package, or package body does not exist"
 #define OB_ERR_INVALID_RESTORE_POINT_NAME__USER_ERROR_MSG "invalid restore point name specified in connection string"
@@ -3251,7 +3254,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_CHECK_OPTION_ON_NONUPDATABLE_VIEW__USER_ERROR_MSG "CHECK OPTION on non-updatable view '%.*s.%.*s'"
 #define OB_ERR_NO_DESC_FOR_POS__USER_ERROR_MSG "no descriptor for this position"
 #define OB_ERR_ILL_OBJ_FLAG__USER_ERROR_MSG "object specified is incompatible with the flag specified"
-#define OB_ERR_DBLINK_REMOTE_ECODE__USER_ERROR_MSG "Unknown errorcode: %d"
+#define OB_ERR_DBLINK_REMOTE_ECODE__USER_ERROR_MSG "\ndblink remote error code: %d,\nremote error msg: %.*s"
 #define OB_ERR_DBLINK_NO_LIB__USER_ERROR_MSG "oci lib not founded"
 #define OB_ERR_PARTITION_EXTENDED_ON_VIEW__USER_ERROR_MSG "partition-extended object names may only be used with tables and editioning views"
 #define OB_ERR_NOT_ALL_VARIABLE_BIND__USER_ERROR_MSG "not all variables bound"
@@ -3906,6 +3909,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_SEQUENCE_NOT_DEFINE__USER_ERROR_MSG "sequence is not yet defined in this session"
 #define OB_ERR_VALUES_CLAUSE_NEED_HAVE_COLUMN__USER_ERROR_MSG "Each row of a VALUES clause must have at least one column, unless when used as source in an INSERT statement."
 #define OB_ERR_VALUES_CLAUSE_CANNOT_USE_DEFAULT_VALUES__USER_ERROR_MSG "A VALUES clause cannot use DEFAULT values, unless used as a source in an INSERT statement."
+#define OB_WRONG_PARTITION_NAME__USER_ERROR_MSG "Incorrect partition name '%.*s'"
 #define OB_SP_RAISE_APPLICATION_ERROR__USER_ERROR_MSG "%.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__USER_ERROR_MSG "error number argument to raise_application_error of '%d' is out of range"
 #define OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN__USER_ERROR_MSG "CLOB or NCLOB in multibyte character set not supported"
@@ -4936,7 +4940,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_RENAME_SUBPARTITION_NAME_DUPLICATE__ORA_USER_ERROR_MSG "ORA-14263: New subpartition name %.*s must differ from that of any other partition or subpartition of the object."
 #define OB_ERR_INVALID_WAIT_INTERVAL__ORA_USER_ERROR_MSG "ORA-30005: missing or invalid WAIT interval"
 #define OB_ERR_FUNCTIONAL_INDEX_REF_AUTO_INCREMENT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5496, Functional index '%.*s' cannot refer to an auto-increment column."
-#define OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5497, Column '%.*s' has a functional index dependency and cannot be dropped."
+#define OB_ERR_DEPENDENT_BY_FUNCTIONAL_INDEX__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5497, Column '%.*s' has a functional index dependency and cannot be dropped or renamed."
 #define OB_ERR_FUNCTIONAL_INDEX_ON_LOB__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5498, Cannot create a functional index on an expression that returns a BLOB or TEXT. Please consider using CAST."
 #define OB_ERR_FUNCTIONAL_INDEX_ON_FIELD__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5499, Functional index on a column is not supported. Consider using a regular index instead."
 #define OB_ERR_GENCOL_LEGIT_CHECK_FAILED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5500, Legitimacy check failed for generated columns."
@@ -4953,6 +4957,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_DEFAULT_FOR_MODIFYING_VIEWS__ORA_USER_ERROR_MSG "ORA-32575: Explicit column default is not supported for modifying views"
 #define OB_ERR_FK_COLUMN_NOT_NULL__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5512, Column \'%s\' cannot be NOT NULL: needed in a foreign key constraint \'%s\' SET NULL"
 #define OB_ERR_UNSUPPORTED_FK_SET_NULL_ON_GENERATED_COLUMN__ORA_USER_ERROR_MSG "ORA-54036: cannot define referential constraint with ON DELETE SET NULL clause on virtual column"
+#define OB_JSON_PROCESSING_ERROR__ORA_USER_ERROR_MSG "ORA-40444:  JSON processing error"
 #define OB_ERR_TABLE_WITHOUT_ALIAS__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5515, Every table function must have an alias"
 #define OB_ERR_SP_ALREADY_EXISTS__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5541, %s %.*s already exists"
 #define OB_ERR_SP_DOES_NOT_EXIST__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5542, %s %.*s.%.*s does not exist"
@@ -5379,7 +5384,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_CHECK_OPTION_ON_NONUPDATABLE_VIEW__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5972, CHECK OPTION on non-updatable view '%.*s.%.*s'"
 #define OB_ERR_NO_DESC_FOR_POS__ORA_USER_ERROR_MSG "ORA-24334: no descriptor for this position"
 #define OB_ERR_ILL_OBJ_FLAG__ORA_USER_ERROR_MSG "ORA-04047: object specified is incompatible with the flag specified"
-#define OB_ERR_DBLINK_REMOTE_ECODE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5975, Unknown errorcode: %d"
+#define OB_ERR_DBLINK_REMOTE_ECODE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5975, \ndblink remote error code: %d,\nremote error msg: %.*s"
 #define OB_ERR_DBLINK_NO_LIB__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5976, oci lib not founded"
 #define OB_ERR_PARTITION_EXTENDED_ON_VIEW__ORA_USER_ERROR_MSG "ORA-14109: partition-extended object names may only be used with tables and editioning views"
 #define OB_ERR_NOT_ALL_VARIABLE_BIND__ORA_USER_ERROR_MSG "ORA-01008: not all variables bound"
@@ -6034,6 +6039,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_SEQUENCE_NOT_DEFINE__ORA_USER_ERROR_MSG "ORA-08002: sequence is not yet defined in this session"
 #define OB_ERR_VALUES_CLAUSE_NEED_HAVE_COLUMN__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11000, Each row of a VALUES clause must have at least one column, unless when used as source in an INSERT statement."
 #define OB_ERR_VALUES_CLAUSE_CANNOT_USE_DEFAULT_VALUES__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11001, A VALUES clause cannot use DEFAULT values, unless used as a source in an INSERT statement."
+#define OB_WRONG_PARTITION_NAME__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11002, Incorrect partition name '%.*s'"
 #define OB_SP_RAISE_APPLICATION_ERROR__ORA_USER_ERROR_MSG "ORA%06ld: %.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__ORA_USER_ERROR_MSG "ORA-21000: error number argument to raise_application_error of '%d' is out of range"
 #define OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN__ORA_USER_ERROR_MSG "ORA-22998: CLOB or NCLOB in multibyte character set not supported"
@@ -6044,7 +6050,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_DATA_TOO_LONG_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-12899: value too large for column %.*s (actual: %ld, maximum: %ld)"
 #define OB_ERR_INVALID_DATE_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-01861: Incorrect datetime value for column '%.*s' at row %ld"
 
-extern int g_all_ob_errnos[2124];
+extern int g_all_ob_errnos[2126];
 
   const char *ob_error_name(const int oberr);
   const char* ob_error_cause(const int oberr);

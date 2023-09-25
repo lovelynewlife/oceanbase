@@ -382,7 +382,6 @@ int ObLogSubPlanFilter::compute_sharding_info()
                                     get_plan()->get_optimizer_context().get_local_server_addr(),
                                     get_child_list(),
                                     get_plan()->get_allocator(),
-                                    dup_table_pos_,
                                     strong_sharding_,
                                     inherit_sharding_index_))) {
       LOG_WARN("failed to compute basic sharding info", K(ret));
@@ -679,7 +678,7 @@ int ObLogSubPlanFilter::allocate_startup_expr_post(int64_t child_idx)
       }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(append_array_no_dup(get_startup_exprs(), new_startup_exprs))) {
+      if (OB_FAIL(ObOptimizerUtil::append_exprs_no_dup(get_startup_exprs(), new_startup_exprs))) {
         LOG_WARN("failed to add startup exprs", K(ret));
       } else if (OB_FAIL(child->get_startup_exprs().assign(non_startup_exprs))) {
         LOG_WARN("failed to assign exprs", K(ret));

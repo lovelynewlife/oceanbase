@@ -274,7 +274,8 @@ public:
       transformer_type_(INVALID_TRANSFORM_TYPE),
       trans_happened_(false),
       cost_based_trans_tried_(false),
-	    stmt_cost_(-1)
+      current_temp_table_(NULL),
+      stmt_cost_(-1)
   {
   }
   virtual ~ObTransformRule()
@@ -419,6 +420,8 @@ private:
                              ObDMLStmt *&copied_stmt,
                              bool is_trans_stmt);
 
+  int prepare_root_stmt_with_temp_table_filter(ObDMLStmt &root_stmt, ObDMLStmt *&root_stmt_with_filter);
+
   virtual int is_expected_plan(ObLogPlan *plan,
                                void *check_ctx,
                                bool is_trans_plan,
@@ -448,6 +451,7 @@ protected:
   uint64_t transformer_type_;
   bool trans_happened_;
   bool cost_based_trans_tried_;
+  ObDMLStmt::TempTableInfo *current_temp_table_;
 
 private:
   double stmt_cost_;

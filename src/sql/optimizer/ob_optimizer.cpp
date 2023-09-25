@@ -107,7 +107,7 @@ int ObOptimizer::get_optimization_cost(ObDMLStmt &stmt,
   } else if (OB_FAIL(generate_plan_for_temp_table(stmt))) {
     LOG_WARN("failed to generate plan for temp table", K(ret));
   } else if (OB_FAIL(plan->generate_raw_plan())) {
-      LOG_WARN("failed to perform optimization", K(ret));
+    LOG_WARN("failed to perform optimization", K(ret));
   } else {
     cost = plan->get_optimization_cost();
   }
@@ -206,10 +206,16 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
       } else {
         OPT_TRACE_TITLE("begin generate plan for temp table ", temp_table_info->table_name_);
       }
+      /**
+       * In table scan op, filters are calculated before `limit`.
+       * So, we can not push filter into temp table which contain `limit`.
+      */
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(try_push_down_temp_table_filter(*temp_table_info,
-                                                         temp_table_nonwhere_filter,
-                                                         temp_table_where_filter))) {
+      } else if (!ref_query->has_limit() &&
+                 OB_FAIL(ObOptimizerUtil::try_push_down_temp_table_filter(ctx_,
+                                                                          *temp_table_info,
+                                                                          temp_table_nonwhere_filter,
+                                                                          temp_table_where_filter))) {
         LOG_WARN("failed to push down filter for temp table", K(ret));
       } else if (NULL != temp_table_where_filter &&
                  OB_FAIL(temp_plan->get_pushdown_filters().push_back(temp_table_where_filter))) {
@@ -221,143 +227,19 @@ int ObOptimizer::generate_plan_for_temp_table(ObDMLStmt &stmt)
       } else if (OB_ISNULL(temp_op)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null", K(ret));
-      } else if (NULL != temp_table_nonwhere_filter &&
-                 OB_FAIL(temp_op->get_filter_exprs().push_back(temp_table_nonwhere_filter))) {
-        LOG_WARN("failed to push back", K(ret));
       } else {
+        if (NULL != temp_table_nonwhere_filter) {
+          ObSEArray<ObRawExpr *, 1> expr_array;
+          if (OB_FAIL(expr_array.push_back(temp_table_nonwhere_filter))) {
+            LOG_WARN("failed to push back");
+          } else if (OB_FAIL(temp_plan->candi_allocate_filter(expr_array))) {
+            LOG_WARN("failed to push back", K(ret));
+          }
+        }
         temp_table_info->table_plan_ = temp_op;
         OPT_TRACE_TITLE("end generate plan for temp table ", temp_table_info->table_name_);
       }
     }
-  }
-  return ret;
-}
-
-/**
- * If every appearance of cte is accompanied by some filter,
- * We can combine these filters to reduce the data materialized by cte.
- * We try to push these filters to where condition.
- * If all filters can be push to where condition, nonwhere_filter will be NULL.
- * Otherwise, we might have both where_filter and nonwhere_filter.
- * e.g.
- *   with cte as (select a,count(*) as cnt from t1 group by a)
- *    select * from cte where a = 1 and cnt = 1 union all select * from cte where a = 2 and cnt = 2;
- *   nonwhere_filter :  (a = 1 and cnt = 1) or (a = 2 and cnt = 2)
- *   where_filter : (a = 1) or (a = 2)
-*/
-int ObOptimizer::try_push_down_temp_table_filter(ObSqlTempTableInfo &info,
-                                                 ObRawExpr *&nonwhere_filter,
-                                                 ObRawExpr *&where_filter)
-{
-  int ret = OB_SUCCESS;
-  bool have_filter = true;
-  nonwhere_filter = NULL;
-  where_filter = NULL;
-  ObSEArray<ObIArray<ObRawExpr *> *, 4> temp_table_filters;
-  ObSEArray<const ObDMLStmt *, 4> parent_stmts;
-  ObSEArray<const ObSelectStmt *, 4> subqueries;
-  ObSEArray<int64_t, 4> table_ids;
-  for (int64_t i = 0; OB_SUCC(ret) && have_filter && i < info.table_infos_.count(); ++i) {
-    TableItem *table =  info.table_infos_.at(i).table_item_;
-    ObDMLStmt *stmt = info.table_infos_.at(i).upper_stmt_;
-    if (OB_ISNULL(table) || OB_ISNULL(stmt)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected null", K(ret));
-    } else if (info.table_infos_.at(i).table_filters_.empty()) {
-      have_filter = false;
-    } else if (OB_FAIL(temp_table_filters.push_back(&info.table_infos_.at(i).table_filters_))) {
-      LOG_WARN("failed to push back", K(ret));
-    } else if (OB_FAIL(parent_stmts.push_back(stmt))) {
-      LOG_WARN("failed to push back", K(ret));
-    } else if (OB_FAIL(subqueries.push_back(table->ref_query_))) {
-      LOG_WARN("failed to push back", K(ret));
-    } else if (OB_FAIL(table_ids.push_back(table->table_id_))) {
-      LOG_WARN("failed to push back", K(ret));
-    }
-  }
-  if (OB_SUCC(ret) && have_filter) {
-    OPT_TRACE("pushdown filter into temp table:", info.table_query_);
-    bool can_push_all = false;
-    if (OB_FAIL(ObOptimizerUtil::split_or_filter_into_subquery(parent_stmts,
-                                                               subqueries,
-                                                               table_ids,
-                                                               temp_table_filters,
-                                                               ctx_,
-                                                               where_filter,
-                                                               can_push_all,
-                                                               /*check_match_index = */false))) {
-      LOG_WARN("failed to split filter", K(ret));
-    } else if (can_push_all) {
-      // do nothing
-    } else if (OB_FAIL(push_down_temp_table_filter(info, nonwhere_filter))) {
-      LOG_WARN("failed to push down remain temp table filter", K(ret));
-    }
-    if (NULL != where_filter) {
-      OPT_TRACE("succeed to pushdown filter to where:", where_filter);
-    }
-    if (NULL != nonwhere_filter) {
-      OPT_TRACE("succeed to pushdown filter into the top of temp table:", nonwhere_filter);
-    }
-  }
-  return ret;
-}
-
-int ObOptimizer::push_down_temp_table_filter(ObSqlTempTableInfo &info,
-                                             ObRawExpr *&temp_table_filter)
-{
-  int ret = OB_SUCCESS;
-  ObRawExprFactory &expr_factory = ctx_.get_expr_factory();
-  ObSQLSessionInfo *session_info = NULL;
-  temp_table_filter = NULL;
-  ObSEArray<ObRawExpr *, 8> and_exprs;
-  ObRawExpr *or_expr = NULL;
-  bool have_temp_table_filter = true;
-  if (OB_ISNULL(session_info = ctx_.get_session_info()) ||
-             OB_ISNULL(info.table_query_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpect null param", K(session_info), K(ret));
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
-    have_temp_table_filter &= !info.table_infos_.at(i).table_filters_.empty();
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && have_temp_table_filter && i < info.table_infos_.count(); ++i) {
-    ObDMLStmt *upper_stmt = info.table_infos_.at(i).upper_stmt_;
-    TableItem *table = info.table_infos_.at(i).table_item_;
-    ObIArray<ObRawExpr *> &table_filters = info.table_infos_.at(i).table_filters_;
-    ObSEArray<ObRawExpr *, 8> rename_exprs;
-    ObRawExpr *and_expr = NULL;
-    if (table_filters.empty() || OB_ISNULL(upper_stmt) ||
-        OB_ISNULL(table)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpect null table info", K(ret));
-    } else if (OB_FAIL(ObOptimizerUtil::rename_pushdown_filter(*upper_stmt,
-                                                               *info.table_query_,
-                                                               table->table_id_,
-                                                               session_info,
-                                                               expr_factory,
-                                                               table_filters,
-                                                               rename_exprs))) {
-      LOG_WARN("failed to rename push down preds", K(ret));
-    } else if (OB_FAIL(ObRawExprUtils::build_and_expr(expr_factory,
-                                                      rename_exprs,
-                                                      and_expr))) {
-      LOG_WARN("failed to build and expr", K(ret));
-    }
-    if (OB_SUCC(ret) && OB_FAIL(and_exprs.push_back(and_expr))) {
-      LOG_WARN("failed to push back expr", K(ret));
-    }
-  }
-  if (OB_FAIL(ret) || !have_temp_table_filter) {
-  } else if (OB_FAIL(ObRawExprUtils::build_or_exprs(expr_factory,
-                                                    and_exprs,
-                                                    or_expr))) {
-    LOG_WARN("failed to build or expr", K(ret));
-  } else if (OB_FAIL(or_expr->formalize(session_info))) {
-    LOG_WARN("failed to formalize expr", K(ret));
-  } else if (OB_FAIL(or_expr->pull_relation_id())) {
-    LOG_WARN("failed to pull relation id and levels", K(ret));
-  } else {
-    temp_table_filter = or_expr;
   }
   return ret;
 }
@@ -432,13 +314,14 @@ int ObOptimizer::check_pdml_enabled(const ObDMLStmt &stmt,
   // 3. decided by session variable: _enable_parallel_dml is true or _force_parallel_dml_dop > 1;
   int ret = OB_SUCCESS;
   ObSqlCtx *sql_ctx = NULL;
+  ObQueryCtx *query_ctx = NULL;
   bool can_use_pdml = true;
   bool session_enable_pdml = false;
   bool enable_auto_dop = false;
   uint64_t session_pdml_dop = ObGlobalHint::UNSET_PARALLEL;
-  if (OB_ISNULL(ctx_.get_exec_ctx())) {
+  if (OB_ISNULL(ctx_.get_exec_ctx()) || OB_ISNULL(query_ctx = ctx_.get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected null", K(ret), K(ctx_.get_exec_ctx()));
+    LOG_WARN("unexpected null", K(ret), K(ctx_.get_exec_ctx()), K(query_ctx));
   } else if (OB_ISNULL(sql_ctx = ctx_.get_exec_ctx()->get_sql_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), K(ctx_.get_exec_ctx()));
@@ -464,7 +347,8 @@ int ObOptimizer::check_pdml_enabled(const ObDMLStmt &stmt,
     // do nothing
   } else if (ctx_.get_global_hint().get_pdml_option() == ObPDMLOption::ENABLE) {
     // 1. enable parallel dml by hint
-  } else if (ctx_.get_global_hint().get_pdml_option() == ObPDMLOption::DISABLE) {
+  } else if (ctx_.get_global_hint().get_pdml_option() == ObPDMLOption::DISABLE
+             || query_ctx->get_query_hint().has_outline_data()) {
     can_use_pdml = false; // 1. disable parallel dml by hint
   } else if (ctx_.get_global_hint().enable_auto_dop()) {
     // 2.1 enable parallel dml by auto dop
@@ -501,25 +385,10 @@ int ObOptimizer::check_pdml_supported_feature(const ObDelUpdStmt &pdml_stmt,
   int ret = OB_SUCCESS;
   share::schema::ObSchemaGetterGuard *schema_guard = ctx_.get_schema_guard();
   ObSEArray<const ObDmlTableInfo*, 2> table_infos;
-  bool enable_all_pdml_feature = false; // 默认非注入错误情况下，关闭PDML不稳定feature
-  // 目前通过注入错误的方式来打开PDML不稳定功能，用于PDML全部功能的case回归
-  // 对应的event注入任何类型的错误，都会打开PDML非稳定功能
-  ret = OB_E(EventTable::EN_ENABLE_PDML_ALL_FEATURE) OB_SUCCESS;
-  LOG_TRACE("event: check pdml all feature", K(ret));
-  if (OB_FAIL(ret)) {
-    enable_all_pdml_feature = true;
-    ret = OB_SUCCESS;
-    ctx_.add_plan_note(PDML_ENABLE_BY_TRACE_EVENT);
-  }
-  LOG_TRACE("event: check pdml all feature result", K(ret), K(enable_all_pdml_feature));
-  // 检查是否开启全部pdml feature：
-  // 1. 如果开启，is open = true
-  // 2. 如果没有开启，需要依次检查被禁止的不稳定的功能，如果存在被禁止的不稳定功能 is open = false
+  // 依次检查被禁止的不稳定的功能，如果存在被禁止的不稳定功能 is open = false
   if (OB_ISNULL(schema_guard)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("the schema guard is null", K(ret));
-  } else if (enable_all_pdml_feature) {
-    is_use_pdml = true;
   } else if (pdml_stmt.is_ignore()) {
     is_use_pdml = false;
     ctx_.add_plan_note(PDML_DISABLED_BY_IGNORE);
@@ -735,7 +604,10 @@ int ObOptimizer::init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &s
   int64_t session_force_parallel_dop = ObGlobalHint::UNSET_PARALLEL;
   bool session_enable_auto_dop = false;
   bool session_enable_manual_dop = false;
-  if (ctx_.has_pl_udf()) {
+  if (OB_ISNULL(ctx_.get_query_ctx())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("query ctx is nul", K(ret));
+  } else if (ctx_.has_pl_udf()) {
     //following above rule, but if stmt contain pl_udf, force das, parallel should be 1
     ctx_.set_parallel_rule(PXParallelRule::PL_UDF_DAS_FORCE_SERIALIZE);
   } else if (ctx_.has_cursor_expression()) {
@@ -749,6 +621,9 @@ int ObOptimizer::init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &s
     ctx_.set_parallel(ctx_.get_global_hint().get_parallel_degree());
   } else if (ctx_.get_global_hint().enable_auto_dop()) {
     ctx_.set_parallel_rule(PXParallelRule::AUTO_DOP);
+  } else if (ctx_.get_query_ctx()->get_query_hint().has_outline_data()) {
+    ctx_.set_parallel_rule(PXParallelRule::MANUAL_HINT);
+    ctx_.set_parallel(ObGlobalHint::DEFAULT_PARALLEL);
   } else if (session.is_user_session() && !ctx_.get_global_hint().enable_manual_dop() &&
              OB_FAIL(OB_E(EventTable::EN_ENABLE_AUTO_DOP_FORCE_PARALLEL_PLAN) OB_SUCCESS)) {
     ret = OB_SUCCESS;
@@ -774,7 +649,7 @@ int ObOptimizer::init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &s
   } else {
     LOG_TRACE("succeed to init parallel policy", K(session.is_user_session()),
                         K(ctx_.can_use_pdml()), K(ctx_.get_parallel_rule()), K(ctx_.get_parallel()),
-                        K(ctx_.get_parallel_degree_limit()), K(ctx_.get_parallel_min_scan_time_threshold()));
+                        K(ctx_.get_auto_dop_params()));
   }
   return ret;
 }
@@ -782,31 +657,38 @@ int ObOptimizer::init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &s
 int ObOptimizer::set_auto_dop_params(const ObSQLSessionInfo &session)
 {
   int ret = OB_SUCCESS;
-  const uint64_t default_parallel_degree_limit = 256;
-  uint64_t parallel_degree_limit = default_parallel_degree_limit;
+  uint64_t parallel_degree_limit = 0;
   uint64_t parallel_min_scan_time_threshold = 1000;
-  int64_t parallel_servers_target = 0;
+  AutoDOPParams params;
   if (!session.is_user_session()) {
     /* do nothing */
   } else if (OB_FAIL(session.get_sys_variable(share::SYS_VAR_PARALLEL_DEGREE_LIMIT, parallel_degree_limit))) {
     LOG_WARN("failed to get sys variable parallel degree limit", K(ret));
   } else if (OB_FAIL(session.get_sys_variable(share::SYS_VAR_PARALLEL_MIN_SCAN_TIME_THRESHOLD, parallel_min_scan_time_threshold))) {
     LOG_WARN("failed to get sys variable parallel threshold", K(ret));
-  } else if (0 != parallel_degree_limit) {
-    /* do nothing */
-  } else if (OB_FAIL(ObSchemaUtils::get_tenant_int_variable(session.get_effective_tenant_id(),
-                                                            SYS_VAR_PARALLEL_SERVERS_TARGET,
-                                                            parallel_servers_target))) {
-    LOG_WARN("fail read tenant variable", K(ret), K(session.get_effective_tenant_id()));
-  } else if (parallel_servers_target > 0) {
-    parallel_degree_limit = parallel_servers_target;
-  } else {
-    parallel_degree_limit = default_parallel_degree_limit;
+  }
+
+  if (OB_SUCC(ret) && 0 == parallel_degree_limit) {
+    const ObTenantBase *tenant = NULL;
+    int64_t parallel_servers_target = 0;
+    if (OB_ISNULL(tenant = MTL_CTX())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (session.is_user_session() &&
+               OB_FAIL(ObSchemaUtils::get_tenant_int_variable(session.get_effective_tenant_id(),
+                                                              SYS_VAR_PARALLEL_SERVERS_TARGET,
+                                                              parallel_servers_target))) {
+      LOG_WARN("fail read tenant variable", K(ret), K(session.get_effective_tenant_id()));
+    } else {
+      params.unit_min_cpu_ = std::max(tenant->unit_min_cpu(), 0.0);
+      params.parallel_servers_target_ = std::max(parallel_servers_target, 0L);
+    }
   }
 
   if (OB_SUCC(ret)) {
-    ctx_.set_parallel_degree_limit(parallel_degree_limit);
-    ctx_.set_parallel_min_scan_time_threshold(parallel_min_scan_time_threshold);
+    params.parallel_min_scan_time_threshold_ = parallel_min_scan_time_threshold;
+    params.parallel_degree_limit_ = parallel_degree_limit;
+    ctx_.set_auto_dop_params(params);
   }
   return ret;
 }
@@ -1101,7 +983,7 @@ int ObOptimizer::update_column_usage_infos()
         LOG_WARN("get unexpected null", K(ret), K(optstat_monitor_mgr));
       } else if (OB_FAIL(optstat_monitor_mgr->update_local_cache(ctx_.get_column_usage_infos()))) {
         LOG_WARN("failed to update local cache", K(ret));
-      } else {/*do nothiing*/}
+      } else {/*do nothing*/}
     }
   }
   return ret;

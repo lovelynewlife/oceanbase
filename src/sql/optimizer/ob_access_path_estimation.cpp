@@ -574,7 +574,7 @@ int ObAccessPathEstimation::add_index_info(ObOptimizerContext &ctx,
   } else if (OB_FAIL(task->paths_.push_back(ap))) {
     LOG_WARN("failed to push back access path", K(ret));
   } else if (OB_ISNULL(index_est_arg = task->arg_.index_params_.alloc_place_holder())) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate index argument", K(ret));
   } else if (OB_FAIL(get_key_ranges(ctx, allocator, part.tablet_id_, ap, tmp_ranges))) {
     LOG_WARN("failed to get key ranges", K(ret));
@@ -1399,7 +1399,7 @@ int ObAccessPathEstimation::process_dynamic_sampling_estimation(ObOptimizerConte
     int64_t start_time = ObTimeUtility::current_time();
     bool throw_ds_error = false;
     if (OB_FAIL(dynamic_sampling.estimate_table_rowcount(ds_table_param, ds_result_items, throw_ds_error))) {
-      if (!throw_ds_error) {
+      if (!throw_ds_error && !is_retry_ret(ret)) {
         LOG_WARN("failed to estimate table rowcount caused by some reason, please check!!!", K(ret),
                  K(start_time), K(ObTimeUtility::current_time() - start_time), K(ds_table_param),
                  K(ctx.get_session_info()->get_current_query_string()));

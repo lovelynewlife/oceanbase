@@ -396,6 +396,7 @@ public:
   virtual void destroy();
   //called before put session to freelist: unlock/set invalid
   virtual void reset(bool skip_sys_var = false);
+  void reset_user_var();
   void set_tenant_session_mgr(ObTenantSQLSessionMgr *tenant_session_mgr)
   {
     tenant_session_mgr_ = tenant_session_mgr;
@@ -2415,7 +2416,7 @@ public:
   int load(ObBasicSessionInfo &session, ObIAllocator *alloc = NULL);
   int store(ObBasicSessionInfo &session);
 
-  ObSQLMode get_sql_mode() { return sql_mode_; }
+  ObSQLMode get_sql_mode() const { return sql_mode_; }
   ObCharsetType get_charset_client() { return ObCharset::charset_type_by_coll(charset_client_); }
   ObCollationType get_collation_connection() { return collation_connection_; }
   ObCollationType get_collation_database() { return collation_database_; }

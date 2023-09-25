@@ -32,6 +32,54 @@ using namespace schema;
 using namespace sql;
 namespace pl {
 
+int ObPLCompiler::check_dep_schema(ObSchemaGetterGuard &schema_guard,
+                                   const DependenyTableStore &dep_schema_objs)
+{
+  int ret = OB_SUCCESS;
+  uint64_t tenant_id = OB_INVALID_ID;
+  for (int64_t i = 0; OB_SUCC(ret) && i < dep_schema_objs.count(); ++i) {
+    tenant_id = MTL_ID();
+    if (TABLE_SCHEMA != dep_schema_objs.at(i).get_schema_type()) {
+      int64_t new_version = 0;
+      if (PACKAGE_SCHEMA == dep_schema_objs.at(i).get_schema_type()
+          || UDT_SCHEMA == dep_schema_objs.at(i).get_schema_type()
+          || ROUTINE_SCHEMA == dep_schema_objs.at(i).get_schema_type()) {
+        tenant_id = pl::get_tenant_id_by_object_id(dep_schema_objs.at(i).object_id_);
+      }
+      if (OB_FAIL(schema_guard.get_schema_version(dep_schema_objs.at(i).get_schema_type(),
+                                                  tenant_id,
+                                                  dep_schema_objs.at(i).object_id_,
+                                                  new_version))) {
+        LOG_WARN("failed to get schema version",
+                  K(ret), K(tenant_id), K(dep_schema_objs.at(i)));
+      } else if (OB_INVALID_VERSION == new_version ||
+                 new_version != dep_schema_objs.at(i).version_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("schema version is invalid", K(ret), K(dep_schema_objs.at(i)));
+      }
+    } else {
+      const ObSimpleTableSchemaV2 *table_schema = nullptr;
+      if (OB_FAIL(schema_guard.get_simple_table_schema(MTL_ID(),
+                                                      dep_schema_objs.at(i).object_id_,
+                                                      table_schema))) {
+        LOG_WARN("failed to get table schema",
+                K(ret), K(dep_schema_objs.at(i)));
+      } else if (nullptr == table_schema) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get an unexpected null table schema", K(ret));
+      } else if (table_schema->is_index_table()) {
+        // do nothing
+      } else if (table_schema->get_schema_version() != dep_schema_objs.at(i).version_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("schema version is invalid", K(ret), K(dep_schema_objs.at(i)));
+      }
+    }
+  }
+
+  return ret;
+}
+
+
 int ObPLCompiler::init_anonymous_ast(
   ObPLFunctionAST &func_ast,
   ObIAllocator &allocator,
@@ -225,6 +273,9 @@ int ObPLCompiler::compile(
             func.set_sys_schema_version(sys_schema_version);
           }
         }
+        if (OB_SUCC(ret) && OB_FAIL(check_dep_schema(schema_guard_, func.get_dependency_table()))) {
+          LOG_WARN("fail to check schema version", K(ret));
+        }
       } // end of HEAP_VAR
     }
   }
@@ -310,9 +361,13 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
       obj_version.version_ = proc->get_schema_version();
       if (OB_FAIL(func_ast.add_dependency_object(obj_version))) {
         LOG_WARN("add dependency table failed", K(ret));
-      } else if (ROUTINE_PROCEDURE_TYPE == proc->get_routine_type()) {
+      } else if (proc->is_procedure() &&
+                 (ROUTINE_PROCEDURE_TYPE == proc->get_routine_type() ||
+                  ROUTINE_UDT_TYPE == proc->get_routine_type())) {
         func_ast.set_proc_type(STANDALONE_PROCEDURE);
-      } else if (ROUTINE_FUNCTION_TYPE == proc->get_routine_type()) {
+      } else if (proc->is_function() &&
+                 (ROUTINE_FUNCTION_TYPE == proc->get_routine_type() ||
+                  ROUTINE_UDT_TYPE == proc->get_routine_type())) {
         func_ast.set_proc_type(STANDALONE_FUNCTION);
       } else {}
       //添加参数列表
@@ -384,11 +439,11 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("pl body is NULL", K(parse_tree), K(ret));
       } else if (OB_FAIL(resolver.init(func_ast))) {
-        LOG_WARN("failed to init resolver", K(*proc), K(ret));
+        LOG_WARN("failed to init resolver", KPC(proc), K(ret));
       } else if (OB_FAIL(resolver.init_default_exprs(func_ast, proc->get_routine_params()))) {
         LOG_WARN("failed to init routine default exprs", K(ret), KPC(proc));
       } else if (OB_FAIL(resolver.resolve_root(parse_tree, func_ast))) {
-        LOG_WARN("failed to analyze pl body", K(*proc), K(ret));
+        LOG_WARN("failed to analyze pl body", KPC(proc), K(ret));
       } else if (session_info_.is_pl_debug_on()) {
         if (OB_FAIL(func_ast.generate_symbol_debuginfo())) {
           LOG_WARN("failed to generate symbol debuginfo", K(ret));
@@ -429,6 +484,9 @@ int ObPLCompiler::compile(const uint64_t id, ObPLFunction &func)
             func.set_sys_schema_version(sys_schema_version);
             func.set_ret_type(func_ast.get_ret_type());
           }
+        }
+        if (OB_SUCC(ret) && OB_FAIL(check_dep_schema(schema_guard_, func.get_dependency_table()))) {
+          LOG_WARN("fail to check schema version", K(ret), K(tenant_id));
         }
       } // end of HEAP_VAR
     }
@@ -557,6 +615,10 @@ int ObPLCompiler::check_package_body_legal(const ObPLBlockNS *parent_ns,
                      spec_routine_info->get_name().length(), spec_routine_info->get_name().ptr());
       LOG_WARN("PLS-00323: subprogram or cursor is declared in a package specification and must be defined in the package body",
                K(ret), K(i), K(spec_routine_info->get_decl_str()));
+      ObPL::insert_error_msg(ret);
+      ObPLResolver::record_error_line(session_info_,
+                                      spec_routine_info->get_line_number(),
+                                      spec_routine_info->get_col_number());
     }
   }
   CK (OB_NOT_NULL(parent_ns->get_cursor_table()));
@@ -737,6 +799,7 @@ int ObPLCompiler::compile_package(const ObPackageInfo &package_info,
   OX (package.set_can_cached(package_ast.get_can_cached()));
   OX (package_ast.get_serially_reusable() ? package.set_serially_reusable() : void(NULL));
   session_info_.set_for_trigger_package(saved_trigger_flag);
+  OZ (check_dep_schema(schema_guard_, package.get_dependency_table()));
   OZ (update_schema_object_dep_info(package_ast.get_dependency_table(),
                                     package_info.get_tenant_id(),
                                     package_info.get_owner_id(),
@@ -782,55 +845,53 @@ int ObPLCompiler::init_function(const share::schema::ObRoutineInfo *routine, ObP
       }
     }
     if (OB_SUCC(ret)) {
-    //FIXME: FATAL ERROR!!!! can't modify schema from schema_guard
-    if (routine->is_udt_procedure()) {
-      const_cast<share::schema::ObRoutineInfo *>(routine)->set_routine_type(ROUTINE_PROCEDURE_TYPE);
-    } else if (routine->is_udt_function()) {
-      const_cast<share::schema::ObRoutineInfo *>(routine)->set_routine_type(ROUTINE_FUNCTION_TYPE);
-    }
-    if (ROUTINE_PROCEDURE_TYPE == routine->get_routine_type()) {
-      func.set_proc_type(STANDALONE_PROCEDURE);
-      func.set_ns(ObLibCacheNameSpace::NS_PRCR);
-    } else if (ROUTINE_FUNCTION_TYPE == routine->get_routine_type()) {
-      func.set_proc_type(STANDALONE_FUNCTION);
-      func.set_ns(ObLibCacheNameSpace::NS_SFC);
-    } else {
-      // do nothing...
-    }
-    func.set_tenant_id(routine->get_tenant_id());
-    func.set_database_id(routine->get_database_id());
-    func.set_package_id(routine->get_package_id());
-    func.set_routine_id(routine->get_routine_id());
-    func.set_arg_count(routine->get_param_count());
-    func.set_owner(routine->get_owner_id());
-    func.set_priv_user(routine->get_priv_user());
-    if (routine->is_invoker_right()) {
-      func.set_invoker_right();
-    }
-    // 对于function而言，输出参数也在params里面，这里不能简单的按照param_count进行遍历
-    for (int64_t i = 0; OB_SUCC(ret) && i < routine->get_routine_params().count(); ++i) {
-      ObRoutineParam *param = routine->get_routine_params().at(i);
-      int64_t param_pos = param->get_param_position();
-      if (OB_ISNULL(param)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("routine param is NULL", K(i), K(ret));
-      } else if (param->is_ret_param()) {
-        // 对于返回值, 既不是in也不是out, 不做处理
+      if (routine->is_procedure() &&
+          (ROUTINE_PROCEDURE_TYPE == routine->get_routine_type() ||
+            ROUTINE_UDT_TYPE == routine->get_routine_type())) {
+        func.set_proc_type(STANDALONE_PROCEDURE);
+        func.set_ns(ObLibCacheNameSpace::NS_PRCR);
+      } else if (routine->is_function() &&
+                 (ROUTINE_FUNCTION_TYPE == routine->get_routine_type() ||
+                  ROUTINE_UDT_TYPE == routine->get_routine_type())) {
+        func.set_proc_type(STANDALONE_FUNCTION);
+        func.set_ns(ObLibCacheNameSpace::NS_SFC);
       } else {
-         if (param->is_inout_sp_param() || param->is_out_sp_param()) {
-          if (OB_FAIL(func.add_out_arg(param_pos - 1))) {
-            LOG_WARN("Failed to add out arg", K(param_pos), K(ret));
+        // do nothing...
+      }
+      func.set_tenant_id(routine->get_tenant_id());
+      func.set_database_id(routine->get_database_id());
+      func.set_package_id(routine->get_package_id());
+      func.set_routine_id(routine->get_routine_id());
+      func.set_arg_count(routine->get_param_count());
+      func.set_owner(routine->get_owner_id());
+      func.set_priv_user(routine->get_priv_user());
+      if (routine->is_invoker_right()) {
+        func.set_invoker_right();
+      }
+      // 对于function而言，输出参数也在params里面，这里不能简单的按照param_count进行遍历
+      for (int64_t i = 0; OB_SUCC(ret) && i < routine->get_routine_params().count(); ++i) {
+        ObRoutineParam *param = routine->get_routine_params().at(i);
+        int64_t param_pos = param->get_param_position();
+        if (OB_ISNULL(param)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("routine param is NULL", K(i), K(ret));
+        } else if (param->is_ret_param()) {
+          // 对于返回值, 既不是in也不是out, 不做处理
+        } else {
+           if (param->is_inout_sp_param() || param->is_out_sp_param()) {
+            if (OB_FAIL(func.add_out_arg(param_pos - 1))) {
+              LOG_WARN("Failed to add out arg", K(param_pos), K(ret));
+            }
           }
-        }
-        if (OB_SUCC(ret)) {
-          if (param->is_inout_sp_param() || param->is_in_sp_param()) {
-            if (OB_FAIL(func.add_in_arg(param_pos - 1))) {
-              LOG_WARN("Failed to add out arg", K(i), K(param_pos), K(ret));
+          if (OB_SUCC(ret)) {
+            if (param->is_inout_sp_param() || param->is_in_sp_param()) {
+              if (OB_FAIL(func.add_in_arg(param_pos - 1))) {
+                LOG_WARN("Failed to add out arg", K(i), K(param_pos), K(ret));
+              }
             }
           }
         }
       }
-    }
       ObString database_name, package_name;
       OZ (format_object_name(schema_guard_,
                              routine->get_tenant_id(),

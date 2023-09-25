@@ -10,12 +10,22 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "storage/tablet/ob_tablet_common.h"
-
+#ifndef OCEANBASE_LOGSERVICE_LOG_IO_UTILS_
+#define OCEANBASE_LOGSERVICE_LOG_IO_UTILS_
 namespace oceanbase
 {
-namespace storage
+namespace palf
 {
-const int64_t ObTabletCommon::FINAL_TX_ID;
-} // namespace storage
-} // namespace oceanbase
+
+int openat_with_retry(const int dir_fd,
+                      const char *block_path,
+                      const int flag,
+                      const int mode,
+                      int &fd);
+int close_with_ret(const int fd);
+
+int rename_with_retry(const char *src_name, const char *dest_name);
+
+} // end namespace palf
+} // end namespace oceanbase
+#endif

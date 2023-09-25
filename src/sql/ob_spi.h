@@ -44,7 +44,10 @@ class ObExprObjAccess;
 struct ObSPICursor
 {
   ObSPICursor(ObIAllocator &allocator) :
-    row_store_(), row_desc_(), allocator_(&allocator), cur_(0), fields_(allocator) {}
+    row_store_(), row_desc_(), allocator_(&allocator), cur_(0), fields_(allocator)
+  {
+    row_desc_.set_tenant_id(MTL_ID());
+  }
 
   ~ObSPICursor()
   {
@@ -408,7 +411,7 @@ public:
                          const ObDataType *column_types,
                          int64_t type_count,
                          const bool *exprs_not_null_flag,
-                         const int64_t *pl_integer_rangs,
+                         const int64_t *pl_integer_ranges,
                          bool is_bulk = false,
                          bool is_forall = false,
                          bool is_type_record = false,
@@ -424,7 +427,7 @@ public:
                                    const ObDataType *column_types,
                                    int64_t type_count,
                                    const bool *exprs_not_null_flag,
-                                   const int64_t *pl_integer_rangs,
+                                   const int64_t *pl_integer_ranges,
                                    bool is_bulk = false,
                                    bool is_returning = false,
                                    bool is_type_record = false);
@@ -504,7 +507,7 @@ public:
                               const ObDataType *column_types,
                               int64_t type_count,
                               const bool *exprs_not_null_flag,
-                              const int64_t *pl_integer_rangs,
+                              const int64_t *pl_integer_ranges,
                               bool is_bulk,
                               int64_t limit,
                               const ObDataType *return_types,
@@ -527,7 +530,7 @@ public:
 
   static int spi_extend_collection(pl::ObPLExecCtx *ctx,
                                    const ObSqlExpression *collection_expr,
-                                   int64_t coluln_count,
+                                   int64_t column_count,
                                    const ObSqlExpression *n_expr,
                                    const ObSqlExpression *i_expr = NULL,
                                    uint64_t package_id = OB_INVALID_ID);
@@ -791,7 +794,7 @@ private:
                                const ObDataType *column_types,
                                int64_t type_count,
                                const bool *exprs_not_null_flag,
-                               const int64_t *pl_integer_rangs,
+                               const int64_t *pl_integer_ranges,
                                int64_t is_bulk,
                                bool is_forall = false,
                                bool is_type_record = false,
@@ -976,7 +979,7 @@ private:
   static int store_datums(ObObj &dest_addr, ObIArray<ObObj> &result,
                           ObIAllocator *alloc, ObSQLSessionInfo *session_info, bool is_schema_object);
 
-  static int store_datum(int64_t &current_addr, const ObObj &obj);
+  static int store_datum(int64_t &current_addr, const ObObj &obj, ObSQLSessionInfo *session_info);
 
   static const ObPostExprItem &get_last_expr_item(const ObSqlExpression &expr);
 

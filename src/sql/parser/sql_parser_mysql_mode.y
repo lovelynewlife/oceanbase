@@ -373,7 +373,7 @@ END_P SET_VAR DELIMITER
 %type <node> create_tenant_stmt opt_tenant_option_list alter_tenant_stmt drop_tenant_stmt create_standby_tenant_stmt log_restore_source_option
 %type <node> create_restore_point_stmt drop_restore_point_stmt
 %type <node> create_resource_stmt drop_resource_stmt alter_resource_stmt
-%type <node> cur_timestamp_func cur_time_func cur_date_func now_synonyms_func utc_timestamp_func utc_time_func utc_date_func sys_interval_func sysdate_func
+%type <node> cur_timestamp_func cur_time_func cur_date_func now_synonyms_func utc_timestamp_func utc_time_func utc_date_func sys_interval_func sysdate_func cur_user_func
 %type <node> create_dblink_stmt drop_dblink_stmt dblink tenant opt_cluster opt_dblink
 %type <node> opt_create_resource_pool_option_list create_resource_pool_option alter_resource_pool_option_list alter_resource_pool_option
 %type <node> opt_shrink_unit_option id_list opt_shrink_tenant_unit_option
@@ -2434,6 +2434,10 @@ MOD '(' expr ',' expr ')'
 {
   $$ = $1;
 }
+| cur_user_func
+{
+  $$ = $1;
+}
 | cur_date_func
 {
   $$ = $1;
@@ -3074,6 +3078,30 @@ CURTIME  '(' ')'
   {
     malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_CUR_TIME, 1, NULL);
   }
+}
+;
+
+cur_user_func:
+CURRENT_USER
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_CURRENT_USER, 1, NULL);
+}
+| CURRENT_USER '(' ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_CURRENT_USER, 1, NULL);
+}
+| relation_name '.' CURRENT_USER '(' ')'
+{
+  ParseNode *name_node = NULL;
+  ParseNode *function = NULL;
+  ParseNode *sub_obj_access_ref = NULL;
+  ParseNode *udf_node = NULL;
+  make_name_node(name_node, result->malloc_pool_, "current_user");
+  malloc_non_terminal_node(function, result->malloc_pool_, T_FUN_SYS, 2, name_node, NULL);
+  malloc_non_terminal_node(sub_obj_access_ref, result->malloc_pool_, T_OBJ_ACCESS_REF, 2, function, NULL);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_OBJ_ACCESS_REF, 2, $1, sub_obj_access_ref);
+  malloc_non_terminal_node(udf_node, result->malloc_pool_, T_FUN_UDF, 4, $3, NULL, $1, NULL);
+  store_pl_ref_object_symbol(udf_node, result, REF_FUNC);
 }
 ;
 
@@ -6813,7 +6841,7 @@ PARTITION relation_factor opt_part_id opt_engine_option opt_subpartition_list
 opt_range_partition_list:
 '(' range_partition_list ')'
 {
-  merge_nodes($$, result, T_PARTITION_LIST, $2);
+  merge_nodes($$, result, T_RANGE_PARTITION_LIST, $2);
 }
 ;
 
@@ -8322,22 +8350,7 @@ opt_lock_type:
 ;
 
 no_table_select:
-select_with_opt_hint opt_query_expression_option_list select_expr_list into_opt %prec LOWER_PARENS
-{
-  ParseNode *project_list = NULL;
-  merge_nodes(project_list, result, T_PROJECT_LIST, $3);
-
-  ParseNode *select_node = NULL;
-  malloc_select_node(select_node, result->malloc_pool_);
-  select_node->children_[PARSE_SELECT_DISTINCT] = $2;
-  select_node->children_[PARSE_SELECT_SELECT] = project_list;
-  select_node->children_[PARSE_SELECT_HINTS] = $1;
-  select_node->children_[PARSE_SELECT_INTO] = $4;
-  $$ = select_node;
-
-  setup_token_pos_info(select_node, @1.first_column - 1, 6);
-}
-| select_with_opt_hint opt_query_expression_option_list select_expr_list into_opt
+select_with_opt_hint opt_query_expression_option_list select_expr_list into_opt
 FROM DUAL opt_where opt_groupby opt_having opt_named_windows
 {
   ParseNode *project_list = NULL;
@@ -8357,24 +8370,21 @@ FROM DUAL opt_where opt_groupby opt_having opt_named_windows
 
   setup_token_pos_info(select_node, @1.first_column - 1, 6);
 }
-| select_with_opt_hint opt_query_expression_option_list select_expr_list into_opt
-WHERE opt_hint_value expr opt_groupby opt_having opt_named_windows
+| select_with_opt_hint opt_query_expression_option_list select_expr_list into_opt opt_where opt_groupby opt_having opt_named_windows
 {
   ParseNode *project_list = NULL;
-  ParseNode *where_node = NULL;
   ParseNode *select_node = NULL;
   merge_nodes(project_list, result, T_PROJECT_LIST, $3);
-  malloc_non_terminal_node(where_node, result->malloc_pool_, T_WHERE_CLAUSE, 2, $7, $6);
   setup_token_pos_info($$, @1.first_column - 1, 5);
   malloc_select_node(select_node, result->malloc_pool_);
   select_node->children_[PARSE_SELECT_DISTINCT] = $2;
   select_node->children_[PARSE_SELECT_SELECT] = project_list;
-  select_node->children_[PARSE_SELECT_WHERE] = where_node;
+  select_node->children_[PARSE_SELECT_WHERE] = $5;
   select_node->children_[PARSE_SELECT_HINTS] = $1;
   select_node->children_[PARSE_SELECT_INTO] = $4;
-  select_node->children_[PARSE_SELECT_DYNAMIC_GROUP] = $8;
-  select_node->children_[PARSE_SELECT_DYNAMIC_HAVING] = $9;
-  select_node->children_[PARSE_SELECT_NAMED_WINDOWS] = $10;
+  select_node->children_[PARSE_SELECT_DYNAMIC_GROUP] = $6;
+  select_node->children_[PARSE_SELECT_DYNAMIC_HAVING] = $7;
+  select_node->children_[PARSE_SELECT_NAMED_WINDOWS] = $8;
   $$ = select_node;
   setup_token_pos_info(select_node, @1.first_column - 1, 6);
 }
@@ -11794,7 +11804,12 @@ INTNUM
 | QUESTIONMARK
 {
   $$ = $1;
-  dup_string($$, result, @1.first_column + 1, @1.last_column);
+  if (result->pl_parse_info_.is_pl_parse_ || result->pl_parse_info_.is_inner_parse_) {
+    dup_string($$, result, @1.first_column + 1, @1.last_column);
+  } else {
+    yyerror(&@1, result, "question mark as condition arg not allowed\n");
+    YYABORT_PARSE_SQL_ERROR;
+  }
 }
 | column_name
 {
@@ -17547,10 +17562,6 @@ NAME_OB
 | RIGHT
 {
   make_name_node($$, result->malloc_pool_, "right");
-}
-| CURRENT_USER
-{
-  make_name_node($$, result->malloc_pool_, "current_user");
 }
 | SYSTEM_USER
 {

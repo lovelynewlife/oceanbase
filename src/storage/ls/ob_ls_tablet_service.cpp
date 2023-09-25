@@ -3486,6 +3486,9 @@ int ObLSTabletService::need_check_old_row_legitimacy(ObDMLRunningCtx &run_ctx,
       //index can not be read during building index, so does not check old index row
       need_check = false;
     }
+    if (ObDmlFlag::DF_LOCK == run_ctx.dml_flag_) {
+      need_check = false;
+    }
   }
   return ret;
 }
@@ -4311,22 +4314,14 @@ int ObLSTabletService::process_lob_row(
               ObString val_str = old_obj.get_string();
               ObLobCommon *lob_common = reinterpret_cast<ObLobCommon*>(val_str.ptr());
               if (!lob_common->in_row_ && data_tbl_rowkey_change) {
+                ObLobAccessParam lob_param;
                 if (val_str.length() < ObLobManager::LOB_WITH_OUTROW_CTX_SIZE) {
                   ret = OB_ERR_UNEXPECTED;
                   LOG_WARN("not enough space for lob header", K(ret), K(val_str), K(i));
-                } else {
-                  char *buf = reinterpret_cast<char*>(run_ctx.lob_allocator_.alloc(val_str.length()));
-                  if (OB_ISNULL(buf)) {
-                    ret = OB_ALLOCATE_MEMORY_FAILED;
-                    LOG_WARN("alloc memory failed.", K(ret), K(val_str), K(i));
-                  } else {
-                    MEMCPY(buf, val_str.ptr(), val_str.length());
-                    lob_common = reinterpret_cast<ObLobCommon*>(buf);
-                    ObLobData *lob_data = reinterpret_cast<ObLobData*>(lob_common->buffer_);
-                    ObLobDataOutRowCtx *ctx = reinterpret_cast<ObLobDataOutRowCtx*>(lob_data->buffer_);
-                    ctx->op_ = ObLobDataOutRowCtx::OpType::EMPTY_SQL;
-                    new_obj.set_lob_value(new_obj.get_type(), buf, val_str.length()); // remove has lob header flag
-                  }
+                } else if (OB_FAIL(delete_lob_col(run_ctx, run_ctx.col_descs_->at(i), old_obj, old_sql_obj, lob_common, lob_param))) {
+                  LOG_WARN("[STORAGE_LOB]failed to erase old lob col", K(ret), K(old_sql_row), K(old_row), K(i));
+                } else if (OB_FAIL(insert_lob_col(run_ctx, run_ctx.col_descs_->at(i), new_obj, nullptr, nullptr))) { // no need del_param
+                  LOG_WARN("[STORAGE_LOB]failed to insert new lob col.", K(ret), K(new_row), K(i));
                 }
               } else {
                 new_obj.set_lob_value(new_obj.get_type(), val_str.ptr(), val_str.length()); // remove has lob header flag
@@ -5181,6 +5176,8 @@ int ObLSTabletService::delete_row_in_tablet(
     LOG_WARN("check old row legitimacy failed", K(row));
   } else if (OB_FAIL(process_old_row_lob_col(tablet_handle, run_ctx, tbl_row))) {
     LOG_WARN("failed to process old row lob col", K(ret), K(tbl_row));
+  } else if (OB_FAIL(delete_lob_tablet_rows(run_ctx, tablet_handle, tbl_row, row))) {
+    LOG_WARN("failed to delete lob rows.", K(ret), K(tbl_row), K(row));
   } else if (!dml_param.is_total_quantity_log_) {
     if (OB_FAIL(tablet_handle.get_obj()->insert_row_without_rowkey_check(relative_table,
         ctx, *run_ctx.col_descs_, tbl_row, dml_param.encrypt_meta_))) {
@@ -5188,8 +5185,6 @@ int ObLSTabletService::delete_row_in_tablet(
         LOG_WARN("failed to set row", K(ret), K(*run_ctx.col_descs_), K(tbl_row));
       }
     }
-  } else if (OB_FAIL(delete_lob_tablet_rows(run_ctx, tablet_handle, tbl_row, row))) {
-    LOG_WARN("failed to delete lob rows.", K(ret), K(tbl_row), K(row));
   } else {
     update_idx.reset(); // update_idx is a dummy param here
     new_tbl_row.reset();
@@ -6073,9 +6068,12 @@ int ObLSTabletService::ha_scan_all_tablets(const HandleTabletMetaFunc &handle_ta
       ObTabletHandle tablet_handle;
       ObTablet *tablet = nullptr;
       obrpc::ObCopyTabletInfo tablet_info;
+      ObTabletCreateDeleteMdsUserData user_data;
+      bool committed_flag = false;
 
       while (OB_SUCC(ret)) {
         tablet_info.reset();
+        committed_flag = false;
         if (OB_FAIL(iterator.get_next_tablet(tablet_handle))) {
           if (OB_ITER_END == ret) {
             ret = OB_SUCCESS;
@@ -6086,6 +6084,23 @@ int ObLSTabletService::ha_scan_all_tablets(const HandleTabletMetaFunc &handle_ta
         } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("tablet is nullptr", K(ret), K(tablet_handle));
+        } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, committed_flag))) {
+          LOG_WARN("failed to get latest tablet status", K(ret), KPC(tablet));
+        } else if (!committed_flag && ObTabletStatus::TRANSFER_IN == user_data.tablet_status_) {
+          //TODO(muwei.ym) CAN NOT USE this condition when MDS supports uncommitted transaction
+
+          // why we should skip uncommited transfer in tablet, because if we backup the uncommited transfer in tablet
+          // but the final result of the uncommited transfer in tablet is aborted, which means the tablet has no MDS Table,
+          // and the restore process will create this tablet nontheless, however this aborted tablet should be GC-ed at the end,
+          // because the aborted tablet has no MDS Table, the tablet can not be GC-ed correctly, resulting in the tablet dangling
+          // for details, see issue-51990749
+
+          // we can skip backup uncommited transfer in tablets because we backup ls meta first
+          // if the start transfer in transaction is not commited, the clog_checkpoint_scn recorded
+          // in ls meta will not be advanced, so that even though we skip backup uncommited
+          // transfer in tablet, we can still restore transfer in tablet by replaying clog
+          LOG_WARN("tablet is transfer in but not commited, skip", K(tablet_handle), K(user_data));
+          continue;
         } else if (OB_FAIL(tablet->build_migration_tablet_param(tablet_info.param_))) {
           LOG_WARN("failed to build migration tablet param", K(ret));
         } else if (OB_FAIL(tablet->get_ha_sstable_size(tablet_info.data_size_))) {
@@ -6180,7 +6195,7 @@ int ObLSTabletService::check_need_rollback_in_transfer_for_4377_(const transacti
     // read from origin tablet, if there's inconsistent, it should throw 4377 error
     // CASE 2.2: transfer_scn_ is valid, the transfer_scn_ is backfilled, it means that
     // tablet has started to transfer out. If it's the first transfer, we should
-    // throw 4377 erorr, otherwise we should compare the transfer_scn_ with the tx_scn,
+    // throw 4377 error, otherwise we should compare the transfer_scn_ with the tx_scn,
     // and decide to rollback the transaction or throw 4377 error.
     // However, we can not be sure about whether this transfer out is the first transfer or not.
     // So we consider all the transfer out status as not the first transfer here, to avoid

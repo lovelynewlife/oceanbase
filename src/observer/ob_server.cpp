@@ -412,7 +412,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init server startup task handler failed", KR(ret));
     } else if (OB_FAIL(ObServerCheckpointSlogHandler::get_instance().init())) {
       LOG_ERROR("init server checkpoint slog handler failed", KR(ret));
-    } else if (FALSE_IT(common::occam::ObThreadHungDetector::get_instance())) {
+    } else if (OB_FAIL(common::occam::ObThreadHungDetector::get_instance().init())) {
+      LOG_ERROR("init sObThreadHungDetector failed", KR(ret));
     } else if (OB_FAIL(palf::election::GLOBAL_INIT_ELECTION_MODULE())) {
       LOG_ERROR("init election module failed", KR(ret));
     } else if (OB_FAIL(init_multi_tenant())) {
@@ -1091,18 +1092,9 @@ int ObServer::start()
 int ObServer::try_create_hidden_sys()
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = OB_SYS_TENANT_ID;
-  omt::ObTenant *tenant;
-  if (OB_FAIL(multi_tenant_.get_tenant(tenant_id, tenant))) {
-    ret = OB_SUCCESS;
-    if (OB_FAIL(multi_tenant_.create_hidden_sys_tenant())) {
-      LOG_ERROR("fail to create hidden sys tenant", KR(ret));
-    }
-    LOG_INFO("finish create hidden sys", KR(ret));
-  } else {
-    LOG_INFO("sys tenant has been created, no need create hidden sys");
+  if (OB_FAIL(multi_tenant_.create_hidden_sys_tenant())) {
+    LOG_ERROR("fail to create hidden sys tenant", KR(ret));
   }
-
   return ret;
 }
 

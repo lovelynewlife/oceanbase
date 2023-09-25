@@ -1439,9 +1439,12 @@ int DdlStmtTask::parse_ddl_info_(
   } else {
     PartTransTask &part_trans_task = get_host();
     if (nullptr != new_lob_ctx_cols && new_lob_ctx_cols->has_out_row_lob()) {
-      new_lob_ctx_cols->reset(part_trans_task.get_tenant_id(),
+      new_lob_ctx_cols->reset(
+          this,
+          part_trans_task.get_tenant_id(),
           part_trans_task.get_trans_id(),
-          share::OB_ALL_DDL_OPERATION_AUX_LOB_META_TID);
+          share::OB_ALL_DDL_OPERATION_AUX_LOB_META_TID,
+          true/*is_ddl*/);
 
       IObCDCLobDataMerger *lob_data_merger = TCTX.lob_data_merger_;
 
@@ -2051,7 +2054,7 @@ int ObLogEntryTask::link_row_list(int64_t &row_ref_cnt)
     if (OB_SUCC(ret)) {
       // Note: First set ref count before set formatted status, to avoid Sortter has get Dml Stmt
       set_row_ref_cnt(redo_node_->get_valid_row_num());
-      row_ref_cnt = row_ref_cnt_;
+      row_ref_cnt = get_row_ref_cnt();
 
       if (OB_FAIL(set_redo_log_formatted())) {
         LOG_ERROR("set_redo_log_formatted fail", KR(ret));

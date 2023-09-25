@@ -208,7 +208,7 @@ void obpl_mysql_wrap_get_user_var_into_subquery(ObParseCtx *parse_ctx, ParseNode
 %token <node> USER_NAME
 //*data type keyword*/
 %token TINYINT SMALLINT MEDIUMINT INTEGER BIGINT FLOAT DOUBLE PRECISION NUMBER NUMERIC BIT
-        DATETIME TIMESTAMP TIME DATE YEAR CHARACTER TEXT VARCHAR BINARY VARBINARY UNSIGNED
+        DATETIME TIMESTAMP TIME DATE YEAR CHARACTER TEXT VARCHAR NCHAR NVARCHAR BINARY VARBINARY UNSIGNED
         SIGNED ZEROFILL COLLATE SET CHARSET BOOL BOOLEAN BLOB ENUM TINYTEXT MEDIUMTEXT LONGTEXT TINYBLOB
         MEDIUMBLOB LONGBLOB VARYING
 
@@ -217,7 +217,7 @@ void obpl_mysql_wrap_get_user_var_into_subquery(ObParseCtx *parse_ctx, ParseNode
       AFTER AUTHID BEGIN_KEY BINARY_INTEGER BODY C CATALOG_NAME CLASS_ORIGIN CLOSE COLUMN_NAME COMMENT
       CONSTRAINT_CATALOG CONSTRAINT_NAME CONSTRAINT_ORIGIN CONSTRAINT_SCHEMA CONTAINS COUNT CURSOR_NAME
       DATA DEFINER END_KEY EXTEND FOLLOWS FOUND FUNCTION HANDLER INTERFACE INVOKER JSON LANGUAGE
-      MESSAGE_TEXT MYSQL_ERRNO NEXT NO OF OPEN PACKAGE PRAGMA PRECEDES RECORD RETURNS ROW ROWTYPE
+      MESSAGE_TEXT MYSQL_ERRNO NATIONAL NEXT NO OF OPEN PACKAGE PRAGMA PRECEDES RECORD RETURNS ROW ROWTYPE
       SCHEMA_NAME SECURITY SUBCLASS_ORIGIN TABLE_NAME TYPE VALUE
 
 %right END_KEY
@@ -278,6 +278,7 @@ void obpl_mysql_wrap_get_user_var_into_subquery(ObParseCtx *parse_ctx, ParseNode
 %type <ival> string_length_i opt_string_length_i opt_int_length_i opt_string_length_i_v2
 %type <ival> opt_bit_length_i opt_datetime_fsp_i opt_unsigned_i opt_zerofill_i opt_year_i
 %type <ival> int_type_i float_type_i datetime_type_i date_year_type_i text_type_i blob_type_i
+%type <ival> nchar_type_i nvarchar_type_i
 %type <node> variable
 %%
 /*****************************************************************************
@@ -430,7 +431,15 @@ sql_stmt:
   | SET /*sql stmt tail*/
     {
       //read sql query string直到读到token';'或者END_P
-      do_parse_sql_stmt($$, parse_ctx, @1.first_column, @1.last_column, 2, ';', END_P);
+      ParseNode *sql_stmt = NULL;
+      do_parse_sql_stmt(sql_stmt, parse_ctx, @1.first_column, @1.last_column, 2, ';', END_P);
+      if (T_SET_PASSWORD == sql_stmt->type_ ||
+          T_SET_NAMES == sql_stmt->type_ ||
+          T_SET_CHARSET == sql_stmt->type_) {
+        malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SQL_STMT, 1, sql_stmt);
+      } else {
+        $$ = sql_stmt;
+      }
       if(T_VARIABLE_SET == $$->type_) {
         for(int64_t i = 0; i < $$->num_child_; ++i) {
           if(OB_UNLIKELY(NULL == $$->children_[i] || NULL == $$->children_[i]->children_[1])) {
@@ -546,6 +555,38 @@ call_sp_stmt:
         YYERROR; //生成一个语法错误
       }
       $$ = $2;
+    }
+  | CALL PROCEDURE sp_name '(' opt_sp_param_list ')' sp_create_chistics procedure_body
+    {
+      if (!parse_ctx->is_inner_parse_) {
+        obpl_mysql_yyerror(&@2, parse_ctx, "Syntax Error\n");
+        YYERROR; //生成一个语法错误
+      }
+      $$ = $8;
+    }
+  | CALL PROCEDURE sp_name '(' opt_sp_param_list ')' procedure_body
+    {
+      if (!parse_ctx->is_inner_parse_) {
+        obpl_mysql_yyerror(&@2, parse_ctx, "Syntax Error\n");
+        YYERROR; //生成一个语法错误
+      }
+      $$ = $7;
+    }
+  | CALL FUNCTION sp_name '(' opt_sp_fparam_list ')' RETURNS sp_data_type sp_create_chistics function_body
+    {
+      if (!parse_ctx->is_inner_parse_) {
+        obpl_mysql_yyerror(&@2, parse_ctx, "Syntax Error\n");
+        YYERROR; //生成一个语法错误
+      }
+      $$ = $10;
+    }
+  | CALL FUNCTION sp_name '(' opt_sp_fparam_list ')' RETURNS sp_data_type function_body
+    {
+      if (!parse_ctx->is_inner_parse_) {
+        obpl_mysql_yyerror(&@2, parse_ctx, "Syntax Error\n");
+        YYERROR; //生成一个语法错误
+      }
+      $$ = $9;
     }
 ;
 
@@ -1073,21 +1114,39 @@ create_procedure_stmt:
       check_ptr($9);
       ParseNode *sp_clause_node = NULL;
       merge_nodes(sp_clause_node, parse_ctx->mem_pool_, T_SP_CLAUSE_LIST, $8);
-      const char *stmt_str = parse_ctx->stmt_str_ + @9.first_column;
-      int32_t str_len = @9.last_column - @9.first_column + 1;
+      const char *stmt_str = parse_ctx->stmt_str_ + @3.first_column;
+      int32_t str_len = @9.last_column - @3.first_column + 1;
       $9->str_value_ = parse_strndup(stmt_str, str_len, parse_ctx->mem_pool_);
       check_ptr($9->str_value_);
       $9->str_len_ = str_len;
+      $9->raw_text_ = $9->str_value_ + @9.first_column - @3.first_column;
+      $9->text_len_ = str_len - (@9.first_column - @3.first_column);
+      if (NULL != $6) {
+        const char *param_str = parse_ctx->stmt_str_ + @5.first_column + 1;
+        int32_t param_len = @7.last_column - @5.last_column - 1;
+        $6->str_value_ = parse_strndup(param_str, param_len, parse_ctx->mem_pool_);
+        check_ptr($6->str_value_);
+        $6->str_len_ = param_len;
+      }
       malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SP_CREATE, 5, $2, $4, $6, sp_clause_node, $9);
     }
-  | CREATE opt_sp_definer PROCEDURE sp_name '('opt_sp_param_list  ')' procedure_body
+  | CREATE opt_sp_definer PROCEDURE sp_name '(' opt_sp_param_list ')' procedure_body
     {
       check_ptr($8);
-      const char *stmt_str = parse_ctx->stmt_str_ + @8.first_column;
-      int32_t str_len = @8.last_column - @8.first_column + 1;
+      const char *stmt_str = parse_ctx->stmt_str_ + @3.first_column;
+      int32_t str_len = @8.last_column - @3.first_column + 1;
       $8->str_value_ = parse_strndup(stmt_str, str_len, parse_ctx->mem_pool_);
       check_ptr($8->str_value_);
       $8->str_len_ = str_len;
+      $8->raw_text_ = $8->str_value_ + @8.first_column - @3.first_column;
+      $8->text_len_ = str_len - (@8.first_column - @3.first_column);
+      if (NULL != $6) {
+        const char *param_str = parse_ctx->stmt_str_ + @5.first_column + 1;
+        int32_t param_len = @7.last_column - @5.last_column - 1;
+        $6->str_value_ = parse_strndup(param_str, param_len, parse_ctx->mem_pool_);
+        check_ptr($6->str_value_);
+        $6->str_len_ = param_len;
+      }
       malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SP_CREATE, 5, $2, $4, $6, NULL, $8);
     }
 ;
@@ -1098,21 +1157,39 @@ create_function_stmt:
       check_ptr($11);
       ParseNode *sp_clause_node = NULL;
       merge_nodes(sp_clause_node, parse_ctx->mem_pool_, T_SP_CLAUSE_LIST, $10);
-      const char *stmt_str = parse_ctx->stmt_str_ + @11.first_column;
-      int32_t str_len = @11.last_column - @11.first_column + 1;
+      const char *stmt_str = parse_ctx->stmt_str_ + @3.first_column;
+      int32_t str_len = @11.last_column - @3.first_column + 1;
       $11->str_value_ = parse_strndup(stmt_str, str_len, parse_ctx->mem_pool_);
       check_ptr($11->str_value_);
       $11->str_len_ = str_len;
+      $11->raw_text_ = $11->str_value_ + @11.first_column - @3.first_column;
+      $11->text_len_ = str_len - (@11.first_column - @3.first_column);
+      if (NULL != $6) {
+        const char *param_str = parse_ctx->stmt_str_ + @5.first_column + 1;
+        int32_t param_len = @7.last_column - @5.last_column - 1;
+        $6->str_value_ = parse_strndup(param_str, param_len, parse_ctx->mem_pool_);
+        check_ptr($6->str_value_);
+        $6->str_len_ = param_len;
+      }
       malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SF_CREATE, 6, $2, $4, $6, $9, sp_clause_node, $11);
     }
   | CREATE opt_sp_definer FUNCTION sp_name '(' opt_sp_fparam_list ')' RETURNS sp_data_type function_body
     {
       check_ptr($10);
-      const char *stmt_str = parse_ctx->stmt_str_ + @10.first_column;
-      int32_t str_len = @10.last_column - @10.first_column + 1;
+      const char *stmt_str = parse_ctx->stmt_str_ + @3.first_column;
+      int32_t str_len = @10.last_column - @3.first_column + 1;
       $10->str_value_ = parse_strndup(stmt_str, str_len, parse_ctx->mem_pool_);
       check_ptr($10->str_value_);
       $10->str_len_ = str_len;
+      $10->raw_text_ = $10->str_value_ + @10.first_column - @3.first_column;
+      $10->text_len_ = str_len - (@10.first_column - @3.first_column);
+      if (NULL != $6) {
+        const char *param_str = parse_ctx->stmt_str_ + @5.first_column + 1;
+        int32_t param_len = @7.last_column - @5.last_column - 1;
+        $6->str_value_ = parse_strndup(param_str, param_len, parse_ctx->mem_pool_);
+        check_ptr($6->str_value_);
+        $6->str_len_ = param_len;
+      }
       malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_SF_CREATE, 6, $2, $4, $6, $9, NULL, $10);
     }
 ;
@@ -1879,6 +1956,20 @@ scalar_data_type:
       $$->int32_values_[0] = $2;
       $$->int32_values_[1] = 0; /* is char */
     }
+  | nchar_type_i opt_string_length_i opt_binary opt_collation
+    {
+      ParseNode *charset_node = NULL;
+      malloc_terminal_node(charset_node, parse_ctx->mem_pool_, T_CHARSET);
+      charset_node->str_value_ = parse_strdup("utf8mb4", parse_ctx->mem_pool_, &(charset_node->str_len_));
+      if (OB_UNLIKELY(NULL == charset_node->str_value_)) {
+        obpl_mysql_yyerror(NULL, parse_ctx, "memory space for string is not enough\n");
+        YYERROR;
+      }
+
+      malloc_non_terminal_node($$, parse_ctx->mem_pool_, $1, 3, charset_node, $4, $3);
+      $$->int32_values_[0] = $2;
+      $$->int32_values_[1] = 0; /* is char */
+    }
   /*  | TEXT opt_binary opt_charset opt_collation
   //  {
   //    UNUSED($2);
@@ -1895,6 +1986,20 @@ scalar_data_type:
   | VARCHAR string_length_i opt_binary opt_charset opt_collation
     {
       malloc_non_terminal_node($$, parse_ctx->mem_pool_, T_VARCHAR, 3, $4, $5, $3);
+      $$->int32_values_[0] = $2;
+      $$->int32_values_[1] = 0; /* is char */
+    }
+  | nvarchar_type_i opt_string_length_i opt_binary opt_collation
+    {
+      ParseNode *charset_node = NULL;
+      malloc_terminal_node(charset_node, parse_ctx->mem_pool_, T_CHARSET);
+      charset_node->str_value_ = parse_strdup("utf8mb4", parse_ctx->mem_pool_, &(charset_node->str_len_));
+      if (OB_UNLIKELY(NULL == charset_node->str_value_)) {
+        obpl_mysql_yyerror(NULL, parse_ctx, "memory space for string is not enough\n");
+        YYERROR;
+      }
+
+      malloc_non_terminal_node($$, parse_ctx->mem_pool_, $1, 3, charset_node, $4, $3);
       $$->int32_values_[0] = $2;
       $$->int32_values_[1] = 0; /* is char */
     }
@@ -2029,6 +2134,18 @@ datetime_type_i:
 date_year_type_i:
     DATE        { $$ = T_DATE; }
   | YEAR opt_year_i { $$ = T_YEAR; }
+;
+
+nchar_type_i:
+    NCHAR               { $$ = T_CHAR; }
+  | NATIONAL CHARACTER  { $$ = T_CHAR; }
+;
+
+nvarchar_type_i:
+    NVARCHAR                    { $$ = T_VARCHAR; }
+  | NCHAR VARCHAR               { $$ = T_VARCHAR; }
+  | NATIONAL VARCHAR            { $$ = T_VARCHAR; }
+  | NATIONAL CHARACTER VARYING  { $$ = T_VARCHAR; }
 ;
 
 opt_int_length_i:

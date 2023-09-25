@@ -208,7 +208,7 @@ public:
   static bool same_exprs(const common::ObIArray<ObRawExpr*> &src_exprs,
                          const common::ObIArray<ObRawExpr*> &target_exprs);
 
-  //for topk, non terminal expr with agg params need to be deep copyed to prevent sum being replaced
+  //for topk, non terminal expr with agg params need to be deep copied to prevent sum being replaced
   //with sum(sum)
   static int clone_expr_for_topk(ObRawExprFactory &expr_factory, ObRawExpr* src, ObRawExpr* &dst);
 
@@ -296,6 +296,8 @@ public:
                               const ObRawExpr *expr,
                               const EqualSets &equal_sets,
                               int64_t &idx);
+
+  static int append_exprs_no_dup(ObIArray<ObRawExpr *> &dst, const ObIArray<ObRawExpr *> &src);
 
   static int find_stmt_expr_direction(const ObDMLStmt &stmt,
                                       const common::ObIArray<ObRawExpr*> &exprs,
@@ -1316,30 +1318,29 @@ public:
   static int compute_basic_sharding_info(const ObAddr &local_addr,
                                          const ObIArray<ObLogicalOperator *> &child_ops,
                                          ObIAllocator &allocator,
-                                         ObIArray<int64_t> &reselected_pos,
                                          ObShardingInfo *&result_sharding,
                                          int64_t &inherit_sharding_index);
 
   static int compute_basic_sharding_info(const ObAddr &local_addr,
                                          const ObIArray<ObShardingInfo*> &input_shardings,
                                          ObIAllocator &allocator,
-                                         ObIArray<int64_t> &reselected_pos,
                                          ObShardingInfo *&result_sharding,
                                          int64_t &inherit_sharding_index);
 
   static int get_duplicate_table_replica(const ObCandiTableLoc &phy_table_loc,
                                          ObIArray<ObAddr> &valid_addrs);
 
-  static int compute_duplicate_table_replica_pos(const ObAddr &addr,
-                                                 const ObIArray<ObShardingInfo*> &input_shardings,
-                                                 ObIArray<int64_t> &reselected_pos);
-
   static int compute_duplicate_table_sharding(const ObAddr &local_addr,
+                                              const ObAddr &selected_addr,
                                               ObIAllocator &allocator,
-                                              const ObShardingInfo &src_sharding,
-                                              const int64_t reselected_pos,
-                                              bool can_reselect_replica,
+                                              ObShardingInfo &src_sharding,
+                                              ObIArray<ObAddr> &valid_addrs,
                                               ObShardingInfo *&target_sharding);
+
+  static int generate_duplicate_table_replicas(ObIAllocator &allocator,
+                                               const ObCandiTableLoc *source_table_loc,
+                                               ObIArray<ObAddr> &valid_addrs,
+                                               ObCandiTableLoc *&target_table_loc);
 
   static int64_t get_join_style_parallel(const int64_t left_parallel,
                                          const int64_t right_parallel,
@@ -1498,6 +1499,16 @@ public:
 
   static bool find_superset(const ObRelIds &rel_ids,
                            const ObIArray<ObRelIds> &single_table_ids);
+
+  static int try_push_down_temp_table_filter(ObOptimizerContext &opt_ctx,
+                                             ObSqlTempTableInfo &temp_table_info,
+                                             ObRawExpr *&temp_table_filter,
+                                             ObRawExpr *&where_filter);
+  static int push_down_temp_table_filter(ObRawExprFactory &expr_factory,
+                                         ObSQLSessionInfo *session_info,
+                                         ObSqlTempTableInfo &temp_table_info,
+                                         ObRawExpr *&temp_table_filter,
+                                         ObSelectStmt *temp_table_query = NULL);
 private:
   //disallow construct
   ObOptimizerUtil();
@@ -1594,7 +1605,7 @@ int ObOptimizerUtil::intersect(const ObIArray<T> &first,
  /**
    * @brief intersect, to reduce the assign cost when computing many sets' overlap.
    * @param sets the element sets to calculate the overlap.
-   * @param result the reuslt of the overlap
+   * @param result the result of the overlap
    * @return
    */
 template <class T>

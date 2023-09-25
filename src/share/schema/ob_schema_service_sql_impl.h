@@ -1159,7 +1159,14 @@ private:
       const char* name_col_name,
       const ObString &schema_name,
       const bool case_compare,
+      const bool compare_with_collation,
       uint64_t &schema_id);
+
+  bool schema_name_is_equal_(
+       const ObString &src,
+       const ObString &dst,
+       const bool case_compare,
+       const bool compare_with_collation);
 
   int fetch_table_latest_schema_versions_(
       common::ObISQLClient &sql_client,
@@ -1173,15 +1180,14 @@ private:
       ObISQLClient &sql_client,
       const uint64_t tenant_id,
       const char* tname,
-      ObTimeoutCtx &ctx,
-      int64_t &table_cnt);
+      ObTimeoutCtx &ctx);
 
   int calc_refresh_full_schema_timeout_ctx_(
       ObISQLClient &sql_client,
       const uint64_t tenant_id,
       const char* tname,
       int64_t &timeout,
-      int64_t &table_cnt);
+      int64_t &row_cnt);
 private:
   common::ObMySQLProxy *mysql_proxy_;
   common::ObDbLinkProxy *dblink_proxy_;

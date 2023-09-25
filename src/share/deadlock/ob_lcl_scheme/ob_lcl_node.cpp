@@ -10,6 +10,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "lib/atomic/ob_atomic.h"
 #include "share/config/ob_server_config.h"
 #include <algorithm>
 #include "share/ob_occam_time_guard.h"
@@ -42,6 +43,7 @@ ObLCLNode::ObLCLNode(const UserBinaryKey &user_key,
                      const CollectCallBack &on_collect_operation,
                      const ObDetectorPriority &priority,
                      const uint64_t start_delay,
+                     const uint32_t count_down_allow_detect,
                      const bool auto_activate_when_detected)
   :push_state_task_(*this),
   self_key_(user_key),
@@ -56,6 +58,7 @@ ObLCLNode::ObLCLNode(const UserBinaryKey &user_key,
   lcl_period_(0),
   last_report_waiting_for_period_(0),
   last_send_collect_info_period_(0),
+  count_down_allow_detect_(count_down_allow_detect),
   lock_(ObLatchIds::DEADLOCK_LOCK)
 {
   #define PRINT_WRAPPER K(*this), K(resource_id), K(on_detect_operation),\
@@ -129,6 +132,18 @@ int ObLCLNode::register_timer_task()
 void ObLCLNode::unregister_timer_task()
 {
   ATOMIC_STORE(&is_timer_task_canceled_, true);
+}
+
+void ObLCLNode::dec_count_down_allow_detect()
+{
+  uint32_t cnt = 0;
+  bool cas_failed = false;
+  do {
+    cnt = ATOMIC_LOAD(&count_down_allow_detect_);
+    if (cnt > 0) {
+      cas_failed = (ATOMIC_CAS(&count_down_allow_detect_, cnt, cnt - 1) != cnt);
+    }
+  } while (cnt > 0 && cas_failed);
 }
 
 int ObLCLNode::register_timer_with_necessary_retry_with_lock_()
@@ -598,30 +613,33 @@ int ObLCLNode::process_collect_info_message(const ObDeadLockCollectInfoMessage &
   int ret = OB_SUCCESS;
   uint64_t event_id = 0;
 
-  ObDeadLockCollectInfoMessage msg_copy = msg;
-  const ObSArray<ObDetectorInnerReportInfo> &collected_info = msg_copy.get_collected_info();
-  
-  if (!collected_info.empty()) {
-    int64_t detector_id = private_label_.get_id();
-    const UserBinaryKey &victim = collected_info[0].get_user_key(); 
-    DETECT_LOG_(INFO, "witness deadlock", KP(this), K(detector_id), K_(self_key), K(victim));
-  }
-  DETECT_TIME_GUARD(100_ms);
-  DETECT_LOG_(INFO, "reveive collect info message", K(collected_info.count()), PRINT_WRAPPER);
-  if (CLICK() && OB_SUCC(check_and_process_completely_collected_msg_with_lock_(collected_info))) {
-    DETECT_LOG_(INFO, "collect info done", PRINT_WRAPPER);
-    CLICK();
-    (void) ObDeadLockInnerTableService::insert_all(collected_info);
-  } else if (CLICK() && check_dead_loop_with_lock_(collected_info)) {
-    DETECT_LOG_(INFO, "message dead loop, just drop this message", PRINT_WRAPPER);
-  } else if (CLICK() && OB_FAIL(generate_event_id_with_lock_(collected_info, event_id))) {
-    DETECT_LOG_(WARN, "generate event id failed", PRINT_WRAPPER);
-  } else if (CLICK() && OB_FAIL(append_report_info_to_msg_(msg_copy, event_id))) {
-    DETECT_LOG_(WARN, "append report info to collect info message failed", PRINT_WRAPPER);
-  } else if (CLICK() && OB_FAIL(broadcast_with_lock_(msg_copy))) {
-    DETECT_LOG_(WARN, "keep boardcasting collect info msg failed", PRINT_WRAPPER);
+  ObDeadLockCollectInfoMessage msg_copy;
+  if (OB_FAIL(msg_copy.assign(msg))) {
+    DETECT_LOG_(WARN, "fail to copy message", PRINT_WRAPPER);
   } else {
-    DETECT_LOG_(INFO, "successfully keep broadcasting collect info msg", PRINT_WRAPPER);
+    const ObSArray<ObDetectorInnerReportInfo> &collected_info = msg_copy.get_collected_info();
+    if (!collected_info.empty()) {
+      int64_t detector_id = private_label_.get_id();
+      const UserBinaryKey &victim = collected_info[0].get_user_key();
+      DETECT_LOG_(INFO, "witness deadlock", KP(this), K(detector_id), K_(self_key), K(victim));
+    }
+    DETECT_TIME_GUARD(100_ms);
+    DETECT_LOG_(INFO, "reveive collect info message", K(collected_info.count()), PRINT_WRAPPER);
+    if (CLICK() && OB_SUCC(check_and_process_completely_collected_msg_with_lock_(collected_info))) {
+      DETECT_LOG_(INFO, "collect info done", PRINT_WRAPPER);
+      CLICK();
+      (void) ObDeadLockInnerTableService::insert_all(collected_info);
+    } else if (CLICK() && check_dead_loop_with_lock_(collected_info)) {
+      DETECT_LOG_(INFO, "message dead loop, just drop this message", PRINT_WRAPPER);
+    } else if (CLICK() && OB_FAIL(generate_event_id_with_lock_(collected_info, event_id))) {
+      DETECT_LOG_(WARN, "generate event id failed", PRINT_WRAPPER);
+    } else if (CLICK() && OB_FAIL(append_report_info_to_msg_(msg_copy, event_id))) {
+      DETECT_LOG_(WARN, "append report info to collect info message failed", PRINT_WRAPPER);
+    } else if (CLICK() && OB_FAIL(broadcast_with_lock_(msg_copy))) {
+      DETECT_LOG_(WARN, "keep boardcasting collect info msg failed", PRINT_WRAPPER);
+    } else {
+      DETECT_LOG_(INFO, "successfully keep broadcasting collect info msg", PRINT_WRAPPER);
+    }
   }
 
   return ret;
@@ -805,7 +823,11 @@ int ObLCLNode::push_state_to_downstreams_with_lock_()
   }
 
   CLICK();
-  if (OB_FAIL(broadcast_(blocklist_snapshot, lclv_snapshot, public_label_snapshot))) {
+  if (ATOMIC_LOAD(&count_down_allow_detect_) != 0) {
+    DETECT_LOG_(INFO, "not allow do detect cause count_down_allow_detect_ is not dec to 0 yet",
+                      K(blocklist_snapshot), K(lclv_snapshot), K(public_label_snapshot),
+                      K(*this));
+  } else if (OB_FAIL(broadcast_(blocklist_snapshot, lclv_snapshot, public_label_snapshot))) {
     DETECT_LOG_(WARN, "boardcast failed",
                       K(blocklist_snapshot), K(lclv_snapshot), K(public_label_snapshot),
                       K(*this));

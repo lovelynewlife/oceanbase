@@ -401,7 +401,8 @@ int ObLSCompleteMigrationDagNet::update_migration_status_(ObLS *ls)
           need_update_status = false;
           if (ObMigrationOpType::REBUILD_LS_OP == ctx_.arg_.type_
               && (ObMigrationStatus::OB_MIGRATION_STATUS_NONE == current_migration_status
-                  || ObMigrationStatus::OB_MIGRATION_STATUS_REBUILD_FAIL == current_migration_status)) {
+                  || ObMigrationStatus::OB_MIGRATION_STATUS_REBUILD_FAIL == current_migration_status
+                  || ObMigrationStatus::OB_MIGRATION_STATUS_GC == current_migration_status)) {
             LOG_INFO("current migration status is none, no need update migration status", K(current_migration_status), K(ctx_));
           } else {
             if (!ctx_.is_failed()) {
@@ -1263,10 +1264,7 @@ int ObStartCompleteMigrationTask::wait_transfer_table_replace_()
       LOG_WARN("failed to build tablet iter", K(ret), KPC(ctx_));
     } else {
       while (OB_SUCC(ret)) {
-        if (timeout_ctx.is_timeouted()) {
-          ret = OB_WAIT_TABLET_READY_TIMEOUT;
-          LOG_WARN("already timeout", K(ret), KPC(ctx_));
-        } else if (OB_FAIL(iter.get_next_tablet_id(tablet_id))) {
+        if (OB_FAIL(iter.get_next_tablet_id(tablet_id))) {
           if (OB_ITER_END == ret) {
             ret = OB_SUCCESS;
             break;
@@ -1649,10 +1647,7 @@ int ObStartCompleteMigrationTask::check_all_tablet_ready_()
       LOG_WARN("failed to build tablet iter", K(ret), KPC(ctx_));
     } else {
       while (OB_SUCC(ret)) {
-        if (timeout_ctx.is_timeouted()) {
-          ret = OB_WAIT_TABLET_READY_TIMEOUT;
-          LOG_WARN("already timeout", K(ret), KPC(ctx_));
-        } else if (OB_FAIL(iter.get_next_tablet_id(tablet_id))) {
+        if (OB_FAIL(iter.get_next_tablet_id(tablet_id))) {
           if (OB_ITER_END == ret) {
             ret = OB_SUCCESS;
             break;

@@ -16,6 +16,7 @@
 #include "lib/container/ob_array.h"
 #include "lib/thread/ob_async_task_queue.h"
 #include "lib/trace/ob_trace.h"
+#include "share/ob_ddl_common.h"
 #include "share/ob_ddl_task_executor.h"
 #include "share/ob_rpc_struct.h"
 #include "share/schema/ob_schema_struct.h"
@@ -241,10 +242,12 @@ public:
      const uint64_t table_id,
      bool &is_building);
 
+  // To check if any long-time running DDL exists.
   static int check_has_long_running_ddl(
      common::ObMySQLProxy *proxy,
      const uint64_t tenant_id,
      const uint64_t table_id,
+     const share::ObCheckExistedDDLMode check_mode,
      bool &has_long_running_ddl);
 
   static int check_has_conflict_ddl(
@@ -548,8 +551,8 @@ public:
   int check_errsim_error();
   #endif
   VIRTUAL_TO_STRING_KV(
-      K(is_inited_), K(need_retry_), K(task_type_), K(trace_id_),
-      K(tenant_id_), K(object_id_), K(schema_version_),
+      K(is_inited_), K(need_retry_), K(is_abort_), K(task_type_), K(trace_id_),
+      K(tenant_id_), K(dst_tenant_id_), K(object_id_), K(schema_version_),
       K(target_object_id_), K(task_status_), K(snapshot_version_),
       K_(ret_code), K_(task_id), K_(parent_task_id), K_(parent_task_key),
       K_(task_version), K_(parallelism), K_(ddl_stmt_str), K_(compat_mode),

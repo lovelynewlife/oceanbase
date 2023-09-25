@@ -145,6 +145,7 @@ int ObDDLRedefinitionSSTableBuildTask::process()
       session_param.consumer_group_id_ = consumer_group_id_;
 
       common::ObAddr *sql_exec_addr = nullptr;
+      const int64_t DDL_INNER_SQL_EXECUTE_TIMEOUT = ObDDLUtil::calc_inner_sql_execute_timeout();
       if (inner_sql_exec_addr_.is_valid()) {
         sql_exec_addr = &inner_sql_exec_addr_;
         LOG_INFO("inner sql execute addr" , K(*sql_exec_addr));
@@ -155,10 +156,10 @@ int ObDDLRedefinitionSSTableBuildTask::process()
         user_sql_proxy = GCTX.ddl_sql_proxy_;
       }
       LOG_INFO("execute sql" , K(sql_string), K(data_table_id_), K(tenant_id_),
-              "is_strict_mode", is_strict_mode(sql_mode_), K(sql_mode_), K(parallelism_));
-      if (OB_FAIL(timeout_ctx.set_trx_timeout_us(OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT))) {
+              "is_strict_mode", is_strict_mode(sql_mode_), K(sql_mode_), K(parallelism_), K(DDL_INNER_SQL_EXECUTE_TIMEOUT));
+      if (OB_FAIL(timeout_ctx.set_trx_timeout_us(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
         LOG_WARN("set trx timeout failed", K(ret));
-      } else if (OB_FAIL(timeout_ctx.set_timeout(OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT))) {
+      } else if (OB_FAIL(timeout_ctx.set_timeout(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
         LOG_WARN("set timeout failed", K(ret));
       } else {
         if (OB_FAIL(user_sql_proxy->write(tenant_id_, sql_string.ptr(), affected_rows,
@@ -669,7 +670,7 @@ int ObDDLRedefinitionTask::check_build_single_replica(bool &is_end)
   } else if (OB_FAIL(replica_builder_.check_build_end(is_end, complete_sstable_job_ret_code_))) {
     LOG_WARN("fail to check build end", K(ret));
   } else if (!is_end) {
-    if (sstable_complete_request_time_ + OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT < ObTimeUtility::current_time()) {   // timeout, retry
+    if (sstable_complete_request_time_ + ObDDLUtil::calc_inner_sql_execute_timeout() < ObTimeUtility::current_time()) {   // timeout, retry
       is_sstable_complete_task_submitted_ = false;
       sstable_complete_request_time_ = 0;
     }
@@ -939,6 +940,7 @@ int ObDDLRedefinitionTask::add_fk_ddl_task(const int64_t fk_id)
           fk_arg.is_modify_rely_flag_ = fk_info.is_modify_rely_flag_;
           fk_arg.is_modify_fk_state_ = fk_info.is_modify_fk_state_;
           fk_arg.need_validate_data_ = fk_info.validate_flag_;
+          fk_arg.name_generated_type_ = fk_info.name_generated_type_;
           ObDDLTaskRecord task_record;
           ObCreateDDLTaskParam param(dst_tenant_id_,
                                      ObDDLType::DDL_FOREIGN_KEY_CONSTRAINT,
@@ -1087,9 +1089,9 @@ int ObDDLRedefinitionTask::sync_auto_increment_position()
         } else if (FALSE_IT(param.global_value_to_sync_ = sequence_value - 1)) {
           // as sequence_value is an avaliable value. sync value will not be avaliable to user
         } else {
-          while (OB_SUCC(ret)) {
+          for (int64_t retry_cnt = 100; OB_SUCC(ret) && retry_cnt > 0; retry_cnt--) {
             if (OB_FAIL(auto_inc_service.sync_insert_value_global(param))) {
-              if (DDL_TABLE_RESTORE == task_type_ && OB_TENANT_NOT_IN_SERVER == ret) {
+              if (DDL_TABLE_RESTORE == task_type_ && share::ObIDDLTask::in_ddl_retry_white_list(ret)) {
                 if (TC_REACH_TIME_INTERVAL(10L * 1000L * 1000L)) {
                   LOG_INFO("set auto increment position failed, retry", K(ret), K(dst_tenant_id_), K(target_object_id_), K(cur_column_id), K(param));
                 }
@@ -2031,7 +2033,7 @@ int ObDDLRedefinitionTask::get_child_task_ids(char *buf, int64_t len)
 }
 
 ObSyncTabletAutoincSeqCtx::ObSyncTabletAutoincSeqCtx()
-  : is_inited_(false), is_synced_(false), src_tenant_id_(OB_INVALID_ID), dst_tenant_id_(OB_INVALID_ID), orig_src_tablet_ids_(),
+  : is_inited_(false), is_synced_(false), need_renew_location_(false), src_tenant_id_(OB_INVALID_ID), dst_tenant_id_(OB_INVALID_ID), orig_src_tablet_ids_(),
     src_tablet_ids_(), dest_tablet_ids_(), autoinc_params_()
 {}
 
@@ -2091,6 +2093,9 @@ int ObSyncTabletAutoincSeqCtx::sync()
         is_synced_ = true;
       }
     }
+  }
+  if (OB_LS_NOT_EXIST == ret || is_location_service_renew_error(ret)) {
+    need_renew_location_ = true;
   }
   return ret;
 }
@@ -2178,7 +2183,7 @@ int ObSyncTabletAutoincSeqCtx::call_and_process_all_tablet_autoinc_seqs(P &proxy
                                                          target_tenant_id,
                                                          tmp_autoinc_params,
                                                          rpc_timeout,
-                                                         force_renew,
+                                                         need_renew_location_,
                                                          true/*by src tablet*/,
                                                          ls_to_tablet_map))) {
         LOG_WARN("failed to build ls to tabmap", K(ret));
@@ -2188,7 +2193,7 @@ int ObSyncTabletAutoincSeqCtx::call_and_process_all_tablet_autoinc_seqs(P &proxy
                                          target_tenant_id,
                                          autoinc_params_,
                                          rpc_timeout,
-                                         force_renew,
+                                         need_renew_location_,
                                          false/*by src tablet*/,
                                          ls_to_tablet_map))) {
         LOG_WARN("failed to build ls to tabmap", K(ret));

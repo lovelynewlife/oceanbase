@@ -321,16 +321,9 @@ int ObDDLService::get_tenant_schema_guard_with_version_in_inner_table(
   int ret = OB_SUCCESS;
   src_tenant_schema_guard = nullptr;
   dst_tenant_schema_guard = nullptr;
-  bool is_standby = false;
   if (OB_UNLIKELY(OB_INVALID_TENANT_ID == src_tenant_id || OB_INVALID_TENANT_ID == dst_tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tenant_id", K(ret), K(src_tenant_id), K(dst_tenant_id));
-  } else if (src_tenant_id != dst_tenant_id
-    && OB_FAIL(ObAllTenantInfoProxy::is_standby_tenant(sql_proxy_, src_tenant_id, is_standby))) {
-    LOG_WARN("check tenant standby failed", K(ret), K(src_tenant_id), K(dst_tenant_id));
-  } else if (src_tenant_id != dst_tenant_id && !is_standby) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg, src tenant should be standby", K(ret), K(src_tenant_id), K(dst_tenant_id));
   } else if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(dst_tenant_id, hold_buf_dst_tenant_schema_guard))) {
     LOG_WARN("get tenant schema guard failed", K(dst_tenant_id));
   } else if (src_tenant_id == dst_tenant_id) {
@@ -478,8 +471,7 @@ int ObDDLService::create_inner_expr_index(ObMySQLTransaction &trans,
                                           const ObTableSchema &orig_table_schema,
                                           ObTableSchema &new_table_schema,
                                           ObIArray<ObColumnSchemaV2*> &new_columns,
-                                          ObTableSchema &index_schema,
-                                          const ObString *ddl_stmt_str)
+                                          ObTableSchema &index_schema)
 {
   int ret = OB_SUCCESS;
   ObSchemaGetterGuard schema_guard;
@@ -528,7 +520,8 @@ int ObDDLService::create_inner_expr_index(ObMySQLTransaction &trans,
                                                    trans))) {
         LOG_WARN("alter table options failed", K(ret), K(new_table_schema));
       } else if (OB_FAIL(ddl_operator.create_table(
-              index_schema, trans, ddl_stmt_str, true, false))) {
+              index_schema, trans, nullptr/*ddl_stmt_str*/, true, false))) {
+        // record the create index operation when index enables rather than schema generates.
         LOG_WARN("failed to create index schema", K(ret));
       }
     }
@@ -570,7 +563,6 @@ int ObDDLService::create_global_index(
 
 int ObDDLService::create_global_inner_expr_index(
     ObMySQLTransaction &trans,
-    const obrpc::ObCreateIndexArg &arg,
     const share::schema::ObTableSchema &orig_table_schema,
     share::schema::ObTableSchema &new_table_schema,
     common::ObIArray<share::schema::ObColumnSchemaV2*> &new_columns,
@@ -580,8 +572,7 @@ int ObDDLService::create_global_inner_expr_index(
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("variable is not init", K(ret));
   } else if (OB_FAIL(create_inner_expr_index(trans, orig_table_schema,
-          new_table_schema, new_columns, index_schema,
-          &arg.ddl_stmt_str_))) {
+          new_table_schema, new_columns, index_schema))) {
     LOG_WARN("fail to create inner expr index", K(ret));
   }
   return ret;
@@ -1622,6 +1613,7 @@ int ObDDLService::deal_with_cst_for_alter_table(
         foreign_key_info.ref_cst_type_ = foreign_key_arg.ref_cst_type_;
         foreign_key_info.ref_cst_id_ = foreign_key_arg.ref_cst_id_;
         foreign_key_info.is_parent_table_mock_ = foreign_key_arg.is_parent_table_mock_;
+        foreign_key_info.name_generated_type_ = foreign_key_arg.name_generated_type_;
       }
       // add foreign key info.
       if (OB_SUCC(ret)) {
@@ -3019,6 +3011,9 @@ int ObDDLService::drop_primary_key(
     if (OB_ISNULL(col = new_table_schema.get_column_schema(rowkey_column->column_id_))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("col is nullptr", K(ret), K(rowkey_column->column_id_), K(new_table_schema));
+    } else if (OB_HIDDEN_SESSION_ID_COLUMN_ID == col->get_column_id()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Dropping primary key of global temporary table");
     } else {
       col->set_rowkey_position(0);
     }
@@ -3056,21 +3051,30 @@ int ObDDLService::add_primary_key(const ObIArray<ObString> &pk_column_names, ObT
   // step1: clear origin primary key
   ObTableSchema::const_column_iterator tmp_begin = new_table_schema.column_begin();
   ObTableSchema::const_column_iterator tmp_end = new_table_schema.column_end();
+  ObColumnSchemaV2 *del_hidden_pk_column = nullptr;
   for (; OB_SUCC(ret) && tmp_begin != tmp_end; tmp_begin++) {
     ObColumnSchemaV2 *col = (*tmp_begin);
     if (OB_ISNULL(col)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (col->get_column_id() == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
-      // delete hidden primary key
-      if (OB_FAIL(new_table_schema.delete_column(col->get_column_name_str()))) {
-        LOG_WARN("fail to delete hidden primary key", K(ret));
-      }
+    } else if (OB_HIDDEN_PK_INCREMENT_COLUMN_ID == col->get_column_id()) {
+      del_hidden_pk_column = col;
+    } else if (OB_HIDDEN_SESSION_ID_COLUMN_ID == col->get_column_id()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Adding primary key to global temporary table");
     } else {
       col->set_rowkey_position(0);
     }
     new_table_schema.set_table_pk_mode(ObTablePKMode::TPKM_OLD_NO_PK);
     new_table_schema.set_table_organization_mode(ObTableOrganizationMode::TOM_INDEX_ORGANIZED);
   }
+
+  if (OB_SUCC(ret) && nullptr != del_hidden_pk_column) {
+    // delete hidden primary key
+    if (OB_FAIL(new_table_schema.delete_column(del_hidden_pk_column->get_column_name_str()))) {
+      LOG_WARN("fail to delete hidden primary key", K(ret));
+    }
+  }
+
   if (OB_SUCC(ret)) {
     // step2: set new primary key rowkey_position
     int64_t rowkey_position = 1;
@@ -11192,7 +11196,8 @@ int ObDDLService::alter_table_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
             const ObCreateForeignKeyArg &foreign_key_arg = const_alter_table_arg.foreign_key_arg_list_.at(0);
             int64_t fk_id = OB_INVALID_ID;
             res.schema_version_ = new_table_schema.get_schema_version();
-            if (foreign_key_arg.need_validate_data_
+            if (const_alter_table_arg.foreign_key_checks_
+                && foreign_key_arg.need_validate_data_
                 && ((!foreign_key_arg.is_modify_fk_state_
                   && foreign_key_arg.validate_flag_)
                 || (foreign_key_arg.is_modify_validate_flag_
@@ -11371,7 +11376,10 @@ int ObDDLService::check_is_offline_ddl(ObAlterTableArg &alter_table_arg,
     if (OB_SUCC(ret) && (is_long_running_ddl(ddl_type)
       || alter_table_arg.is_alter_indexs_
       || alter_table_arg.alter_constraint_type_!= obrpc::ObAlterTableArg::CONSTRAINT_NO_OPERATION)) {
-      if (OB_FAIL(check_fk_related_table_ddl(*orig_table_schema))) {
+      // For add fk operation, fk occurs in orig_table_schema after publish schema,
+      // so the routine here can not refuse the add fk operation if related schema executing offline ddl.
+      // Don't worry, add_table_foreign_keys in alter_table_in_trans will refuse it.
+      if (OB_FAIL(check_fk_related_table_ddl(*orig_table_schema, ddl_type))) {
         LOG_WARN("check whether the foreign key related table is executing ddl failed", K(ret));
       }
     }
@@ -11448,23 +11456,26 @@ int ObDDLService::check_is_adding_constraint(const uint64_t tenant_id, const uin
   return ObDDLTaskRecordOperator::check_is_adding_constraint(sql_proxy_, allocator, tenant_id, table_id, is_building);
 }
 
-// check whether the foreign key related table is executing offline ddl, creating index, and executin constrtaint task.
+// check whether the foreign key related table is executing specifing long-running ddl.
 // And ddl should be refused if the foreign key related table is executing above ddl.
 int ObDDLService::check_fk_related_table_ddl(
-    const share::schema::ObTableSchema &data_table_schema)
+    const share::schema::ObTableSchema &data_table_schema,
+    const share::ObDDLType &ddl_type)
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = data_table_schema.get_tenant_id();
   ObSchemaGetterGuard schema_guard;
-  if (OB_UNLIKELY(OB_INVALID_ID == tenant_id)) {
+  if (OB_UNLIKELY(OB_INVALID_ID == tenant_id || share::ObDDLType::DDL_INVALID == ddl_type)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(ret));
+    LOG_WARN("invalid arg", K(ret), K(tenant_id), K(ddl_type));
   } else if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("variable is not init");
   } else if (OB_FAIL(schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
     LOG_WARN("get schema guard failed", K(ret));
   } else {
     const ObIArray<ObForeignKeyInfo> &foreign_key_infos = data_table_schema.get_foreign_key_infos();
+    const ObCheckExistedDDLMode check_mode = is_double_table_long_running_ddl(ddl_type) ?
+        ObCheckExistedDDLMode::ALL_LONG_RUNNING_DDL : ObCheckExistedDDLMode::DOUBLE_TABLE_RUNNING_DDL;
     for (int64_t i = 0; OB_SUCC(ret) && i < foreign_key_infos.count(); i++) {
       const ObForeignKeyInfo &foreign_key_info = foreign_key_infos.at(i);
       const uint64_t related_table_id = data_table_schema.get_table_id() == foreign_key_info.parent_table_id_
@@ -11482,14 +11493,17 @@ int ObDDLService::check_fk_related_table_ddl(
         LOG_WARN("unexpected error, related schema is nullptr", K(ret), K(related_table_id), K(foreign_key_info));
       } else if (!related_schema->check_can_do_ddl()) {
         ret = OB_OP_NOT_ALLOW;
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "execute ddl while foreign key related table is executing offline ddl");
+        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "execute ddl while foreign key related table is executing long running ddl");
       } else if (OB_FAIL(ObDDLTaskRecordOperator::check_has_long_running_ddl(sql_proxy_,
                                                                             tenant_id,
                                                                             related_table_id,
+                                                                            check_mode,
                                                                             has_long_running_ddl))) {
         LOG_WARN("check has long running ddl failed", K(ret), K(tenant_id), K(related_table_id));
       } else if (has_long_running_ddl) {
         ret = OB_OP_NOT_ALLOW;
+        LOG_WARN("foreign key related table is executing offline ddl", K(ret), K(check_mode), K(tenant_id),
+          "table_id", data_table_schema.get_table_id(), K(related_table_id));
         LOG_USER_ERROR(OB_OP_NOT_ALLOW, "execute ddl while there are some long running ddl on foreign key related table");
       }
     }
@@ -11743,10 +11757,10 @@ int ObDDLService::do_offline_ddl_in_trans(obrpc::ObAlterTableArg &alter_table_ar
                                    &alter_table_arg,
                                    0/*parent_task_id*/,
                                    task_id);
-        if (orig_table_schema->is_tmp_table() || orig_table_schema->is_external_table()) {
+        if (orig_table_schema->is_external_table()) {
           ret = OB_OP_NOT_ALLOW;
           char err_msg[OB_MAX_ERROR_MSG_LEN] = {0};
-          (void)snprintf(err_msg, sizeof(err_msg), "%s on temporary table is", ddl_type_str(ddl_type));
+          (void)snprintf(err_msg, sizeof(err_msg), "%s on external table is", ddl_type_str(ddl_type));
           LOG_WARN("double table long running ddl on temporary table is disallowed", K(ret), K(ddl_type));
           LOG_USER_ERROR(OB_OP_NOT_ALLOW, err_msg);
         } else if (OB_FAIL(ObDDLTaskRecordOperator::check_has_conflict_ddl(sql_proxy_, tenant_id, orig_table_schema->get_table_id(), 0, ddl_type, has_conflict_ddl))) {
@@ -13234,7 +13248,7 @@ int ObDDLService::alter_table(obrpc::ObAlterTableArg &alter_table_arg,
       end_usec = ObTimeUtility::current_time();
       cost_usec = end_usec - start_usec;
       start_usec = end_usec;
-      LOG_INFO("alter_table_in_trans cost: ", K(cost_usec), K(ddl_type));
+      LOG_INFO("alter_table_in_trans cost: ", K(ret), K(cost_usec), K(ddl_type), "ddl_stmt", alter_table_arg.ddl_stmt_str_);
     }
   }
 
@@ -14208,8 +14222,8 @@ int ObDDLService::drop_aux_table_in_truncate(
   const bool is_index = USER_INDEX == table_type;
   ObSEArray<uint64_t, 16> aux_vp_tid_array;
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
-  uint64_t lob_meta_table_id;
-  uint64_t lob_piece_table_id;
+  uint64_t lob_meta_table_id = 0;
+  uint64_t lob_piece_table_id = 0;
   int64_t N = 0;
   if (table_type == USER_INDEX) {
     if (OB_FAIL(orig_table_schema.get_simple_index_infos(simple_index_infos))) {
@@ -14225,10 +14239,10 @@ int ObDDLService::drop_aux_table_in_truncate(
     }
   } else if (table_type == AUX_LOB_META) {
     lob_meta_table_id = orig_table_schema.get_aux_lob_meta_tid();
-    N = orig_table_schema.has_lob_column() ? 1 : 0;
+    N = orig_table_schema.has_lob_aux_table() ? 1 : 0;
   } else if (table_type == AUX_LOB_PIECE) {
     lob_piece_table_id = orig_table_schema.get_aux_lob_piece_tid();
-    N = orig_table_schema.has_lob_column() ? 1 : 0;
+    N = orig_table_schema.has_lob_aux_table() ? 1 : 0;
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table type is invalide", K(ret), K(table_type));
@@ -14509,6 +14523,7 @@ int ObDDLService::prepare_hidden_table_schema(const ObTableSchema &orig_table_sc
       if (is_oracle_mode && !hidden_table_schema.is_heap_table()) {
         uint64_t new_cst_id = OB_INVALID_ID;
         ObString pk_name;
+        ObNameGeneratedType pk_name_type = GENERATED_TYPE_USER;
         ObConstraint cst;
         cst.set_constraint_type(CONSTRAINT_TYPE_PRIMARY_KEY);
         if (OB_FAIL(schema_service->fetch_new_constraint_id(hidden_table_schema.get_tenant_id(),
@@ -14516,8 +14531,11 @@ int ObDDLService::prepare_hidden_table_schema(const ObTableSchema &orig_table_sc
           LOG_WARN("failed to fetch new constraint id", K(ret));
         } else if (FALSE_IT(cst.set_constraint_id(new_cst_id))) {
         } else if (!orig_table_schema.is_heap_table()) {
-          if (OB_FAIL(orig_table_schema.get_pk_constraint_name(pk_name))) {
-            LOG_WARN("failed to get pk constraint name", K(ret));
+          const ObConstraint *pk_cst = orig_table_schema.get_pk_constraint();
+          if (OB_NOT_NULL(pk_cst)) {
+            pk_name.assign_ptr(
+                pk_cst->get_constraint_name_str().ptr(), pk_cst->get_constraint_name_str().length());
+            pk_name_type = pk_cst->get_name_generated_type();
           }
         } else {
           if (index_name.length() != 0) {
@@ -14528,9 +14546,12 @@ int ObDDLService::prepare_hidden_table_schema(const ObTableSchema &orig_table_sc
                       pk_name, orig_table_schema.get_table_name_str(),
                       allocator, CONSTRAINT_TYPE_PRIMARY_KEY, is_oracle_mode))) {
             LOG_WARN("create cons name automatically failed", K(ret));
+          } else {
+            pk_name_type = GENERATED_TYPE_SYSTEM;
           }
         }
         OZ(cst.set_constraint_name(pk_name));
+        OX(cst.set_name_generated_type(pk_name_type));
         OZ(hidden_table_schema.add_constraint(cst));
       }
     }
@@ -15407,7 +15428,7 @@ int ObDDLService::reconstruct_index_schema(obrpc::ObAlterTableArg &alter_table_a
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_index_in_trans(
+int ObDDLService::rebuild_hidden_table_index(
                   const uint64_t tenant_id,
                   ObSchemaGetterGuard &schema_guard,
                   ObDDLOperator &ddl_operator,
@@ -15452,19 +15473,12 @@ int ObDDLService::rebuild_hidden_table_index_in_trans(
         }
       }
     }
-    if (trans.is_started()) {
-      int temp_ret = OB_SUCCESS;
-      if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
-        LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
-        ret = (OB_SUCC(ret)) ? temp_ret : ret;
-      }
-    }
   }
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_index(obrpc::ObAlterTableArg &alter_table_arg,
-                                             ObSArray<uint64_t> &index_ids)
+int ObDDLService::rebuild_hidden_table_index_in_trans(obrpc::ObAlterTableArg &alter_table_arg,
+                                                      ObSArray<uint64_t> &index_ids)
 {
   int ret = OB_SUCCESS;
   ObSArray<ObTableSchema> new_table_schemas;
@@ -15541,12 +15555,19 @@ int ObDDLService::rebuild_hidden_table_index(obrpc::ObAlterTableArg &alter_table
                                               new_table_schemas,
                                               index_ids))) {
         LOG_WARN("failed to add new index schema", K(ret));
-      } else if (OB_FAIL(rebuild_hidden_table_index_in_trans(dst_tenant_id,
-                                                            *dst_tenant_schema_guard,
-                                                            ddl_operator,
-                                                            trans,
-                                                            new_table_schemas))) {
-        LOG_WARN("failed to rebuild hidden table index in trans", K(ret));
+      } else if (OB_FAIL(rebuild_hidden_table_index(dst_tenant_id,
+                                                    *dst_tenant_schema_guard,
+                                                    ddl_operator,
+                                                    trans,
+                                                    new_table_schemas))) {
+        LOG_WARN("failed to rebuild hidden table index", K(ret));
+      }
+    }
+    if (trans.is_started()) {
+      int temp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
+        LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
+        ret = (OB_SUCC(ret)) ? temp_ret : ret;
       }
     }
   }
@@ -15694,7 +15715,7 @@ int ObDDLService::check_and_get_rebuild_constraints(
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_constraints_in_trans(
+int ObDDLService::rebuild_hidden_table_constraints(
                   const ObAlterTableArg &alter_table_arg,
                   const ObTableSchema &orig_table_schema,
                   const ObTableSchema &hidden_table_schema,
@@ -15747,18 +15768,11 @@ int ObDDLService::rebuild_hidden_table_constraints_in_trans(
       }
     }
   }
-  if (trans.is_started()) {
-    int temp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
-      LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
-      ret = (OB_SUCC(ret)) ? temp_ret : ret;
-    }
-  }
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_constraints(ObAlterTableArg &alter_table_arg,
-                                                   ObSArray<uint64_t> &cst_ids)
+int ObDDLService::rebuild_hidden_table_constraints_in_trans(ObAlterTableArg &alter_table_arg,
+                                                            ObSArray<uint64_t> &cst_ids)
 {
   int ret = OB_SUCCESS;
   AlterTableSchema &alter_table_schema = alter_table_arg.alter_table_schema_;
@@ -15792,12 +15806,19 @@ int ObDDLService::rebuild_hidden_table_constraints(ObAlterTableArg &alter_table_
                                                         orig_table_schema,
                                                         hidden_table_schema))) {
       LOG_WARN("failed to get orig and hidden table schema", K(ret));
-    } else if (OB_FAIL(rebuild_hidden_table_constraints_in_trans(alter_table_arg,
-                                                                *orig_table_schema,
-                                                                *hidden_table_schema,
-                                                                trans,
-                                                                cst_ids))) {
-      LOG_WARN("failed to rebuild hidden table constraints in trans", K(ret));
+    } else if (OB_FAIL(rebuild_hidden_table_constraints(alter_table_arg,
+                                                        *orig_table_schema,
+                                                        *hidden_table_schema,
+                                                        trans,
+                                                        cst_ids))) {
+      LOG_WARN("failed to rebuild hidden table constraints", K(ret));
+    }
+    if (trans.is_started()) {
+      int temp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
+        LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
+        ret = (OB_SUCC(ret)) ? temp_ret : ret;
+      }
     }
   }
   int tmp_ret = OB_SUCCESS;
@@ -16115,16 +16136,17 @@ int ObDDLService::get_rebuild_foreign_key_infos(
           LOG_WARN("unexpected fk", K(ret), K(new_fk_info), K(orig_table_id));
         }
       }
-      if (OB_FAIL(ret)) {
-      } else if (need_rebuild && OB_FAIL(rebuild_fk_infos.push_back(new_fk_info))) {
-        LOG_WARN("fail to push back fk infos that need to rebuild", K(ret));
-      } else {/* do nothing. */}
+      if (OB_SUCC(ret) && need_rebuild) {
+        if (OB_FAIL(rebuild_fk_infos.push_back(new_fk_info))) {
+          LOG_WARN("fail to push back fk infos that need to rebuild", K(ret));
+        }
+      }
     }
   }
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_foreign_key_in_trans(
+int ObDDLService::rebuild_hidden_table_foreign_key(
                   ObAlterTableArg &alter_table_arg,
                   const ObTableSchema &orig_table_schema,
                   const ObTableSchema &hidden_table_schema,
@@ -16157,10 +16179,12 @@ int ObDDLService::rebuild_hidden_table_foreign_key_in_trans(
     LOG_WARN("failed to build hidden index table map", K(ret));
   } else if (OB_FAIL(orig_table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
     LOG_WARN("failed to check if oralce compat mode", K(ret));
+  } else if (!hidden_table_schema.get_foreign_key_infos().empty()) {
+    // not empty means already rebuilt.
   } else if (OB_FAIL(get_rebuild_foreign_key_infos(alter_table_arg,
-                                                   orig_table_schema,
-                                                   rebuild_child_table_fk,
-                                                   rebuild_fk_infos))) {
+                                                  orig_table_schema,
+                                                  rebuild_child_table_fk,
+                                                  rebuild_fk_infos))) {
     LOG_WARN("fail to get fk infos that need to rebuild", K(ret));
   } else if (OB_FAIL(inc_table_schema.set_foreign_key_infos(rebuild_fk_infos))) {
     LOG_WARN("fail to set fk infos", K(ret));
@@ -16279,8 +16303,8 @@ int ObDDLService::rebuild_hidden_table_foreign_key_in_trans(
   return ret;
 }
 
-int ObDDLService::rebuild_hidden_table_foreign_key(ObAlterTableArg &alter_table_arg,
-                                                   ObSArray<uint64_t> &cst_ids)
+int ObDDLService::rebuild_hidden_table_foreign_key_in_trans(ObAlterTableArg &alter_table_arg,
+                                                            ObSArray<uint64_t> &cst_ids)
 {
   int ret = OB_SUCCESS;
   AlterTableSchema &alter_table_schema = alter_table_arg.alter_table_schema_;
@@ -16314,14 +16338,14 @@ int ObDDLService::rebuild_hidden_table_foreign_key(ObAlterTableArg &alter_table_
                                                         orig_table_schema,
                                                         hidden_table_schema))) {
       LOG_WARN("failed to get orig and hidden table schema", K(ret));
-    } else if (OB_FAIL(rebuild_hidden_table_foreign_key_in_trans(alter_table_arg,
-                                                                *orig_table_schema,
-                                                                *hidden_table_schema,
-                                                                false/*rebuild_child_table_fk*/,
-                                                                *dst_tenant_schema_guard,
-                                                                trans,
-                                                                cst_ids))) {
-      LOG_WARN("failed to rebuild hidden table foreign key in trans", K(ret));
+    } else if (OB_FAIL(rebuild_hidden_table_foreign_key(alter_table_arg,
+                                                        *orig_table_schema,
+                                                        *hidden_table_schema,
+                                                        false/*rebuild_child_table_fk*/,
+                                                        *dst_tenant_schema_guard,
+                                                        trans,
+                                                        cst_ids))) {
+      LOG_WARN("failed to rebuild hidden table foreign key", K(ret));
     }
     if (trans.is_started()) {
       int temp_ret = OB_SUCCESS;
@@ -16642,7 +16666,7 @@ int ObDDLService::swap_orig_and_hidden_table_state(obrpc::ObAlterTableArg &alter
       } else if (OB_FAIL(drop_child_table_fk(alter_table_arg, new_orig_table_schema,
           *hidden_table_schema, schema_guard, trans))) {
         LOG_WARN("failed to drop origin table fk", K(ret));
-      } else if (OB_FAIL(rebuild_hidden_table_foreign_key_in_trans(alter_table_arg,
+      } else if (OB_FAIL(rebuild_hidden_table_foreign_key(alter_table_arg,
           *orig_table_schema, *hidden_table_schema, true/*rebuild_child_table_fk*/, schema_guard, trans, fk_cst_ids))) {
         LOG_WARN("failed to rebuild hidden table fk", K(ret));
       } else if (OB_FAIL(check_hidden_table_constraint_exist(hidden_table_schema,
@@ -16787,10 +16811,7 @@ int ObDDLService::check_and_replace_default_index_name_on_demand(
     LOG_WARN("invalid args", K(ret), K(is_oracle_mode), K(target_data_table_name), K(new_index_schema));
   } else {
     const bool is_unique_index = new_index_schema.is_unique_index();
-    const char *cst_type_name = is_unique_index ? "_OBUNIQUE_" : "_OBIDX_";
-    const int64_t cst_type_name_len = static_cast<int64_t>(strlen(cst_type_name));
-    if (0 != ObCharset::instr(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-        new_index_schema.get_table_name_str().ptr(), new_index_schema.get_table_name_str().length(), cst_type_name, cst_type_name_len)) {
+    if (new_index_schema.is_sys_generated_name(true/*check_unknown*/)) {
       // the index name is generated by the sys default function, then replace it with new default name.
       ObString new_index_name;
       ObString new_index_name_postfix;
@@ -16805,6 +16826,8 @@ int ObDDLService::check_and_replace_default_index_name_on_demand(
         LOG_WARN("build_index_table_name failed", K(ret));
       } else if (OB_FAIL(new_index_schema.set_table_name(new_index_name))) {
         LOG_WARN("set new table name failed", K(ret));
+      } else {
+        new_index_schema.set_name_generated_type(GENERATED_TYPE_SYSTEM);
       }
     }
   }
@@ -16842,25 +16865,17 @@ int ObDDLService::check_and_replace_dup_constraint_name_on_demand(
             ObString new_cst_name;
             ObConstraint new_constraint;
             bool is_constraint_name_exist = false;
-            const ObString &old_cst_name = (*iter)->get_constraint_name();
             const ObConstraintType &cst_type = (*iter)->get_constraint_type();
-            const char *cst_type_name = CONSTRAINT_TYPE_PRIMARY_KEY == cst_type ? "_OBPK_" :
-                                        CONSTRAINT_TYPE_CHECK       == cst_type ? "_OBCHECK_" :
-                                        CONSTRAINT_TYPE_UNIQUE_KEY  == cst_type ? "_OBUNIQUE_" :
-                                        CONSTRAINT_TYPE_NOT_NULL    == cst_type ? "_OBNOTNULL_" : nullptr;
-            const int64_t cst_type_name_len = static_cast<int64_t>(strlen(cst_type_name));
-            if (nullptr == cst_type_name) {
-              ret = OB_ERR_UNEXPECTED;
-              LOG_WARN("unexpected err", K(ret), K(cst_type), K(old_cst_name), K(**iter));
-            } else if (OB_FAIL(new_constraint.assign(**iter))) {
+            if (OB_FAIL(new_constraint.assign(**iter))) {
               LOG_WARN("assign failed", K(ret));
-            } else if (0 != ObCharset::instr(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                old_cst_name.ptr(), old_cst_name.length(), cst_type_name, cst_type_name_len)) {
+            } else if (new_constraint.is_sys_generated_name(true/*check_unknown*/)) {
               if (OB_FAIL(ObTableSchema::create_cons_name_automatically(new_cst_name,
                   tmp_schema.get_table_name_str(), allocator, cst_type, is_oracle_mode))) {
                 LOG_WARN("create cons name automatically failed", K(ret));
               } else if (OB_FAIL(new_constraint.set_constraint_name(new_cst_name))) {
                 LOG_WARN("set constraint name failed", K(ret), K(new_cst_name));
+              } else {
+                new_constraint.set_name_generated_type(GENERATED_TYPE_SYSTEM);
               }
             }
             if (FAILEDx(check_constraint_name_is_exist(tenant_schema_guard,
@@ -17593,7 +17608,7 @@ int ObDDLService::inner_drop_and_create_tablet_(const int64_t &schema_version,
         LOG_WARN("fail to get frozen status for create tablet", KR(ret), K(tenant_id));
       } else {
         ObTableCreator table_creator(tenant_id, frozen_scn, trans);
-        if (OB_FAIL(table_creator.init(false/*need_check_tablet_cnt*/))) {
+        if (OB_FAIL(table_creator.init(true/*need_check_tablet_cnt*/))) {
           LOG_WARN("table_creator init failed", KR(ret), K(tenant_id));
         } else if (1 == create_table_count && create_table_schema_ptrs.at(0)->is_global_index_table()) {
           if (OB_FAIL(table_creator.add_create_tablets_of_table_arg(*create_table_schema_ptrs.at(0), orig_ls_id_array))) {
@@ -18701,6 +18716,7 @@ int ObDDLService::rebuild_table_schema_with_new_id(const ObTableSchema &orig_tab
         } while (OB_SUCC(ret) && is_constraint_name_exist);
         if (OB_SUCC(ret)) {
           (*iter)->set_constraint_name(new_constraint_name);
+          (*iter)->set_name_generated_type(GENERATED_TYPE_SYSTEM);
         }
         iter_last = iter;
       }
@@ -19338,8 +19354,8 @@ int ObDDLService::flashback_aux_table(
   const uint64_t tenant_id = table_schema.get_tenant_id();
   ObSEArray<uint64_t, 16> aux_vp_tid_array;
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
-  uint64_t lob_meta_table_id;
-  uint64_t lob_piece_table_id;
+  uint64_t lob_meta_table_id = 0;
+  uint64_t lob_piece_table_id = 0;
   int64_t N = 0;
   if (table_type == USER_INDEX) {
     if (OB_FAIL(table_schema.get_simple_index_infos(simple_index_infos))) {
@@ -19355,10 +19371,10 @@ int ObDDLService::flashback_aux_table(
     }
   } else if (table_type == AUX_LOB_META) {
     lob_meta_table_id = table_schema.get_aux_lob_meta_tid();
-    N = table_schema.has_lob_column() ? 1 : 0;
+    N = table_schema.has_lob_aux_table() ? 1 : 0;
   } else if (table_type == AUX_LOB_PIECE) {
     lob_piece_table_id = table_schema.get_aux_lob_piece_tid();
-    N = table_schema.has_lob_column() ? 1 : 0;
+    N = table_schema.has_lob_aux_table() ? 1 : 0;
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Invalid table type.", K(ret), K(table_type));
@@ -22111,9 +22127,32 @@ int ObDDLService::create_tenant_schema(
                  OB_DDL_ADD_TENANT_START, trans, &arg.ddl_stmt_str_))) {
         LOG_WARN("create tenant failed", KR(ret), K(user_tenant_schema));
       }
-      LOG_INFO("[CREATE_TENANT] STEP 1.2. finish create tenant schema", KR(ret), K(arg),
+      LOG_INFO("[CREATE_TENANT] STEP 1.1. finish create tenant schema", KR(ret), K(arg),
                "cost", ObTimeUtility::fast_current_time() - tmp_start_time);
     }
+
+#ifdef OB_BUILD_TDE_SECURITY
+    if (OB_SUCC(ret)) {
+      LOG_INFO("[CREATE_TENANT] STEP 1.1.1. start create root key", K(user_tenant_id));
+      const int64_t tmp_start_time = ObTimeUtility::fast_current_time();
+      ObArray<ObAddr> addrs;
+      bool need_create = false;
+      if (OB_FAIL(check_need_create_root_key(arg, need_create))) {
+        LOG_WARN("fail to check need create root key", K(ret));
+      } else if (!need_create) {
+        // do nothing
+      } else if (arg.is_creating_standby_) {
+        if (OB_FAIL(standby_create_root_key(user_tenant_id, arg, addrs))) {
+          LOG_WARN("failed to create root key", KR(ret), K(user_tenant_id), K(arg));
+        }
+      } else if (OB_FAIL(create_root_key(*rpc_proxy_, user_tenant_id, addrs))) {
+        LOG_WARN("fail to create root key", KR(ret), K(addrs));
+      }
+      LOG_INFO("[CREATE_TENANT] STEP 1.1.1. finish create root key",
+               KR(ret), K(user_tenant_id), "cost", ObTimeUtility::fast_current_time() - tmp_start_time);
+    }
+#endif
+
     // 2. grant pool
     if (OB_SUCC(ret)) {
       LOG_INFO("[CREATE_TENANT] STEP 1.2. start grant pools", K(user_tenant_id));
@@ -22167,30 +22206,6 @@ int ObDDLService::create_tenant_schema(
       LOG_INFO("[CREATE_TENANT] STEP 1.4. finish reload unit_manager", KR(ret), K(user_tenant_id),
                "cost", ObTimeUtility::fast_current_time() - tmp_start_time);
     }
-
-#ifdef OB_BUILD_TDE_SECURITY
-    if (OB_SUCC(ret)) {
-      LOG_INFO("[CREATE_TENANT] STEP 1.5. start create root key", K(user_tenant_id));
-      const int64_t tmp_start_time = ObTimeUtility::fast_current_time();
-      ObArray<ObAddr> addrs;
-      bool need_create = false;
-      if (OB_FAIL(check_need_create_root_key(arg, need_create))) {
-        LOG_WARN("fail to check need create root key", K(ret));
-      } else if (!need_create) {
-        // do nothing
-      } else if (OB_FAIL(unit_mgr_->get_servers_by_pools(pools, addrs))) {
-        LOG_WARN("fail to get tenant's servers", KR(ret), K(user_tenant_id));
-      } else if (arg.is_creating_standby_) {
-        if (OB_FAIL(standby_create_root_key(user_tenant_id, arg, addrs))) {
-          LOG_WARN("failed to create root key", KR(ret), K(user_tenant_id), K(arg));
-        }
-      } else if (OB_FAIL(create_root_key(*rpc_proxy_, user_tenant_id, addrs))) {
-        LOG_WARN("fail to create root key", KR(ret), K(addrs));
-      }
-      LOG_INFO("[CREATE_TENANT] STEP 1.5. finish create root key",
-               KR(ret), K(user_tenant_id), "cost", ObTimeUtility::fast_current_time() - tmp_start_time);
-    }
-#endif
 
     if (OB_SUCC(ret)) {
       ObArray<ObAddr> addrs;
@@ -22325,14 +22340,15 @@ int ObDDLService::standby_create_root_key(
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(arg));
   } else {
     obrpc::RootKeyType key_type = obrpc::RootKeyType::INVALID;
-    RootKeyValue root_key;
-    if (OB_FAIL(get_root_key_from_primary(arg, tenant_id, key_type, root_key))) {
+    common::ObString root_key;
+    ObArenaAllocator allocator("root_key");
+
+    if (OB_FAIL(get_root_key_from_primary(arg, tenant_id, key_type, root_key, allocator))) {
       LOG_WARN("failed to get root key", KR(ret), K(arg), K(tenant_id));
     } else {
       obrpc::ObRootKeyArg root_key_arg;
       obrpc::ObRootKeyResult dummy_result;
-      ObString key_value_str(root_key.ptr());
-      if (OB_FAIL(root_key_arg.init(tenant_id, key_type, key_value_str))) {
+      if (OB_FAIL(root_key_arg.init(tenant_id, key_type, root_key))) {
         LOG_WARN("failed to init root key arg", KR(ret), K(tenant_id), K(key_type), K(root_key));
       } else if (OB_FAIL(notify_root_key(*rpc_proxy_, root_key_arg, addrs, dummy_result))) {
         LOG_WARN("fail to notify root key", K(ret), K(root_key_arg));
@@ -22344,7 +22360,8 @@ int ObDDLService::standby_create_root_key(
 
 int ObDDLService::get_root_key_from_primary(const obrpc::ObCreateTenantArg &arg,
     const uint64_t tenant_id, obrpc::RootKeyType &key_type,
-    RootKeyValue &key_value)
+    common::ObString &key_value,
+    common::ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_inner_stat())) {
@@ -22359,6 +22376,7 @@ int ObDDLService::get_root_key_from_primary(const obrpc::ObCreateTenantArg &arg,
     ObLogRestoreSourceServiceConfigParser log_restore_source(ObBackupConfigType::LOG_RESTORE_SOURCE, tenant_id);
     common::ObSqlString value;
     obrpc::ObRootKeyArg root_key_arg;
+    obrpc::ObRootKeyResult result;
     if (OB_FAIL(value.assign(arg.log_restore_source_))) {
       LOG_WARN("fail to assign value", KR(ret), K(log_restore_source));
     } else if (OB_FAIL(log_restore_source.get_primary_server_addr(
@@ -22367,10 +22385,13 @@ int ObDDLService::get_root_key_from_primary(const obrpc::ObCreateTenantArg &arg,
     } else if (OB_FAIL(root_key_arg.init_for_get(primary_tenant_id))) {
       LOG_WARN("failed to init for get", KR(ret), K(primary_tenant_id));
     }
-    if (FAILEDx(get_root_key_from_obs(cluster_id, *rpc_proxy_, root_key_arg,
-            addr_list, key_type, key_value))) {
+    if (FAILEDx(notify_root_key(*rpc_proxy_, root_key_arg,
+            addr_list, result, true, cluster_id, &allocator))) {
       LOG_WARN("failed to get root key from obs", KR(ret), K(cluster_id),
           K(root_key_arg), K(addr_list));
+    } else {
+      key_type = result.key_type_;
+      key_value = result.root_key_;
     }
     if (OB_INVALID_ROOT_KEY == ret) {
       LOG_USER_ERROR(OB_INVALID_ROOT_KEY, "Can not get root key from primary tenant");
@@ -22387,7 +22408,7 @@ int ObDDLService::create_root_key(
     const common::ObIArray<common::ObAddr> &addrs)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id || addrs.count() <= 0)) {
+  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("tenant_id is invalid", KR(ret), K(tenant_id), K(addrs));
   } else {
@@ -22407,54 +22428,71 @@ int ObDDLService::create_root_key(
   return ret;
 }
 
-int ObDDLService::get_root_key_from_obs(
-             const uint64_t &cluster_id,
-             obrpc::ObSrvRpcProxy &rpc_proxy,
-             const obrpc::ObRootKeyArg &arg,
-             const common::ObIArray<common::ObAddr> &addrs,
-             obrpc::RootKeyType &key_type,
-             RootKeyValue &key_value)
+int ObDDLService::notify_root_key(
+    obrpc::ObSrvRpcProxy &rpc_proxy,
+    const obrpc::ObRootKeyArg &arg,
+    const common::ObIArray<common::ObAddr> &addrs,
+    obrpc::ObRootKeyResult &result,
+    const bool enable_default /*=true*/,
+    const uint64_t &cluster_id /*=OB_INVALID_CLUSTER_ID*/,
+    common::ObIAllocator *allocator /*=NULL*/)
 {
   int ret = OB_SUCCESS;
-  key_type = obrpc::RootKeyType::INVALID;
-  key_value.reset();
-  if (OB_UNLIKELY(OB_INVALID_CLUSTER_ID == cluster_id
-                  || !arg.is_valid() || arg.is_set_)) {
+  ObTimeoutCtx ctx;
+  bool has_failed = false;
+  const int64_t DEFAULT_TIMEOUT = 10 * 1000 * 1000L; // 10s
+  if (OB_UNLIKELY(!arg.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(arg));
+  } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, DEFAULT_TIMEOUT))) {
+    LOG_WARN("fail to set default timeout", KR(ret));
   } else {
-    ObTimeoutCtx ctx;
-    bool has_failed = false;
-    const int64_t DEFAULT_TIMEOUT = 10 * 1000 * 1000L; // 10s
-    if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, DEFAULT_TIMEOUT))) {
-      LOG_WARN("fail to set default timeout", KR(ret));
-    } else {
-      // 1. send rpc
-      rootserver::ObSetRootKeyProxy proxy(
+    // 1. send rpc
+    rootserver::ObSetRootKeyProxy proxy(
         rpc_proxy, &obrpc::ObSrvRpcProxy::set_root_key);
-      int tmp_ret = OB_SUCCESS;
-      for (int64_t i = 0; OB_SUCC(ret) && i < addrs.count(); i++) {
-        int64_t timeout = ctx.get_timeout();
-        const ObAddr &addr = addrs.at(i);
-        if (OB_TMP_FAIL(proxy.call(addr, timeout, cluster_id, OB_SYS_TENANT_ID, arg))) {
-          has_failed = true;
-          LOG_WARN("send rpc failed", KR(ret), KR(tmp_ret), K(addr), K(timeout), K(arg), K(cluster_id));
-        }
-      } // end for
-      // 2. check result
-      ObArray<int> return_ret_array;
-      if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_ret_array))) {
-        LOG_WARN("wait batch result failed", KR(tmp_ret), KR(ret));
-        ret = OB_SUCC(ret) ? tmp_ret : ret;
+    int tmp_ret = OB_SUCCESS;
+    int return_ret = OB_SUCCESS;
+    bool need_call_rs = OB_INVALID_CLUSTER_ID == cluster_id;
+    ObAddr rs_addr = GCONF.self_addr_;
+    int64_t timeout = ctx.get_timeout();
+    for (int64_t i = 0; OB_SUCC(ret) && i < addrs.count(); i++) {
+      const ObAddr &addr = addrs.at(i);
+      if (OB_TMP_FAIL(proxy.call(addr, timeout, cluster_id, OB_SYS_TENANT_ID, arg))) {
+        has_failed = true;
+        return_ret= tmp_ret;
+        LOG_WARN("send rpc failed", KR(ret), KR(tmp_ret), K(addr), K(timeout), K(cluster_id));
+      } else if (rs_addr == addr) {
+        need_call_rs = false;
       }
-      for (int64_t i = 0; OB_SUCC(ret) && i < return_ret_array.count() && !has_failed; ++i) {
-        tmp_ret = return_ret_array.at(i);
-        if (OB_TMP_FAIL(tmp_ret)) {
-          has_failed = true;
-          LOG_WARN("failed to get root key from observer", KR(tmp_ret), K(i));
-        }
+    } // end for
+    if (OB_FAIL(ret) || !need_call_rs) {
+    } else if (OB_TMP_FAIL(proxy.call(rs_addr, timeout, cluster_id, OB_SYS_TENANT_ID, arg))) {
+      has_failed = true;
+      return_ret= tmp_ret;
+      LOG_WARN("fail to call rs", KR(ret), KR(tmp_ret), K(rs_addr), K(timeout), K(cluster_id));
+    }
+    // 2. check result
+    ObArray<int> return_ret_array;
+    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_ret_array))) { // ignore ret
+      LOG_WARN("wait batch result failed", KR(tmp_ret), KR(ret));
+      ret = OB_SUCC(ret) ? tmp_ret : ret;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < return_ret_array.count() && !has_failed; ++i) {
+      if (OB_TMP_FAIL(return_ret_array.at(i))) {
+        has_failed = true;
+        return_ret= tmp_ret;
+        LOG_WARN("rpc return error", KR(tmp_ret), K(i));
       }
-      for (int64_t i = 0; OB_SUCC(ret) && i < proxy.get_results().count(); i++) {
+    }
+    if (OB_SUCC(ret) && arg.is_set_) {
+      if (OB_UNLIKELY(has_failed)) {
+        ret = return_ret;
+        LOG_WARN("failed to set root key", KR(ret));
+      }
+    } else {
+      obrpc::RootKeyType key_type = obrpc::RootKeyType::INVALID;
+      ObString root_key;
+      for (int64_t i = 0; OB_SUCC(ret) && i < proxy.get_results().count(); ++i) {
         const ObRootKeyResult *rpc_result = proxy.get_results().at(i);
         if (OB_ISNULL(rpc_result)) {
           ret = OB_ERR_UNEXPECTED;
@@ -22465,131 +22503,54 @@ int ObDDLService::get_root_key_from_obs(
           if (OB_UNLIKELY(obrpc::RootKeyType::INVALID != key_type)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("root key type is conflict", KR(ret), K(key_type), KPC(rpc_result));
-          } else if (OB_FAIL(key_value.assign(rpc_result->root_key_))) {
-            LOG_WARN("failed to assign result", KR(ret), KPC(rpc_result));
-          } else {
-            key_type = rpc_result->key_type_;
           }
-        } else if (OB_UNLIKELY(0 != key_value.str().compare(rpc_result->root_key_))) {
+          if (OB_SUCC(ret)) {
+            key_type = rpc_result->key_type_;
+            root_key = rpc_result->root_key_;
+          }
+        } else if (OB_UNLIKELY(0 != root_key.compare(rpc_result->root_key_))) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("root key is conflict", KR(ret), K(key_value), KPC(rpc_result));
+          LOG_WARN("root key is conflict", KR(ret), K(root_key), KPC(rpc_result));
         }
       } // end for
       if (OB_SUCC(ret) && obrpc::RootKeyType::INVALID == key_type) {
         if (has_failed) {
           ret = OB_INVALID_ROOT_KEY;
           LOG_WARN("failed to get root key from obs", KR(ret), K(cluster_id),
-            K(addrs), K(key_type), K(key_value));
-        } else {
+            K(addrs), K(key_type), K(root_key));
+        } else if (enable_default) {
           //If the root_key cannot be obtained from all current observers,
           //set default. This tenant may be an upgraded tenant.
-          //The scope of this observer is obtained from the __all_virtual_log_stat,
+          //The addrs are obtained from the __all_virtual_log_stat in standby cluster,
           //it may not be all observers, ignore this situation
           key_type = obrpc::RootKeyType::DEFAULT;
           LOG_INFO("can not get root key from all observer, set default", K(cluster_id),
-              K(addrs), K(key_type), K(key_value));
+                   K(addrs), K(key_type), K(root_key));
         }
       }
-    }
-  }
-  return ret;
-}
-
-int ObDDLService::notify_root_key(
-    obrpc::ObSrvRpcProxy &rpc_proxy,
-    const obrpc::ObRootKeyArg &arg,
-    const common::ObIArray<common::ObAddr> &addrs,
-    obrpc::ObRootKeyResult &result)
-{
-  int ret = OB_SUCCESS;
-  ObTimeoutCtx ctx;
-  const int64_t DEFAULT_TIMEOUT = 10 * 1000 * 1000L; // 10s
-  if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, DEFAULT_TIMEOUT))) {
-    LOG_WARN("fail to set default timeout", KR(ret));
-  } else {
-    int64_t server_cnt = addrs.count();
-    // 1. send rpc
-    rootserver::ObSetRootKeyProxy proxy(
-        rpc_proxy, &obrpc::ObSrvRpcProxy::set_root_key);
-    bool call_rs = false;
-    ObAddr rs_addr = GCONF.self_addr_;
-    int64_t timeout = ctx.get_timeout();
-    for (int64_t i = 0; OB_SUCC(ret) && i < addrs.count(); i++) {
-      const ObAddr &addr = addrs.at(i);
-      if (OB_FAIL(proxy.call(addr, timeout, arg))) {
-        LOG_WARN("send rpc failed", KR(ret), K(addr), K(timeout), K(arg));
-      } else if (rs_addr == addr) {
-        call_rs = true;
-      }
-    } // end for
-    if (OB_FAIL(ret) || call_rs) {
-    } else if (OB_FAIL(proxy.call(rs_addr, timeout, arg))) {
-      LOG_WARN("fail to call rs", KR(ret), K(rs_addr), K(timeout), K(arg));
-    } else {
-      server_cnt++;
-    }
-    // 2. check result
-    ObArray<int> return_ret_array;
-    int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_ret_array))) { // ignore ret
-      LOG_WARN("wait batch result failed", KR(tmp_ret), KR(ret));
-      ret = OB_SUCC(ret) ? tmp_ret : ret;
-    } else if (return_ret_array.count() != server_cnt ||
-               proxy.get_results().count() != server_cnt) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("result cnt not match", KR(ret), K(server_cnt), "ret_cnt", return_ret_array.count(),
-                                                "result_cnt", proxy.get_results().count());
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && i < return_ret_array.count(); i++) {
-      int return_ret = return_ret_array.at(i);
-      const ObAddr &addr = proxy.get_dests().at(i);
-      const ObRootKeyResult *result = proxy.get_results().at(i);
-      if (OB_SUCCESS != return_ret) {
-        ret = return_ret;
-        LOG_WARN("rpc return error", KR(ret), K(addr), K(timeout));
-      } else if (OB_ISNULL(result)) {
+      if (OB_FAIL(ret)) {
+      } else if (obrpc::RootKeyType::INVALID == key_type) {
+        result.key_type_ = key_type;
+        result.root_key_.reset();
+      } else if (OB_INVALID_CLUSTER_ID != cluster_id) {
+        if (OB_ISNULL(allocator)) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("allocator is null", K(ret));
+        } else if (OB_FAIL(deep_copy_ob_string(*allocator, root_key, result.root_key_))) {
+          LOG_WARN("failed to deep copy string", KR(ret));
+        } else {
+          result.key_type_ = key_type;
+        }
+      } else if (OB_FAIL(ObMasterKeyGetter::instance().set_root_key(arg.tenant_id_,
+                                                key_type, root_key))) {
+        LOG_WARN("failed to set root key", K(ret));
+      } else if (OB_FAIL(ObMasterKeyGetter::instance().get_root_key(arg.tenant_id_,
+                                                result.key_type_, result.root_key_))) {
+        LOG_WARN("failed to get root key", K(ret));
+      } else if (OB_UNLIKELY(key_type != result.key_type_ ||
+                              0 != root_key.compare(result.root_key_))) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get empty result", KR(ret), K(addr), K(timeout));
-      }
-    } // end for
-    if (OB_SUCC(ret) && !arg.is_set_) {
-      obrpc::RootKeyType key_type = obrpc::RootKeyType::INVALID;
-      ObString root_key;
-      for (int64_t i = 0; OB_SUCC(ret) && i < proxy.get_results().count(); ++i) {
-        const ObRootKeyResult *rpc_result = proxy.get_results().at(i);
-        if (OB_ISNULL(rpc_result)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get empty result", KR(ret), "addr", proxy.get_dests().at(i), K(timeout));
-        } else if (obrpc::RootKeyType::INVALID == rpc_result->key_type_) {
-          // do nothing
-        } else if (rpc_result->key_type_ != key_type) {
-          if (OB_UNLIKELY(obrpc::RootKeyType::INVALID != key_type)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("root key type is conflict", K(key_type), K(rpc_result->key_type_), K(ret));
-          } else {
-            key_type = rpc_result->key_type_;
-            root_key = rpc_result->root_key_;
-          }
-        } else if (OB_UNLIKELY(0 != root_key.compare(rpc_result->root_key_))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("root key is conflict", K(root_key), K(rpc_result->root_key_), K(ret));
-        }
-      }
-      if (OB_SUCC(ret)) {
-        if (obrpc::RootKeyType::INVALID == key_type) {
-          key_type = obrpc::RootKeyType::DEFAULT;
-        }
-        if (OB_FAIL(ObMasterKeyGetter::instance().set_root_key(arg.tenant_id_,
-                                                  key_type, root_key))) {
-          LOG_WARN("failed to set root key", K(ret));
-        } else if (OB_FAIL(ObMasterKeyGetter::instance().get_root_key(arg.tenant_id_,
-                                                  result.key_type_, result.root_key_))) {
-          LOG_WARN("failed to get root key", K(ret));
-        } else if (OB_UNLIKELY(key_type != result.key_type_ ||
-                               0 != root_key.compare(result.root_key_))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get unexpect root key", K(ret));
-        }
+        LOG_WARN("get unexpect root key", K(ret));
       }
     }
   }
@@ -23493,29 +23454,6 @@ int ObDDLService::commit_alter_tenant_locality(
               LOG_WARN("fail to set meta tenant previous locality", KR(ret));
             } else if (OB_FAIL(ddl_operator.alter_tenant(new_meta_tenant_schema, trans))) {
               LOG_WARN("fail to alter meta tenant", KR(ret));
-            }
-          }
-          int return_code = arg.rs_job_check_ret_;
-          int64_t job_id = arg.rs_job_id_;
-          if (OB_FAIL(ret)) {
-          } else if (OB_SUCC(RS_JOB_COMPLETE(job_id, return_code, trans))) {
-            FLOG_INFO("[ALTER_TENANT_LOCALITY NOTICE] complete an inprogress rs job", KR(ret),
-                  K(arg), K(return_code));
-          } else {
-            LOG_WARN("fail to complete rs job", KR(ret), K(job_id), K(return_code));
-            if (OB_EAGAIN == ret) {
-              int64_t find_job_id = 0;
-              if (OB_FAIL(ObAlterLocalityFinishChecker::find_rs_job(arg.tenant_id_, find_job_id, trans))) {
-                LOG_WARN("fail to find rs job", KR(ret), K(arg));
-                if (OB_ENTRY_NOT_EXIST == ret) {
-                  FLOG_WARN("[ALTER_TENANT_LOCALITY NOTICE] the specified rs job might has "
-                      "been already deleted in table manually", KR(ret), K(arg), K(return_code));
-                  ret = OB_SUCCESS;
-                }
-              } else {
-                ret = OB_EAGAIN;
-                FLOG_WARN("[ALTER_TENANT_LOCALITY NOTICE] a non-checked rs job cannot be committed", KR(ret), K(arg), K(find_job_id));
-              }
             }
           }
         }
@@ -24790,7 +24728,7 @@ int ObDDLService::check_rename_object_type(
     RenameOracleObjectType &obj_type)
 {
   int ret = OB_SUCCESS;
-  uint64_t sequence_id;
+  uint64_t sequence_id = 0;
   bool sequence_exist = false;
   bool is_system_generated = false;
   obj_type = RENAME_TYPE_INVALID;
@@ -24859,16 +24797,22 @@ int ObDDLService::record_tenant_locality_event_history(
   if (ALTER_LOCALITY_OP_INVALID == alter_locality_op) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid alter locality op", K(ret), K(alter_locality_op));
-  } else if (ROLLBACK_ALTER_LOCALITY == alter_locality_op) {
+  } else {
     int64_t job_id = 0;
     if (OB_FAIL(ObAlterLocalityFinishChecker::find_rs_job(tenant_schema.get_tenant_id(), job_id, trans))) {
-      LOG_WARN("failed to find rs job", K(ret), "tenant_id", tenant_schema.get_tenant_id());
+      if (OB_ENTRY_NOT_EXIST == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("fail to find rs job", K(ret), "tenant_id", tenant_schema.get_tenant_id());
+      }
     } else {
-      ret = RS_JOB_COMPLETE(job_id, OB_CANCELED, trans); // The change task is rolled back, this change failed
+      ret = RS_JOB_COMPLETE(job_id, OB_CANCELED, trans);
       FLOG_INFO("[ALTER_TENANT_LOCALITY NOTICE] cancel an old inprogress rs job due to rollback", KR(ret),
           "tenant_id", tenant_schema.get_tenant_id(), K(job_id));
     }
-    if (FAILEDx(GET_MIN_DATA_VERSION(OB_SYS_TENANT_ID, tenant_data_version))) {
+  }
+  if (OB_SUCC(ret) && ROLLBACK_ALTER_LOCALITY == alter_locality_op) {
+    if (OB_FAIL(GET_MIN_DATA_VERSION(OB_SYS_TENANT_ID, tenant_data_version))) {
       LOG_WARN("fail to get sys tenant's min data version", KR(ret));
     } else if (tenant_data_version < DATA_VERSION_4_2_1_0) {
       job_type = ObRsJobType::JOB_TYPE_ROLLBACK_ALTER_TENANT_LOCALITY;
@@ -26288,7 +26232,7 @@ int ObDDLService::refresh_schema(uint64_t tenant_id, int64_t *publish_schema_ver
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid tenant_id", K(ret));
     } else if (OB_FAIL(tenant_ids.push_back(tenant_id))) {
-      LOG_WARN("fail to push back tenant_id", K(ret), K(tenant_id));
+      LOG_WARN("fail to push back tenant_id", KR(ret), K(tenant_id));
     }
     while (!stopped_) {
       common::ObTimeoutCtx ctx;
@@ -26304,7 +26248,7 @@ int ObDDLService::refresh_schema(uint64_t tenant_id, int64_t *publish_schema_ver
       } else {
         int tmp_ret = OB_SUCCESS;
         bool is_dropped = false;
-        if (OB_TMP_FAIL(schema_service_->check_if_tenant_has_been_dropped(tenant_id, is_dropped))) {
+        if (OB_TMP_FAIL(check_tenant_has_been_dropped_(tenant_id, is_dropped))) {
           LOG_WARN("fail to check if tenant has been dropped", KR(ret), K(tmp_ret), K(tenant_id));
         } else if (is_dropped) {
           LOG_WARN("tenant has been dropped, just exit", KR(ret), K(tenant_id));
@@ -26324,7 +26268,7 @@ int ObDDLService::refresh_schema(uint64_t tenant_id, int64_t *publish_schema_ver
       int64_t schema_version = OB_INVALID_VERSION;
       if (OB_FAIL(schema_service_->get_tenant_refreshed_schema_version(
                          tenant_id, schema_version))) {
-        LOG_WARN("fail to get tenant refreshed schema version", K(ret), K(tenant_id));
+        LOG_WARN("fail to get tenant refreshed schema version", KR(ret), K(tenant_id));
       } else {
         ObSchemaService *schema_service = schema_service_->get_schema_service();
         ObRefreshSchemaInfo schema_info;
@@ -26336,7 +26280,7 @@ int ObDDLService::refresh_schema(uint64_t tenant_id, int64_t *publish_schema_ver
         } else if (OB_FAIL(schema_service->inc_sequence_id())) {
           LOG_WARN("increase sequence_id failed", K(ret));
         } else if (OB_FAIL(schema_service->set_refresh_schema_info(schema_info))) {
-          LOG_WARN("fail to set refresh schema info", K(ret), K(schema_info));
+          LOG_WARN("fail to set refresh schema info", KR(ret), K(schema_info));
         } else if (OB_NOT_NULL(publish_schema_version)) {
           *publish_schema_version = schema_version;
         }
@@ -26344,11 +26288,51 @@ int ObDDLService::refresh_schema(uint64_t tenant_id, int64_t *publish_schema_ver
     }
     if (OB_FAIL(ret) && stopped_) {
       ret = OB_CANCELED;
-      LOG_WARN("rs is stopped");
+      LOG_WARN("rs is stopped", KR(ret), K(tenant_id));
     }
     THIS_WORKER.set_timeout_ts(original_timeout_us);
   }
 
+  return ret;
+}
+
+int ObDDLService::check_tenant_has_been_dropped_(
+    const uint64_t tenant_id,
+    bool &is_dropped)
+{
+  int ret = OB_SUCCESS;
+  is_dropped = false;
+  ObSchemaGetterGuard guard;
+  const ObSimpleTenantSchema *tenant = NULL;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("ddl_service is not init", KR(ret));
+  } else if (OB_FAIL(schema_service_->get_tenant_schema_guard(OB_SYS_TENANT_ID, guard))) {
+    LOG_WARN("fail to get schema guard", KR(ret));
+  } else if (OB_FAIL(guard.check_if_tenant_has_been_dropped(tenant_id, is_dropped))) {
+    LOG_WARN("fail to check if tenant has been dropped", KR(ret), K(tenant_id));
+  } else if (is_dropped) {
+    LOG_WARN("tenant has been dropped, just exit", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(guard.get_tenant_info(tenant_id, tenant))) {
+    LOG_WARN("fail to get tenant info", KR(ret), K(tenant_id));
+  } else if (OB_ISNULL(tenant)) {
+    LOG_WARN("tenant not exist, maybe schema is fall behind", KR(ret), K(tenant_id));
+  } else if (tenant->is_dropping()) {
+    ObLSStatusOperator ls_status;
+    ObLSStatusInfo sys_ls_info;
+    if (OB_FAIL(ls_status.get_ls_status_info(tenant_id, SYS_LS, sys_ls_info, *sql_proxy_))) {
+      if (OB_ENTRY_NOT_EXIST == ret) {
+        LOG_WARN("sys ls not exist, consider that tenant has been dropped", KR(ret), K(tenant_id));
+        ret = OB_SUCCESS;
+        is_dropped = true;
+      } else {
+        LOG_WARN("fail to get ls status info", KR(ret), K(tenant_id));
+      }
+    } else if (sys_ls_info.ls_is_tenant_dropping()
+               || sys_ls_info.ls_is_wait_offline()) {
+      is_dropped = true;
+      LOG_INFO("sys ls is not readable, consider that tenant has been dropped", KR(ret), K(tenant_id));
+    }
+  }
   return ret;
 }
 
@@ -26390,7 +26374,16 @@ int ObDDLService::notify_refresh_schema(const ObAddrIArray &addrs)
       schema_info.set_schema_version(schema_version);
     }
 
-    LOG_INFO("try to notify refresh schema", K(schema_version), K(local_schema_info), K(schema_info));
+    bool is_async = false;
+    if (OB_INVALID_TENANT_ID != schema_info.get_tenant_id()) {
+      omt::ObTenantConfigGuard tenant_config(OTC_MGR.get_tenant_config_with_lock(
+                                             schema_info.get_tenant_id()));
+      if (tenant_config.is_valid()) {
+        is_async = (0 == tenant_config->_publish_schema_mode.case_compare(PUBLISH_SCHEMA_MODE_ASYNC));
+      }
+    }
+
+    LOG_INFO("try to notify refresh schema", K(is_async), K(schema_version), K(local_schema_info), K(schema_info));
     const int64_t rpc_timeout = GCONF.rpc_timeout;
     int64_t timeout = 0;
     FOREACH_X(s, server_list, OB_SUCC(ret)) {
@@ -26416,6 +26409,9 @@ int ObDDLService::notify_refresh_schema(const ObAddrIArray &addrs)
           timeout = std::min(THIS_WORKER.get_timeout_remain(), rpc_timeout);
         }
         arg.force_refresh_ = found;
+        if (!arg.force_refresh_) {
+          arg.is_async_ = is_async;
+        }
         // overwrite ret
         if (FAILEDx(proxy.call(*s, timeout, arg))) {
           LOG_WARN("send switch schema rpc failed", KR(ret),
@@ -27692,7 +27688,7 @@ int ObDDLService::grant_sys_priv_to_ur(
   int64_t refreshed_schema_version = 0;
   const ObUserInfo *user_info = NULL;
   ObSysPriv *sys_priv = NULL;
-  uint64_t grantee_id;
+  uint64_t grantee_id = 0;
   ObSArray<ObString> users_name;
   ObSArray<ObString> hosts_name;
 
@@ -27789,7 +27785,7 @@ int ObDDLService::grant_table_and_col_privs_to_user(
                          schema_guard));
   /* 2. deal with cols privs */
   /* 2.1 reorg privs according to colid */
-  uint64_t colid;
+  uint64_t colid = 0;
   ObRawObjPrivArray obj_priv_array;
   for (int i = 0; i < arg.ins_col_ids_.count() && OB_SUCC(ret); i++) {
     obj_priv_array.reset();
@@ -28506,7 +28502,7 @@ int ObDDLService::build_need_flush_role_array(
   ObIArray<uint64_t> &disable_flag_array)
 {
   int ret = OB_SUCCESS;
-  uint64_t role_id;
+  uint64_t role_id = 0;
   uint64_t target_disable_flag = 0;
   uint64_t org_disable_flag = 0;
   ObSEArray<uint64_t, 8> org_role_id_array;
@@ -29497,9 +29493,9 @@ int ObDDLService::alter_outline_in_trans(const obrpc::ObAlterOutlineArg &arg)
 int ObDDLService::alter_outline(const obrpc::ObAlterOutlineArg &alter_outline_arg)
 {
   int ret = OB_SUCCESS;
-  int64_t start_usec;
-  int64_t end_usec;
-  int64_t cost_usec;
+  int64_t start_usec = 0;
+  int64_t end_usec = 0;
+  int64_t cost_usec = 0;
   const uint64_t tenant_id = alter_outline_arg.alter_outline_info_.get_tenant_id();
   start_usec = ObTimeUtility::current_time();
   if (OB_FAIL(check_inner_stat())) {
@@ -32970,10 +32966,11 @@ int ObDDLSQLTransaction::start(ObISQLClient *proxy,
 int ObDDLSQLTransaction::start(
     ObISQLClient *proxy,
     const uint64_t tenant_id,
-    bool with_snapshot /*= false*/)
+    bool with_snapshot /*= false*/,
+    const int32_t group_id /* = 0*/)
 {
   int ret = OB_NOT_SUPPORTED;
-  UNUSEDx(proxy, with_snapshot, tenant_id);
+  UNUSEDx(proxy, with_snapshot, tenant_id, group_id);
   return ret;
 }
 
@@ -33032,7 +33029,7 @@ int ObDDLSQLTransaction::end(const bool commit)
   } else if (OB_ISNULL(schema_service_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("schema service is null", K(ret));
-  } else if (enable_check_ddl_epoch_ && OB_FAIL(lock_ddl_epoch(this))) {
+  } else if (commit && enable_check_ddl_epoch_ && OB_FAIL(lock_ddl_epoch(this))) {
     // compare ddl_epoch promise execute on master
     LOG_WARN("lock_ddl_epoch fail", K(ret));
   } else if (commit && need_end_signal_) {

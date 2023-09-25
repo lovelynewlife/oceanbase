@@ -37,7 +37,7 @@ public:
   ~ObTabletMediumCompactionInfoRecorder();
   int init(
       const share::ObLSID &ls_id,
-      const ObTabletID &tablet_id,
+      const common::ObTabletID &tablet_id,
       const int64_t max_saved_version,
       logservice::ObLogHandler *log_handler);
   virtual void destroy() override;
@@ -77,7 +77,7 @@ private:
   bool is_inited_;
   bool ignore_medium_;
   share::ObLSID ls_id_;
-  ObTabletID tablet_id_;
+  common::ObTabletID tablet_id_;
   storage::ObTabletHandle *tablet_handle_ptr_;
   ObMediumCompactionInfo *medium_info_;
   common::ObIAllocator *allocator_;
@@ -101,7 +101,7 @@ public:
   int init(
       common::ObIAllocator &allocator,
       const ObExtraMediumInfo &extra_medium_info,
-      const ObTabletDumpedMediumInfo &medium_info_list);
+      const ObTabletDumpedMediumInfo *medium_info_list);
   void reset();
   OB_INLINE bool is_empty() const { return 0 == medium_info_list_.get_size(); }
   OB_INLINE int64_t size() const { return medium_info_list_.get_size(); }
@@ -114,10 +114,7 @@ public:
   OB_INLINE int64_t get_wait_check_medium_scn() const { return extra_info_.wait_check_flag_ ? extra_info_.last_medium_scn_ : 0; }
   OB_INLINE bool need_check_finish() const { return get_wait_check_medium_scn() > 0; }
   // check status on serialized medium list
-  OB_INLINE bool could_schedule_next_round() const
-  {
-    return !need_check_finish() && medium_info_list_.is_empty();
-  }
+  OB_INLINE bool could_schedule_next_round(const int64_t last_major_snapshot) const;
   OB_INLINE ObMediumCompactionInfo::ObCompactionType get_last_compaction_type() const
   {
     return static_cast<ObMediumCompactionInfo::ObCompactionType>(extra_info_.last_compaction_type_);
@@ -130,6 +127,7 @@ public:
   {
     return extra_info_;
   }
+  int get_max_sync_medium_scn(int64_t &max_received_medium_scn) const;
 
   // serialize & deserialize
   int serialize(char *buf, const int64_t buf_len, int64_t &pos) const;

@@ -202,7 +202,7 @@ int ObDASScanOp::swizzling_remote_task(ObDASRemoteInfo *remote_info)
       lookup_rtdef->stmt_allocator_.set_alloc(&CURRENT_CONTEXT->get_arena_allocator());
       lookup_rtdef->scan_allocator_.set_alloc(&CURRENT_CONTEXT->get_arena_allocator());
       if (OB_FAIL(lookup_rtdef->init_pd_op(*remote_info->exec_ctx_, *lookup_ctdef))) {
-        LOG_WARN("init lookup pushdown opeartor failed", K(ret));
+        LOG_WARN("init lookup pushdown operator failed", K(ret));
       } else {
         lookup_rtdef->p_pd_expr_op_->get_eval_ctx()
             .set_max_batch_size(lookup_ctdef->pd_expr_spec_.max_batch_size_);
@@ -215,7 +215,10 @@ int ObDASScanOp::swizzling_remote_task(ObDASRemoteInfo *remote_info)
 int ObDASScanOp::init_scan_param()
 {
   int ret = OB_SUCCESS;
-  scan_param_.tenant_id_ = MTL_ID();
+  uint64_t tenant_id = MTL_ID();
+  scan_param_.tenant_id_ = tenant_id;
+  scan_param_.key_ranges_.set_attr(ObMemAttr(tenant_id, "ScanParamKR"));
+  scan_param_.ss_key_ranges_.set_attr(ObMemAttr(tenant_id, "ScanParamSSKR"));
   scan_param_.tx_lock_timeout_ = scan_rtdef_->tx_lock_timeout_;
   scan_param_.index_id_ = scan_ctdef_->ref_table_id_;
   scan_param_.is_get_ = scan_ctdef_->is_get_;
@@ -711,7 +714,7 @@ OB_SERIALIZE_MEMBER((ObDASScanOp, ObIDASTaskOp),
 ObDASScanResult::ObDASScanResult()
   : ObIDASTaskResult(),
     ObNewRowIterator(),
-    datum_store_(),
+    datum_store_("DASScanResult"),
     result_iter_(),
     output_exprs_(nullptr),
     eval_ctx_(nullptr),
@@ -1218,7 +1221,10 @@ OB_INLINE ObITabletScan &ObLocalIndexLookupOp::get_tsc_service()
 OB_INLINE int ObLocalIndexLookupOp::init_scan_param()
 {
   int ret = OB_SUCCESS;
-  scan_param_.tenant_id_ = MTL_ID();
+  uint64_t tenant_id = MTL_ID();
+  scan_param_.tenant_id_ = tenant_id;
+  scan_param_.key_ranges_.set_attr(ObMemAttr(tenant_id, "ScanParamKR"));
+  scan_param_.ss_key_ranges_.set_attr(ObMemAttr(tenant_id, "ScanParamSSKR"));
   scan_param_.tx_lock_timeout_ = lookup_rtdef_->tx_lock_timeout_;
   scan_param_.index_id_ = lookup_ctdef_->ref_table_id_;
   scan_param_.is_get_ = lookup_ctdef_->is_get_;

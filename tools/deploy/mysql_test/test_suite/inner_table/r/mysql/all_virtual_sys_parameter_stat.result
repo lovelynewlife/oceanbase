@@ -39,9 +39,11 @@ cache_wash_threshold
 clog_sync_time_warn_threshold
 cluster
 cluster_id
+compaction_dag_cnt_limit
 compaction_high_thread_score
 compaction_low_thread_score
 compaction_mid_thread_score
+compaction_schedule_tablet_batch_cnt
 compatible
 config_additional_dir
 connection_control_failed_connections_threshold
@@ -229,6 +231,7 @@ tenant_sql_net_thread_count
 tenant_task_queue_size
 trace_log_slow_query_watermark
 trx_2pc_retry_interval
+ttl_thread_score
 undo_retention
 user_block_cache_priority
 user_row_cache_priority
@@ -286,12 +289,14 @@ _enable_system_tenant_memory_limit
 _enable_tenant_sql_net_thread
 _enable_trace_session_leak
 _enable_transaction_internal_routing
+_enable_values_table_folding
 _endpoint_tenant_mapping
 _fast_commit_callback_count
 _follower_snapshot_read_retry_duration
 _force_explict_500_malloc
 _force_hash_groupby_dump
 _force_hash_join_spill
+_force_malloc_for_absent_tenant
 _force_skip_encoding_partition_id
 _hash_area_size
 _hash_join_enabled
@@ -306,6 +311,7 @@ _log_writer_parallelism
 _ls_gc_wait_readonly_tx_time
 _ls_migration_wait_completing_timeout
 _max_elr_dependent_trx_count
+_max_ls_cnt_per_server
 _max_malloc_sample_interval
 _max_rpc_packet_size
 _max_schema_slot_num
@@ -316,6 +322,7 @@ _minor_compaction_amplification_factor
 _min_malloc_sample_interval
 _mvcc_gc_using_min_txn_snapshot
 _nested_loop_join_enabled
+_obkv_feature_mode
 _ob_ddl_timeout
 _ob_elr_fast_freeze_threshold
 _ob_enable_direct_load
@@ -334,6 +341,7 @@ _ob_trans_rpc_timeout
 _optimizer_ads_time_limit
 _optimizer_better_inlist_costing
 _optimizer_group_by_placement
+_optimizer_skip_scan_enabled
 _optimizer_sortmerge_join_enabled
 _parallel_max_active_sessions
 _parallel_min_message_pool
@@ -341,6 +349,7 @@ _parallel_server_sleep_time
 _pipelined_table_function_memory_limit
 _print_sample_ppm
 _private_buffer_size
+_publish_schema_mode
 _pushdown_storage_level
 _px_bloom_filter_group_size
 _px_chunklist_count_ratio
@@ -378,7 +387,7 @@ _transfer_start_rpc_timeout
 _transfer_start_trans_timeout
 _tx_result_retention
 _upgrade_stage
-_wait_interval_after_truncate
+_wait_interval_after_parallel_ddl
 _with_subquery
 _xa_gc_interval
 _xa_gc_timeout

@@ -91,7 +91,7 @@ struct FunctionTableDependInfo {
     K_(depend_table_set),
     K_(table_idx)
   );
-  ObSqlBitSet<> depend_table_set_;  //function table expr所依赖的表
+  ObRelIds depend_table_set_;  //function table expr所依赖的表
   int64_t table_idx_; //function table的bit index
 };
 typedef struct FunctionTableDependInfo JsonTableDependInfo;
@@ -264,8 +264,9 @@ public:
   int check_das_dppr_filter_exprs(const ObIArray<ObRawExpr *> &input_filters,
                                   bool &has_dppr_filters);
 
-  int set_duplicated_table_location(ObLogicalOperator *op,
-                                    int64_t dup_table_pos);
+  int choose_duplicate_table_replica(ObLogicalOperator *op,
+                                    const ObAddr &addr,
+                                    bool is_root);
   /**
    *  Get allocator used in sql compilation
    *
@@ -1343,6 +1344,8 @@ public:
 
   common::ObIArray<ObRawExpr *> &get_new_or_quals() { return new_or_quals_; }
 
+  int construct_startup_filter_for_limit(ObRawExpr *limit_expr, ObLogicalOperator *log_op);
+
 protected:
   virtual int generate_normal_raw_plan() = 0;
   virtual int generate_dblink_raw_plan();
@@ -1704,7 +1707,8 @@ private: // member functions
                                   int64_t max_read_stale_time,
                                   common::ObIArray<ObCandiTableLoc*> &phy_tbl_loc_info_list,
                                   bool &is_hit_partition,
-                                  share::ObFollowerFirstFeedbackType &follower_first_feedback);
+                                  share::ObFollowerFirstFeedbackType &follower_first_feedback,
+                                  int64_t &proxy_stat);
   static int calc_hit_partition_for_compat(const common::ObIArray<ObCandiTableLoc*> &phy_tbl_loc_info_list,
                                            const common::ObAddr &local_server,
                                            bool &is_hit_partition,
@@ -1713,6 +1717,10 @@ private: // member functions
                                           const common::ObAddr &local_server,
                                           const ObAddrList &intersect_servers,
                                           share::ObFollowerFirstFeedbackType &follower_first_feedback);
+
+  static int calc_rwsplit_partition_feedback(const common::ObIArray<ObCandiTableLoc*> &phy_tbl_loc_info_list,
+                                             const common::ObAddr &local_server,
+                                             int64_t &proxy_stat);
 
   int set_connect_by_property(JoinPath *join_path, ObLogJoin &log_join);
   static int calc_intersect_servers(const ObIArray<ObCandiTableLoc*> &phy_tbl_loc_info_list,
@@ -1733,6 +1741,8 @@ private: // member functions
                               common::ObIArray<ObObj> &popular_values) const;
   bool has_depend_json_table(const ObRelIds& table_ids);
   int adjust_expr_properties_for_external_table(ObRawExpr *col_expr, ObRawExpr *&expr) const;
+
+  int compute_duplicate_table_replicas(ObLogicalOperator *op);
 public:
   const ObLogPlanHint &get_log_plan_hint() const { return log_plan_hint_; }
   bool has_join_order_hint() { return !log_plan_hint_.join_order_.leading_tables_.is_empty(); }

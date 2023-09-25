@@ -392,6 +392,8 @@ int ObLogResourceCollector::revert_participants_(const int64_t thread_index,
 int ObLogResourceCollector::push_task_into_queue_(ObLogResourceRecycleTask &task)
 {
   int ret = OB_SUCCESS;
+  const static int64_t PUSH_TASK_TIMEOUT_WAIT_TIME = 1 * _MSEC_;
+  const static int64_t PUSH_TASK_TIMEOUT_PRINT_INTERVAL = 10 * _SEC_;
   static uint64_t part_trans_task_push_seq = 0;
   static uint64_t br_push_seq = 0;
   uint64_t hash_value = 0;
@@ -419,11 +421,15 @@ int ObLogResourceCollector::push_task_into_queue_(ObLogResourceRecycleTask &task
   while (OB_SUCC(ret) && ! RCThread::is_stoped()) {
     ret = RCThread::push(&task, hash_value, DATA_OP_TIMEOUT);
 
-    if (OB_TIMEOUT != ret) {
-      break;
-    } else {
-      // When timeout, need to retry
+    // retry if OB_TIMEOUT and break for other ret code
+    if (OB_UNLIKELY(OB_TIMEOUT == ret)) {
+      if (TC_REACH_TIME_INTERVAL(PUSH_TASK_TIMEOUT_PRINT_INTERVAL)) {
+        LOG_INFO("push task into RC Thread timeout, retrying", KR(ret));
+      }
+      usleep(PUSH_TASK_TIMEOUT_WAIT_TIME);
       ret = OB_SUCCESS;
+    } else {
+      break;
     }
   }
   // Note: After a task is pushed to the queue, it may be recycled quickly and the task cannot be accessed later
@@ -511,6 +517,7 @@ int ObLogResourceCollector::handle(void *data,
           // Copy the Trans ID to avoid invalidating the Trans ID when the PartTransTask is recycled
           uint64_t tenant_id = task->get_tenant_id();
           ObTransID trans_id = task->get_trans_id();
+          int64_t commit_version = task->get_trans_commit_version();
 
           if (OB_FAIL(trans_ctx_mgr_->get_trans_ctx(tenant_id, trans_id, trans_ctx, enable_create))) {
             LOG_ERROR("get trans_ctx fail", KR(ret), K(tenant_id), K(trans_id), K(*task));
@@ -540,12 +547,9 @@ int ObLogResourceCollector::handle(void *data,
             // do nothing
           }
 
-          // TODO optimize
           if (OB_SUCC(ret)) {
-            ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
-
-            if (OB_FAIL(lob_aux_meta_storager.del(tenant_id, trans_id))) {
-              LOG_ERROR("lob_aux_meta_storager del failed", K(tenant_id), K(trans_id));
+            if (OB_FAIL(push_lob_data_clean_task_(tenant_id, commit_version))) {
+              LOG_ERROR("push_lob_data_clean_task_ fail", KR(ret), K(tenant_id), K(trans_id), K(commit_version));
             }
           }
 
@@ -592,6 +596,12 @@ int ObLogResourceCollector::handle(void *data,
         ATOMIC_DEC(&br_count_);
         task = NULL;
       }
+    } else if (recycle_task->is_lob_data_clean_task()) {
+      ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
+      ObCDCLobAuxDataCleanTask *task = static_cast<ObCDCLobAuxDataCleanTask *>(recycle_task);
+      if (OB_FAIL(lob_aux_meta_storager.clean_unused_data(task))) {
+        LOG_ERROR("clean lob data fail", KR(ret));
+      }
     } else {
       LOG_ERROR("task type not supported", K(recycle_task), K(thread_index),
           "task_type", ObLogResourceRecycleTask::print_task_type(task_type));
@@ -606,6 +616,34 @@ int ObLogResourceCollector::handle(void *data,
     stop_flag = true;
   }
 
+  return ret;
+}
+
+int ObLogResourceCollector::push_lob_data_clean_task_(const uint64_t tenant_id, const int64_t commit_version)
+{
+  int ret = OB_SUCCESS;
+  ObCDCLobAuxMetaStorager &lob_aux_meta_storager = TCTX.lob_aux_meta_storager_;
+  ObCDCLobAuxDataCleanTask *clean_task = nullptr;
+  if (OB_FAIL(lob_aux_meta_storager.get_clean_task(tenant_id, clean_task))){
+    LOG_ERROR("lob_aux_meta_storager get_clean_task failed", KR(ret), K(tenant_id));
+  } else {
+    const bool is_task_push = ATOMIC_LOAD(&clean_task->is_task_push_);
+    const int64_t clean_task_interval = lob_aux_meta_storager.get_clean_task_interval();
+    if (is_task_push || ! REACH_TIME_INTERVAL(clean_task_interval)) {
+      LOG_DEBUG("no need push clean task", K(is_task_push), K(tenant_id), K(commit_version), K(clean_task_interval));
+    // try set flag by cas, oldv is false, newv is ture
+    // expect return oldv (false). if return true, means cas fail, just skip
+    } else if (ATOMIC_CAS(&clean_task->is_task_push_, false, true)) {
+      LOG_DEBUG("no need push clean task", K(is_task_push), K(tenant_id), K(commit_version), K(clean_task_interval));
+    } else {
+      ATOMIC_STORE(&clean_task->commit_version_, commit_version);
+      if (OB_FAIL(push_task_into_queue_(*clean_task))) {
+        LOG_ERROR("push_task_into_queue_ failed", KR(ret), KPC(clean_task), K(clean_task_interval));
+      } else {
+        LOG_INFO("push lob data clean task succ", KPC(clean_task), K(clean_task_interval));
+      }
+    }
+  }
   return ret;
 }
 

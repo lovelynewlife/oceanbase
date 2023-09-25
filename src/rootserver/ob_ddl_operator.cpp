@@ -3327,6 +3327,7 @@ int ObDDLOperator::alter_table_rename_index(
           if (nullptr != new_index_status) {
             new_index_table_schema.set_index_status(*new_index_status);
           }
+          new_index_table_schema.set_name_generated_type(GENERATED_TYPE_USER);
         }
         if (OB_FAIL(ret)) {
         } else if (OB_FAIL(new_index_table_schema.set_table_name(new_index_table_name))) {
@@ -3587,10 +3588,10 @@ int ObDDLOperator::update_aux_table(
       }
     } else if (table_type == AUX_LOB_META) {
       lob_meta_table_id = new_table_schema.get_aux_lob_meta_tid();
-      N = new_table_schema.has_lob_column() ? 1 : 0;
+      N = new_table_schema.has_lob_aux_table() ? 1 : 0;
     } else if (table_type == AUX_LOB_PIECE) {
       lob_piece_table_id = new_table_schema.get_aux_lob_piece_tid();
-      N = new_table_schema.has_lob_column() ? 1 : 0;
+      N = new_table_schema.has_lob_aux_table() ? 1 : 0;
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid table type", K(ret), K(table_type));
@@ -7097,7 +7098,7 @@ int ObDDLOperator::build_table_and_col_priv_array_for_revoke_all(
 {
   int ret = OB_SUCCESS;
   ObSEArray<const ObObjPriv *, 4> obj_priv_array;
-  uint64_t col_id;
+  uint64_t col_id = 0;
   CK (obj_priv_key.is_valid());
   OZ (schema_guard.get_obj_privs_in_grantor_ur_obj_id(obj_priv_key.tenant_id_,
                                                       obj_priv_key,
@@ -7629,7 +7630,7 @@ int ObDDLOperator::get_flush_priv_array(
     const ObUserInfo &user_info)
 {
   int ret = OB_SUCCESS;
-  int64_t raw_priv;
+  int64_t raw_priv = 0;
   bool exists = false;
 
   need_flush = FALSE;
@@ -9704,6 +9705,7 @@ int ObDDLOperator::revise_not_null_constraint_info(
         cst.set_constraint_id(new_cst_id);
         cst.set_schema_version(new_schema_version);
         cst.set_constraint_name(cst_name);
+        cst.set_name_generated_type(GENERATED_TYPE_SYSTEM);
         cst.set_check_expr(check_expr_str);
         cst.set_constraint_type(CONSTRAINT_TYPE_NOT_NULL);
         cst.set_rely_flag(false);
