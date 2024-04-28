@@ -26,11 +26,6 @@
 
 namespace oceanbase
 {
-namespace common
-{
-class ObServerConfig;
-class ObMemstoreAllocatorMgr;
-}
 namespace storage
 {
 class ObTenantFreezer;
@@ -74,11 +69,11 @@ public:
   int ls_freeze(const share::ObLSID &ls_id);
   // freeze a tablet
   int tablet_freeze(const common::ObTabletID &tablet_id,
-                    const bool is_force_freeze = false,
+                    const bool need_rewrite_tablet_meta = false,
                     const bool is_sync = false);
   int tablet_freeze(share::ObLSID ls_id,
                     const common::ObTabletID &tablet_id,
-                    const bool is_force_freeze = false,
+                    const bool need_rewrite_tablet_meta = false,
                     const bool is_sync = false);
   // check if this tenant's memstore is out of range, and trigger minor/major freeze.
   int check_and_do_freeze();
@@ -99,6 +94,11 @@ public:
   //                       unset success if the tablet is the one who slow the tenant.
   //                       else do nothing.
   int unset_tenant_slow_freeze(const common::ObTabletID &tablet_id);
+  // check whether the tenant mem limit, memstore limit has been changed.
+  // @param[in] curr_lower_limit, the new lower limit
+  // @param[in] curr_upper_limit, the new upper limit
+  bool is_tenant_mem_changed(const int64_t curr_lower_limit,
+                             const int64_t curr_upper_limit) const;
   // set tenant mem limit, both for min and max memory limit.
   // @param[in] lower_limit, the min memory limit will be set.
   // @param[in] upper_limit, the max memory limit will be set.
@@ -127,7 +127,7 @@ public:
   // used to print a log.
   static int rpc_callback();
   // update the memstore limit use sysconf.
-  void reload_config();
+  int reload_config();
   // print the tenant usage info into print_buf.
   // @param[out] print_buf, the buf is used to print.
   // @param[in] buf_len, the buf length.
@@ -142,7 +142,6 @@ public:
     retry_major_info_ = retry_major_info;
   }
   static int64_t get_freeze_trigger_interval() { return FREEZE_TRIGGER_INTERVAL; }
-  ObServerConfig *get_config() { return config_; }
   bool exist_ls_freezing();
 private:
   int check_memstore_full_(bool &last_result,
@@ -151,13 +150,13 @@ private:
                            const bool from_user = true);
   static int ls_freeze_(ObLS *ls,
                         const bool is_sync = true,
-                        const bool force_freeze = true,
+                        const bool need_rewrite_tablet_meta = true,
                         const int64_t abs_timeout_ts = INT64_MAX);
   static int ls_freeze_all_unit_(ObLS *ls,
                                  const int64_t abs_timeout_ts = INT64_MAX);
   static int tablet_freeze_(ObLS *ls,
                             const common::ObTabletID &tablet_id,
-                            const bool force_tablet_freeze,
+                            const bool need_rewrite_tablet_meta,
                             const bool is_sync,
                             const int64_t abs_timeout_ts);
   // freeze all the ls of this tenant.
@@ -170,6 +169,7 @@ private:
   // @param[in] rollback_freeze_cnt, reduce the tenant's freeze count by 1, if true.
   int unset_tenant_freezing_(const bool rollback_freeze_cnt);
   static int64_t get_freeze_trigger_percentage_();
+  static int64_t get_memstore_limit_percentage_();
   int post_freeze_request_(const storage::ObFreezeType freeze_type,
                            const int64_t try_frozen_version);
   int retry_failed_major_freeze_(bool &triggered);
@@ -209,9 +209,7 @@ private:
   obrpc::ObCommonRpcProxy *common_rpc_proxy_;
   const share::ObRsMgr *rs_mgr_;
   ObAddr self_;
-  common::ObServerConfig *config_;
   ObRetryMajorInfo retry_major_info_;
-  common::ObMemstoreAllocatorMgr *allocator_mgr_;
 
   common::ObOccamThreadPool freeze_trigger_pool_;
   common::ObOccamTimer freeze_trigger_timer_;

@@ -67,7 +67,7 @@ void ObOptOSGColumnStat::reset()
 ObOptOSGColumnStat* ObOptOSGColumnStat::create_new_osg_col_stat(common::ObIAllocator &allocator)
 {
   ObOptOSGColumnStat *new_osg_col_stat = OB_NEWx(ObOptOSGColumnStat, (&allocator), allocator);
-  ObOptColumnStat *new_col_stat = OB_NEWx(ObOptColumnStat, (&allocator), allocator);
+  ObOptColumnStat *new_col_stat = ObOptColumnStat::malloc_new_column_stat(allocator);
   if (OB_NOT_NULL(new_osg_col_stat) && OB_NOT_NULL(new_col_stat)) {
     new_osg_col_stat->col_stat_ = new_col_stat;
   } else {
@@ -117,9 +117,9 @@ int ObOptOSGColumnStat::set_min_max_datum_to_obj()
     LOG_WARN("failed to get min obj");
   } else if (OB_FAIL(max_val_.get_obj(*max_obj))) {
     LOG_WARN("failed to get max obj");
-  } else if (OB_FAIL(ObDbmsStatsUtils::shadow_truncate_string_for_opt_stats(*min_obj))) {
+  } else if (OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(*min_obj, allocator_))) {
     LOG_WARN("fail to truncate string", K(ret));
-  } else if (OB_FAIL(ObDbmsStatsUtils::shadow_truncate_string_for_opt_stats(*max_obj))) {
+  } else if (OB_FAIL(ObDbmsStatsUtils::truncate_string_for_opt_stats(*max_obj, allocator_))) {
     LOG_WARN("fail to truncate string", K(ret));
   } else {
     const ObObj &min_val = col_stat_->get_min_value();

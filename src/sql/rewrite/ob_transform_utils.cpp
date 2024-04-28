@@ -472,7 +472,7 @@ int ObTransformUtils::is_columns_unique(const ObIArray<ObRawExpr *> &exprs,
     } else if (!is_unique) {
       ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
       if (OB_FAIL(table_schema->get_simple_index_infos(
-                  simple_index_infos, false))) {
+                  simple_index_infos))) {
         LOG_WARN("get simple_index_infos failed", K(ret));
       }
       for (int64_t i = 0;
@@ -2177,6 +2177,8 @@ int ObTransformUtils::is_column_expr_not_null(ObNotNullContext &ctx,
       OB_ISNULL(table = stmt->get_table_item_by_id(expr->get_table_id()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table item is null", K(ret), K(expr->get_table_id()), K(*stmt));
+  } else if (is_virtual_table(table->ref_id_)) {
+    // 'NOT NULL' of the virtual table is unreliable
   } else if (ObOptimizerUtil::find_item(ctx.right_table_ids_, table->table_id_)) {
     // do nothing
   } else if (table->is_basic_table()) {
@@ -2816,6 +2818,8 @@ int ObTransformUtils::get_simple_filter_column(const ObDMLStmt *stmt,
             OB_UNLIKELY(!column_exprs.at(i)->is_column_ref_expr())) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get unexpected error", K(ret), KPC(column_exprs.at(i)));
+        } else if (table_id != static_cast<ObColumnRefRawExpr*>(column_exprs.at(i))->get_table_id()) {
+          //do nothing
         } else if (OB_FAIL(col_exprs.push_back(static_cast<ObColumnRefRawExpr*>(column_exprs.at(i))))) {
           LOG_WARN("failed to push back", K(ret));
         } else {/*do nothing*/}
@@ -3058,7 +3062,8 @@ int ObTransformUtils::get_simple_filter_column_in_parent_stmt(const ObDMLStmt *r
       } else if (OB_FALSE_IT(sel_idx = col->get_column_id() - OB_APP_MIN_COLUMN_ID)) {
       } else if (sel_idx < 0 || sel_idx >= sel_stmt->get_select_item_size()) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("select item index is incorrect", K(sel_idx), K(ret));
+        LOG_WARN("select item index is incorrect", KPC(parent_stmt), KPC(parent_col_exprs.at(i)),
+                                                   K(sel_idx), K(ret));
       } else {
         ObRawExpr *sel_expr = sel_stmt->get_select_item(sel_idx).expr_;
         ObColumnRefRawExpr *col_expr = NULL;
@@ -3231,7 +3236,7 @@ int ObTransformUtils::get_vaild_index_id(ObSqlSchemaGuard *schema_guard,
   } else if (OB_ISNULL(table_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table_schema is NULL", K(ret), K(table_schema));
-  } else if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos, false))) {
+  } else if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos))) {
     LOG_WARN("get simple_index_infos failed", K(ret));
   } else if (OB_FAIL(index_ids.push_back(table_item->ref_id_))) {
     LOG_WARN("failed to push back index id", K(ret), K(table_item->ref_id_));
@@ -3388,7 +3393,7 @@ int ObTransformUtils::classify_scalar_query_ref(ObRawExpr *expr,
     LOG_WARN("expr is null", K(ret));
   } else if (expr->is_query_ref_expr()) {
     ObQueryRefRawExpr *query_ref = static_cast<ObQueryRefRawExpr *>(expr);
-    if (query_ref->is_set() || query_ref->get_output_column() > 1) {
+    if (!query_ref->is_scalar()) {
       // if a query ref returns multi row or multi col,
       // we consider such query ref as a non-scalar one.
       if (OB_FAIL(add_var_to_array_no_dup(non_scalar_query_refs, expr))) {
@@ -3968,38 +3973,35 @@ int ObTransformUtils::check_exprs_unique_on_table_items(const ObDMLStmt *stmt,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret));
   } else {
-    lib::ContextParam param;
-    param.set_mem_attr(session_info->get_effective_tenant_id(), "CheckUnique",
-                       ObCtxIds::DEFAULT_CTX_ID)
-       .set_properties(lib::USE_TL_PAGE_OPTIONAL)
-       .set_page_size(OB_MALLOC_NORMAL_BLOCK_SIZE);
-    CREATE_WITH_TEMP_CONTEXT(param) {
-      ObArenaAllocator &alloc = CURRENT_CONTEXT->get_arena_allocator();
-      ObFdItemFactory fd_item_factory(alloc);
-      ObRawExprFactory expr_factory(alloc);
-      UniqueCheckHelper check_helper;
-      check_helper.alloc_ = &alloc;
-      check_helper.fd_factory_ = &fd_item_factory;
-      check_helper.expr_factory_ = &expr_factory;
-      check_helper.schema_checker_ = schema_checker;
-      check_helper.session_info_ = session_info;
-      UniqueCheckInfo res_info;
-      ObRelIds all_tables;
-      if (OB_FAIL(compute_tables_property(stmt, check_helper, table_items, conditions, res_info))) {
-        LOG_WARN("failed to compute tables property", K(ret));
-      } else if (OB_FAIL(get_rel_ids_from_tables(stmt, table_items, all_tables))) {
-        LOG_WARN("failed to add members", K(ret));
-      } else if (!is_strict && OB_FAIL(append(res_info.fd_sets_, res_info.candi_fd_sets_))) {
-        // is strict, use fd_item_set & candi_fd_set check unique
-        LOG_WARN("failed to append fd item sets", K(ret));
-      } else if (OB_FAIL(ObOptimizerUtil::is_exprs_unique(exprs, all_tables, res_info.fd_sets_,
-                                                          res_info.equal_sets_,
-                                                          res_info.const_exprs_,
-                                                          is_unique))) {
-        LOG_WARN("failed to check is exprs unique", K(ret));
-      } else {
-        LOG_TRACE("get is unique result", K(exprs), K(table_items), K(is_unique));
-      }
+    ObArenaAllocator alloc("CheckUnique", OB_MALLOC_NORMAL_BLOCK_SIZE,
+                           session_info->get_effective_tenant_id(),
+                           ObCtxIds::DEFAULT_CTX_ID);
+    ObFdItemFactory fd_item_factory(alloc);
+    ObRawExprFactory expr_factory(alloc);
+    UniqueCheckHelper check_helper;
+    check_helper.alloc_ = &alloc;
+    check_helper.fd_factory_ = &fd_item_factory;
+    check_helper.expr_factory_ = &expr_factory;
+    check_helper.schema_checker_ = schema_checker;
+    check_helper.session_info_ = session_info;
+    UniqueCheckInfo res_info;
+    ObRelIds all_tables;
+    if (OB_FAIL(compute_tables_property(stmt, check_helper, table_items, conditions, res_info))) {
+      LOG_WARN("failed to compute tables property", K(ret));
+    } else if (OB_FAIL(get_rel_ids_from_tables(stmt, table_items, all_tables))) {
+      LOG_WARN("failed to add members", K(ret));
+    } else if (!is_strict && OB_FAIL(append(res_info.fd_sets_, res_info.candi_fd_sets_))) {
+      // is strict, use fd_item_set & candi_fd_set check unique
+      LOG_WARN("failed to append fd item sets", K(ret));
+    } else if (OB_FAIL(ObOptimizerUtil::is_exprs_unique(exprs, all_tables, res_info.fd_sets_,
+                                                        res_info.equal_sets_,
+                                                        res_info.const_exprs_,
+                                                        is_unique))) {
+      LOG_WARN("failed to check is exprs unique", K(ret));
+    } else {
+      fd_item_factory.destory();
+      expr_factory.destory();
+      LOG_TRACE("get is unique result", K(exprs), K(table_items), K(is_unique));
     }
   }
   return ret;
@@ -4017,7 +4019,7 @@ int ObTransformUtils::check_stmt_unique(const ObSelectStmt *stmt,
   if (OB_ISNULL(stmt)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("stmt is null", K(ret));
-  } else if (OB_FAIL(stmt->get_select_exprs_without_lob(select_exprs))) {
+  } else if (OB_FAIL(stmt->get_select_exprs(select_exprs))) {
     LOG_WARN("failed to get select exprs", K(ret));
   } else if (OB_FAIL(SMART_CALL(check_stmt_unique(stmt,
                                                   session_info,
@@ -4089,37 +4091,34 @@ int ObTransformUtils::check_stmt_unique(const ObSelectStmt *stmt,
   if (OB_FAIL(ret) || is_unique || !need_check) {
     /*do nothing*/
   } else {
-    lib::ContextParam param;
-    param.set_mem_attr(session_info->get_effective_tenant_id(), "CheckUnique",
-                       ObCtxIds::DEFAULT_CTX_ID)
-       .set_properties(lib::USE_TL_PAGE_OPTIONAL)
-       .set_page_size(OB_MALLOC_NORMAL_BLOCK_SIZE);
-    CREATE_WITH_TEMP_CONTEXT(param) {
-      ObArenaAllocator &alloc = CURRENT_CONTEXT->get_arena_allocator();
-      ObFdItemFactory fd_item_factory(alloc);
-      ObRawExprFactory expr_factory(alloc);
-      UniqueCheckHelper check_helper;
-      check_helper.alloc_ = &alloc;
-      check_helper.fd_factory_ = &fd_item_factory;
-      check_helper.expr_factory_ = &expr_factory;
-      check_helper.schema_checker_ = schema_checker;
-      check_helper.session_info_ = session_info;
-      UniqueCheckInfo res_info;
-      ObRelIds all_tables;
-      if (OB_FAIL(compute_stmt_property(stmt, check_helper, res_info, extra_flags))) {
-        LOG_WARN("failed to compute stmt property", K(ret));
-      } else if (OB_FAIL(stmt->get_from_tables(all_tables))) {
-        LOG_WARN("failed to get from tables", K(ret));
-      } else if (!is_strict && OB_FAIL(append(res_info.fd_sets_, res_info.candi_fd_sets_))) {
-        // is strict, use fd_item_set & candi_fd_set check unique
-        LOG_WARN("failed to append fd item sets", K(ret));
-      } else if (OB_FAIL(ObOptimizerUtil::is_exprs_unique(exprs, all_tables, res_info.fd_sets_,
-                                                          res_info.equal_sets_,
-                                                          res_info.const_exprs_, is_unique))) {
-        LOG_WARN("failed to check is exprs unique", K(ret));
-      } else {
-        LOG_TRACE("get is unique result", K(ret), K(is_unique));
-      }
+    ObArenaAllocator alloc("CheckUnique", OB_MALLOC_NORMAL_BLOCK_SIZE,
+                           session_info->get_effective_tenant_id(),
+                           ObCtxIds::DEFAULT_CTX_ID);
+    ObFdItemFactory fd_item_factory(alloc);
+    ObRawExprFactory expr_factory(alloc);
+    UniqueCheckHelper check_helper;
+    check_helper.alloc_ = &alloc;
+    check_helper.fd_factory_ = &fd_item_factory;
+    check_helper.expr_factory_ = &expr_factory;
+    check_helper.schema_checker_ = schema_checker;
+    check_helper.session_info_ = session_info;
+    UniqueCheckInfo res_info;
+    ObRelIds all_tables;
+    if (OB_FAIL(compute_stmt_property(stmt, check_helper, res_info, extra_flags))) {
+      LOG_WARN("failed to compute stmt property", K(ret));
+    } else if (OB_FAIL(stmt->get_from_tables(all_tables))) {
+      LOG_WARN("failed to get from tables", K(ret));
+    } else if (!is_strict && OB_FAIL(append(res_info.fd_sets_, res_info.candi_fd_sets_))) {
+      // is strict, use fd_item_set & candi_fd_set check unique
+      LOG_WARN("failed to append fd item sets", K(ret));
+    } else if (OB_FAIL(ObOptimizerUtil::is_exprs_unique(exprs, all_tables, res_info.fd_sets_,
+                                                        res_info.equal_sets_,
+                                                        res_info.const_exprs_, is_unique))) {
+      LOG_WARN("failed to check is exprs unique", K(ret));
+    } else {
+      fd_item_factory.destory();
+      expr_factory.destory();
+      LOG_TRACE("get is unique result", K(ret), K(is_unique));
     }
   }
   return ret;
@@ -4354,11 +4353,12 @@ int ObTransformUtils::add_cast_for_replace_if_need(ObRawExprFactory &expr_factor
     const ObExprResType &dst_type = to_expr->get_result_type();
     bool need_length_cast = (ob_is_string_or_lob_type(dst_type.get_type()) || ob_is_rowid_tc(dst_type.get_type()))
                             ? (src_type.get_length() != dst_type.get_length()) : false;
+    bool need_zerofill_cast = from_expr->get_result_type().has_result_flag(ZEROFILL_FLAG) &&
+                              !to_expr->get_result_type().has_result_flag(ZEROFILL_FLAG);
     bool need_cast = (src_type.get_type() != dst_type.get_type()) ||
                      (src_type.get_precision() != dst_type.get_precision()) ||
                      (src_type.get_scale() != dst_type.get_scale()) ||
-                     from_expr->get_result_type().has_result_flag(ZEROFILL_FLAG) ||
-                     need_length_cast;
+                     need_zerofill_cast || need_length_cast;
     if (ob_is_string_or_lob_type(src_type.get_type())) {
       need_cast |= (src_type.get_collation_type() != dst_type.get_collation_type()) ||
                    (src_type.get_collation_level() != dst_type.get_collation_level());
@@ -6727,7 +6727,8 @@ int ObTransformUtils::create_view_with_groupby_items(ObSelectStmt *stmt,
       LOG_WARN("failed to append", K(ret));
     } else if (OB_FAIL(create_select_item(*(ctx->allocator_), select_list, view_stmt))) {
       LOG_WARN("failed to create select items", K(ret));
-    } else if (OB_FAIL(view_stmt->formalize_stmt_expr_reference())) {
+    } else if (OB_FAIL(view_stmt->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                ctx->session_info_))) {
       LOG_WARN("failed to formalize stmt expr reference", K(ret));
     } else if (OB_FAIL(view_stmt->get_stmt_hint().set_simple_view_hint())) {
       LOG_WARN("failed to set simple view hint", K(ret));
@@ -9112,6 +9113,9 @@ int ObTransformUtils::recursive_set_stmt_unique(ObSelectStmt *select_stmt,
     }
   } else if (OB_FAIL(select_stmt->get_from_tables(origin_output_rel_ids))) {
     LOG_WARN("failed to get output rel ids", K(ret));
+  } else if (OB_UNLIKELY(origin_output_rel_ids.is_empty())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected empty unique keys", K(ret), KPC(select_stmt));
   } else {
     ObIArray<TableItem *> &table_items = select_stmt->get_table_items();
     for (int64_t i = 0; OB_SUCC(ret) && i < table_items.count(); ++i) {
@@ -9189,10 +9193,13 @@ int ObTransformUtils::get_unique_keys_from_unique_stmt(const ObSelectStmt *selec
   unique_keys.reuse();
   added_unique_keys.reuse();
   ObConstRawExpr *expr = NULL;
+  const bool can_use_lob_as_unique_key = lib::is_mysql_mode();
   if (OB_ISNULL(select_stmt) || OB_ISNULL(expr_factory)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), K(select_stmt), K(expr_factory));
-  } else if (OB_FAIL(select_stmt->get_select_exprs_without_lob(unique_keys))) {
+  } else if (can_use_lob_as_unique_key && OB_FAIL(select_stmt->get_select_exprs(unique_keys))) {
+    LOG_WARN("failed to get select exprs", K(ret));
+  } else if (!can_use_lob_as_unique_key && OB_FAIL(select_stmt->get_select_exprs_without_lob(unique_keys))) {
     LOG_WARN("failed to get select exprs", K(ret));
   } else if (OB_LIKELY(!unique_keys.empty())) {
     /* do nothing */
@@ -10180,7 +10187,7 @@ int ObTransformUtils::replace_with_groupby_exprs(ObSelectStmt *select_stmt,
                                                         expr->get_param_expr(i),
                                                         need_query_compare,
                                                         trans_ctx,
-                                                        T_OP_ADD == expr->get_expr_type())))) {
+                                                        in_add_expr || T_OP_ADD == expr->get_expr_type())))) {
         LOG_WARN("failed to replace with groupby columns.", K(ret));
       } else { /*do nothing.*/ }
     }
@@ -10376,6 +10383,8 @@ bool ObTransformUtils::check_objparam_abs_equal(const ObObjParam &obj1, const Ob
     is_abs_equal = (obj1.get_double() + obj2.get_double() == 0) || (obj1.get_double() == obj2.get_double());
   } else if(obj1.is_float() && obj2.is_float()) {
     is_abs_equal = (obj1.get_float() + obj2.get_float() == 0) || (obj1.get_float() == obj2.get_float());
+  } else if (obj1.is_decimal_int() && obj2.is_decimal_int()) {
+    is_abs_equal = wide::abs_equal(obj1, obj2);
   }
   return is_abs_equal;
 }
@@ -10388,6 +10397,8 @@ bool ObTransformUtils::check_objparam_negative(const ObObjParam &obj1) {
     is_neg = (obj1.get_double() < 0);
   } else if(obj1.is_float()) {
     is_neg = (obj1.get_float()  < 0);
+  } else if (obj1.is_decimal_int()) {
+    is_neg = wide::is_negative(obj1.get_decimal_int(), obj1.get_int_bytes());
   }
   return is_neg;
 }
@@ -11865,6 +11876,33 @@ int ObTransformUtils::extract_udt_exprs(ObRawExpr *expr, ObIArray<ObRawExpr *> &
   return ret;
 }
 
+int ObTransformUtils::extract_json_object_exprs(ObRawExpr *expr, ObIArray<ObRawExpr *> &json_exprs)
+{
+  int ret = OB_SUCCESS;
+  ObString json_object_str(11, "json_object");
+  bool is_find = false;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), K(expr));
+  } else if (expr->get_expr_type() == T_FUN_SYS_JSON_OBJECT
+            && (0 == json_object_str.compare(static_cast<ObSysFunRawExpr*>(expr)->get_func_name()))) {
+    for (int32 i = 0; OB_SUCC(ret) && !is_find && i < expr->get_param_count() - 4; i += 3) {
+      if (expr->get_param_expr(i)->get_expr_type() != T_FUN_SYS_JSON_OBJECT_WILD_STAR) {
+      } else if (OB_FAIL(add_var_to_array_no_dup(json_exprs, expr))) {
+        LOG_WARN("failed to add var to array no dup", K(ret));
+      } else {
+        is_find = true;
+      }
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+    if (OB_FAIL(SMART_CALL(extract_json_object_exprs(expr->get_param_expr(i), json_exprs)))) {
+      LOG_WARN("Failed to extract rowid exprs", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::is_batch_stmt_write_table(uint64_t table_id,
                                                 const ObDMLStmt &stmt,
                                                 bool &is_target_table)
@@ -12745,7 +12783,7 @@ int ObTransformUtils::is_scalar_expr(ObRawExpr* expr, bool &is_scalar)
     is_scalar = false;
   } else if (expr->is_query_ref_expr()) {
     ObQueryRefRawExpr *query_ref = static_cast<ObQueryRefRawExpr*>(expr);
-    is_scalar = (!query_ref->is_set()) && (query_ref->get_output_column() == 1);
+    is_scalar = query_ref->is_scalar();
   }
   return ret;
 }
@@ -12954,7 +12992,8 @@ int ObTransformUtils::create_view_with_pre_aggregate(ObSelectStmt *stmt,
       LOG_WARN("failed to append shared exprs", K(ret));
     } else if (OB_FAIL(create_select_item(*(ctx->allocator_), select_list, view_stmt))) {
       LOG_WARN("failed to create select items", K(ret));
-    } else if (OB_FAIL(view_stmt->formalize_stmt_expr_reference())) {
+    } else if (OB_FAIL(view_stmt->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                ctx->session_info_))) {
       LOG_WARN("failed to formalize stmt expr reference", K(ret));
     } else if (OB_FAIL(view_stmt->get_stmt_hint().set_simple_view_hint())) {
       LOG_WARN("failed to set simple view hint", K(ret));
@@ -13195,6 +13234,33 @@ int ObTransformUtils::convert_aggr_expr(ObTransformerCtx *ctx,
   return ret;
 }
 
+int ObTransformUtils::check_stmt_is_only_full_group_by(const ObSelectStmt *stmt,
+                                                       bool &is_only_full_group_by)
+{
+  int ret = OB_SUCCESS;
+  is_only_full_group_by = true;
+  ObSEArray<ObRawExpr *, 4> exprs;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_FAIL(stmt->get_select_exprs(exprs))) {
+    LOG_WARN("failed to get select exprs", K(ret));
+  } else if (OB_FAIL(stmt->get_order_exprs(exprs))) {
+    LOG_WARN("failed to get order exprs", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && is_only_full_group_by && i < exprs.count(); i++) {
+    if (OB_FAIL(check_group_by_subset(exprs.at(i), stmt->get_group_exprs(), is_only_full_group_by))) {
+      LOG_WARN("check group by exprs failed", K(ret));
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && is_only_full_group_by && i < stmt->get_having_exprs().count(); i++) {
+    if (OB_FAIL(check_group_by_subset(stmt->get_having_exprs().at(i), stmt->get_group_exprs(), is_only_full_group_by))) {
+      LOG_WARN("check group by exprs failed", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::wrap_case_when_for_count(ObTransformerCtx *ctx,
                                                ObDMLStmt *stmt,
                                                ObColumnRefRawExpr *view_count,
@@ -13214,6 +13280,407 @@ int ObTransformUtils::wrap_case_when_for_count(ObTransformerCtx *ctx,
     LOG_WARN("failed to build case when expr", K(ret));
   } else {
     output = case_when;
+  }
+  return ret;
+}
+
+int ObTransformUtils::check_is_json_constraint(ObTransformerCtx *ctx,
+                                               ObDMLStmt *stmt,
+                                               ColumnItem& col_item,
+                                               bool &is_json)
+{
+  INIT_SUCC(ret);
+  TableItem *table = NULL;
+  const ParseNode *node = NULL;
+  const share::schema::ObTableSchema *table_schema = NULL;
+  is_json = false;
+
+  if (OB_ISNULL(stmt)
+      || OB_ISNULL(ctx)
+      || OB_ISNULL(ctx->session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null unexpected", K(ctx), K(stmt), K(ret));
+  } else if (OB_ISNULL(table = stmt->get_table_item_by_id(col_item.table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get table item", K(col_item.table_id_), K(ret));
+  } else if (table->is_json_table() || table->is_temp_table()
+              || table->is_generated_table() || table->is_function_table()) {
+    ObColumnRefRawExpr* col_expr = col_item.get_expr();
+    if (OB_NOT_NULL(col_expr)) {
+      is_json = (col_expr->get_result_type().get_calc_type() == ObJsonType
+                    || col_expr->get_result_type().get_type() == ObJsonType
+                    || col_expr->is_strict_json_column());
+    } else {
+      is_json = false;
+    }
+    if (!is_json) {
+      if (table->is_json_table()) {
+        for (size_t i = 0; i < table->json_table_def_->all_cols_.count(); ++i) {
+          const ObJtColBaseInfo& info = *table->json_table_def_->all_cols_.at(i);
+          const ObString& cur_column_name = info.col_name_;
+          if (info.col_type_ == static_cast<int32_t>(COL_TYPE_QUERY)) {
+            if (ObCharset::case_compat_mode_equal(cur_column_name, col_item.column_name_)) {
+              is_json = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+  } else if (OB_FAIL(ctx->schema_checker_->get_table_schema(ctx->session_info_->get_effective_tenant_id(),
+                                                            table->ref_id_, table_schema))) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("get table schema failed", K_(table->table_name), K(table->ref_id_), K(ret));
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table should not be null", K(table->ref_id_));
+  } else {
+    for (ObTableSchema::const_constraint_iterator iter = table_schema->constraint_begin();
+          OB_SUCC(ret) && iter != table_schema->constraint_end() && !is_json; iter ++) {
+      const ObConstraint* ptr_constrain = *iter;
+      if (OB_ISNULL(ptr_constrain)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("table schema constrain is null", K(ret));
+      } else if (OB_ISNULL(ptr_constrain->get_check_expr_str().ptr())) {
+      } else if (OB_FAIL(ObRawExprUtils::parse_bool_expr_node_from_str(
+          ptr_constrain->get_check_expr_str(), *(ctx->allocator_), node))) {
+        LOG_WARN("parse expr node from string failed", K(ret));
+      } else if (OB_ISNULL(node)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("parse expr get node failed", K(ret));
+      } else if (node->type_ == T_FUN_SYS_IS_JSON
+                  && ptr_constrain->get_column_cnt() > 0
+                  && col_item.column_id_ == *(ptr_constrain->cst_col_begin())) {
+        is_json = true;
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObTransformUtils::add_dummy_expr_for_json_object_node(ObTransformerCtx *ctx,
+                                                          ObSEArray<ObRawExpr *, 1>& param_array)
+{
+  INIT_SUCC(ret);
+  ObConstRawExpr* key_expr = NULL;
+  ObConstRawExpr* value_expr = NULL;
+  ObConstRawExpr* format_expr = NULL;
+  const char *ptr_name = "DUMMY";
+  const char *ptr_value = "X";
+  if (OB_ISNULL(ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("input can not be null", K(ret));
+  } else if (OB_FAIL(ctx->expr_factory_->create_raw_expr(T_VARCHAR, key_expr))) {
+    LOG_WARN("create const expr failed", K(ret));
+  } else if (OB_ISNULL(key_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("true expr is NULL", K(ret));
+  } else {
+    ObObj key_obj;
+    key_obj.set_varchar(ptr_name);
+    key_obj.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+    key_obj.set_collation_level(CS_LEVEL_IMPLICIT);
+    key_expr->set_value(key_obj);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ctx->expr_factory_->create_raw_expr(T_VARCHAR, value_expr))) {
+    LOG_WARN("create const expr failed", K(ret));
+  } else if (OB_ISNULL(key_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("true expr is NULL", K(ret));
+  } else {
+    ObObj val_obj;
+    val_obj.set_varchar(ptr_value);
+    val_obj.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+    val_obj.set_collation_level(CS_LEVEL_IMPLICIT);
+    value_expr->set_value(val_obj);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ctx->expr_factory_->create_raw_expr(T_INT, format_expr))) {
+    LOG_WARN("create const expr failed", K(ret));
+  } else if (OB_ISNULL(format_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("true expr is NULL", K(ret));
+  } else {
+    ObObj format_obj;
+    format_obj.set_int(0);
+    format_expr->set_data_type(ObIntType);
+    format_expr->set_value(format_obj);
+    format_expr->set_param(format_obj);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(param_array.push_back(key_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  } else if (OB_FAIL(param_array.push_back(value_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  } else if (OB_FAIL(param_array.push_back(format_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  }
+  return ret;
+}
+
+int ObTransformUtils::add_column_expr_for_json_object_node(ObTransformerCtx *ctx,
+                                                           ObDMLStmt *stmt,
+                                                           ColumnItem& col_item,
+                                                           ObSEArray<ObRawExpr *, 1>& param_array)
+{
+  INIT_SUCC(ret);
+  ObConstRawExpr* key_expr = NULL;
+  ObColumnRefRawExpr* value_expr = NULL;
+  ObConstRawExpr* format_expr = NULL;
+  bool is_json = false;
+
+  if (OB_ISNULL(ctx) || OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("input can not be null", K(ret));
+  } else if (OB_FAIL(ctx->expr_factory_->create_raw_expr(T_VARCHAR, key_expr))) {
+    LOG_WARN("create const expr failed", K(ret));
+  } else if (OB_ISNULL(key_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("true expr is NULL", K(ret));
+  } else {
+    ObObj key_obj;
+    key_obj.set_varchar(col_item.column_name_);
+    key_obj.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+    key_obj.set_collation_level(CS_LEVEL_IMPLICIT);
+    key_expr->set_value(key_obj);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(value_expr = col_item.expr_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("can not get column raw expr", K(ret));
+  } else if (OB_FAIL(ctx->expr_factory_->create_raw_expr(T_INT, format_expr))) {
+    LOG_WARN("create const expr failed", K(ret));
+  } else if (OB_ISNULL(format_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("true expr is NULL", K(ret));
+  } else if (check_is_json_constraint(ctx, stmt, col_item, is_json)) {
+    LOG_WARN("fail to check is json constraint", K(ret));
+  } else {
+    ObObj format_obj;
+    format_obj.set_int(is_json);
+    format_expr->set_data_type(ObIntType);
+    format_expr->set_value(format_obj);
+    format_expr->set_param(format_obj);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(param_array.push_back(key_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  } else if (OB_FAIL(param_array.push_back(value_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  } else if (OB_FAIL(param_array.push_back(format_expr))) {
+    LOG_WARN("can not push key expr to array", K(ret));
+  }
+
+  return ret;
+}
+
+int ObTransformUtils::get_expand_node_from_star(ObTransformerCtx *ctx,
+                                                ObDMLStmt *stmt,
+                                                ObRawExpr *param_expr,
+                                                ObSEArray<ObRawExpr *, 1>& param_array)
+{
+  INIT_SUCC(ret);
+  TableItem *table = NULL;
+  ObRawExpr* node_expr = NULL;
+  int64_t num_child = 0;
+  bool all_tab = true;
+  const int8_t TABLE_NAME_POS = 0;
+  ObString tab_name;
+  bool tab_has_alias = false;
+  ObSEArray<ColumnItem, 4> columns_list;
+  bool is_empty_table = false;
+
+  if (OB_ISNULL(param_expr) || param_expr->get_param_count() != 1
+      || OB_ISNULL(param_expr->get_param_expr(TABLE_NAME_POS))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("node should not be null", K(ret));
+  } else if (param_expr->get_param_expr(TABLE_NAME_POS)->get_expr_type() == T_VARCHAR) {
+    ObConstRawExpr* name_expr = static_cast<ObConstRawExpr*>(param_expr->get_param_expr(TABLE_NAME_POS));
+    tab_name = name_expr->get_value().get_string();
+    all_tab = false;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(get_column_node_from_table(ctx, stmt, tab_name, columns_list, all_tab, tab_has_alias, table, is_empty_table))) {
+    LOG_WARN("fail to get coulmn node from table", K(ret));
+  } else if (OB_ISNULL(table)) {
+    if (!is_empty_table) {
+      ret = OB_ERR_KEY_COLUMN_DOES_NOT_EXITS;
+      LOG_USER_ERROR(OB_ERR_KEY_COLUMN_DOES_NOT_EXITS, tab_name.length(), tab_name.ptr());
+    } else if (OB_FAIL(add_dummy_expr_for_json_object_node(ctx, param_array))) {
+      LOG_WARN("fail to resolve dual table", K(ret));
+    }
+  } else {
+    int64_t num = columns_list.count();
+    for (int64_t i = 0; OB_SUCC(ret) && i < num; i++) {
+      if (columns_list.at(i).column_id_ < OB_APP_MIN_COLUMN_ID) {
+      } else if (OB_FAIL(add_column_expr_for_json_object_node(ctx, stmt, columns_list.at(i), param_array))) {
+        LOG_WARN("json object star node parse fail", K(ret));
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObTransformUtils::get_column_node_from_table(ObTransformerCtx *ctx,
+                                                 ObDMLStmt *stmt,
+                                                 ObString& tab_name,
+                                                 ObSEArray<ColumnItem, 4>& column_list,
+                                                 bool all_tab,
+                                                 bool &tab_has_alias,
+                                                 TableItem *&tab_item,
+                                                 bool &is_empty_table)
+{
+  INIT_SUCC(ret);
+  int64_t num = 0;
+  ObColumnRefRawExpr *col_expr = NULL;
+  const ObTableSchema *table_schema = NULL;
+  const ObColumnSchemaV2 *col_schema = NULL;
+  bool col_is_exist = false;
+
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("select stmt is null");
+  } else {
+    num = stmt->get_table_size();
+  }
+  if (num == 0) {
+    is_empty_table = true;
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < num; i++) {
+    const TableItem *tmp_table_item = stmt->get_table_item(i);
+    if (OB_ISNULL(tmp_table_item)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table item is null");
+    } else if (OB_NOT_NULL(tab_name.ptr()) && !all_tab && tmp_table_item->table_name_ != tab_name && tmp_table_item->alias_name_ != tab_name) {
+      // other table should chose
+    } else {
+      if (tmp_table_item->alias_name_ == tab_name ||
+          (num > 1 && tmp_table_item->table_name_ == tab_name && stmt->get_stmt_type() == stmt::T_SELECT)) {
+        tab_has_alias = true;
+      }
+      tab_item = const_cast<TableItem *>(tmp_table_item);
+
+      if (OB_FAIL(ctx->schema_checker_->get_table_schema(ctx->session_info_->get_effective_tenant_id(),
+                                                                tmp_table_item->ref_id_, table_schema))) { // get table schema
+        if ((tmp_table_item->is_generated_table()
+              || tmp_table_item->is_temp_table())
+            && OB_NOT_NULL(tmp_table_item->ref_query_)) {
+          if (OB_FAIL(stmt->get_column_items(tmp_table_item->table_id_, column_list))) {
+            LOG_WARN("fail to get column items from generate or temp table", K(ret));
+          }
+        } else if (tmp_table_item->is_json_table()) {
+          ret = OB_SUCCESS;
+          if (OB_FAIL(ObTransformUtils::get_columnitem_from_json_table(stmt, tmp_table_item, column_list))) {
+            LOG_WARN("fail to get column item from json table", K(ret));
+          }
+        } else {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("failed to get table schema", K(ret));
+        }
+      } else {
+        ObTableSchema::const_column_iterator iter = table_schema->column_begin();
+        ObTableSchema::const_column_iterator end = table_schema->column_end();
+        for (int64_t i = 0; OB_SUCC(ret) && iter != end; ++iter, i++) {
+          col_is_exist = false;
+          col_schema = *iter;
+          col_expr = NULL;
+          ColumnItem column_item;
+          ColumnItem* col_item = stmt->get_column_item_by_id(tmp_table_item->table_id_, col_schema->get_column_id());
+          if (OB_NOT_NULL(col_item)) {
+            col_is_exist = true;
+          } else if (OB_ISNULL(col_schema) || col_schema->is_generated_column()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("column schema is NULL", K(ret));
+          } else if (col_schema->is_extend()) {
+            ret = OB_ERR_JSON_FUN_UNSUPPORTED_TYPE;
+            LOG_WARN("unsupported data type in json object function", K(ret));
+          } else if (ObRawExprUtils::build_column_expr(*ctx->expr_factory_, *col_schema, col_expr)) {
+            LOG_WARN("fail to create col expr by column schema", K(ret));
+          } else {
+            col_expr->set_table_name(tmp_table_item->table_name_);
+            col_expr->set_table_id(tmp_table_item->table_id_);
+            column_item.expr_ = col_expr;
+            column_item.table_id_ = col_expr->get_table_id();
+            column_item.column_id_ = col_expr->get_column_id();
+            column_item.column_name_ = col_expr->get_column_name();
+            col_item = &column_item;
+          }
+          if (OB_FAIL(ret)) {
+          } else if (!col_is_exist && OB_FAIL(stmt->add_column_item(*col_item))) {
+            LOG_WARN("add column item to stmt failed", K(ret), K(col_item));
+          } else if (OB_FAIL(column_list.push_back(*col_item))) {
+            LOG_WARN("fail to push column expr in array", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformUtils::get_columnitem_from_json_table(ObDMLStmt *stmt,
+                                                     const TableItem *tmp_table_item,
+                                                     ObSEArray<ColumnItem, 4>& column_list)
+{
+  INIT_SUCC(ret);
+  ObJsonTableDef* jt_def = NULL;
+  if (OB_ISNULL(jt_def = tmp_table_item->json_table_def_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table_item json_table_def_ is null", K(tmp_table_item->json_table_def_));
+  } else {
+    for (size_t i = 0; OB_SUCC(ret) && i < jt_def->all_cols_.count(); ++i) {
+      ObJtColBaseInfo* col_info = jt_def->all_cols_.at(i);
+      if (OB_ISNULL(col_info)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("col info is null", K(ret), K(i));
+      } else if (col_info->col_type_ != NESTED_COL_TYPE) {
+        ColumnItem* col_item = stmt->get_column_item_by_id(tmp_table_item->table_id_, col_info->output_column_idx_);
+        if (OB_ISNULL(col_item)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("col item is null", K(ret), K(i));
+        } else if (OB_FAIL(stmt->add_column_item(*col_item))) {
+          LOG_WARN("add column item to stmt failed", K(ret), K(col_item));
+        } else if (OB_FAIL(column_list.push_back(*col_item))) {
+          LOG_WARN("fail to store col result", K(ret));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformUtils::expand_wild_star_to_columns(ObTransformerCtx *ctx,
+                                                  ObDMLStmt *stmt,
+                                                  ObSysFunRawExpr *json_object_expr)
+{
+  INIT_SUCC(ret);
+  ObSEArray<ObRawExpr *, 1> new_col_arr;
+
+  for (int32_t i = 0; OB_SUCC(ret) && i < json_object_expr->get_param_count(); i++) {
+    if (OB_ISNULL(json_object_expr->get_param_expr(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret), K(json_object_expr));
+    } else if (json_object_expr->get_param_expr(i)->get_expr_type() == T_FUN_SYS_JSON_OBJECT_WILD_STAR) {
+      if (OB_FAIL(get_expand_node_from_star(ctx, stmt, json_object_expr->get_param_expr(i), new_col_arr))) {
+        LOG_WARN("fail to expand star node", K(ret));
+      } else {
+        i += 2;
+      }
+    } else if (OB_FAIL(new_col_arr.push_back(json_object_expr->get_param_expr(i)))) {
+      LOG_WARN("fail to push back expr to array", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    // clear child then append, raw expr not support insert
+    json_object_expr->clear_child();
+    for (int32_t i = 0; OB_SUCC(ret) && i < new_col_arr.count(); i++) {
+      if (OB_FAIL(json_object_expr->add_param_expr(new_col_arr.at(i)))) {
+        LOG_WARN("can not push expr into json object expr", K(ret));
+      }
+    }
   }
   return ret;
 }
@@ -13417,6 +13884,36 @@ int ObTransformUtils::check_is_index_part_key(ObTransformerCtx &ctx,
   return ret;
 }
 
+int ObTransformUtils::check_group_by_subset(ObRawExpr *expr,
+                                            const ObIArray<ObRawExpr *> &group_exprs,
+                                            bool &bret)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("expr is null", K(ret));
+  } else {
+    bret = true;
+    int64_t idx = -1;
+    if (expr->has_flag(IS_AGG) || expr->has_flag(IS_CONST)) {
+      //do nothing
+    } else if (OB_FAIL(ObTransformUtils::get_expr_idx(group_exprs, expr, idx))) {
+      LOG_WARN("get expr idx failed", K(ret));
+    } else if (idx == -1) { //not found
+      if (expr->get_param_count() == 0) {
+        bret = false;
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && bret && i < expr->get_param_count(); i++) {
+          if (OB_FAIL(SMART_CALL(check_group_by_subset(expr->get_param_expr(i), group_exprs, bret)))) {
+            LOG_WARN("check group by subset faield", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::get_stmt_map_after_copy(ObDMLStmt *origin_stmt,
                                               ObDMLStmt *new_stmt,
                                               hash::ObHashMap<uint64_t, ObDMLStmt *> &stmt_map)
@@ -13501,9 +13998,11 @@ int ObTransformUtils::expand_temp_table(ObTransformerCtx *ctx, ObDMLStmt::TempTa
           LOG_WARN("unexpect null stmt", K(ret));
         } else if (OB_FAIL(temp_table_query->formalize_stmt(ctx->session_info_))) {
           LOG_WARN("failed to formalize stmt", K(ret));
-        } else if (OB_FAIL(temp_table_query->formalize_stmt_expr_reference())) {
+        } else if (OB_FAIL(temp_table_query->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                           ctx->session_info_))) {
           LOG_WARN("failed to formalize stmt reference", K(ret));
-        } else if (OB_FAIL(upper_stmt->formalize_stmt_expr_reference())) {
+        } else if (OB_FAIL(upper_stmt->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                     ctx->session_info_))) {
           LOG_WARN("failed to formalize stmt reference", K(ret));
         }
       } else if (OB_FAIL(ctx->stmt_factory_->create_stmt<ObSelectStmt>(child_stmt))) {
@@ -13517,7 +14016,8 @@ int ObTransformUtils::expand_temp_table(ObTransformerCtx *ctx, ObDMLStmt::TempTa
         LOG_WARN("failed to deep copy stmt", K(ret));
       } else if (OB_FAIL(child_stmt->formalize_stmt(ctx->session_info_))) {
         LOG_WARN("failed to formalize stmt", K(ret));
-      } else if (OB_FAIL(child_stmt->formalize_stmt_expr_reference())) {
+      } else if (OB_FAIL(child_stmt->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                   ctx->session_info_))) {
         LOG_WARN("failed to formalize stmt reference", K(ret));
       } else if (OB_FAIL(child_stmt->recursive_adjust_statement_id(ctx->allocator_,
                                                                    ctx->src_hash_val_,
@@ -13525,7 +14025,8 @@ int ObTransformUtils::expand_temp_table(ObTransformerCtx *ctx, ObDMLStmt::TempTa
         LOG_WARN("failed to recursive adjust statement id", K(ret));
       } else if (OB_FAIL(child_stmt->update_stmt_table_id(*temp_table_query))) {
         LOG_WARN("failed to update table id", K(ret));
-      } else if (OB_FAIL(upper_stmt->formalize_stmt_expr_reference())) {
+      } else if (OB_FAIL(upper_stmt->formalize_stmt_expr_reference(ctx->expr_factory_,
+                                                                   ctx->session_info_))) {
         LOG_WARN("failed to formalize stmt reference", K(ret));
       } else {
         table->ref_query_ = child_stmt;
@@ -13786,13 +14287,15 @@ int ObTransformUtils::check_convert_string_safely(const ObRawExpr *expr,
 // Q2: select * from (select * from t1 intersect select * from t2) v where concat(c1,'a') = 'aa';
 // only predicate in Q1 can be pushdown into set stmt
 // TODO: sean.yyj, concat(c1,'a') = 'aa' can be pushdown into UNION after solved collation level bug
-int ObTransformUtils::check_pushdown_into_set_valid(ObRawExpr *expr,
+int ObTransformUtils::check_pushdown_into_set_valid(const ObSelectStmt* child_stmt,
+                                                    ObRawExpr *expr,
                                                     const ObIArray<ObRawExpr *> &set_op_exprs,
                                                     bool &is_valid)
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr *, 4> parent_exprs;
-  if (OB_FAIL(recursive_check_pushdown_into_set_valid(expr,
+  if (OB_FAIL(recursive_check_pushdown_into_set_valid(child_stmt,
+                                                      expr,
                                                       set_op_exprs,
                                                       parent_exprs,
                                                       is_valid))) {
@@ -13802,6 +14305,7 @@ int ObTransformUtils::check_pushdown_into_set_valid(ObRawExpr *expr,
 }
 
 int ObTransformUtils::recursive_check_pushdown_into_set_valid(
+    const ObSelectStmt* child_stmt,
     ObRawExpr *expr,
     const ObIArray<ObRawExpr *> &set_op_exprs,
     ObIArray<ObRawExpr *> &parent_exprs,
@@ -13817,6 +14321,8 @@ int ObTransformUtils::recursive_check_pushdown_into_set_valid(
   } else if (ObOptimizerUtil::find_item(set_op_exprs, expr)) {
     if (OB_FAIL(ObTransformUtils::check_can_replace(expr, parent_exprs, false, is_valid))) {
       LOG_WARN("failed to check can replace expr", K(ret));
+    } else if (is_valid && check_child_projection_validity(child_stmt, expr, is_valid)) {
+      LOG_WARN("failed to check push to set child validity", K(ret));
     }
   } else if (OB_UNLIKELY(expr->is_set_op_expr())) {
     ret = OB_ERR_UNEXPECTED;
@@ -13826,7 +14332,8 @@ int ObTransformUtils::recursive_check_pushdown_into_set_valid(
       if (OB_FAIL(parent_exprs.push_back(expr))) {
         LOG_WARN("failed to push back", K(ret));
       }
-      if (OB_FAIL(SMART_CALL(recursive_check_pushdown_into_set_valid(expr->get_param_expr(i),
+      if (OB_FAIL(SMART_CALL(recursive_check_pushdown_into_set_valid(child_stmt,
+                                                                     expr->get_param_expr(i),
                                                                      set_op_exprs,
                                                                      parent_exprs,
                                                                      is_valid)))) {
@@ -13835,6 +14342,41 @@ int ObTransformUtils::recursive_check_pushdown_into_set_valid(
       if (OB_SUCC(ret)) {
         parent_exprs.pop_back();
       }
+    }
+  }
+  return ret;
+}
+
+int ObTransformUtils::check_child_projection_validity(const ObSelectStmt *child_stmt,
+                                                      ObRawExpr *expr,
+                                                      bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  is_valid = true;
+  ObSetOpRawExpr* set_op_expr = NULL;
+  if (OB_ISNULL(child_stmt) || OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null pointer", K(ret), K(child_stmt), K(expr));
+  } else if (OB_UNLIKELY(!expr->is_set_op_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected expr type", K(ret), K(expr->get_expr_type()));
+  } else if (OB_FALSE_IT(set_op_expr = static_cast<ObSetOpRawExpr*>(expr))) {
+  } else {
+    int64_t proj_idx = set_op_expr->get_idx();
+    ObRawExpr *proj_expr = NULL;
+    if (proj_idx < 0 || proj_idx >= child_stmt->get_select_item_size()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected index of select items", K(ret), K(proj_idx), K(child_stmt->get_select_item_size()));
+    } else if (OB_ISNULL(proj_expr = child_stmt->get_select_item(proj_idx).expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null pointer", K(ret));
+    } else if (proj_expr->has_flag(CNT_SUB_QUERY)) {
+      /*
+      * disable pushdown predicates that reference a select item containing subquery in set query.
+      * e.g. select * from (select 1 a, exists(select 1 from t2 where t1.c1=t2.c1) b from t1
+      *      union all select c1,c2 from t1) v where b is true;
+      */
+      is_valid = false;
     }
   }
   return ret;

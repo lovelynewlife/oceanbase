@@ -15,7 +15,7 @@ set @@session.ob_query_timeout = 200000000;
 source init_create_tenant_routines.sql;
 
 call adjust_sys_resource();
-call create_tenant_by_memory_resource('mysql', 'mysql');
+call create_tenant_with_arg('mysql', 'mysql', '2c2g', '');
 
 /****************************** ATTENTION ******************************/
 /* The tenant=all will be deprecated. If you want all tenants to be    */
@@ -44,3 +44,10 @@ alter system set_tp tp_no = 1200, error_code = 4001, frequency = 1;
 alter system set_tp tp_no = 509, error_code = 4016, frequency = 1;
 alter system set_tp tp_no = 368, error_code = 4016, frequency = 1;
 alter system set_tp tp_no = 551, error_code = 5434, frequency = 1;
+
+alter system set _enable_var_assign_use_das = true tenant = sys;
+alter system set _enable_var_assign_use_das = true tenant = all_user;
+alter system set _enable_var_assign_use_das = true tenant = all_meta;
+alter system set _enable_spf_batch_rescan = true tenant = sys;
+alter system set _enable_spf_batch_rescan = true tenant = all_user;
+alter system set _enable_spf_batch_rescan = true tenant = all_meta;

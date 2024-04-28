@@ -15,6 +15,7 @@
 #include "share/schema/ob_schema_getter_guard.h"
 #include "observer/ob_server_struct.h"
 #include "share/partition_table/ob_partition_location.h"
+#include "share/location_cache/ob_location_service.h"
 
 using namespace oceanbase::observer;
 using namespace oceanbase::common;
@@ -74,7 +75,7 @@ int ObTableMoveResponseSender::init(const uint64_t table_id,
 
       // set move pcode
       response_sender_.set_pcode(obrpc::OB_TABLE_API_MOVE);
-      LOG_DEBUG("move response init successfully", K(replica));
+      LOG_INFO("move response init successfully", K(replica));
     }
   }
 

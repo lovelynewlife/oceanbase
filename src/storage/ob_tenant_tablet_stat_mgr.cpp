@@ -1,8 +1,15 @@
-/*
- * (C) Copyright 2022 Alipay Inc. All Rights Reserved.
- * Authors:
- *     Danling <>
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
+
 #define USING_LOG_PREFIX STORAGE
 
 #include "lib/oblog/ob_log_module.h"
@@ -11,6 +18,7 @@
 #include "storage/ob_tenant_tablet_stat_mgr.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_server.h"
+#include <sys/sysinfo.h>
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -181,6 +189,13 @@ ObTabletStat& ObTabletStat::archive(int64_t factor)
 
 
 /************************************* ObTabletStatAnalyzer *************************************/
+ObTabletStatAnalyzer::ObTabletStatAnalyzer()
+  : tablet_stat_(),
+    boost_factor_(1),
+    is_small_tenant_(false)
+{
+}
+
 bool ObTabletStatAnalyzer::is_hot_tablet() const
 {
   return tablet_stat_.query_cnt_ + tablet_stat_.merge_cnt_ >= ACCESS_FREQUENCY * boost_factor_;
@@ -266,9 +281,9 @@ bool ObTenantSysStat::is_full_cpu_usage() const
 {
   bool bret = false;
   if (is_small_tenant()) {
-    bret = max_cpu_cnt_ * 60 <= cpu_usage_percentage_;
+    bret = 75 <= cpu_usage_percentage_;
   } else {
-    bret = max_cpu_cnt_ * 70 <= cpu_usage_percentage_;
+    bret = 85 <= cpu_usage_percentage_;
   }
   return bret;
 }
@@ -488,6 +503,82 @@ void ObTabletStreamPool::free(ObTabletStreamNode *node)
 }
 
 
+/************************************* ObTenantSysLoadShedder *************************************/
+ObTenantSysLoadShedder::ObTenantSysLoadShedder()
+{
+  reset();
+}
+
+void ObTenantSysLoadShedder::reset()
+{
+  MEMSET(this, 0, sizeof(ObTenantSysLoadShedder));
+  load_shedding_factor_ = 1;
+}
+
+void ObTenantSysLoadShedder::refresh_sys_load()
+{
+  if (load_shedding_factor_ > 1 &&
+      ObTimeUtility::fast_current_time() < effect_time_ + SHEDDER_EXPIRE_TIME) {
+    // do nothing
+  } else if (REACH_TENANT_TIME_INTERVAL(CPU_TIME_SAMPLING_INTERVAL)) {
+    load_shedding_factor_ = 1;
+    (void) refresh_cpu_utility();
+
+    if (1 >= load_shedding_factor_) {
+      (void) refresh_cpu_usage();
+    }
+  }
+}
+
+int ObTenantSysLoadShedder::refresh_cpu_utility()
+{
+  int ret = OB_SUCCESS;
+  int64_t curr_cpu_time = last_cpu_time_;
+  int64_t inc_cpu_time = 0;
+  int64_t physical_cpu_utility = 0;
+  double max_cpu_cnt = 0; // placeholder
+
+  if (OB_FAIL(GCTX.omt_->get_tenant_cpu(MTL_ID(), min_cpu_cnt_, max_cpu_cnt))) {
+    LOG_WARN("failed to get tennant cpu cnt", K(ret));
+  } else if (OB_FAIL(GCTX.omt_->get_tenant_cpu_time(MTL_ID(), curr_cpu_time))) {
+    LOG_WARN("failed to get tennant cpu cnt", K(ret));
+  } else {
+    const int64_t curr_sample_time = ObTimeUtility::fast_current_time();
+    if (0 == last_sample_time_) {
+      // first time sample, no need to calculate cpu utility
+    } else {
+      inc_cpu_time = curr_cpu_time - last_cpu_time_;
+      physical_cpu_utility = inc_cpu_time * 100 / (curr_sample_time - last_sample_time_);
+    }
+    last_sample_time_ = curr_sample_time;
+
+    if (physical_cpu_utility >= min_cpu_cnt_ * CPU_UTIL_THRESHOLD) {
+      ATOMIC_STORE(&load_shedding_factor_, DEFAULT_LOAD_SHEDDING_FACTOR);
+      effect_time_ = ObTimeUtility::fast_current_time();
+    }
+  }
+
+  // debug log, remove later
+  FLOG_INFO("BatMan refresh cpu utility", K(ret), K(load_shedding_factor_), K(min_cpu_cnt_), K(inc_cpu_time), K(physical_cpu_utility));
+  return ret;
+}
+
+int ObTenantSysLoadShedder::refresh_cpu_usage()
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_FAIL(GCTX.omt_->get_tenant_cpu_usage(MTL_ID(), cpu_usage_))) {
+    LOG_WARN("failed to get tenant cpu usage", K(ret));
+  } else if (cpu_usage_ * 100 >= CPU_UTIL_THRESHOLD) {
+    effect_time_ = ObTimeUtility::fast_current_time();
+    ATOMIC_STORE(&load_shedding_factor_, DEFAULT_LOAD_SHEDDING_FACTOR);
+  }
+
+  // debug log, remove later
+  FLOG_INFO("BatMan refresh cpu usage", K(ret), K(load_shedding_factor_), "cpu_usage_percent", cpu_usage_ * 100 * 100);
+  return ret;
+}
+
 /************************************* ObTenantTabletStatMgr *************************************/
 ObTenantTabletStatMgr::ObTenantTabletStatMgr()
   : report_stat_task_(*this),
@@ -495,6 +586,7 @@ ObTenantTabletStatMgr::ObTenantTabletStatMgr()
     stream_map_(),
     bucket_lock_(),
     report_queue_(),
+    load_shedder_(),
     report_cursor_(0),
     pending_cursor_(0),
     report_tg_id_(0),
@@ -531,6 +623,7 @@ int ObTenantTabletStatMgr::init(const int64_t tenant_id)
   } else if (OB_FAIL(TG_SCHEDULE(report_tg_id_, report_stat_task_, TABLET_STAT_PROCESS_INTERVAL, repeat))) {
     LOG_WARN("failed to schedule tablet stat update task", K(ret));
   } else {
+    load_shedder_.refresh_sys_load();
     is_inited_ = true;
   }
   if (!is_inited_) {
@@ -582,6 +675,7 @@ void ObTenantTabletStatMgr::reset()
     is_inited_ = false;
   }
   bucket_lock_.destroy();
+  load_shedder_.reset();
   FLOG_INFO("ObTenantTabletStatMgr destroyed!");
 }
 
@@ -649,6 +743,54 @@ int ObTenantTabletStatMgr::get_latest_tablet_stat(
   return ret;
 }
 
+int ObTenantTabletStatMgr::clear_tablet_stat(
+    const share::ObLSID &ls_id,
+    const common::ObTabletID &tablet_id)
+{
+  int ret = OB_SUCCESS;
+  const ObTabletStatKey key(ls_id, tablet_id);
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObTenantTabletStatMgr not inited", K(ret));
+  } else if (OB_UNLIKELY(!key.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid arguments", K(ret), K(ls_id), K(tablet_id));
+  } else {
+    ObBucketHashWLockGuard lock_guard(bucket_lock_, key.hash());
+    if (OB_FAIL(stream_map_.erase_refactored(key))) {
+      if (OB_HASH_NOT_EXIST == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("failed to erase tablet stat", K(ret), K(key));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTenantTabletStatMgr::get_all_tablet_stats(
+    common::ObIArray<ObTabletStat> &tablet_stats)
+{
+  int ret = OB_SUCCESS;
+  tablet_stats.reset();
+  ObTabletStreamNode *cur_node = nullptr;
+  ObTabletStat cur_stat;
+  for (auto bucket_it = stream_map_.begin(); OB_SUCC(ret) && bucket_it != stream_map_.end(); ++bucket_it) {
+    if (OB_NOT_NULL(cur_node = bucket_it->second)) {
+      cur_stat.reset();
+      cur_node->stream_.get_latest_stat(cur_stat);
+      if (!cur_stat.is_valid()) {
+      } else if (0 == cur_stat.query_cnt_ && 0 == cur_stat.merge_cnt_) {
+        // no tablet stat has been collected in the past 16 minutes.
+      } else if (OB_FAIL(tablet_stats.push_back(cur_stat))) {
+        LOG_WARN("failed to add tablet stat", K(ret), K(cur_stat));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTenantTabletStatMgr::get_history_tablet_stats(
     const share::ObLSID &ls_id,
     const common::ObTabletID &tablet_id,
@@ -702,17 +844,14 @@ int ObTenantTabletStatMgr::get_sys_stat(ObTenantSysStat &sys_stat)
 {
   int ret = OB_SUCCESS;
 
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("ObTenantTabletStatMgr not inited", K(ret));
-  } else if (OB_FAIL(GCTX.omt_->get_tenant_cpu_usage(MTL_ID(), sys_stat.cpu_usage_percentage_))) {
+  if (OB_FAIL(GCTX.omt_->get_tenant_cpu_usage(MTL_ID(), sys_stat.cpu_usage_percentage_))) {
     LOG_WARN("failed to get tenant cpu usage", K(ret), K(sys_stat));
   } else if (OB_FAIL(GCTX.omt_->get_tenant_cpu(MTL_ID(), sys_stat.min_cpu_cnt_, sys_stat.max_cpu_cnt_))) {
     LOG_WARN("failed to get tenant cpu count", K(ret), K(sys_stat));
   } else {
     sys_stat.memory_hold_ = lib::get_tenant_memory_hold(MTL_ID());
     sys_stat.memory_limit_ = lib::get_tenant_memory_limit(MTL_ID());
-    sys_stat.cpu_usage_percentage_ *= 100;
+    sys_stat.cpu_usage_percentage_ *= 100 * 100;
   }
   return ret;
 }
@@ -798,7 +937,6 @@ void ObTenantTabletStatMgr::process_stats()
   uint64_t end_idx = (pending_cur > start_idx + DEFAULT_MAX_PENDING_CNT)
                    ? start_idx + DEFAULT_MAX_PENDING_CNT
                    : pending_cur;
-
   if (start_idx == end_idx) { // empty queue
   } else {
     for (uint64_t i = start_idx; i < end_idx; ++i) {
@@ -828,6 +966,7 @@ void ObTenantTabletStatMgr::refresh_all(const int64_t step)
 void ObTenantTabletStatMgr::TabletStatUpdater::runTimerTask()
 {
   mgr_.process_stats();
+  mgr_.refresh_sys_load();
 
   int64_t interval_step = 0;
   if (CHECK_SCHEDULE_TIME_INTERVAL(CHECK_INTERVAL, interval_step)) {

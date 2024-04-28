@@ -21,6 +21,7 @@
 #include "share/schema/ob_part_mgr_util.h"
 #include "sql/engine/dml/ob_table_modify_op.h"
 #include "sql/engine/ob_engine_op_traits.h"
+#include "sql/engine/px/ob_px_sqc_handler.h"
 
 namespace oceanbase
 {
@@ -456,7 +457,9 @@ int ObGranulePump::fetch_pw_granule_from_shared_pool(ObIArray<ObGranuleTaskInfo>
     // 表示取不到下一个GI task的op的个数；
     // 理论上end_op_count只能等于0（表示gi任务还没有被消费完）或者等于`op_ids.count()`（表示gi任务全部被消费完）
     int64_t end_op_count = 0;
-    if (no_more_task_from_shared_pool_) {
+    if (OB_FAIL(fetch_task_ret_)) {
+      LOG_WARN("fetch task concurrently already failed", K(ret));
+    } else if (no_more_task_from_shared_pool_) {
       ret = OB_ITER_END;
     } else if (GIT_FULL_PARTITION_WISE != splitter_type_) {
       ret = OB_ERR_UNEXPECTED;
@@ -488,6 +491,7 @@ int ObGranulePump::fetch_pw_granule_from_shared_pool(ObIArray<ObGranuleTaskInfo>
 
     // 防御性代码：检查full partition wise的情况下，每一个op对应的GI task是否被同时消费完毕
     if (OB_FAIL(ret)) {
+      fetch_task_ret_ = ret;
     } else if (OB_FAIL(check_pw_end(end_op_count, op_ids.count(), infos.count()))) {
       if (OB_ITER_END != ret) {
         LOG_WARN("incorrect state", K(ret));
@@ -659,10 +663,14 @@ int ObGranulePump::check_can_randomize(ObGranulePumpArgs &args, bool &can_random
   }
 
   // Only when in ddl and pdml, can randomize. Specially, can not randomize when sql specifies the order
-  can_randomize = (need_start_ddl || need_start_pdml) && (!(ObGranuleUtil::asc_order(args.gi_attri_flag_) || ObGranuleUtil::desc_order(args.gi_attri_flag_)));
+  can_randomize = (need_start_ddl || need_start_pdml)
+                  && (!(ObGranuleUtil::asc_order(args.gi_attri_flag_)
+                        || ObGranuleUtil::desc_order(args.gi_attri_flag_)
+                        || ObGranuleUtil::force_partition_granule(args.gi_attri_flag_)));
   LOG_DEBUG("scan order is ", K(ObGranuleUtil::asc_order(args.gi_attri_flag_)),
             K(ObGranuleUtil::desc_order(args.gi_attri_flag_)),
-            K(can_randomize), K(need_start_ddl), K(need_start_pdml));
+            K(ObGranuleUtil::force_partition_granule(args.gi_attri_flag_)), K(can_randomize),
+            K(need_start_ddl), K(need_start_pdml));
   return ret;
 }
 
@@ -1045,15 +1053,18 @@ int ObAffinitizeGranuleSplitter::split_tasks_affinity(ObExecContext &ctx,
   int ret = OB_SUCCESS;
   ObSchemaGetterGuard schema_guard;
   const ObTableSchema *table_schema = NULL;
-  ObPxAffinityByRandom affinitize_rule;
   ObSQLSessionInfo *my_session = NULL;
   ObPxTabletInfo partition_row_info;
   ObTabletIdxMap idx_map;
-  if (OB_ISNULL(my_session = GET_MY_SESSION(ctx))) {
+  bool qc_order_gi_tasks = false;
+  if (OB_ISNULL(my_session = GET_MY_SESSION(ctx)) || OB_ISNULL(ctx.get_sqc_handler())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("fail to get my session", K(ret));
+    LOG_WARN("fail to get my session", K(ret), K(my_session), K(ctx.get_sqc_handler()));
+  } else {
+    qc_order_gi_tasks = ctx.get_sqc_handler()->get_sqc_init_arg().qc_order_gi_tasks_;
   }
   int64_t cur_idx = -1;
+  ObPxAffinityByRandom affinitize_rule(qc_order_gi_tasks);
   ARRAY_FOREACH_X(taskset.gi_task_set_, idx, cnt, OB_SUCC(ret)) {
     if (cur_idx != taskset.gi_task_set_.at(idx).idx_) {
       cur_idx = taskset.gi_task_set_.at(idx).idx_; // get all different parition key in Affinitize
@@ -1096,6 +1107,7 @@ int ObAffinitizeGranuleSplitter::split_tasks_affinity(ObExecContext &ctx,
       } else if (OB_FAIL(affinitize_rule.add_partition(tablet_loc.tablet_id_.id(),
                                                       tablet_idx,
                                                       parallelism,
+                                                      my_session->get_effective_tenant_id(),
                                                       partition_row_info))) {
         LOG_WARN("Failed to get affinitize taskid" , K(ret));
       }
@@ -1608,6 +1620,7 @@ int ObGranulePump::reset_gi_task()
     } else {
       is_taskset_reset_ = true;
       no_more_task_from_shared_pool_ = false;
+      fetch_task_ret_ = OB_SUCCESS;
       for (int64_t i = 0; i < gi_task_array_map_.count() && OB_SUCC(ret); ++i) {
         GITaskArrayItem &item = gi_task_array_map_.at(i);
         for(int64_t j = 0; j < item.taskset_array_.count() && OB_SUCC(ret); ++j) {

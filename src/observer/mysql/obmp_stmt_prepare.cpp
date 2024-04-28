@@ -98,7 +98,7 @@ int ObMPStmtPrepare::multiple_query_check(ObSQLSessionInfo &session,
   if (OB_UNLIKELY(1 == session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS)) {
     ObSEArray<ObString, 1> queries;
     ObParser parser(THIS_WORKER.get_allocator(),
-                    session.get_sql_mode(), session.get_local_collation_connection());
+                    session.get_sql_mode(), session.get_charsets4parser());
     bool parse_fail = false;
     ObMPParseStat parse_stat;
     force_sync_resp = true;
@@ -192,6 +192,8 @@ int ObMPStmtPrepare::process()
     if (OB_UNLIKELY(!session.is_valid())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("invalid session", K_(sql), K(ret));
+    } else if (OB_FAIL(process_kill_client_session(session))) {
+      LOG_WARN("client session has been killed", K(ret));
     } else if (OB_UNLIKELY(session.is_zombie())) {
       ret = OB_ERR_SESSION_INTERRUPTED;
       LOG_WARN("session has been killed", K(session.get_session_state()), K_(sql),

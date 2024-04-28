@@ -46,7 +46,6 @@ namespace share
 namespace schema
 {
 
-bool ObMultiVersionSchemaService::g_skip_resolve_materialized_view_definition_ = false;
 
 const char *ObMultiVersionSchemaService::print_refresh_schema_mode(const RefreshSchemaMode mode)
 {
@@ -308,68 +307,6 @@ int ObMultiVersionSchemaService::update_schema_cache(
   } else {
     LOG_INFO("put schema succeed", K(schema));
   }
-  return ret;
-}
-
-// for materialized view, construct the 'full schema' with 'column generated rules'
-int ObMultiVersionSchemaService::build_full_materalized_view_schema(
-    ObSchemaGetterGuard &schema_guard,
-    ObIAllocator &allocator,
-    ObTableSchema *&view_schema)
-{
-  int ret = OB_SUCCESS;
-
-  const uint64_t tenant_id = view_schema->get_tenant_id();
-  const ObTenantSchema *tenant_schema = NULL;
-  if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant_schema))) {
-    LOG_WARN("fail to get tenant schema", K(tenant_id), K(ret));
-  } else if (OB_ISNULL(tenant_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("NULL ptr", K(tenant_schema), K(ret));
-  } else {
-    ObParser parser(allocator, DEFAULT_MYSQL_MODE);
-    ParseResult view_result;
-    // parse view define
-    const ObString &view_def = view_schema->get_view_schema().get_view_definition();
-    if (OB_FAIL(parser.parse(view_def, view_result))) {
-      LOG_WARN("parse view defination failed", K(view_def), K(ret));
-    } else {
-      // resolve params
-      ObResolverParams resolver_ctx;
-      ObSchemaChecker schema_checker;
-      ObStmtFactory stmt_factory(allocator);
-      ObRawExprFactory expr_factory(allocator);
-      SMART_VAR(ObSQLSessionInfo, default_session) {
-        if (OB_FAIL(schema_checker.init(schema_guard))) {
-          LOG_WARN("fail to init schema_checker", K(ret));
-        } else if (OB_FAIL(default_session.init(0, 0, &allocator))) {
-          LOG_WARN("init empty session failed", K(ret));
-        } else if (OB_FAIL(default_session.load_default_sys_variable(false, false))) {
-          LOG_WARN("session load default system variable failed", K(ret));
-        } else if (OB_FAIL(default_session.init_tenant(tenant_schema->get_tenant_name(), tenant_id))) {
-          LOG_WARN("fail to set tenant", "tenant", tenant_schema->get_tenant_name(),
-                   "id", tenant_id, K(ret));
-        } else {
-          resolver_ctx.allocator_ = &allocator;
-          resolver_ctx.schema_checker_ = &schema_checker;
-          resolver_ctx.session_info_ = &default_session;
-          resolver_ctx.stmt_factory_ = &stmt_factory;
-          resolver_ctx.expr_factory_ = &expr_factory;
-          resolver_ctx.query_ctx_ = stmt_factory.get_query_ctx();
-          ObSelectResolver view_resolver(resolver_ctx);
-
-          ParseNode *view_stmt_node = view_result.result_tree_->children_[0];
-          if (!view_stmt_node) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("unexpected children for view result after parse", K(ret));
-          } else if (OB_FAIL(view_resolver.resolve(*view_stmt_node))) {
-            LOG_WARN("resolve view definition failed", K(ret));
-          } else { /*do nothing*/ }
-        }
-      }
-    }
-  }
-
   return ret;
 }
 
@@ -664,29 +601,8 @@ int ObMultiVersionSchemaService::get_schema(const ObSchemaMgr *mgr,
               LOG_WARN("get aux lob meta table schemas failed", K(ret), KPC(table_schema));
             } else if (OB_FAIL(add_aux_schema_from_mgr(*mgr, *table_schema, AUX_LOB_PIECE))) {
               LOG_WARN("get aux lob data table schemas failed", K(ret), KPC(table_schema));
-            }
-          }
-          // process mv
-          if (OB_FAIL(ret)) {
-          } else if (MATERIALIZED_VIEW == table_schema->get_table_type()
-                     && !g_skip_resolve_materialized_view_definition_) {
-            // Ideally, the current function should no longer rely on schema_guard,
-            // but in order to deal with compatibility, it has to be used here
-            ObSchemaGetterGuard schema_guard;
-            const ObSimpleTableSchemaV2 *mv_schema = NULL;
-            if (OB_FAIL(get_tenant_schema_guard(tenant_id, schema_guard))) {
-              LOG_WARN("get schema guard failed", K(ret), K(tenant_id));
-            } else if (OB_FAIL(schema_guard.get_simple_table_schema(
-                       tenant_id, schema_id, mv_schema))) {
-              LOG_WARN("get table schema failed", K(tenant_id), K(schema_id), K(ret));
-            } else if (mv_schema != NULL && mv_schema->get_schema_version() == schema_version) {
-              // do-nothing
-            } else if (OB_FAIL(get_tenant_schema_guard(tenant_id, schema_guard, schema_version, true))) {
-              LOG_WARN("get schema guard failed", K(tenant_id), K(schema_id), K(schema_version), K(ret));
-            }
-            if (FAILEDx(build_full_materalized_view_schema(schema_guard, allocator, table_schema))) {
-              LOG_WARN("fail to make columns for materialized table schema",
-                       K(ret), K(tenant_id), K(schema_id));
+            } else if (OB_FAIL(add_aux_schema_from_mgr(*mgr, *table_schema, MATERIALIZED_VIEW_LOG))) {
+              LOG_WARN("get materialized view log schemas failed", K(ret), KPC(table_schema));
             }
           }
         }
@@ -793,7 +709,7 @@ int ObMultiVersionSchemaService::add_aux_schema_from_mgr(
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("NULL ptr", K(ret));
       } else {
-        if (simple_aux_table->is_index_table() || simple_aux_table->is_materialized_view()) {
+        if (simple_aux_table->is_index_table()) {
           if (OB_FAIL(table_schema.add_simple_index_info(ObAuxTableMetaInfo(
                      simple_aux_table->get_table_id(),
                      simple_aux_table->get_table_type(),
@@ -808,6 +724,8 @@ int ObMultiVersionSchemaService::add_aux_schema_from_mgr(
           table_schema.set_aux_lob_meta_tid(simple_aux_table->get_table_id());
         } else if (simple_aux_table->is_aux_lob_piece_table()) {
           table_schema.set_aux_lob_piece_tid(simple_aux_table->get_table_id());
+        } else if (simple_aux_table->is_mlog_table()) {
+          table_schema.set_mlog_tid(simple_aux_table->get_table_id());
         } else {
           ret = OB_ERR_UNEXPECTED;
           LOG_ERROR("unexpected", K(ret));
@@ -4722,11 +4640,15 @@ int ObMultiVersionSchemaService::cal_purge_need_timeout(
             }
             break;
           }
+          case ObRecycleObject::TENANT: {
+            tmp_timeout += GCONF.rpc_timeout;
+            total_purge_count++;
+            break;
+          }
           case ObRecycleObject::TRIGGER:
           case ObRecycleObject::INDEX:
           case ObRecycleObject::AUX_LOB_META:
           case ObRecycleObject::AUX_LOB_PIECE:
-          case ObRecycleObject::TENANT:
           case ObRecycleObject::AUX_VP: {
             continue;
           }
@@ -4886,7 +4808,7 @@ int ObMultiVersionSchemaService::cal_purge_table_timeout_(
     }
     if (OB_SUCC(ret)) {
       //100 tablet 2s,default 2s
-      cal_table_timeout += (part_num / 100 + part_num % 100 == 0 ? 0 : 1) * GCONF.rpc_timeout;
+      cal_table_timeout += (part_num / 100 + (part_num % 100 == 0 ? 0 : 1)) * GCONF.rpc_timeout;
     }
   }
   return ret;
@@ -5142,6 +5064,28 @@ int ObMultiVersionSchemaService::batch_fetch_tablet_to_table_history_(
   return ret;
 }
 
+int ObMultiVersionSchemaService::get_dropped_tenant_ids(
+    common::ObIArray<uint64_t> &dropped_tenant_ids)
+{
+  int ret = OB_SUCCESS;
+  dropped_tenant_ids.reset();
+  if (!check_inner_stat()) {
+    ret = OB_INNER_STAT_ERROR;
+    LOG_WARN("inner stat error", KR(ret));
+  } else {
+    SpinRLockGuard guard(schema_manager_rwlock_);
+    ObSchemaGetterGuard schema_guard;
+    if (OB_UNLIKELY(!is_tenant_full_schema(OB_SYS_TENANT_ID))) {
+      ret = OB_NOT_INIT;
+      LOG_WARN("sys schema is not full", KR(ret));
+    } else if (OB_FAIL(get_tenant_schema_guard(OB_SYS_TENANT_ID, schema_guard))) {
+      LOG_WARN("get sys tenant schema guard failed", KR(ret));
+    } else if (OB_FAIL(schema_guard.get_dropped_tenant_ids(dropped_tenant_ids))) {
+      LOG_WARN("get dropped tenant ids failed", KR(ret));
+    }
+  }
+  return ret;
+}
 
 }//end of namespace schema
 }//end of namespace share

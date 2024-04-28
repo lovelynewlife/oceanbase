@@ -37,12 +37,22 @@ int ObMPUtils::add_changed_session_info(OMPKOK &ok_pkt, sql::ObSQLSessionInfo &s
   if (session.is_session_info_changed()) {
     ok_pkt.set_state_changed(true);
   }
-  if (session.is_database_changed()) {
-    ObString db_name = session.get_database_name();
-    ok_pkt.set_changed_schema(db_name);
-  }
 
   ObIAllocator &allocator = session.get_allocator();
+  if (session.is_database_changed()) {
+    ObCollationType client_cs_type = session.get_local_collation_connection();
+    ObString db_name;
+    if (OB_UNLIKELY(OB_SUCCESS != ObCharset::charset_convert(allocator,
+                                                             session.get_database_name(),
+                                                             CS_TYPE_UTF8MB4_BIN,
+                                                             client_cs_type,
+                                                             db_name,
+                                                             ObCharset::REPLACE_UNKNOWN_CHARACTER))) {
+    } else {
+      ok_pkt.set_changed_schema(db_name);
+    }
+  }
+
   if (session.is_sys_var_changed()) {
     const ObIArray<sql::ObBasicSessionInfo::ChangedVar> &sys_var = session.get_changed_sys_var();
     LOG_DEBUG("sys var changed", K(session.get_tenant_name()), K(sys_var.count()));
@@ -236,7 +246,7 @@ int ObMPUtils::append_modfied_sess_info(common::ObIAllocator &allocator,
     char *buf = NULL;
 
     int64_t size = 0;
-    int32_t sess_size[SESSION_SYNC_MAX_TYPE];
+    int64_t sess_size[SESSION_SYNC_MAX_TYPE];
     for (int64_t i=0; OB_SUCC(ret) && i < SESSION_SYNC_MAX_TYPE; i++) {
       oceanbase::sql::SessionSyncInfoType info_type = (oceanbase::sql::SessionSyncInfoType)(i);
       sess_size[i] = 0;
@@ -246,9 +256,12 @@ int ObMPUtils::append_modfied_sess_info(common::ObIAllocator &allocator,
         if (info_type == SESSION_SYNC_SYS_VAR && !need_sync_sys_var) {
           // do nothing.
         } else if (encoder->is_changed_) {
-          sess_size[i] = encoder->get_serialize_size(sess);
-          size += ObProtoTransUtil::get_serialize_size(sess_size[i]);
-          LOG_DEBUG("get seri size", K(sess_size[i]), K(encoder->get_serialize_size(sess)));
+          if (OB_FAIL(encoder->get_serialize_size(sess, sess_size[i]))) {
+            LOG_WARN("fail to get serialize size", K(info_type), K(ret));
+          } else {
+            size += ObProtoTransUtil::get_serialize_size(sess_size[i]);
+            LOG_DEBUG("get seri size", K(sess_size[i]));
+          }
         } else {
           // encoder->is_changed_ = false;
         }

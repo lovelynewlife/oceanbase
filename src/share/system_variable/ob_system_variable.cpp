@@ -781,11 +781,24 @@ int ObTypeLibSysVar::check_update_type(const ObSetVar &set_var, const ObObj &val
   } else if (false == ob_is_integer_type(val.get_type())
              && false == ob_is_string_type(val.get_type())) {
     ret = OB_ERR_WRONG_TYPE_FOR_VAR;
-    if (is_oracle_mode() && ObNumberType == val.get_type()) {
-      number::ObNumber num = val.get_number();
-      if (num.is_valid_int()) {
-        ret = OB_SUCCESS;
-        LOG_DEBUG("number is valid int", K(val), K(num));
+    if (is_oracle_mode()) {
+      if (ObNumberType == val.get_type()) {
+        number::ObNumber num = val.get_number();
+        if (num.is_valid_int()) {
+          ret = OB_SUCCESS;
+          LOG_DEBUG("number is valid int", K(val), K(num));
+        }
+      } else if (ob_is_decimal_int(val.get_type())) {
+        int tmp_ret = ret;
+        bool is_valid_int64 = false;
+        int64_t res_v = 0;
+        if (OB_FAIL(wide::check_range_valid_int64(val.get_decimal_int(), val.get_int_bytes(),
+                                                  is_valid_int64, res_v))) {
+          LOG_WARN("check valid int64 failed", K(ret));
+        } else if (is_valid_int64) {
+          ret = OB_SUCCESS;
+          LOG_DEBUG("decimal int is valid int", K(val), K(res_v));
+        }
       }
     }
     if (OB_SUCCESS != ret) {
@@ -929,6 +942,23 @@ int ObTypeLibSysVar::do_check_and_convert(ObExecContext &ctx,
     } else {
       ret = OB_ERR_WRONG_TYPE_FOR_VAR;
       LOG_WARN("not valid int value for var on oracle mode", K(in_val));
+    }
+  } else if (is_oracle_mode() && ob_is_decimal_int(in_val.get_type())) {
+    int64_t res_v = 0;
+    bool is_valid_int64 = false;
+    if (OB_FAIL(wide::check_range_valid_int64(in_val.get_decimal_int(), in_val.get_int_bytes(),
+                                              is_valid_int64, res_v))) {
+      LOG_WARN("check int64 range failed", K(ret));
+    } else if (is_valid_int64) {
+      if (res_v < 0 || res_v >= type_lib_.count_) {
+        ret = OB_ERR_WRONG_VALUE_FOR_VAR;
+        int log_ret = OB_SUCCESS;
+        if (OB_SUCCESS != (log_ret = log_err_wrong_value_for_var(ret, in_val))) {
+          LOG_ERROR("fail to log error", K(ret), K(log_ret), K(in_val));
+        }
+      } else {
+        out_val.set_int(res_v);
+      }
     }
   } else {
     ret = OB_ERR_UNEXPECTED;
@@ -1107,7 +1137,9 @@ int ObIntSysVar::check_update_type(const ObSetVar &set_var, const ObObj &val)
   if (true == set_var.is_set_default_
       || (0 != (flags_ & ObSysVarFlag::NULLABLE) && ObNullType == val.get_type())) {
     // do nothing
-  } else if (false == ob_is_integer_type(val.get_type()) && ObNumberType != val.get_type()) {
+  } else if (false == ob_is_integer_type(val.get_type())
+             && ObNumberType != val.get_type()
+             && ObDecimalIntType != val.get_type()) {
     ret = OB_ERR_WRONG_TYPE_FOR_VAR;
     LOG_WARN("wrong type for var", K(ret), K(val));
   }
@@ -1135,6 +1167,17 @@ int ObIntSysVar::do_check_and_convert(ObExecContext &ctx,
   }
   return ret;
 }
+
+#define CHECK_DECIMAL_INT_VALID(TYPE)                      \
+  case sizeof(TYPE##_t): {                                 \
+    const TYPE##_t &l = *(decint->TYPE##_v_);              \
+    const TYPE##_t r = get_scale_factor<TYPE##_t>(scale);  \
+    is_in_val_valid = ((l % r) == 0);                      \
+    if (is_in_val_valid) {                                 \
+      div_res_val.from(l / r);                             \
+    }                                                      \
+    break;                                                 \
+  }
 
 int ObIntSysVar::do_convert(ObExecContext &ctx,
                             const common::ObObj &in_val,
@@ -1174,6 +1217,47 @@ int ObIntSysVar::do_convert(ObExecContext &ctx,
       } else {
         ret = OB_ERR_WRONG_TYPE_FOR_VAR;
         LOG_WARN("wrong type for int variables", K(ret), K(in_val));
+      }
+    } else if (ObDecimalIntType == in_val.get_type()) {
+      bool is_in_val_valid = false;
+      const ObDecimalInt *decint = in_val.get_decimal_int();
+      const int32_t int_bytes = in_val.get_int_bytes();
+      const int16_t scale = in_val.get_scale();
+      ObDecimalIntBuilder div_res_val;
+      switch (int_bytes) {
+        CHECK_DECIMAL_INT_VALID(int32)
+        CHECK_DECIMAL_INT_VALID(int64)
+        CHECK_DECIMAL_INT_VALID(int128)
+        CHECK_DECIMAL_INT_VALID(int256)
+        CHECK_DECIMAL_INT_VALID(int512)
+        default: {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("int_bytes is unexpected", K(ret), K(int_bytes));
+          break;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        if (is_in_val_valid) {
+          int64_t tmp_int = 0;
+          uint64_t tmp_uint = 0;
+          if (OB_FAIL(wide::check_range_valid_int64(div_res_val.get_decimal_int(),
+              div_res_val.get_int_bytes(), is_in_val_valid, tmp_int))) {
+            LOG_WARN("check_range_valid_int64 failed", K(ret), K(div_res_val.get_int_bytes()));
+          } else if (is_in_val_valid) {
+            tmp_obj.set_int(tmp_int);
+          } else if (OB_FAIL(wide::check_range_valid_uint64(div_res_val.get_decimal_int(),
+              div_res_val.get_int_bytes(), is_in_val_valid, tmp_uint))) {
+            LOG_WARN("check_range_valid_uint64 failed", K(ret), K(div_res_val.get_int_bytes()));
+          } else if (is_in_val_valid) {
+            tmp_obj.set_uint64(tmp_uint);
+          } else {
+            ret = OB_ERR_WRONG_TYPE_FOR_VAR;
+            LOG_WARN("wrong type for int variables", K(ret), K(in_val), K(int_bytes), K(scale));
+          }
+        } else {
+          ret = OB_ERR_WRONG_TYPE_FOR_VAR;
+          LOG_WARN("wrong type for int variables", K(ret), K(in_val), K(int_bytes), K(scale));
+        }
       }
     } else {
       tmp_obj = in_val;
@@ -1221,6 +1305,7 @@ int ObIntSysVar::do_convert(ObExecContext &ctx,
   }
   return ret;
 }
+#undef CHECK_DECIMAL_INT_VALID
 
 int ObStrictRangeIntSysVar::do_check_and_convert(ObExecContext &ctx,
                                                  const ObSetVar &set_var,
@@ -2005,6 +2090,26 @@ int ObSysVarOnCheckFuncs::check_log_row_value_option_is_valid(sql::ObExecContext
   return ret;
 }
 
+int ObSysVarOnCheckFuncs::check_default_lob_inrow_threshold(sql::ObExecContext &ctx,
+                                                const ObSetVar &set_var,
+                                                const ObBasicSysVar &sys_var,
+                                                const common::ObObj &in_val,
+                                                common::ObObj &out_val)
+{
+  int ret = OB_SUCCESS;
+  int64_t inrow_threshold = 0;
+  if (OB_FAIL(in_val.get_int(inrow_threshold))) {
+    LOG_WARN("get_int fail", K(ret), K(in_val));
+  } else if (inrow_threshold < OB_MIN_LOB_INROW_THRESHOLD || inrow_threshold > OB_MAX_LOB_INROW_THRESHOLD) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("lob inrow_threshold invalid", KR(ret), K(inrow_threshold));
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "invalid inrow_threshold LOB storage option value");
+  } else {
+    out_val = in_val;
+  }
+  return ret;
+}
+
 bool ObSysVarOnCheckFuncs::can_set_trans_var(ObSetVar::SetScopeType scope,
                                              ObBasicSessionInfo &session)
 {
@@ -2315,6 +2420,18 @@ int ObSysVarOnCheckFuncs::check_session_readonly(ObExecContext &ctx,
   } else {
     out_val = in_val;
   }
+  return ret;
+}
+
+int ObSysVarOnCheckFuncs::check_locale_type_is_valid(
+    sql::ObExecContext &ctx,
+    const ObSetVar &set_var,
+    const ObBasicSysVar &sys_var,
+    const common::ObObj &in_val,
+    common::ObObj &out_val)
+{
+  int ret = OB_NOT_SUPPORTED;
+  LOG_USER_ERROR(OB_NOT_SUPPORTED, "lc_time_names");
   return ret;
 }
 
@@ -2630,6 +2747,8 @@ int ObSysVarToStrFuncs::to_str_charset(ObIAllocator &allocator,
   } else if (OB_FAIL(sys_var.get_value().get_int(coll_type_int64))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("invalid value", K(ret), K(sys_var), K(sys_var.get_value()));
+  } else if (coll_type_int64 == 0) {
+    result_str = ObString("");
   } else if (OB_UNLIKELY(false == ObCharset::is_valid_collation(coll_type_int64))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("invalid collation", K(ret), K(coll_type_int64), K(sys_var));

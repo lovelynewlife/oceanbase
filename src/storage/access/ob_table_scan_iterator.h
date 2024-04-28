@@ -51,8 +51,9 @@ public:
   virtual ~ObTableScanIterator();
   int init( ObTableScanParam &scan_param, const ObTabletHandle &tablet_handle);
   int switch_param( ObTableScanParam &scan_param, const ObTabletHandle &tablet_handle);
+  int get_next_row(blocksstable::ObDatumRow *&row);
   virtual int get_next_row(common::ObNewRow *&row) override;
-  virtual int get_next_row() override { common::ObNewRow *r = NULL; return get_next_row(r); }
+  virtual int get_next_row() override { blocksstable::ObDatumRow *r = nullptr; return get_next_row(r); }
   virtual int get_next_rows(int64_t &count, int64_t capacity) override;
   int rescan(ObTableScanParam &scan_param);
   void reuse();
@@ -74,6 +75,7 @@ private:
   template<typename T> void reset_scan_iter(T *&iter);
   int switch_scan_param(ObMultipleMerge &iter);
   void reuse_row_iters();
+  int rescan_for_iter();
   int switch_param_for_iter();
   int open_iter();
 

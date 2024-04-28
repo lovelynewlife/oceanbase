@@ -23,6 +23,7 @@
 #include "common/storage/ob_io_device.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
 #include "storage/blocksstable/ob_block_manager.h"
+#include "storage/blocksstable/ob_decode_resource_pool.h"
 #include "storage/slog/ob_storage_logger_manager.h"
 #include "observer/ob_server_struct.h"
 
@@ -39,6 +40,7 @@ ObAdminExecutor::ObAdminExecutor()
       config_mgr_(ObServerConfig::get_instance(), reload_config_)
 {
   // 设置MTL上下文
+  mock_server_tenant_.set(&blocksstable::ObDecodeResourcePool::get_instance());
   share::ObTenantEnv::set_tenant(&mock_server_tenant_);
 
   storage_env_.data_dir_ = data_dir_;
@@ -72,6 +74,7 @@ ObAdminExecutor::ObAdminExecutor()
 
 ObAdminExecutor::~ObAdminExecutor()
 {
+  blocksstable::ObDecodeResourcePool::get_instance().destroy();
   ObIOManager::get_instance().stop();
   ObIOManager::get_instance().destroy();
   OB_SERVER_BLOCK_MGR.stop();
@@ -138,6 +141,15 @@ int ObAdminExecutor::prepare_io()
   return ret;
 }
 
+int ObAdminExecutor::prepare_decoder()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(blocksstable::ObDecodeResourcePool::get_instance().init())) {
+    LOG_WARN("fail to init decoder resource pool");
+  }
+  return ret;
+}
+
 int ObAdminExecutor::init_slogger_mgr()
 {
   int ret = OB_SUCCESS;
@@ -171,10 +183,16 @@ int ObAdminExecutor::load_config()
       tmp_addr.set_ip_addr(ipv6, local_port);
       GCTX.self_addr_seq_.set_addr(tmp_addr);
     } else {
-      int32_t ipv4 = ntohl(obsys::ObNetUtil::get_local_addr_ipv4(config.devname));
-      ObAddr tmp_addr = GCTX.self_addr();
-      tmp_addr.set_ipv4_addr(ipv4, local_port);
-      GCTX.self_addr_seq_.set_addr(tmp_addr);
+      uint32_t ipv4_net = 0;
+      if (OB_FAIL(obsys::ObNetUtil::get_local_addr_ipv4(config.devname, ipv4_net))) {
+        LOG_ERROR("get ipv4 address by devname failed", "devname",
+            config.devname.get_value(), KR(ret));
+      } else {
+        int32_t ipv4 = ntohl(ipv4_net);
+        ObAddr tmp_addr = GCTX.self_addr();
+        tmp_addr.set_ipv4_addr(ipv4, local_port);
+        GCTX.self_addr_seq_.set_addr(tmp_addr);
+      }
     }
   }
 

@@ -125,8 +125,14 @@ public:
 struct ObContextUnit
 {
   inline void free(common::ObIAllocator &alloc) {
-    alloc.free(value_.ptr());
-    alloc.free(attribute_.ptr());
+    if (nullptr != value_.ptr()) {
+      alloc.free(value_.ptr());
+      value_.reset();
+    }
+    if (nullptr != attribute_.ptr()) {
+      alloc.free(attribute_.ptr());
+      attribute_.reset();
+    }
   }
   int deep_copy(const common::ObString &attribute,
                 const common::ObString &value,
@@ -136,6 +142,7 @@ struct ObContextUnit
       SQL_ENG_LOG(WARN, "failed to copy attribute", K(ret));
     } else if (OB_FAIL(ob_write_string(alloc, value, value_))) {
       alloc.free(attribute_.ptr());
+      attribute_.reset();
       SQL_ENG_LOG(WARN, "failed to copy value", K(ret));
     }
     return ret;
@@ -249,7 +256,7 @@ public:
   virtual ~ObSessInfoEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) = 0;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) = 0;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo& sess) const = 0;
+  virtual int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const = 0;
   // When implementing new information synchronization,
   // it is necessary to add a self-verification interface
   // include fetch, compare, and error display.
@@ -269,7 +276,7 @@ public:
   ~ObSysVarEncoder() {}
   int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
   int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos);
-  int64_t get_serialize_size(ObSQLSessionInfo& sess) const;
+  int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const;
   int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
   int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
   int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length,
@@ -284,7 +291,7 @@ public:
   ~ObAppInfoEncoder() {}
   int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
   int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos);
-  int64_t get_serialize_size(ObSQLSessionInfo& sess) const;
+  int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const;
   int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos);
   int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
   int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length,
@@ -312,7 +319,7 @@ public:
   virtual ~ObAppCtxInfoEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo& sess) const override;
+  virtual int get_serialize_size(ObSQLSessionInfo& sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
   virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
@@ -327,7 +334,7 @@ public:
   virtual ~ObClientIdInfoEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;
+  virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
   virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
@@ -343,7 +350,7 @@ public:
   virtual ~ObSequenceCurrvalEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;
+  virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
   virtual int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length,
@@ -358,7 +365,7 @@ public:
   virtual ~ObControlInfoEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;
+  virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf,
                               const int64_t length, int64_t &pos);
   virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess);
@@ -378,7 +385,7 @@ public:
   virtual ~ObErrorSyncSysVarEncoder() {}
   virtual int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override;
-  virtual int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;
+  virtual int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;
   virtual int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override;
   virtual int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override;
   virtual int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length,
@@ -392,7 +399,7 @@ class CLS final : public ObSessInfoEncoder {                            \
 public:                                                                 \
   int serialize(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override; \
   int deserialize(ObSQLSessionInfo &sess, const char *buf, const int64_t length, int64_t &pos) override; \
-  int64_t get_serialize_size(ObSQLSessionInfo &sess) const override;    \
+  int get_serialize_size(ObSQLSessionInfo &sess, int64_t &length) const override;    \
   int fetch_sess_info(ObSQLSessionInfo &sess, char *buf, const int64_t length, int64_t &pos) override; \
   int64_t get_fetch_sess_info_size(ObSQLSessionInfo& sess) override; \
   int compare_sess_info(const char* current_sess_buf, int64_t current_sess_length, const char* last_sess_buf, int64_t last_sess_length) override; \
@@ -458,9 +465,11 @@ struct ObInnerContextMap {
     if (OB_NOT_NULL(context_map_)) {
       context_map_->destroy();
       alloc_.free(context_map_);
+      context_map_ = nullptr;
     }
     if (OB_NOT_NULL(context_name_.ptr())) {
       alloc_.free(context_name_.ptr());
+      context_name_.reset();
     }
   }
   int init()
@@ -500,6 +509,8 @@ struct ObInnerContextMap {
   ObInnerContextHashMap *context_map_;
   common::ObIAllocator &alloc_;
   OB_UNIS_VERSION(1);
+public:
+  TO_STRING_KV(K(context_name_), K(context_map_->size()));
 };
 typedef common::hash::ObHashMap<common::ObString, ObInnerContextMap *,
                                 common::hash::NoPthreadDefendMode,
@@ -651,6 +662,8 @@ public:
                                  enable_query_response_time_stats_(false),
                                  enable_user_defined_rewrite_rules_(false),
                                  range_optimizer_max_mem_size_(128*1024*1024),
+                                 enable_column_store_(false),
+                                 enable_decimal_int_type_(false),
                                  print_sample_ppm_(0),
                                  last_check_ec_ts_(0),
                                  session_(session)
@@ -671,6 +684,8 @@ public:
     bool get_px_join_skew_handling() const { return px_join_skew_handling_; }
     int64_t get_px_join_skew_minfreq() const { return px_join_skew_minfreq_; }
     int64_t get_range_optimizer_max_mem_size() const { return range_optimizer_max_mem_size_; }
+    bool get_enable_column_store() const { return enable_column_store_; }
+    bool get_enable_decimal_int_type() const { return enable_decimal_int_type_; }
   private:
     //租户级别配置项缓存session 上，避免每次获取都需要刷新
     bool is_external_consistent_;
@@ -686,6 +701,8 @@ public:
     bool enable_query_response_time_stats_;
     bool enable_user_defined_rewrite_rules_;
     int64_t range_optimizer_max_mem_size_;
+    bool enable_column_store_;
+    bool enable_decimal_int_type_;
     // for record sys config print_sample_ppm
     int64_t print_sample_ppm_;
     int64_t last_check_ec_ts_;
@@ -715,7 +732,8 @@ public:
            common::ObIAllocator *bucket_allocator,
            const ObTZInfoMap *tz_info = NULL,
            int64_t sess_create_time = 0,
-           uint64_t tenant_id = OB_INVALID_TENANT_ID);
+           uint64_t tenant_id = OB_INVALID_TENANT_ID,
+           int64_t client_create_time = 0);
   //for test
   int test_init(uint32_t version, uint32_t sessid, uint64_t proxy_sessid,
            common::ObIAllocator *bucket_allocator);
@@ -1150,6 +1168,9 @@ public:
   bool is_in_range_optimization_enabled() const;
   int is_better_inlist_enabled(bool &enabled) const;
   bool is_index_skip_scan_enabled() const;
+  int is_enable_range_extraction_for_not_in(bool &enabled) const;
+  bool is_var_assign_use_das_enabled() const;
+  int is_adj_index_cost_enabled(bool &enabled, int64_t &stats_cost_percent) const;
 
   ObSessionDDLInfo &get_ddl_info() { return ddl_info_; }
   void set_ddl_info(const ObSessionDDLInfo &ddl_info) { ddl_info_ = ddl_info; }
@@ -1165,7 +1186,7 @@ public:
   void set_prelock(bool prelock) { prelock_ = prelock; }
 
   void set_priv_user_id(uint64_t priv_user_id) { priv_user_id_ = priv_user_id; }
-  uint64_t get_priv_user_id() {
+  uint64_t get_priv_user_id() const {
     return (priv_user_id_ == OB_INVALID_ID) ? get_user_id() : priv_user_id_; }
   int64_t get_xa_end_timeout_seconds() const;
   int set_xa_end_timeout_seconds(int64_t seconds);
@@ -1243,6 +1264,16 @@ public:
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.get_print_sample_ppm();
   }
+  bool is_enable_column_store()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.get_enable_column_store();
+  }
+  bool is_enable_decimal_int_type()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.get_enable_decimal_int_type();
+  }
   int get_tmp_table_size(uint64_t &size);
   int ps_use_stream_result_set(bool &use_stream);
   void set_proxy_version(uint64_t v) { proxy_version_ = v; }
@@ -1265,7 +1296,7 @@ public:
   uint64_t get_conn_res_user_id() const { return conn_res_user_id_; }
   int on_user_connect(share::schema::ObSessionPrivInfo &priv_info, const ObUserInfo *user_info);
   int on_user_disconnect();
-  virtual void reset_tx_variable();
+  virtual void reset_tx_variable(bool reset_next_scope = true);
   ObOptimizerTraceImpl& get_optimizer_tracer() { return optimizer_tracer_; }
 public:
   bool has_tx_level_temp_table() const { return tx_desc_ && tx_desc_->with_temporary_table(); }
@@ -1380,7 +1411,6 @@ private:
   bool is_ob20_protocol_; // mark as whether use oceanbase 2.0 protocol
 
   bool is_session_var_sync_; //session var sync support flag.
-
   common::hash::ObHashSet<common::ObString> *pl_sync_pkg_vars_ = NULL;
 
   void *inner_conn_;  // ObInnerSQLConnection * will cause .h included from each other.

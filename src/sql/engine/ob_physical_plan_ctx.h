@@ -23,6 +23,7 @@
 #include "sql/plan_cache/ob_plan_cache_util.h"
 #include "sql/engine/user_defined_function/ob_udf_ctx_mgr.h"
 #include "sql/engine/expr/ob_expr.h"
+#include "sql/engine/ob_subschema_ctx.h"
 namespace oceanbase
 {
 namespace sql
@@ -460,6 +461,8 @@ public:
   void set_spm_timeout_timestamp(const int64_t timeout) { spm_ts_timeout_us_ = timeout; }
   const ObIArray<ObArrayParamGroup> &get_array_param_groups() const { return array_param_groups_; }
   ObIArray<ObArrayParamGroup> &get_array_param_groups() { return array_param_groups_; }
+  int set_all_local_session_vars(ObIArray<ObLocalSessionVar> &all_local_session_vars);
+  int get_local_session_vars(int64_t idx, const ObLocalSessionVar *&local_vars);
 private:
   void reset_datum_frame(char *frame, int64_t expr_cnt);
   int extend_param_frame(const int64_t old_size);
@@ -468,7 +471,6 @@ private:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObPhysicalPlanCtx);
 private:
-  static const int64_t ESTIMATE_PS_RESERVE_TIME = 100 * 1000;
   static const int64_t ESTIMATE_TRANS_RESERVE_TIME = 70 * 1000;
   //oracle calc time during running, not before running.
   //oracle datetime func has two categories: sysdate/systimestamp, current_date/current_timestamp/localtimestamp
@@ -595,6 +597,9 @@ private:
   bool is_ps_rewrite_sql_;
   // timeout use by spm, don't need to serialize
   int64_t spm_ts_timeout_us_;
+  ObSubSchemaCtx subschema_ctx_;
+  // for dependant exprs of generated columns
+  common::ObFixedArray<ObLocalSessionVar *, common::ObIAllocator> all_local_session_vars_;
 };
 
 }

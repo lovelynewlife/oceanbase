@@ -244,7 +244,7 @@ int ObTableCtx::get_expr_from_column_items(const ObString &col_name, ObRawExpr *
           LOG_WARN("item expr is null", K(ret), K(item));
         } else {
           found = true;
-          expr = item.expr_;
+          expr = item.raw_expr_;
         }
       }
     }
@@ -533,7 +533,8 @@ int ObTableCtx::read_real_lob(ObIAllocator &allocator, ObObj &obj)
   - check accuracy
 */
 int ObTableCtx::adjust_column_type(const ObExprResType &column_type,
-                                   ObObj &obj)
+                                   ObObj &obj,
+                                   bool is_autoincrement/*=false*/)
 {
   int ret = OB_SUCCESS;
   const bool is_not_nullable = column_type.is_not_null_for_read();
@@ -541,7 +542,9 @@ int ObTableCtx::adjust_column_type(const ObExprResType &column_type,
 
   // 1. check nullable
   if (is_not_nullable && obj.is_null()) {
-    ret = OB_BAD_NULL_ERROR;
+    if (!is_autoincrement) {
+      ret = OB_BAD_NULL_ERROR;
+    }
   } else if (obj.is_null()) {
     // continue
   } else if (column_type.get_type() != obj.get_type()
@@ -601,7 +604,7 @@ int ObTableCtx::adjust_column(const ObColumnSchemaV2 &col_schema, ObObj &obj)
 
   if (OB_FAIL(cons_column_type(col_schema, column_type))) {
     LOG_WARN("fail to construct column type", K(ret), K(col_schema));
-  } else if (OB_FAIL(adjust_column_type(column_type, obj))) {
+  } else if (OB_FAIL(adjust_column_type(column_type, obj, col_schema.is_autoincrement()))) {
     LOG_WARN("fail to adjust rowkey column type", K(ret), K(obj));
   }
 
@@ -820,12 +823,22 @@ int ObTableCtx::generate_key_range(const ObIArray<ObNewRange> &scan_ranges)
             }
             if (0 == j) {  // padding for startkey
               for (int64_t k = 0; k < padding_num; ++k) {
-                new_objs[k+old_objs_num] = ObObj::make_min_obj();
+                // if inclusive start, should padding min value. else padding max value
+                if (index_key_range.border_flag_.inclusive_start()) {
+                  new_objs[k+old_objs_num] = ObObj::make_min_obj();
+                } else {
+                  new_objs[k+old_objs_num] = ObObj::make_max_obj();
+                }
               }
               index_key_range.start_key_.assign(new_objs, new_objs_num);
             } else {  // padding for endkey
               for (int64_t k = 0; k < padding_num; ++k) {
-                new_objs[k+old_objs_num] = ObObj::make_max_obj();
+                // if inclusive end, should padding max value. else padding min value
+                if (index_key_range.border_flag_.inclusive_end()) {
+                  new_objs[k+old_objs_num] = ObObj::make_max_obj();
+                } else {
+                  new_objs[k+old_objs_num] = ObObj::make_min_obj();
+                }
               }
               index_key_range.end_key_.assign(new_objs, new_objs_num);
             }

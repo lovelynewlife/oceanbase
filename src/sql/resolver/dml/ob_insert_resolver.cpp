@@ -408,11 +408,6 @@ int ObInsertResolver::resolve_insert_field(const ParseNode &insert_into, TableIt
                OB_ISNULL(ref_stmt = table_item->ref_query_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected error", K(table_item), K(ref_stmt), K(ret));
-    } else if (OB_UNLIKELY(ref_stmt->get_from_items().count() != 1)) {
-    //这里是为了兼容oracle的报错行为，对于直接向子查询插入数据时如果子查询中from项不为1项时，报错这种子查询是非法的，
-    //其他情形同update view类似判断，这里不再重复判断
-      ret = OB_ERR_ILLEGAL_VIEW_UPDATE;
-      LOG_WARN("not updatable", K(ret));
     } else if (OB_FAIL(set_base_table_for_view(*table_item))) {
       LOG_WARN("set base table for insert view failed", K(ret));
     } else {/*do nothing*/}
@@ -434,12 +429,7 @@ int ObInsertResolver::resolve_insert_field(const ParseNode &insert_into, TableIt
                           ? table_item->ref_query_->get_view_ref_id()
                           : table_item->get_base_table_item().ref_id_;
     OZ(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(), ref_id, table_schema, table_item->is_link_table()));
-
-    if (OB_SUCC(ret) && table_item->is_view_table_ && is_oracle_mode()) {
-      bool has_tg = false;
-      OZ (has_need_fired_trigger_on_view(table_item, has_tg));
-      OX (insert_stmt->set_has_instead_of_trigger(has_tg));
-    }
+    OZ (check_need_fired_trigger(table_item));
 
     if (OB_SUCC(ret)) {
       if (table_schema->is_oracle_tmp_table()) {

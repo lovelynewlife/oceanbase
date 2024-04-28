@@ -125,7 +125,8 @@ int ObPlanSet::match_params_info(const ParamStore *params,
           if (OB_FAIL(session_info->get_user_variable(related_user_var_names_.at(i), sess_var))) {
             LOG_WARN("failed to get user variable", K(ret), K(related_user_var_names_.at(i)), K(i));
           } else {
-            is_same = (related_user_sess_var_metas_.at(i) == sess_var.meta_);
+            ObPCUserVarMeta tmp_meta(sess_var);
+            is_same = (related_user_sess_var_metas_.at(i) == tmp_meta);
           }
         }
       }
@@ -277,10 +278,11 @@ int ObPlanSet::match_param_info(const ObParamInfo &param_info,
       is_same = false;
     } else {
       // number params in point and st_point can ignore scale check to share plancache
-      // please refer to ObSqlParameterization::is_ignore_scale_check
+      // please refrer to ObSqlParameterization::is_ignore_scale_check
       is_same = param_info.flag_.ignore_scale_check_
                 ? true
                 : (param.get_scale() == param_info.scale_);
+      is_same = is_same && match_decint_precision(param_info, param.get_precision());
     }
   }
   return ret;
@@ -500,11 +502,12 @@ int ObPlanSet::match_params_info(const Ob2DArray<ObParamInfo,
       if (true == is_same
           && (params_info_.at(i).flag_.need_to_check_type_ || need_match_all_params_)) {
         if (infos.at(i).type_ != params_info_.at(i).type_
-           || infos.at(i).scale_ != params_info_.at(i).scale_
-           || infos.at(i).col_type_ != params_info_.at(i).col_type_
-           || (params_info_.at(i).flag_.need_to_check_extend_type_
-               && infos.at(i).ext_real_type_ != params_info_.at(i).ext_real_type_)
-           || (params_info_.at(i).flag_.is_boolean_ != infos.at(i).flag_.is_boolean_)) {
+            || infos.at(i).scale_ != params_info_.at(i).scale_
+            || infos.at(i).col_type_ != params_info_.at(i).col_type_
+            || (params_info_.at(i).flag_.need_to_check_extend_type_
+                && infos.at(i).ext_real_type_ != params_info_.at(i).ext_real_type_)
+            || (params_info_.at(i).flag_.is_boolean_ != infos.at(i).flag_.is_boolean_)
+            || !match_decint_precision(params_info_.at(i), infos.at(i).precision_)) {
           is_same = false;
         }
       }
@@ -528,21 +531,18 @@ int ObPlanSet::match_params_info(const Ob2DArray<ObParamInfo,
                                                              sess_var))) {
             LOG_WARN("failed to get user variable", K(ret), K(sess_var));
           } else {
-            is_same = (sess_var.meta_ == related_user_sess_var_metas_.at(i));
+            ObPCUserVarMeta tmp_meta(sess_var);
+            is_same = (tmp_meta == related_user_sess_var_metas_.at(i));
           }
         }
       }
     }
     if (OB_SUCC(ret) && is_same) {
-      DLIST_FOREACH(pre_calc_con, all_pre_calc_constraints_) {
-        if (OB_FAIL(ObPlanCacheObject::check_pre_calc_cons(is_ignore_stmt_,
-                                                           is_same,
-                                                           *pre_calc_con,
-                                                           pc_ctx.exec_ctx_))) {
-          LOG_WARN("failed to pre calculate expression", K(ret));
-        } else if (!is_same) {
-          break;
-        }
+      if (OB_FAIL(ObPlanCacheObject::match_pre_calc_cons(all_pre_calc_constraints_, pc_ctx,
+                                                         is_ignore_stmt_, is_same))) {
+        LOG_WARN("failed to match pre calc cons", K(ret));
+      } else if (!is_same) {
+        LOG_TRACE("pre calc constraints for plan set and cur plan not match");
       }
     }
 
@@ -725,7 +725,7 @@ int ObPlanSet::init_new_set(const ObPlanCacheCtx &pc_ctx,
             ret,
             related_user_var_names_.at(i),
             i );
-        OC( (related_user_sess_var_metas_.push_back)(sess_var.meta_) );
+        OC( (related_user_sess_var_metas_.push_back)(ObPCUserVarMeta(sess_var)) );
       }
 
       if (OB_FAIL(ret)) {
@@ -1057,6 +1057,8 @@ int ObPlanSet::match_constraint(const ParamStore &params, bool &is_matched)
       } else if (param1.is_float() && param2.is_float()) {
         is_matched = (0 == param1.get_float() + param2.get_float()) ||
                      (param1.get_float() == param2.get_float());
+      } else if (param1.is_decimal_int() && param2.is_decimal_int()) {
+        is_matched = wide::abs_equal(param1, param2);
       } else if (param1.can_compare(param2) &&
                  param1.get_collation_type() == param2.get_collation_type()) {
         is_matched = (0 == param1.compare(param2));
@@ -1204,7 +1206,18 @@ int ObSqlPlanSet::add_plan(ObPhysicalPlan &plan,
                                        candi_table_locs))) {
     LOG_WARN("fail to get physical locations", K(ret));
   } else if (OB_FAIL(set_concurrent_degree(outline_param_idx, plan))) {
-    LOG_WARN("fail to check concurrent degree", K(ret));
+    if (OB_REACH_MAX_CONCURRENT_NUM == ret && 0 == plan.get_max_concurrent_num()) {
+      pc_ctx.is_max_curr_limit_ = true;
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to check concurrent degree", K(ret));
+    }
+  } else {
+    // do nothing
+  }
+
+  if (OB_FAIL(ret)) {
+    // do nothing
   } else {
     if (pc_ctx.exec_ctx_.get_physical_plan_ctx()->get_or_expand_transformed()) {
       need_try_plan_ |= TRY_PLAN_OR_EXPAND;
@@ -1306,7 +1319,6 @@ int ObSqlPlanSet::add_plan(ObPhysicalPlan &plan,
    //   }
    // }
   }
-
   return ret;
 }
 
@@ -2397,4 +2409,17 @@ int ObSqlPlanSet::get_evolving_evolution_task(EvolutionPlanList &evo_task_list)
 #endif
 
 }
+
+bool ObPlanSet::match_decint_precision(const ObParamInfo &param_info, ObPrecision other_prec) const
+{
+  bool ret = false;
+  if (ob_is_decimal_int(param_info.type_)) {
+    ret = (param_info.precision_ == other_prec);
+  } else {
+    // not decimal_int, return true
+    ret = true;
+  }
+  return ret;
+}
+
 }

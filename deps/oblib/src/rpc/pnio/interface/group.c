@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #define MAX_PN_LISTEN 256
 #define MAX_PN_GRP (1<<17)
 #define MAX_PN_PER_GRP 64
@@ -575,4 +587,18 @@ int dispatch_accept_fd_to_certain_group(int fd, uint64_t gid)
     ret = dispatch_fd_to(fd, group_id, thread_idx);
   }
   return ret;
+}
+
+PN_API int pn_get_fd(uint64_t req_id)
+{
+  int fd = -1;
+  pn_resp_ctx_t* ctx = (typeof(ctx))req_id;
+  if (unlikely(NULL == ctx)) {
+    rk_warn("invalid arguments, req_id=%p", ctx);
+  } else {
+    pkts_t* pkts = &ctx->pn->pkts;
+    pkts_sk_t* sock = (typeof(sock))idm_get(&pkts->sk_map, ctx->sock_id);
+    fd = sock->fd;
+  }
+  return fd;
 }

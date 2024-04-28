@@ -786,7 +786,6 @@ public:
                       const share::schema::ObTableType table_type) const;
   int del_schemas_in_tenant(const uint64_t tenant_id);
 
-  int get_tenant_mv_ids(const uint64_t tenant_id, common::ObIArray<uint64_t> &mv_ids) const;
   uint64_t get_tenant_id() const { return tenant_id_; }
   void set_tenant_id(const uint64_t tenant_id) { tenant_id_ = tenant_id; }
 
@@ -795,6 +794,7 @@ public:
   int del_drop_tenant_info(const uint64_t tenant_id);
   // drop_tenant_info is invalid, indicating that the DDL of the drop tenant has not been read
   int get_drop_tenant_info(const uint64_t tenant_id, ObDropTenantInfo &drop_tenant_info) const;
+  int get_drop_tenant_ids(common::ObIArray<uint64_t> &drop_tenant_ids) const;
 
   /*schema statistics*/
   int get_schema_size(int64_t &total_size) const;
@@ -956,6 +956,7 @@ private:
   ObRlsContextMgr rls_context_mgr_;
   int64_t timestamp_in_slot_; // when schema mgr put in slot, we will set the timestamp
   int64_t allocator_idx_;
+  TableInfos mlog_infos_;
 };
 
 }//end of namespace schema

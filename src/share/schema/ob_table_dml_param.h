@@ -54,6 +54,7 @@ public:
   OB_INLINE uint64_t get_spatial_geo_col_id() const { return spatial_geo_col_id_; }
   OB_INLINE uint64_t get_spatial_cellid_col_id() const { return spatial_cellid_col_id_; }
   OB_INLINE uint64_t get_spatial_mbr_col_id() const { return spatial_mbr_col_id_; }
+  OB_INLINE int64_t get_lob_inrow_threshold() const { return lob_inrow_threshold_; }
   OB_INLINE int64_t get_column_count() const { return columns_.count(); }
   OB_INLINE const Columns &get_columns() const { return columns_; }
   OB_INLINE const ColumnMap &get_col_map() const { return col_map_; }
@@ -61,8 +62,10 @@ public:
   OB_INLINE bool is_lob_meta_table() const { return share::schema::is_aux_lob_meta_table(table_type_); }
   OB_INLINE bool is_materialized_view() const
   { return ObTableSchema::is_materialized_view(table_type_); }
+  OB_INLINE bool is_mlog_table() const
+  { return ObTableSchema::is_mlog_table(table_type_); }
   OB_INLINE bool is_storage_index_table() const
-  { return is_index_table() || is_materialized_view(); }
+  { return is_index_table(); }
   OB_INLINE bool can_read_index() const { return ObTableSchema::can_read_index(index_status_); }
   OB_INLINE bool is_unique_index() const { return ObTableSchema::is_unique_index(index_type_); }
   OB_INLINE bool is_domain_index() const { return ObTableSchema::is_domain_index(index_type_); }
@@ -105,6 +108,7 @@ private:
   ColumnMap col_map_;
   common::ObString pk_name_; // use for printing error msg in oracle mode
   storage::ObTableReadInfo read_info_;
+  int64_t lob_inrow_threshold_;
 };
 
 class ObTableDMLParam

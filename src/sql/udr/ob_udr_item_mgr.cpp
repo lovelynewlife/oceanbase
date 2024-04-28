@@ -1,8 +1,14 @@
-// Copyright 2015-2016 Alibaba Inc. All Rights Reserved.
-// Author:
-//     LuoFan
-// Normalizer:
-//     LuoFan
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 
 #define USING_LOG_PREFIX SQL_QRR
@@ -29,6 +35,31 @@ public:
     }
     return ret;
   }
+};
+
+struct MatchSamePatternDigest
+{
+public:
+  MatchSamePatternDigest(const uint64_t pattern_digest) :
+    is_exists_(false), pattern_digest_(pattern_digest)
+  {}
+  int operator()(
+    const hash::HashMapPair<ObUDRItemMgr::UDRKey, ObUDRItemMgr::UDRKeyNodePair *> &entry)
+  {
+    int ret = OB_SUCCESS;
+    if (!is_exists_ && pattern_digest_ == entry.first.pattern_digest_) {
+      is_exists_ = true;
+    }
+    return ret;
+  }
+  bool has_same_pattern_digest() const
+  {
+    return is_exists_;
+  }
+
+public:
+  bool is_exists_;
+  uint64_t pattern_digest_;
 };
 
 int ObUDRItemMgr::UDRKey::deep_copy(common::ObIAllocator &allocator, const UDRKey &other)
@@ -417,11 +448,11 @@ int ObUDRItemMgr::fuzzy_check_by_pattern_digest(const uint64_t pattern_digest,
 {
   int ret = OB_SUCCESS;
   is_exists = false;
-  for (RuleKeyNodeMap::iterator iter = rule_key_node_map_.begin(); iter != rule_key_node_map_.end(); ++iter) {
-    if (pattern_digest == iter->first.pattern_digest_) {
-      is_exists = true;
-      break;
-    }
+  MatchSamePatternDigest callback(pattern_digest);
+  if (OB_FAIL(rule_key_node_map_.foreach_refactored(callback))) {
+    LOG_WARN("traversal rule_key_node_map_ failed", K(ret));
+  } else {
+    is_exists = callback.has_same_pattern_digest();
   }
   return ret;
 }

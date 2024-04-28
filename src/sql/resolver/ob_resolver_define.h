@@ -314,6 +314,7 @@ struct ObResolverParams
        is_from_show_resolver_(false),
        is_restore_(false),
        is_from_create_view_(false),
+       is_from_create_mview_(false),
        is_from_create_table_(false),
        is_prepare_protocol_(false),
        is_pre_execute_(false),
@@ -346,7 +347,9 @@ struct ObResolverParams
        is_execute_call_stmt_(false),
        enable_res_map_(false),
        need_check_col_dup_(true),
-       is_specified_col_name_(false)
+       is_specified_col_name_(false),
+       is_in_sys_view_(false),
+       is_expanding_view_(false)
   {}
   bool is_force_trace_log() { return force_trace_log_; }
 
@@ -374,6 +377,7 @@ public:
   //查询建表、创建视图不能包含临时表;
   //前者是实现起来问题, 后者是兼容MySQL;
   bool is_from_create_view_;
+  bool is_from_create_mview_;
   bool is_from_create_table_;
   bool is_prepare_protocol_;
   bool is_pre_execute_;
@@ -413,6 +417,7 @@ public:
   bool need_check_col_dup_;
   bool is_specified_col_name_;//mark if specify the column name in create view or create table as..
   bool is_in_sys_view_;
+  bool is_expanding_view_;
 };
 } // end namespace sql
 } // end namespace oceanbase

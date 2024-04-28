@@ -121,43 +121,83 @@ int ObImportTableJobScheduler::check_compatible_() const
 int ObImportTableJobScheduler::process_(share::ObImportTableJob &job)
 {
   int ret = OB_SUCCESS;
-  switch(job.get_status()) {
-    case ObImportTableJobStatus::INIT: {
-      if (OB_FAIL(gen_import_table_task_(job))) {
-        LOG_WARN("failed to gen import table task", K(ret), K(job));
-      }
-      break;
+  if (OB_FAIL(wait_src_tenant_schema_refreshed_(job.get_src_tenant_id()))) {
+    if (OB_SCHEMA_EAGAIN != ret) {
+      LOG_WARN("failed to wait src tenant schema refreshed", K(ret), K(job));
     }
-    case ObImportTableJobStatus::IMPORT_TABLE: {
-      if (OB_FAIL(deal_with_import_table_task_(job))) {
-        LOG_WARN("failed to deal with import table task", K(ret), K(job));
+  } else {
+    switch(job.get_status()) {
+      case ObImportTableJobStatus::INIT: {
+        if (OB_FAIL(gen_import_table_task_(job))) {
+          LOG_WARN("failed to gen import table task", K(ret), K(job));
+        }
+        break;
       }
-      break;
-    }
-    case ObImportTableJobStatus::RECONSTRUCT_REF_CONSTRAINT: {
-      if (OB_FAIL(reconstruct_ref_constraint_(job))) {
-        LOG_WARN("failed to deal with reconstrcut ref constraint", K(ret));
+      case ObImportTableJobStatus::IMPORT_TABLE: {
+        if (OB_FAIL(deal_with_import_table_task_(job))) {
+          LOG_WARN("failed to deal with import table task", K(ret), K(job));
+        }
+        break;
       }
-      break;
-    }
-    case ObImportTableJobStatus::CANCELING: {
-      if (OB_FAIL(canceling_(job))) {
-        LOG_WARN("failed to cancel", K(ret), K(job));
+      case ObImportTableJobStatus::RECONSTRUCT_REF_CONSTRAINT: {
+        if (OB_FAIL(reconstruct_ref_constraint_(job))) {
+          LOG_WARN("failed to deal with reconstrcut ref constraint", K(ret));
+        }
+        break;
       }
-      break;
-    }
-    case ObImportTableJobStatus::IMPORT_FINISH: {
-      if (OB_FAIL(finish_(job))) {
-        LOG_WARN("failed to cancel", K(ret), K(job));
+      case ObImportTableJobStatus::CANCELING: {
+        if (OB_FAIL(canceling_(job))) {
+          LOG_WARN("failed to cancel", K(ret), K(job));
+        }
+        break;
       }
-      break;
-    }
-    default: {
-      ret = OB_ERR_SYS;
-      LOG_WARN("invalid import job status", K(ret));
-      break;
+      case ObImportTableJobStatus::IMPORT_FINISH: {
+        if (OB_FAIL(finish_(job))) {
+          LOG_WARN("failed to cancel", K(ret), K(job));
+        }
+        break;
+      }
+      default: {
+        ret = OB_ERR_SYS;
+        LOG_WARN("invalid import job status", K(ret));
+        break;
+      }
     }
   }
+  return ret;
+}
+
+int ObImportTableJobScheduler::wait_src_tenant_schema_refreshed_(const uint64_t tenant_id)
+{
+  // Only if the aux tenant schema refreshed to newest, then we can confirm src table exist or not.
+  int ret = OB_SUCCESS;
+  int64_t max_schema_version = OB_INVALID_VERSION;
+  ObSchemaService *sql_schema_service = nullptr;
+  ObRefreshSchemaStatus status;
+  status.tenant_id_ = tenant_id;
+  MTL_SWITCH (OB_SYS_TENANT_ID) {
+    if (OB_ISNULL(schema_service_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("schema_service_ is null", K(ret));
+    } else if (OB_ISNULL(sql_schema_service = schema_service_->get_schema_service())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("sql_schema_service is null", K(ret));
+    } else if (OB_FAIL(sql_schema_service->fetch_schema_version(status, *sql_proxy_, max_schema_version))) {
+      LOG_WARN("fail to fetch max schema version", K(ret), K(tenant_id), K(status));
+    } else {
+      int64_t refreshed_schema_version = 0;
+      if (OB_FAIL(schema_service_->get_tenant_refreshed_schema_version(
+        tenant_id, refreshed_schema_version))) {
+        LOG_WARN("get refreshed schema version failed", K(ret), K(tenant_id));
+      } else if (!ObSchemaService::is_formal_version(refreshed_schema_version) || refreshed_schema_version < max_schema_version) {
+        ret = OB_SCHEMA_EAGAIN;
+        if (REACH_TIME_INTERVAL(1000L * 1000L)) {
+          LOG_WARN("tenant schema not refreshed to the newest version", K(ret), K(tenant_id), K(max_schema_version), K(refreshed_schema_version));
+        }
+      }
+    }
+  }
+
   return ret;
 }
 
@@ -624,7 +664,13 @@ int ObImportTableTaskScheduler::gen_import_ddl_task_()
   } else if (OB_FAIL(construct_import_table_arg_(arg))) {
     LOG_WARN("failed to construct import table arg", K(ret));
   } else if (OB_FAIL(ObDDLServerClient::execute_recover_restore_table(arg))) {
-    LOG_WARN("fail to start import table", K(ret), K(arg));
+    if (OB_ENTRY_EXIST == ret) {
+      // old and new leader both execute import ddl at the same time.
+      ret = OB_EAGAIN;
+      LOG_WARN("import ddl task exist, try again", K(ret), K(arg));
+    } else {
+      LOG_WARN("fail to start import table", K(ret), K(arg));
+    }
   } else {
     LOG_INFO("[IMPORT_TABLE]succeed execute_recover_restore_table", KPC_(import_task), K(arg));
   }
@@ -676,6 +722,9 @@ int ObImportTableTaskScheduler::construct_import_table_arg_(obrpc::ObRecoverRest
                                                         false,
                                                         src_table_schema))) {
       LOG_WARN("failed to get table schema", K(ret), KPC_(import_task));
+    } else if (OB_ISNULL(src_table_schema)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_WARN("src table not exist", K(ret), KPC_(import_task));
     }
   }
   if (FAILEDx(construct_import_table_schema_(*src_table_schema, arg.target_schema_))) {
@@ -706,12 +755,15 @@ int ObImportTableTaskScheduler::construct_import_table_arg_(obrpc::ObRecoverRest
       LOG_WARN("fail to get tenant system variable", K(ret));
     } else if (OB_ISNULL(data_format_schema) || OB_ISNULL(nls_timestamp_format) || OB_ISNULL(nls_timestamp_tz_format)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("var schema must not be null", K(ret));
+      LOG_WARN("var schema must not be null", K(ret), KP(data_format_schema), KP(nls_timestamp_format), KP(nls_timestamp_tz_format));
+    } else if (OB_FAIL(ob_write_string(arg.allocator_, data_format_schema->get_value(), arg.nls_formats_[ObNLSFormatEnum::NLS_DATE]))) {
+      LOG_WARN("deep copy failed", K(ret), K(data_format_schema->get_value()));
+    } else if (OB_FAIL(ob_write_string(arg.allocator_, nls_timestamp_format->get_value(), arg.nls_formats_[ObNLSFormatEnum::NLS_TIMESTAMP]))) {
+      LOG_WARN("deep copy failed", K(ret), K(nls_timestamp_format->get_value()));
+    } else if (OB_FAIL(ob_write_string(arg.allocator_, nls_timestamp_tz_format->get_value(), arg.nls_formats_[ObNLSFormatEnum::NLS_TIMESTAMP_TZ]))) {
+      LOG_WARN("deep copy failed", K(ret), K(nls_timestamp_tz_format->get_value()));
     } else {
       arg.tz_info_ =  arg.tz_info_wrap_.get_tz_info_offset();
-      arg.nls_formats_[ObNLSFormatEnum::NLS_DATE] = data_format_schema->get_value();
-      arg.nls_formats_[ObNLSFormatEnum::NLS_TIMESTAMP] = nls_timestamp_format->get_value();
-      arg.nls_formats_[ObNLSFormatEnum::NLS_TIMESTAMP_TZ] = nls_timestamp_tz_format->get_value();
     }
   }
   return ret;
@@ -735,6 +787,7 @@ int ObImportTableTaskScheduler::construct_import_table_schema_(
     target_table_schema.clear_constraint();
     target_table_schema.clear_foreign_key_infos();
     target_table_schema.set_table_state_flag(ObTableStateFlag::TABLE_STATE_NORMAL);
+    target_table_schema.set_mlog_tid(OB_INVALID_ID); // mlog (if exists) will be discarded
 
     uint64_t database_id = OB_INVALID_ID;
     if (OB_FAIL(target_tenant_guard.get_database_id(import_task_->get_tenant_id(),
@@ -770,7 +823,12 @@ int ObImportTableTaskScheduler::construct_import_table_schema_(
     } else if (OB_ISNULL(schema)) {
       ret = OB_TABLESPACE_NOT_EXIST;
       LOG_WARN("tablespace must not be null", K(ret), KPC_(import_task));
+    } else if (OB_FAIL(target_table_schema.set_encryption_str(schema->get_encryption_name()))) {
+      LOG_WARN("failed to set encryption str", K(ret));
+    } else if (OB_FAIL(target_table_schema.set_encrypt_key(schema->get_encrypt_key()))) {
+      LOG_WARN("failed to set encrypt key", K(ret));
     } else {
+      target_table_schema.set_master_key_id(schema->get_master_key_id());
       target_table_schema.set_tablespace_id(schema->get_tablespace_id());
     }
   }

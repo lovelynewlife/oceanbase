@@ -394,11 +394,11 @@ void ObDataCheckpoint::ls_frozen_to_active_(int64_t &last_time)
   bool ls_frozen_list_is_empty = false;
   do {
     {
-      int64_t read_lock = LSLOCKALL - LSLOCKLOGMETA;
+      int64_t read_lock = LSLOCKALL;
       int64_t write_lock = 0;
       ObLSLockGuard lock_ls(ls_, ls_->lock_, read_lock, write_lock);
 
-      if (OB_UNLIKELY(ls_->is_stopped_)) {
+      if (OB_UNLIKELY(ls_->is_stopped())) {
         ret = OB_NOT_RUNNING;
         STORAGE_LOG(WARN, "ls stopped", K(ret), K_(ls_->ls_meta));
       } else if (OB_UNLIKELY(!(ls_->get_log_handler()->is_replay_enabled()))) {
@@ -455,11 +455,11 @@ void ObDataCheckpoint::ls_frozen_to_prepare_(int64_t &last_time)
   bool ls_frozen_list_is_empty = false;
   do {
     {
-      int64_t read_lock = LSLOCKALL - LSLOCKLOGMETA;
+      int64_t read_lock = LSLOCKALL;
       int64_t write_lock = 0;
       ObLSLockGuard lock_ls(ls_, ls_->lock_, read_lock, write_lock);
 
-      if (OB_UNLIKELY(ls_->is_stopped_)) {
+      if (OB_UNLIKELY(ls_->is_stopped())) {
         ret = OB_NOT_RUNNING;
         STORAGE_LOG(WARN, "ls stopped", K(ret), K_(ls_->ls_meta));
       } else if (OB_UNLIKELY(!(ls_->get_log_handler()->is_replay_enabled()))) {
@@ -609,7 +609,7 @@ int ObDataCheckpoint::traversal_flush_()
   // based on the order of rec_scn. So we should can simply use a small
   // number for flush tasks.
   const int MAX_DATA_CHECKPOINT_FLUSH_COUNT = 10000;
-  ObSEArray<ObTableHandleV2, 16> flush_tasks;
+  ObSEArray<ObTableHandleV2, BASIC_MEMSTORE_CNT> flush_tasks;
 
   {
     RLOCK(PREPARE);
@@ -713,6 +713,7 @@ int ObDataCheckpoint::finish_freeze(ObFreezeCheckpoint *ob_freeze_checkpoint)
           }
           break;
         case PREPARE:
+        case OUT:
           break;
         case LS_FROZEN:
           if (OB_FAIL(transfer_from_ls_frozen_to_prepare_without_src_lock_(ob_freeze_checkpoint))) {

@@ -96,6 +96,7 @@ private:
   static void *flush_log_thread(void *arg);
   void do_flush_log();
   bool need_flush();
+  virtual void drop_log_items(ObIBaseLogItem **items, const int64_t item_cnt);
 
 protected:
   bool has_stopped_;
@@ -105,7 +106,7 @@ private:
   static const uint64_t MAX_THREAD_NAME_LEN = 9;
   bool is_inited_;
   ObBaseLogWriterCfg log_cfg_;
-  pthread_t flush_tid_;
+  void *flush_tid_;
 protected:
   //async log queue
   ObIBaseLogItem **log_items_;

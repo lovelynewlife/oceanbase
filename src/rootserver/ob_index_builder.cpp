@@ -100,14 +100,27 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = arg.tenant_id_;
-
   const bool is_index = false;
   ObArenaAllocator allocator(ObModIds::OB_SCHEMA);
   const ObTableSchema *table_schema = NULL;
   ObSchemaGetterGuard schema_guard;
   bool is_db_in_recyclebin = false;
-  schema_guard.set_session_id(arg.session_id_);
-  if (!ddl_service_.is_inited()) {
+  bool need_rename_index = true;
+  ObTableType drop_table_type = USER_INDEX;
+  uint64_t compat_version = 0;
+  const bool is_mlog = (obrpc::ObIndexArg::DROP_MLOG == arg.index_action_type_);
+  if (is_mlog) {
+    need_rename_index = false;
+    drop_table_type = MATERIALIZED_VIEW_LOG;
+  }
+  if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
+    LOG_WARN("failed to get data version", KR(ret), K(tenant_id));
+  } else if (is_mlog && (compat_version < DATA_VERSION_4_3_0_0)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("materialized view log before version 4.3 is not supported", KR(ret), K(compat_version));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "materialized view log before version 4.3 is");
+  } else if (OB_FALSE_IT(schema_guard.set_session_id(arg.session_id_))) {
+  } else if (!ddl_service_.is_inited()) {
     ret = OB_INNER_STAT_ERROR;
     LOG_WARN("ddl_service not init", "ddl_service inited", ddl_service_.is_inited(), K(ret));
   } else if (!arg.is_valid()) {
@@ -147,24 +160,36 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
       }
     } else {
       ObString index_table_name;
-      if (OB_FAIL(ObTableSchema::build_index_table_name(
-        allocator, data_table_id, arg.index_name_, index_table_name))) {
-      LOG_WARN("build_index_table_name failed", K(arg), K(data_table_id), K(ret));
-      } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id,
-              table_schema->get_database_id(),
-              index_table_name,
-              true,
-              index_table_schema))) {
-        LOG_WARN("fail to get table schema", K(ret), K(tenant_id), K(index_table_schema));
+      if (is_mlog) {
+        index_table_name = arg.index_name_;
+      } else if (OB_FAIL(ObTableSchema::build_index_table_name(
+          allocator, data_table_id, arg.index_name_, index_table_name))) {
+        LOG_WARN("build_index_table_name failed", K(arg), K(data_table_id), K(ret));
+      }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(schema_guard.get_table_schema(tenant_id,
+            table_schema->get_database_id(),
+            index_table_name,
+            !is_mlog,/*is_index*/
+            index_table_schema))) {
+          LOG_WARN("fail to get table schema", K(ret), K(tenant_id), K(index_table_name), K(index_table_schema));
+        }
       }
     }
     bool have_index = false;
     const common::ObIArray<ObForeignKeyInfo> &foreign_key_infos = table_schema->get_foreign_key_infos();
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(index_table_schema)) {
-      ret = OB_ERR_CANT_DROP_FIELD_OR_KEY;
-      LOG_WARN("index table schema should not be null", K(arg.index_name_), K(ret));
-      LOG_USER_ERROR(OB_ERR_CANT_DROP_FIELD_OR_KEY, arg.index_name_.length(), arg.index_name_.ptr());
+      if (is_mlog) {
+        ret = OB_ERR_TABLE_NO_MLOG;
+        LOG_WARN("table does not have a materialized view log", KR(ret),
+            K(arg.database_name_), K(arg.index_name_));
+        LOG_USER_ERROR(OB_ERR_TABLE_NO_MLOG, to_cstring(arg.database_name_), to_cstring(arg.index_name_));
+      } else {
+        ret = OB_ERR_CANT_DROP_FIELD_OR_KEY;
+        LOG_WARN("index table schema should not be null", K(arg.index_name_), K(ret));
+        LOG_USER_ERROR(OB_ERR_CANT_DROP_FIELD_OR_KEY, arg.index_name_.length(), arg.index_name_.ptr());
+      }
     } else if (OB_FAIL(ddl_service_.check_index_on_foreign_key(index_table_schema,
                                                                foreign_key_infos,
                                                                have_index))) {
@@ -195,7 +220,7 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("not support to drop a building or dropping index", K(ret), K(arg.is_inner_), KPC(index_table_schema));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "dropping a building or dropping index is");
-        } else if (OB_FAIL(ddl_service_.rename_dropping_index_name(
+        } else if (need_rename_index && OB_FAIL(ddl_service_.rename_dropping_index_name(
                                                       table_schema->get_table_id(),
                                                       table_schema->get_database_id(),
                                                       arg,
@@ -204,6 +229,8 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
                                                       trans,
                                                       new_index_schema))) {
           LOG_WARN("renmae index name failed", K(ret));
+        } else if (!need_rename_index && OB_FAIL(new_index_schema.assign(*index_table_schema))) {
+          LOG_WARN("failed to assign index table schema to new index schema", KR(ret));
         } else if (OB_FAIL(submit_drop_index_task(trans, *table_schema, new_index_schema, new_index_schema.get_schema_version(), arg, allocator, task_record))) {
           LOG_WARN("submit drop index task failed", K(ret));
         } else {
@@ -233,12 +260,12 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &arg, obrpc::ObDropIndexRes 
       ObTableItem table_item;
       table_item.database_name_ = arg.database_name_;
       table_item.table_name_ = index_table_schema->get_table_name();
-      table_item.is_hidden_ = arg.is_hidden_;
+      table_item.is_hidden_ = index_table_schema->is_user_hidden_table();
       obrpc::ObDDLRes ddl_res;
       obrpc::ObDropTableArg drop_table_arg;
       drop_table_arg.tenant_id_ = tenant_id;
       drop_table_arg.if_exist_ = false;
-      drop_table_arg.table_type_ = USER_INDEX;
+      drop_table_arg.table_type_ = drop_table_type;
       drop_table_arg.ddl_stmt_str_ = arg.ddl_stmt_str_;
       drop_table_arg.force_drop_ = arg.is_in_recyclebin_;
       drop_table_arg.task_id_ = arg.task_id_;
@@ -398,8 +425,10 @@ int ObIndexBuilder::submit_drop_index_task(ObMySQLTransaction &trans,
   } else {
     int64_t refreshed_schema_version = 0;
     const uint64_t tenant_id = index_schema.get_tenant_id();
+    const ObDDLType ddl_type = (ObIndexArg::DROP_MLOG == arg.index_action_type_) ?
+                               ObDDLType::DDL_DROP_MLOG : ObDDLType::DDL_DROP_INDEX;
     ObCreateDDLTaskParam param(tenant_id,
-                               ObDDLType::DDL_DROP_INDEX,
+                               ddl_type,
                                &index_schema,
                                nullptr,
                                0/*object_id*/,
@@ -796,6 +825,8 @@ int ObIndexBuilder::generate_schema(
         LOG_WARN("set_index_table_columns failed", K(arg), K(data_schema), K(ret));
       } else if (OB_FAIL(set_index_table_options(arg, data_schema, schema))) {
         LOG_WARN("set_index_table_options failed", K(arg), K(data_schema), K(ret));
+      } else if (OB_FAIL(set_index_table_column_store_if_need(schema))) {
+        LOG_WARN("fail to set index table column store if need", KR(ret));
       } else {
         schema.set_name_generated_type(arg.index_schema_.get_name_generated_type());
         LOG_INFO("finish generate index schema", K(schema));
@@ -880,7 +911,9 @@ int ObIndexBuilder::set_basic_infos(const ObCreateIndexArg &arg,
       schema.set_store_format(data_schema.get_store_format());
       schema.set_storage_format_version(data_schema.get_storage_format_version());
       schema.set_tablespace_id(arg.index_schema_.get_tablespace_id());
-      schema.set_encryption_str(arg.index_schema_.get_encryption_str());
+      if (OB_FAIL(schema.set_encryption_str(arg.index_schema_.get_encryption_str()))) {
+        LOG_WARN("fail to set set_encryption_str", K(ret), K(arg));
+      }
 
       if (data_schema.get_max_used_column_id() > schema.get_max_used_column_id()) {
         schema.set_max_used_column_id(data_schema.get_max_used_column_id());
@@ -889,7 +922,8 @@ int ObIndexBuilder::set_basic_infos(const ObCreateIndexArg &arg,
       schema.set_autoinc_column_id(0);
       schema.set_progressive_merge_num(data_schema.get_progressive_merge_num());
       schema.set_progressive_merge_round(data_schema.get_progressive_merge_round());
-      if (OB_FAIL(schema.set_compress_func_name(data_schema.get_compress_func_name()))) {
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(schema.set_compress_func_name(data_schema.get_compress_func_name()))) {
         LOG_WARN("set_compress_func_name failed", K(data_schema));
       } else if (OB_INVALID_ID != schema.get_tablespace_id()) {
         if (OB_FAIL(schema_guard.get_tablespace_schema(
@@ -964,6 +998,29 @@ bool ObIndexBuilder::is_final_index_status(const ObIndexStatus index_status) con
   return (INDEX_STATUS_AVAILABLE == index_status
           || INDEX_STATUS_UNIQUE_INELIGIBLE == index_status
           || is_error_index_status(index_status));
+}
+
+int ObIndexBuilder::set_index_table_column_store_if_need(
+    share::schema::ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t compat_version = 0;
+  const uint64_t tenant_id = table_schema.get_tenant_id();
+  const uint64_t table_id = table_schema.get_table_id();
+  if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(table_schema));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
+    LOG_WARN("fail to get min data version", KR(ret), K(tenant_id), K(table_id));
+  } else if (compat_version >= DATA_VERSION_4_2_0_0) {
+    table_schema.set_column_store(true);
+    if (table_schema.get_column_group_count() == 0) {
+      if (OB_FAIL(table_schema.add_default_column_group())) {
+        LOG_WARN("fail to add default column group", KR(ret), K(tenant_id), K(table_id));
+      }
+    }
+  }
+  return ret;
 }
 
 }//end namespace rootserver

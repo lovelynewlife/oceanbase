@@ -86,6 +86,7 @@ mysql -uroot -h127.1 -P2881
 | OB_TENANT_MINI_CPU      |            | oceanbase租户mini_cpu参数配置 |
 | OB_TENANT_MEMORY_SIZE   |            | oceanbase租户memory_size参数配置 |
 | OB_TENANT_LOG_DISK_SIZE |            | oceanbase租户log_disk_size参数配置 |
+| OB_TENANT_LOWER_CASE_TABLE_NAMES | 1 | oceanbase 租户 表名是否区分大小写 |
 
 ## 运行 Sysbench 脚本
 
@@ -110,3 +111,24 @@ docker run -d -p 2881:2881 -v $PWD/ob:/root/ob -v $PWD/obd:/root/.obd --name oce
 `oceanbase-ce` docker默认会将数据保存到 /root/ob 目录。必须同时绑定 /root/ob 和 /root/.obd 目录。如果仅仅绑定 /root/ob 目录的话，容器就没办法重启了，因为oceanbase-ce 是使用 [obd](https://github.com/oceanbase/obdeploy)来管理数据库集群的，而启动一个全新的docker容器时，里面没有任何数据库集群信息。
 
 docker -v 参数的详细说明可以参考 [docker volumn](https://docs.docker.com/storage/volumes/)。
+
+## 快速单机启动镜像构建
+在`tools/docker/standalone`目录下提供`fast_boot_docker_build.sh`脚本，通过该脚本可以构建快速启动镜像。在运行脚本之前，请首先修改`tools/docker/standalone/boot/_env`环境配置脚本：
+
+- 必须：将`MODE`配置项修改为`STANDALONE`
+- 可选：修改其余配置项
+
+修改完毕后，执行镜像构建脚本：
+
+- `./fast_boot_docker_build.sh <oceanbase_rpm_version>` 例如：`./fast_boot_docker_build.sh 4.2.1.0-100000102023092807`
+
+等待构建完毕后，可使用前述相同的方式启动、测试实例。
+
+## 故障诊断
+提供了一系列诊断方法用来诊断docker中的出错情况
+### 支持‘enable_rich_error_msg’参数
+- 首先在docker启动的过程中会默认开启‘enable_rich_error_msg’参数，如果在启动过程中发生错误，可以trace指令拿到更多的报错信息，启动成功后，docker会将该参数设置为关闭转态。
+- 用户可以通过打开该参数拿到更多运行阶段的sql语句的报错信息，打开方法为使用系统租户连接上docker中的oceanbase，然后执行
+```bash
+alter system set enable_rich_error_msg = true;
+```

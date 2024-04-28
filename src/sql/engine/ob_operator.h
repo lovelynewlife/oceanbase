@@ -570,6 +570,8 @@ private:
   int check_stack_once();
   int output_expr_sanity_check();
   int output_expr_sanity_check_batch();
+  int output_expr_decint_datum_len_check();
+  int output_expr_decint_datum_len_check_batch();
   int setup_op_feedback_info();
   int do_drain_exch();
   // child can implement this interface, but can't call this directly
@@ -679,6 +681,7 @@ public:
 
   ObPhyOperatorType get_type() const { return spec_.type_; }
   const ObOpSpec &get_spec() const { return spec_; }
+  TO_STRING_KV(K(spec_));
 protected:
   ObExecContext &exec_ctx_;
   const ObOpSpec &spec_;

@@ -20,7 +20,7 @@
 #include "lib/mysqlclient/ob_mysql_proxy.h"
 #include "share/backup/ob_archive_struct.h"
 #include "share/ob_ls_id.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/backup/ob_backup_ctx.h"
 #include "storage/backup/ob_backup_index_merger.h"
 #include "storage/backup/ob_backup_index_store.h"
@@ -101,7 +101,6 @@ class ObBackupDagNet : public share::ObIDagNet
 public:
   explicit ObBackupDagNet(const ObBackupDagNetSubType &sub_type);
   virtual ~ObBackupDagNet();
-  bool is_ha_dag_net() const override { return true; }
   ObBackupDagNetSubType get_sub_type() const { return sub_type_; };
   INHERIT_TO_STRING_KV("ObIDagNet", ObIDagNet, K_(sub_type));
 protected:
@@ -204,7 +203,6 @@ private:
   share::SCN compl_end_scn_;
   DISALLOW_COPY_AND_ASSIGN(ObLSBackupComplementLogDagNet);
 };
-
 
 class ObLSBackupMetaDag : public share::ObIDag {
 public:
@@ -413,6 +411,11 @@ private:
   int advance_checkpoint_by_flush_(const uint64_t tenant_id, const share::ObLSID &ls_id, const share::SCN &start_scn);
   int backup_ls_meta_and_tablet_metas_(const uint64_t tenant_id, const share::ObLSID &ls_id);
   int backup_ls_meta_package_(const ObBackupLSMetaInfo &ls_meta_info);
+  int report_backup_stat_(const int64_t tablet_count, const int64_t macro_block_count);
+  int calc_backup_stat_(const ObBackupSetTaskAttr &set_task_attr,
+      const int64_t tablet_count, const int64_t macro_block_count, ObBackupStats &backup_stats);
+  int calc_ls_backup_stat_(const share::ObBackupStats &old_backup_stat, const int64_t tablet_count,
+      const int64_t macro_block_count, ObBackupStats &backup_stats);
 
 private:
   bool is_inited_;
@@ -533,7 +536,9 @@ private:
   int report_ls_backup_task_info_(const ObLSBackupStat &stat);
   int update_task_stat_(const share::ObBackupStats &old_backup_stat, const ObLSBackupStat &ls_stat,
       share::ObBackupStats &new_backup_stat);
-  int update_task_info_stat_(const ObBackupLSTaskInfo &task_info, const ObLSBackupStat &stat, ObLSBackupStat &new_stat);
+  int update_ls_task_stat_(const share::ObBackupStats &old_backup_stat, const ObLSBackupStat &ls_stat,
+      share::ObBackupStats &new_backup_stat);
+  int update_ls_task_info_stat_(const ObBackupLSTaskInfo &task_info, const ObLSBackupStat &stat, ObLSBackupStat &new_stat);
   int do_generate_next_task_();
   int check_disk_space_();
   int get_macro_block_id_list_(common::ObIArray<ObBackupMacroBlockId> &list);
@@ -543,7 +548,7 @@ private:
   int prepare_tablet_meta_reader_(const common::ObTabletID &tablet_id, const ObTabletMetaReaderType &reader_type,
       storage::ObTabletHandle &tablet_handle, ObITabletMetaBackupReader *&reader);
   int get_next_macro_block_data_(ObMultiMacroBlockBackupReader *reader, blocksstable::ObBufferReader &buffer_reader,
-      blocksstable::ObLogicMacroBlockId &logic_id);
+      blocksstable::ObLogicMacroBlockId &logic_id, ObIAllocator *io_allocator);
   int check_macro_block_data_(const blocksstable::ObBufferReader &data);
   int write_macro_block_data_(const blocksstable::ObBufferReader &data, const blocksstable::ObLogicMacroBlockId &logic_id,
       ObBackupMacroBlockIndex &macro_index);
@@ -562,6 +567,10 @@ private:
   int backup_secondary_metas_(ObBackupTabletStat *tablet_stat);
   int may_fill_reused_backup_items_(
       const common::ObTabletID &tablet_id, ObBackupTabletStat *tablet_stat);
+  int check_and_mark_item_reused_(
+      storage::ObITable *table_ptr,
+      storage::ObTabletHandle &tablet_handle,
+      ObBackupTabletStat *tablet_stat);
   int check_macro_block_need_reuse_when_recover_(const blocksstable::ObLogicMacroBlockId &logic_id,
       const common::ObArray<blocksstable::ObLogicMacroBlockId> &logic_id_list, bool &need_reuse);
   int release_tablet_handles_(ObBackupTabletStat *tablet_stat);

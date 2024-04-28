@@ -20,6 +20,7 @@
 #include "lib/container/ob_array_iterator.h"
 #include "lib/container/ob_se_array.h"
 #include "lib/container/ob_se_array_iterator.h"
+#include "lib/net/ob_net_util.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_schema_struct.h"
 #include "share/schema/ob_table_schema.h"
@@ -272,7 +273,7 @@ int ObSchemaGetterGuard::get_can_read_index_array(
         }
       }
       if (OB_SUCC(ret)) {
-        if (!with_mv && index_schema->is_materialized_view()) {
+        if (!with_mv && index_schema->is_mlog_table()) {
           // skip
         } else if (!with_global_index && index_schema->is_global_index_table()) {
           // skip
@@ -290,6 +291,36 @@ int ObSchemaGetterGuard::get_can_read_index_array(
     size = can_read_count;
   }
 
+  return ret;
+}
+
+// For SQL only
+int ObSchemaGetterGuard::get_table_mlog_schema(const uint64_t tenant_id,
+                                               const uint64_t data_table_id,
+                                               const ObTableSchema *&mlog_schema)
+{
+  int ret = OB_SUCCESS;
+  mlog_schema = NULL;
+  const ObTableSchema *table_schema = NULL;
+  uint64_t mlog_table_id = OB_INVALID_ID;
+  if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
+    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
+  } else if (OB_FAIL(get_table_schema(tenant_id, data_table_id, table_schema))) {
+    LOG_TRACE("cannot get table schema for table", KR(ret), K(tenant_id), K(data_table_id));
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("cannot get table schema for table ", KR(ret), K(tenant_id), K(data_table_id));
+  } else if (!table_schema->has_mlog_table()) {
+    ret = OB_ERR_TABLE_NO_MLOG;
+    LOG_WARN("table schema does not has materialized view log", KR(ret), K(tenant_id), K(data_table_id));
+  } else if (FALSE_IT(mlog_table_id = table_schema->get_mlog_tid())) {
+  } else if (OB_FAIL(get_table_schema(tenant_id, mlog_table_id, mlog_schema))) {
+    LOG_WARN("cannot get table schema for table", KR(ret), K(tenant_id), K(mlog_table_id));
+  } else if (OB_ISNULL(mlog_schema)) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("cannot get table schema for mlog table ",
+        KR(ret), K(tenant_id), K(data_table_id), K(mlog_table_id));
+  }
   return ret;
 }
 
@@ -1669,7 +1700,8 @@ int ObSchemaGetterGuard::get_can_write_index_array(
     const uint64_t table_id,
     uint64_t *index_tid_array,
     int64_t &size,
-    bool only_global)
+    bool only_global,
+    bool with_mlog)
 {
   int ret = OB_SUCCESS;
   const ObTableSchema *table_schema = NULL;
@@ -1683,6 +1715,14 @@ int ObSchemaGetterGuard::get_can_write_index_array(
     LOG_WARN("cannot get table schema for table ", KR(ret), K(tenant_id), K(table_id));
   } else if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos))) {
     LOG_WARN("get simple_index_infos failed", KR(ret), K(tenant_id), K(table_id));
+  } else if (with_mlog && table_schema->has_mlog_table()) {
+    ObAuxTableMetaInfo mlog_meta_info;
+    mlog_meta_info.table_id_ = table_schema->get_mlog_tid();
+    mlog_meta_info.table_type_ = MATERIALIZED_VIEW_LOG;
+    if (OB_FAIL(simple_index_infos.push_back(mlog_meta_info))) {
+      LOG_WARN("failed to push back mlog meta info to simple index infos",
+          KR(ret), K(mlog_meta_info));
+    }
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < simple_index_infos.count(); ++i) {
     const uint64_t index_id = simple_index_infos.at(i).table_id_;
@@ -1693,6 +1733,13 @@ int ObSchemaGetterGuard::get_can_write_index_array(
       LOG_WARN("cannot get index table schema for table ", KR(ret), K(tenant_id), K(index_id));
     } else if (OB_UNLIKELY(index_schema->is_final_invalid_index())) {
       //invalid index status, need ingore
+    } else if (OB_MAX_INDEX_PER_TABLE <= can_write_count) {
+      ret = OB_ERR_TOO_MANY_KEYS;
+      LOG_USER_ERROR(OB_ERR_TOO_MANY_KEYS, OB_MAX_INDEX_PER_TABLE);
+      LOG_WARN("too many index or mlog for table!", K(can_write_count), K(OB_MAX_INDEX_PER_TABLE));
+    } else if (index_schema->is_mlog_table()) {
+      index_tid_array[can_write_count] = simple_index_infos.at(i).table_id_;
+      ++can_write_count;
     } else if (!only_global) {
       index_tid_array[can_write_count] = simple_index_infos.at(i).table_id_;
       ++can_write_count;
@@ -1779,11 +1826,7 @@ int ObSchemaGetterGuard::get_database_id(uint64_t tenant_id,
                                             simple_database))) {
         LOG_WARN("get simple database failed", KR(ret), K(tenant_id), K(database_name));
       } else if (NULL == simple_database) {
-        if (0 == database_name.case_compare(OB_INFORMATION_SCHEMA_NAME)) {
-          database_id = OB_INFORMATION_SCHEMA_ID;
-        } else {
-          LOG_INFO("database not exist", K(tenant_id), K(database_name));
-        }
+        LOG_INFO("database not exist", K(tenant_id), K(database_name));
       } else {
         database_id = simple_database->get_database_id();
       }
@@ -2769,8 +2812,7 @@ int ObSchemaGetterGuard::check_user_access(
           LOG_INFO("password error", "tenant_name", login_info.tenant_name_,
               "user_name", login_info.user_name_,
               "client_ip_", login_info.client_ip_, KR(ret));
-        } else if (!ObHostnameStuct::is_wild_match(login_info.client_ip_, user_info->get_host_name_str())
-            && !ObHostnameStuct::is_ip_match(login_info.client_ip_, user_info->get_host_name_str())) {
+        } else if (!obsys::ObNetUtil::is_match(login_info.client_ip_, user_info->get_host_name_str())) {
           LOG_TRACE("account not matched, try next", KPC(user_info), K(login_info));
         } else {
           matched_user_info = user_info;
@@ -7857,26 +7899,6 @@ int ObSchemaGetterGuard::get_schema_size(const uint64_t tenant_id,
   return ret;
 }
 
-int ObSchemaGetterGuard::get_tenant_mv_ids(const uint64_t tenant_id, ObArray<uint64_t> &mv_ids) const
-{
-  int ret = OB_SUCCESS;
-  const ObSchemaMgr *mgr = NULL;
-  mv_ids.reset();
-  if (!check_inner_stat()) {
-    ret = OB_INNER_STAT_ERROR;
-    LOG_WARN("inner stat error", KR(ret));
-  } else if (OB_INVALID_ID == tenant_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
-    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
-  } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
-    LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(mgr->get_tenant_mv_ids(tenant_id, mv_ids))) {
-    LOG_WARN("Failed to get all_mv_ids", KR(ret), K(tenant_id));
-  }
-  return ret;
-}
 
 int ObSchemaGetterGuard::check_udf_exist_with_name(const uint64_t tenant_id,
                                                    const common::ObString &name,
@@ -8808,6 +8830,22 @@ int ObSchemaGetterGuard::check_if_tenant_has_been_dropped(const uint64_t tenant_
     LOG_WARN("fail to get drop tenant info", KR(ret), K(tenant_id));
   } else {
     is_dropped = (drop_tenant_info.is_valid());
+  }
+  return ret;
+}
+
+int ObSchemaGetterGuard::get_dropped_tenant_ids(common::ObIArray<uint64_t> &dropped_tenant_ids) const
+{
+  int ret = OB_SUCCESS;
+  dropped_tenant_ids.reset();
+  const ObSchemaMgr *schema_mgr = NULL;
+  if (OB_FAIL(get_schema_mgr(OB_SYS_TENANT_ID, schema_mgr))) {
+    LOG_WARN("fail to get schema mgr", KR(ret));
+  } else if (OB_ISNULL(schema_mgr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema_mgr is null", KR(ret));
+  } else if (OB_FAIL(schema_mgr->get_drop_tenant_ids(dropped_tenant_ids))) {
+    LOG_WARN("fail to get drop tenant ids", KR(ret));
   }
   return ret;
 }

@@ -391,7 +391,7 @@ int ObExprGeneratorImpl::visit(ObQueryRefRawExpr &expr)
                "expr type", get_type_name(expr.get_expr_type()));
     } else {
       ObExprSubQueryRef *subquery_op = static_cast<ObExprSubQueryRef*>(op);
-      bool result_is_scalar = (expr.get_output_column() == 1 && !expr.is_set() && !expr.is_multiset());
+      bool result_is_scalar = expr.is_scalar();
       subquery_op->set_result_is_scalar(result_is_scalar);
       subquery_op->set_result_type(expr.get_result_type());
       if (result_is_scalar) {
@@ -981,8 +981,6 @@ int ObExprGeneratorImpl::visit_abs_expr(ObNonTerminalRawExpr &expr, ObExprAbs *a
   } else if (OB_ISNULL(expr.get_param_expr(0))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error. param expr is null", K(ret), K(expr));
-  } else {
-    ret = abs_op->set_func(expr.get_param_expr(0)->get_data_type());
   }
   return ret;
 }

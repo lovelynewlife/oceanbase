@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #pragma once
 #include <stdint.h>
 #include <netinet/in.h>
@@ -66,6 +78,7 @@ PN_API uint64_t pn_get_rxbytes(int grp_id);
 PN_API int dispatch_accept_fd_to_certain_group(int fd, uint64_t gid);
 PN_API void pn_stop(uint64_t gid);
 PN_API void pn_wait(uint64_t gid);
+PN_API int pn_get_fd(uint64_t req_id);
 extern int64_t pnio_keepalive_timeout;
 pn_comm_t* get_current_pnio();
 void pn_release(pn_comm_t* pn_comm);

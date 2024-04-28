@@ -12,7 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_ha_macro_block_writer.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "lib/utility/ob_tracepoint.h"
 
 namespace oceanbase
@@ -120,21 +120,21 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
   obrpc::ObCopyMacroBlockHeader header;
   write_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_MIGRATE_WRITE);
   write_info.io_desc_.set_group_id(ObIOModule::HA_MACRO_BLOCK_WRITER_IO);
+  write_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "not inited", K(ret));
   } else {
-    const int64_t io_timeout_ms = GCONF._data_storage_io_timeout / 1000L;
     while (OB_SUCC(ret)) {
       if (!GCTX.omt_->has_tenant(tenant_id_)) {
         ret = OB_TENANT_NOT_EXIST;
         STORAGE_LOG(WARN, "tenant not exists, stop migrate", K(ret), K(tenant_id_));
         break;
       }
-      dag_yield();
-
-      if (OB_FAIL(reader_->get_next_macro_block(header, data))) {
+      if (OB_FAIL(dag_yield())) {
+        STORAGE_LOG(WARN, "fail to yield dag", KR(ret));
+      } else if (OB_FAIL(reader_->get_next_macro_block(header, data))) {
         if (OB_ITER_END != ret) {
           STORAGE_LOG(WARN, "failed to get next macro block", K(ret));
         } else {
@@ -145,8 +145,8 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
       } else if (OB_FAIL(check_macro_block_(data))) {
         STORAGE_LOG(ERROR, "failed to check macro block, fatal error", K(ret), K(write_count), K(data));
         ret = OB_INVALID_DATA;// overwrite ret
-      } else if (!write_handle.is_empty() && OB_FAIL(write_handle.wait(io_timeout_ms))) {
-        STORAGE_LOG(WARN, "failed to wait write handle", K(ret));
+      } else if (!write_handle.is_empty() && OB_FAIL(write_handle.wait())) {
+        STORAGE_LOG(WARN, "failed to wait write handle", K(ret), K(write_info));
       } else if (header.is_reuse_macro_block_) {
         //TODO(muwei.ym) reuse macro block in 4.3
         ret = OB_NOT_SUPPORTED;
@@ -155,6 +155,7 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
         write_info.buffer_ = data.data();
         write_info.size_ = data.upper_align_length();
         write_handle.reset();
+
         if (OB_FAIL(ObBlockManager::async_write_block(write_info, write_handle))) {
           STORAGE_LOG(WARN, "fail to async write block", K(ret), K(write_info), K(write_handle));
         } else if (OB_FAIL(copied_ctx.add_macro_block_id(write_handle.get_macro_id()))) {
@@ -171,9 +172,9 @@ int ObStorageHAMacroBlockWriter::process(blocksstable::ObMacroBlocksWriteCtx &co
     }
 
     if (!write_handle.is_empty()) {
-      int tmp_ret = write_handle.wait(io_timeout_ms);
+      int tmp_ret = write_handle.wait();
       if (OB_SUCCESS != tmp_ret) {
-        STORAGE_LOG(WARN, "failed to wait write handle", K(ret), K(tmp_ret));
+        STORAGE_LOG(WARN, "failed to wait write handle", K(ret), K(tmp_ret), K(write_info));
         if (OB_SUCC(ret)) {
           ret = tmp_ret;
         }

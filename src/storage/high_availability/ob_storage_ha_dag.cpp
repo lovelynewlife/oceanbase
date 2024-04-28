@@ -418,25 +418,40 @@ int ObStorageHADagUtils::check_self_is_valid_member(
   const uint64_t tenant_id = MTL_ID();
   share::ObLocationService *location_service = nullptr;
   const bool force_renew = true;
-  common::ObAddr leader_addr;
   ObLSService *ls_service = nullptr;
   storage::ObStorageRpc *storage_rpc = nullptr;
   obrpc::ObFetchLSMemberAndLearnerListInfo member_info;
   storage::ObStorageHASrcInfo src_info;
   src_info.cluster_id_ = GCONF.cluster_id;
   const ObAddr &self_addr = GCONF.self_addr_;
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+
   if (!ls_id.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("check self in member list get invalid argument", K(ret), K(ls_id));
   } else if (OB_ISNULL(location_service = GCTX.location_service_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("location service should not be NULL", K(ret), KP(location_service));
-  } else if (OB_FAIL(location_service->get_leader(src_info.cluster_id_, tenant_id, ls_id, force_renew, leader_addr))) {
-    LOG_WARN("fail to get ls leader server", K(ret), K(tenant_id), K(ls_id));
-  } else if (FALSE_IT(src_info.src_addr_ = leader_addr)) {
   } else if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls service should not be NULL", K(ret), K(tenant_id), K(ls_id));
+  } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("failed to get ls", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls should not be NULL", K(ret), KP(ls), K(ls_id));
+  } else if (OB_FAIL(ls->get_log_handler()->get_election_leader(src_info.src_addr_))) {
+    LOG_WARN("failed to get election leader", K(ret), K(tenant_id), K(ls_id));
+    if (OB_LEADER_NOT_EXIST == ret) {
+      //overwrite ret
+      if (OB_FAIL(location_service->get_leader(src_info.cluster_id_, tenant_id, ls_id, force_renew, src_info.src_addr_))) {
+        LOG_WARN("failed to get ls leader server", K(ret), K(tenant_id), K(ls_id));
+      }
+    }
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (OB_ISNULL(storage_rpc = ls_service->get_storage_rpc())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("storage rpc should not be NULL", K(ret), K(tenant_id), K(ls_id));
@@ -677,8 +692,7 @@ int ObStorageHATaskUtils::check_major_sstable_need_copy_(
 {
   int ret = OB_SUCCESS;
   ObTablet *tablet = nullptr;
-  const ObSSTable *sstable = nullptr;
-  ObITable *table = nullptr;
+  ObSSTableWrapper sstable_wrapper;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
   ObSSTableMetaHandle sst_meta_hdl;
 
@@ -694,15 +708,14 @@ int ObStorageHATaskUtils::check_major_sstable_need_copy_(
     const ObSSTableArray &major_sstable_array = table_store_wrapper.get_member()->get_major_sstables();
     if (major_sstable_array.empty()) {
       need_copy = true;
-    } else if (OB_FAIL(major_sstable_array.get_table(param.table_key_, table))) {
+    } else if (OB_FAIL(major_sstable_array.get_table(param.table_key_, sstable_wrapper))) {
       LOG_WARN("failed to get table", K(ret), K(param), K(major_sstable_array));
-    } else if (nullptr == table) {
+    } else if (nullptr == sstable_wrapper.get_sstable()) {
       need_copy = true;
-    } else if (FALSE_IT(sstable = static_cast<ObSSTable *>(table))) {
-    } else if (OB_FAIL(sstable->get_meta(sst_meta_hdl))) {
+    } else if (OB_FAIL(sstable_wrapper.get_sstable()->get_meta(sst_meta_hdl))) {
       LOG_WARN("failed to get sstable meta handle", K(ret));
     } else if (OB_FAIL(ObSSTableMetaChecker::check_sstable_meta(param, sst_meta_hdl.get_sstable_meta()))) {
-      LOG_WARN("failed to check sstable meta", K(ret), K(param), KPC(sstable));
+      LOG_WARN("failed to check sstable meta", K(ret), K(param), K(sstable_wrapper));
     } else {
       need_copy = false;
     }
@@ -752,7 +765,6 @@ int ObStorageHATaskUtils::check_minor_sstable_need_copy_(
         //Need copy should be false and reuse local minor sstable.
       }
     }
-
     if (OB_SUCC(ret) && !found) {
       need_copy = true;
     }
@@ -767,8 +779,7 @@ int ObStorageHATaskUtils::check_ddl_sstable_need_copy_(
 {
   int ret = OB_SUCCESS;
   ObTablet *tablet = nullptr;
-  ObITable *table = nullptr;
-  const ObSSTable *sstable = nullptr;
+  ObSSTableWrapper sstable_wrapper;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
   ObSSTableMetaHandle sst_meta_hdl;
 
@@ -788,9 +799,9 @@ int ObStorageHATaskUtils::check_ddl_sstable_need_copy_(
       need_copy = false;
     } else if (ddl_sstable_array.empty()) {
       need_copy = true;
-    } else if (OB_FAIL(ddl_sstable_array.get_table(param.table_key_, table))) {
+    } else if (OB_FAIL(ddl_sstable_array.get_table(param.table_key_, sstable_wrapper))) {
       LOG_WARN("failed to get table", K(ret), K(param), K(ddl_sstable_array));
-    } else if (nullptr == table) {
+    } else if (nullptr == sstable_wrapper.get_sstable()) {
       const SCN start_scn = ddl_sstable_array.get_boundary_table(false)->get_start_scn();
       const SCN end_scn = ddl_sstable_array.get_boundary_table(true)->get_end_scn();
       if (param.table_key_.scn_range_.start_scn_ >= start_scn
@@ -799,11 +810,10 @@ int ObStorageHATaskUtils::check_ddl_sstable_need_copy_(
       } else {
         need_copy = true;
       }
-    } else if (FALSE_IT(sstable = static_cast<ObSSTable *>(table))) {
-    } else if (OB_FAIL(sstable->get_meta(sst_meta_hdl))) {
+    } else if (OB_FAIL(sstable_wrapper.get_sstable()->get_meta(sst_meta_hdl))) {
       LOG_WARN("failed to get sstable meta handle", K(ret));
     } else if (OB_FAIL(ObSSTableMetaChecker::check_sstable_meta(param, sst_meta_hdl.get_sstable_meta()))) {
-      LOG_WARN("failed to check sstable meta", K(ret), K(param), KPC(sstable));
+      LOG_WARN("failed to check sstable meta", K(ret), K(param), K(sstable_wrapper));
     } else {
       need_copy = false;
     }

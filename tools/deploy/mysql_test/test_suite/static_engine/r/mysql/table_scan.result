@@ -23,13 +23,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |7       |5           |
+|0 |TABLE FULL SCAN|t1  |7       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false,
+      is_index_back=false, is_global_index=false, 
       range_key([t1.c1], [t1.c2]), range(MIN,MIN ; MAX,MAX)always true
 select * from t1;
 +----+----+------+------+------------+
@@ -48,13 +48,13 @@ Query Plan
 ======================================================
 |ID|OPERATOR       |NAME       |EST.ROWS|EST.TIME(us)|
 ------------------------------------------------------
-|0 |TABLE FULL SCAN|t1(Reverse)|7       |5           |
+|0 |TABLE FULL SCAN|t1(Reverse)|7       |3           |
 ======================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false,
+      is_index_back=false, is_global_index=false, 
       range_key([t1.c1], [t1.c2]), range(MIN,MIN ; MAX,MAX)always true
 select * from t1 order by c1 desc, c2 desc;
 +----+----+------+------+------------+
@@ -73,13 +73,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |3       |5           |
+|0 |TABLE FULL SCAN|t1  |3       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter([t1.c1 + t1.c2 < cast(10, DECIMAL(2, 0))]), rowset=16
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter([t1.c1 + t1.c2 < cast(10, DECIMAL_INT(11, 0))]), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false, filter_before_indexback[false],
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t1.c1], [t1.c2]), range(MIN,MIN ; MAX,MAX)always true
 select * from t1 where c1 + c2 < 10;
 +----+----+------+------+------------+
@@ -95,13 +95,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t1  |2       |4           |
+|0 |TABLE FULL SCAN|t1  |2       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      limit(2), offset(nil), is_index_back=false, is_global_index=false,
+      limit(2), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t1.c1], [t1.c2]), range(MIN,MIN ; MAX,MAX)always true
 select * from t1 limit 2;
 +----+----+------+------+------------+
@@ -115,15 +115,15 @@ Query Plan
 ================================================
 |ID|OPERATOR        |NAME|EST.ROWS|EST.TIME(us)|
 ------------------------------------------------
-|0 |TABLE RANGE SCAN|t1  |2       |4           |
+|0 |TABLE RANGE SCAN|t1  |2       |3           |
 ================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([t1.c1], [t1.c2]), range(5,MIN ; 5,MAX),
-      range_cond([t1.c1 = cast(5, DECIMAL(1, 0))])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2]), range(5,MIN ; 5,MAX), 
+      range_cond([t1.c1 = cast(5, DECIMAL_INT(10, 0))])
 select * from t1 where c1 = 5;
 +----+----+------+------+------------+
 | c1 | c2 | c3   | c4   | c5         |
@@ -136,15 +136,15 @@ Query Plan
 ================================================
 |ID|OPERATOR        |NAME|EST.ROWS|EST.TIME(us)|
 ------------------------------------------------
-|0 |TABLE RANGE SCAN|t1  |4       |7           |
+|0 |TABLE RANGE SCAN|t1  |4       |5           |
 ================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([t1.c1], [t1.c2]), range(5,MIN ; 5,MAX), (7,MIN ; 7,MAX),
-      range_cond([t1.c1 = cast(5, DECIMAL(1, 0)) OR t1.c1 = cast(7, DECIMAL(1, 0))])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2]), range(5,MIN ; 5,MAX), (7,MIN ; 7,MAX), 
+      range_cond([t1.c1 = cast(5, DECIMAL_INT(10, 0)) OR t1.c1 = cast(7, DECIMAL_INT(10, 0))])
 select * from t1 where c1 = 5 or c1 = 7;
 +----+----+------+------+------------+
 | c1 | c2 | c3   | c4   | c5         |
@@ -165,10 +165,10 @@ Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([t1.c1], [t1.c2]), range[2,4 ; 2,4], [7,5 ; 7,5], [8,7 ; 8,7],
-      range_cond([(T_OP_OR, t1.c1 = cast(2, DECIMAL(1, 0)) AND t1.c2 = cast(4, DECIMAL(1, 0)), t1.c1 = cast(7, DECIMAL(1, 0)) AND t1.c2 = cast(5, DECIMAL(1,
-       0)), t1.c1 = cast(8, DECIMAL(1, 0)) AND t1.c2 = cast(7, DECIMAL(1, 0)))])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2]), range[2,4 ; 2,4], [7,5 ; 7,5], [8,7 ; 8,7], 
+      range_cond([(T_OP_OR, t1.c1 = cast(2, DECIMAL_INT(10, 0)) AND t1.c2 = cast(4, DECIMAL_INT(10, 0)), t1.c1 = cast(7, DECIMAL_INT(10, 0)) AND t1.c2 = 
+      cast(5, DECIMAL_INT(10, 0)), t1.c1 = cast(8, DECIMAL_INT(10, 0)) AND t1.c2 = cast(7, DECIMAL_INT(10, 0)))])
 select * from t1 where (c1 = 2 and c2 = 4) or (c1 = 7 and c2 = 5) or (c1 = 8 and c2 = 7);
 +----+----+------+------+------------+
 | c1 | c2 | c3   | c4   | c5         |
@@ -182,16 +182,16 @@ Query Plan
 ==================================================
 |ID|OPERATOR        |NAME  |EST.ROWS|EST.TIME(us)|
 --------------------------------------------------
-|0 |TABLE RANGE SCAN|t1(i1)|1       |6           |
+|0 |TABLE RANGE SCAN|t1(i1)|1       |7           |
 ==================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter([t1.c1 + cast(cast(2, DECIMAL(1, 0)), DECIMAL(10, 0)) < cast(10, DECIMAL(2, 0))], [t1.c4
-      > t1.c3]), rowset=16
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5]), filter([t1.c1 + cast(cast(2, DECIMAL_INT(10, 0)), DECIMAL_INT(10, 0)) < cast(10, DECIMAL_INT(11,
+       0))], [t1.c4 > t1.c3]), rowset=16
       access([t1.c1], [t1.c2], [t1.c4], [t1.c3], [t1.c5]), partitions(p0)
-      is_index_back=true, is_global_index=false, filter_before_indexback[true,false],
-      range_key([t1.c2], [t1.c1]), range(2,MIN ; 2,MAX),
-      range_cond([t1.c2 = cast(2, DECIMAL(1, 0))])
+      is_index_back=true, is_global_index=false, filter_before_indexback[true,false], 
+      range_key([t1.c2], [t1.c1]), range(2,MIN ; 2,MAX), 
+      range_cond([t1.c2 = cast(2, DECIMAL_INT(10, 0))])
 select * from t1 where c2  = 2 and c1 + c2 < 10 and c4 > c3;
 +----+----+------+------+------------+
 | c1 | c2 | c3   | c4   | c5         |
@@ -205,15 +205,15 @@ Query Plan
 ==================================================
 |ID|OPERATOR        |NAME  |EST.ROWS|EST.TIME(us)|
 --------------------------------------------------
-|0 |TABLE RANGE SCAN|t1(i1)|3       |4           |
+|0 |TABLE RANGE SCAN|t1(i1)|3       |3           |
 ==================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
       access([t1.c1], [t1.c2]), partitions(p0)
-      is_index_back=false, is_global_index=false,
-      range_key([t1.c2], [t1.c1]), range(4,MAX ; MAX,MAX),
-      range_cond([t1.c2 > cast(4, DECIMAL(1, 0))])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c2], [t1.c1]), range(4,MAX ; MAX,MAX), 
+      range_cond([t1.c2 > cast(4, DECIMAL_INT(10, 0))])
 select c1, c2 from t1 where c2 > 4;
 +----+----+
 | c1 | c2 |
@@ -250,14 +250,14 @@ Query Plan
 ===================================================
 |ID|OPERATOR        |NAME   |EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------
-|0 |TABLE RANGE SCAN|t1(idx)|1       |6           |
+|0 |TABLE RANGE SCAN|t1(idx)|1       |7           |
 ===================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c1 < 4]), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=true, is_global_index=false, filter_before_indexback[true],
-      range_key([t1.c2], [t1.c1]), range(1,MAX ; MAX,4),
+      is_index_back=true, is_global_index=false, filter_before_indexback[true], 
+      range_key([t1.c2], [t1.c1]), range(1,MAX ; MAX,4), 
       range_cond([t1.c2 > 1])
 select /*+index(t1 idx)*/ c1, c2, c3 from t1 where c2 > 1 and  c1 <  4;
 +----+------+------+
@@ -274,14 +274,14 @@ Query Plan
 ===================================================
 |ID|OPERATOR        |NAME   |EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------
-|0 |TABLE RANGE SCAN|t1(idx)|1       |20          |
+|0 |TABLE RANGE SCAN|t1(idx)|1       |19          |
 ===================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c3 < 4]), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=true, is_global_index=false, filter_before_indexback[false],
-      range_key([t1.c2], [t1.c1]), range(1,MAX ; MAX,MAX),
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.c2], [t1.c1]), range(1,MAX ; MAX,MAX), 
       range_cond([t1.c2 > 1])
 select /*+index(t1 idx)*/ c1, c2, c3 from t1 where c2 > 1 and  c3 <  4;
 +----+------+------+
@@ -296,13 +296,13 @@ Query Plan
 ==================================================
 |ID|OPERATOR       |NAME   |EST.ROWS|EST.TIME(us)|
 --------------------------------------------------
-|0 |TABLE FULL SCAN|t1(idx)|2       |10          |
+|0 |TABLE FULL SCAN|t1(idx)|2       |11          |
 ==================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c3 != 1]), rowset=16
       access([t1.c1], [t1.c3], [t1.c2]), partitions(p0)
-      limit(2), offset(nil), is_index_back=true, is_global_index=false, filter_before_indexback[false],
+      limit(2), offset(nil), is_index_back=true, is_global_index=false, filter_before_indexback[false], 
       range_key([t1.c2], [t1.c1]), range(MIN,MIN ; MAX,MAX)always true
 select /*+index(t1 idx)*/ c1, c2, c3 from t1 where c3 != 1 limit 2;
 +----+------+------+

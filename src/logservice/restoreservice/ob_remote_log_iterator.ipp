@@ -52,7 +52,7 @@ int ObRemoteLogIterator<LogEntryType>::init(const uint64_t tenant_id,
 {
   int ret = OB_SUCCESS;
   ObRemoteLogParent *source = NULL;
-  const int64_t DEFAULT_BUF_SIZE = 64 * 1024 * 1024L;
+  const int64_t BUF_SIZE = single_read_size + archive::ARCHIVE_FILE_HEADER_SIZE;
   if (OB_UNLIKELY(inited_)) {
     ret = OB_INIT_TWICE;
     CLOG_LOG(WARN, "ObRemoteLogIterator already init", K(ret), K(inited_), K(id_));
@@ -75,11 +75,11 @@ int ObRemoteLogIterator<LogEntryType>::init(const uint64_t tenant_id,
         && ! share::is_raw_path_log_source_type(source->get_source_type()))) {
     ret = OB_NOT_SUPPORTED;
     CLOG_LOG(WARN, "source type not support", K(ret), K(id), KPC(source));
-  } else if (OB_ISNULL(buf_ = buffer_pool_->acquire(DEFAULT_BUF_SIZE))) {
+  } else if (OB_ISNULL(buf_ = buffer_pool_->acquire(BUF_SIZE))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     CLOG_LOG(WARN, "acquire buf failed", K(ret));
   } else {
-    buf_size_ = DEFAULT_BUF_SIZE;
+    buf_size_ = BUF_SIZE;
     tenant_id_ = tenant_id;
     id_ = id;
     start_lsn_ = start_lsn;
@@ -251,6 +251,7 @@ int ObRemoteLogIterator<LogEntryType>::next_entry_(LogEntryType &entry, LSN &lsn
     } else {
       cur_lsn_ = lsn + entry.get_serialize_size();
       cur_scn_ = entry.get_scn();
+      advance_data_gen_lsn_();
       if (lsn < start_lsn_) {
         // do nothing
       } else {
@@ -267,14 +268,17 @@ int ObRemoteLogIterator<LogEntryType>::next_entry_(LogEntryType &entry, LSN &lsn
         }
       }
     }
+
+    // threads consume archive may increase or decrease, if threads stop, just retry
+    if (! done && OB_SUCC(ret) && OB_NOT_NULL(&lib::Thread::current()) ? lib::Thread::current().has_set_stop() : false) {
+      ret = OB_EAGAIN;
+      CLOG_LOG(INFO, "thread stop, try again", K(id_), K(lsn));
+    }
+
   } while (OB_SUCCESS == ret && ! done);
 
   if (OB_FAIL(ret) && OB_ITER_END != ret && ! is_io_error(ret)) {
     mark_source_error_(ret);
-  }
-
-  if (OB_SUCC(ret)) {
-    advance_data_gen_lsn_();
   }
   return ret;
 }

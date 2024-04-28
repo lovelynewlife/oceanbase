@@ -23,15 +23,18 @@
 #include "share/ob_io_device_helper.h"
 #include "share/ob_unit_getter.h"
 #include "share/rc/ob_tenant_base.h"
+#include "share/resource_manager/ob_resource_manager.h"
 #include "storage/blocksstable/ob_block_manager.h"
 #include "storage/blocksstable/ob_macro_block_struct.h"
 #include "storage/blocksstable/ob_sstable_meta.h"
 #include "storage/blocksstable/ob_tmp_file_store.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_slog_handler.h"
+#include "storage/slog_ckpt/ob_tenant_checkpoint_slog_handler.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "storage/ob_super_block_struct.h"
 #include "storage/slog/ob_storage_logger_manager.h"
 #include "storage/blocksstable/ob_shared_macro_block_manager.h"
+#include "storage/tablet/ob_tablet_macro_info_iterator.h"
 #include "lib/worker.h"
 
 using namespace oceanbase::common;
@@ -139,6 +142,7 @@ ObBlockManager::ObBlockManager()
     blk_seq_generator_(),
     alloc_num_(0),
     resize_file_lock_(),
+    group_id_(0),
     is_inited_(false),
     is_started_(false)
 {
@@ -272,6 +276,7 @@ void ObBlockManager::destroy()
   marker_status_.reset();
   blk_seq_generator_.reset();
   ATOMIC_STORE(&alloc_num_, 0);
+  group_id_ = 0;
   is_inited_ = false;
 }
 
@@ -348,11 +353,10 @@ int ObBlockManager::read_block(
     ObMacroBlockHandle &macro_handle)
 {
   int ret = OB_SUCCESS;
-  const int64_t io_timeout_ms = GCONF._data_storage_io_timeout / 1000L;
   if (OB_FAIL(async_read_block(read_info, macro_handle))) {
     LOG_WARN("Fail to sync read block", K(ret), K(read_info));
-  } else if (OB_FAIL(macro_handle.wait(io_timeout_ms))) {
-    LOG_WARN("Fail to wait io finish", K(ret));
+  } else if (OB_FAIL(macro_handle.wait())) {
+    LOG_WARN("Fail to wait io finish", K(ret), K(read_info));
   }
   return ret;
 }
@@ -362,11 +366,10 @@ int ObBlockManager::write_block(
     ObMacroBlockHandle &macro_handle)
 {
   int ret = OB_SUCCESS;
-  const int64_t io_timeout_ms = GCONF._data_storage_io_timeout / 1000L;
   if (OB_FAIL(async_write_block(write_info, macro_handle))) {
     LOG_WARN("Fail to sync write block", K(ret), K(write_info), K(macro_handle));
-  } else if (OB_FAIL(macro_handle.wait(io_timeout_ms))) {
-    LOG_WARN("Fail to wait io finish", K(ret));
+  } else if (OB_FAIL(macro_handle.wait())) {
+    LOG_WARN("Fail to wait io finish", K(ret), K(write_info));
   }
   return ret;
 }
@@ -743,7 +746,6 @@ int ObBlockManager::dec_ref(const MacroBlockId &macro_id)
   return ret;
 }
 
-
 int ObBlockManager::update_write_time(const MacroBlockId &macro_id, const bool update_to_max_time)
 {
   int ret = OB_SUCCESS;
@@ -793,18 +795,15 @@ void ObBlockManager::update_marker_status(const ObMacroBlockMarkerStatus &tmp_st
   marker_status_.sweep_cost_time_ = tmp_status.sweep_cost_time_;
   marker_status_.start_time_ = tmp_status.start_time_;
   marker_status_.last_end_time_ = tmp_status.last_end_time_;
-  marker_status_.mark_finished_ = tmp_status.mark_finished_;
-  if (tmp_status.mark_finished_) {
-    marker_status_.linked_block_count_ = tmp_status.linked_block_count_;
-    marker_status_.index_block_count_ = tmp_status.index_block_count_;
-    marker_status_.ids_block_count_ = tmp_status.ids_block_count_;
-    marker_status_.tmp_file_count_ = tmp_status.tmp_file_count_;
-    marker_status_.data_block_count_ = tmp_status.data_block_count_;
-    marker_status_.shared_data_block_count_ = tmp_status.shared_data_block_count_;
-    marker_status_.pending_free_count_ = tmp_status.pending_free_count_;
-    marker_status_.shared_meta_block_count_ = tmp_status.shared_meta_block_count_;
-    marker_status_.hold_info_ = tmp_status.hold_info_;
-  }
+  marker_status_.linked_block_count_ = tmp_status.linked_block_count_;
+  marker_status_.index_block_count_ = tmp_status.index_block_count_;
+  marker_status_.ids_block_count_ = tmp_status.ids_block_count_;
+  marker_status_.tmp_file_count_ = tmp_status.tmp_file_count_;
+  marker_status_.data_block_count_ = tmp_status.data_block_count_;
+  marker_status_.shared_data_block_count_ = tmp_status.shared_data_block_count_;
+  marker_status_.pending_free_count_ = tmp_status.pending_free_count_;
+  marker_status_.shared_meta_block_count_ = tmp_status.shared_meta_block_count_;
+  marker_status_.hold_info_ = tmp_status.hold_info_;
 }
 
 bool ObBlockManager::GetOldestHoldBlockFunctor::operator()(
@@ -959,15 +958,7 @@ void ObBlockManager::mark_and_sweep()
         skip_mark = true;
         LOG_INFO("no block alloc/free, no need to mark blocks", K(ret));
       } else if (OB_FAIL(mark_macro_blocks(mark_info, macro_id_set, tmp_status))) {//mark
-        if (OB_EAGAIN == ret) {
-          tmp_status.mark_finished_ = false;
-          ret = OB_SUCCESS;
-          // skip marking
-        } else {
-          LOG_WARN("fail to mark macro blocks", K(ret));
-        }
-      } else {
-        tmp_status.mark_finished_ = true;
+        LOG_WARN("fail to mark macro blocks", K(ret));
       }
 
       if (OB_FAIL(ret)) {
@@ -1020,7 +1011,9 @@ int ObBlockManager::mark_macro_blocks(
       const uint64_t tenant_id = mtl_tenant_ids.at(i);
       MacroBlockId macro_id;
       MTL_SWITCH(tenant_id) {
-        if (OB_FAIL(mark_tenant_blocks(mark_info, macro_id_set, tmp_status))) {
+        if (OB_FAIL(set_group_id(tenant_id))) {
+          LOG_WARN("isolate CPU and IOPS failed", K(ret));
+        } else if (OB_FAIL(mark_tenant_blocks(mark_info, macro_id_set, tmp_status))) {
           LOG_WARN("fail to mark tenant blocks", K(ret), K(tenant_id));
         } else if (OB_FALSE_IT(MTL(ObSharedMacroBlockMgr*)->get_cur_shared_block(macro_id))) {
         } else if (OB_FAIL(mark_held_shared_block(macro_id, mark_info, macro_id_set, tmp_status))) {
@@ -1076,27 +1069,27 @@ int ObBlockManager::mark_tenant_blocks(
     LOG_WARN("fail to mark tenant meta blocks", K(ret));
   } else {
     ObArenaAllocator iter_allocator("MarkIter", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
-    ObTenantTabletIterator tablet_iter(*t3m, iter_allocator);
+    ObTenantTabletIterator tablet_iter(*t3m, iter_allocator, nullptr/*no op*/);
     ObTabletHandle handle;
     while (OB_SUCC(ret)) {
-      if (!continue_mark()) {
-        ret = OB_EAGAIN;
-        LOG_INFO("disk usage exceeds threshold, skip marking", K(io_device_->get_free_block_count()),
-          K(super_block_.get_total_macro_block_count()));
-      } else {
-        handle.reset();
-        iter_allocator.reuse();
-        if (OB_FAIL(tablet_iter.get_next_tablet(handle))) {
-          if (OB_ITER_END == ret) {
-            ret = OB_SUCCESS;
-            break;
-          } else {
-            LOG_WARN("fail to get next in-memory tablet", K(ret));
-          }
-        } else if (OB_FAIL(mark_tablet_meta_blocks(mark_info, handle, macro_id_set, tmp_status))) {
+      handle.reset();
+      iter_allocator.reuse();
+      if (OB_FAIL(tablet_iter.get_next_tablet(handle))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          LOG_WARN("fail to get next in-memory tablet", K(ret));
+        }
+      } else if (handle.get_obj()->is_old_tablet()) {
+        if (OB_FAIL(mark_tablet_meta_blocks(mark_info, handle, macro_id_set, tmp_status))) {
           LOG_WARN("fail to mark tablet meta blocks", K(ret));
         } else if (OB_FAIL(mark_sstable_blocks(mark_info, handle, macro_id_set, tmp_status))) {
           LOG_WARN("fail to mark tablet blocks", K(ret));
+        }
+      } else {
+        if (OB_FAIL(mark_tablet_block(mark_info, handle, macro_id_set, tmp_status))) {
+          LOG_WARN("fail to mark tablet's macro blocks", K(ret), K(tmp_status), KPC(handle.get_obj()));
         }
       }
     }
@@ -1118,7 +1111,7 @@ int ObBlockManager::mark_sstable_blocks(
   if (OB_UNLIKELY(!handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(handle));
-  } else if (OB_FAIL(handle.get_obj()->get_all_sstables(table_store_iter))) {
+  } else if (OB_FAIL(handle.get_obj()->get_all_sstables(table_store_iter, true /* unpac cosstable */))) {
     LOG_WARN("fail to get all sstables", K(ret));
   } else {
      while (OB_SUCC(ret)) {
@@ -1234,7 +1227,7 @@ int ObBlockManager::mark_tablet_meta_blocks(
   int ret = OB_SUCCESS;
   const ObTablet *tablet = handle.get_obj();
   ObSArray<MacroBlockId> meta_ids;
-  if (OB_FAIL(tablet->get_tablet_meta_ids(meta_ids))) {
+  if (OB_FAIL(tablet->get_tablet_first_second_level_meta_ids(meta_ids))) {
     LOG_WARN("fail to get tablet meta block ids", K(ret), KPC(tablet));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < meta_ids.count(); i++) {
@@ -1279,6 +1272,91 @@ int ObBlockManager::mark_sstable_meta_block(
       }
     } else {
       tmp_status.shared_meta_block_count_++;
+      tmp_status.hold_count_--;
+    }
+  }
+  return ret;
+}
+
+int ObBlockManager::mark_tablet_block(
+    MacroBlkIdMap &mark_info,
+    storage::ObTabletHandle &handle,
+    common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+    ObMacroBlockMarkerStatus &tmp_status)
+{
+  int ret = OB_SUCCESS;
+  const ObTablet *tablet = handle.get_obj();
+  ObTabletBlockInfo block_info(tablet->get_tablet_addr().block_id(), ObTabletMacroType::SHARED_META_BLOCK, 0 /*useless param*/);
+
+  if (tablet->get_tablet_addr().is_block() && OB_FAIL(do_mark_tablet_block(block_info, mark_info, macro_id_set, tmp_status))) {
+    LOG_WARN("fail to mark tablet macro id", K(ret), K(block_info));
+  } else if (!tablet->is_empty_shell()) {// empty shell may don't have macro info
+    ObArenaAllocator allocator("MarkTabletBlock");
+    ObTabletMacroInfo *macro_info = nullptr;
+    bool in_memory = true;
+    ObMacroInfoIterator macro_iter;
+    if (OB_FAIL(tablet->load_macro_info(allocator, macro_info, in_memory))) {
+      LOG_WARN("fail to load macro info", K(ret));
+    } else if (OB_FAIL(macro_iter.init(ObTabletMacroType::MAX, *macro_info))) {
+      LOG_WARN("fail to init macro iterator", K(ret), KPC(macro_info));
+    }
+    while (OB_SUCC(ret)) {
+      block_info.reset();
+      if (OB_FAIL(macro_iter.get_next(block_info))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("fail to get next block info", K(ret), K(block_info));
+        } else {
+          ret = OB_SUCCESS;
+          break;
+        }
+      } else if (OB_FAIL(do_mark_tablet_block(block_info, mark_info, macro_id_set, tmp_status))) {
+        LOG_WARN("fail to mark macro id", K(ret), K(block_info));
+      }
+    }
+    if (OB_NOT_NULL(macro_info) && !in_memory) {
+      macro_info->reset();
+    }
+  }
+  return ret;
+}
+
+int ObBlockManager::do_mark_tablet_block(
+    const ObTabletBlockInfo &block_info,
+    MacroBlkIdMap &mark_info,
+    common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+    ObMacroBlockMarkerStatus &tmp_status)
+{
+  int ret = OB_SUCCESS;
+  const MacroBlockId &macro_id = block_info.macro_id_;
+  if (OB_FAIL(update_mark_info(macro_id, mark_info))) {
+    LOG_WARN("fail to update mark info", K(ret), K(macro_id));
+  } else if (OB_FAIL(macro_id_set.set_refactored(macro_id, 0 /* not overwrite */))) {
+    if (OB_HASH_EXIST != ret) {
+      LOG_WARN("fail to put macro id into set", K(ret), K(macro_id));
+    } else {
+      ret = OB_SUCCESS;
+    }
+  } else {
+    switch (block_info.block_type_) {
+      case ObTabletMacroType::META_BLOCK:
+      case ObTabletMacroType::LINKED_BLOCK:
+        tmp_status.index_block_count_++;
+        break;
+      case ObTabletMacroType::DATA_BLOCK:
+        tmp_status.data_block_count_++;
+        break;
+      case ObTabletMacroType::SHARED_META_BLOCK:
+        tmp_status.shared_meta_block_count_++;
+        break;
+      case ObTabletMacroType::SHARED_DATA_BLOCK:
+        tmp_status.shared_data_block_count_++;
+        break;
+      default:
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("block type is invalid", K(ret), K(block_info));
+        break;
+    }
+    if (OB_SUCC(ret)) {
       tmp_status.hold_count_--;
     }
   }
@@ -1349,12 +1427,6 @@ int ObBlockManager::mark_server_meta_blocks(
   return ret;
 }
 
-bool ObBlockManager::continue_mark()
-{
-  return (double) (io_device_->get_free_block_count())
-      / (double) (super_block_.get_total_macro_block_count()) >= MARK_THRESHOLD;
-}
-
 int ObBlockManager::update_mark_info(
     const ObIArray<MacroBlockId> &macro_block_list,
     common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
@@ -1411,6 +1483,31 @@ int ObBlockManager::update_mark_info(const MacroBlockId &macro_id,
 
     if (OB_FAIL(mark_info.insert_or_update(macro_id, false))) {
       LOG_WARN("fail to insert or update mark info", K(ret), K(macro_id));
+    }
+  }
+  return ret;
+}
+
+int ObBlockManager::set_group_id(const uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(tenant_id <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid tenant id", K(ret), K(tenant_id));
+  } else {
+    uint64_t consumer_group_id = 0;
+    if (OB_FAIL(G_RES_MGR.get_mapping_rule_mgr().get_group_id_by_function_type(tenant_id, ObFunctionType::PRIO_OTHER_BACKGROUND, consumer_group_id))) {
+      //function level
+      LOG_WARN("fail to get group id by function", K(ret), K(tenant_id), K(consumer_group_id));
+    } else if (consumer_group_id != group_id_) {
+      // for CPU isolation, depend on cgroup
+      if (OB_NOT_NULL(GCTX.cgroup_ctrl_) && GCTX.cgroup_ctrl_->is_valid() && OB_FAIL(GCTX.cgroup_ctrl_->add_self_to_group(tenant_id, consumer_group_id))) {
+        LOG_WARN("bind back thread to group failed", K(ret), K(GETTID()), K(tenant_id), K(consumer_group_id));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      group_id_ = consumer_group_id;
+      THIS_WORKER.set_group_id(static_cast<int32_t>(consumer_group_id));
     }
   }
   return ret;
@@ -1477,7 +1574,7 @@ int ObBlockManager::InspectBadBlockTask::check_block(const MacroBlockId &macro_i
     ObMacroBlockReadInfo read_info;
     ObMacroBlockHandle macro_handle;
     common::ObArenaAllocator allocator(ObModIds::OB_SSTABLE_BLOCK_FILE);
-    const int64_t io_timeout_ms =
+    read_info.io_timeout_ms_ =
       std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
     read_info.macro_block_id_ = macro_id;
     read_info.offset_ = 0;
@@ -1485,19 +1582,21 @@ int ObBlockManager::InspectBadBlockTask::check_block(const MacroBlockId &macro_i
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
     read_info.io_desc_.set_group_id(ObIOModule::INSPECT_BAD_BLOCK_IO);
 
-    if (OB_FAIL(ObBlockManager::async_read_block(read_info, macro_handle))) {
+    if (OB_ISNULL(read_info.buf_ = reinterpret_cast<char*>(allocator.alloc(read_info.size_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_LOG(WARN, "failed to alloc macro read info buffer", K(ret), K(read_info.size_));
+    } else if (OB_FAIL(ObBlockManager::async_read_block(read_info, macro_handle))) {
       LOG_WARN("async read block failed", K(ret), K(macro_id), K(read_info));
-    } else if (OB_FAIL(macro_handle.wait(io_timeout_ms))) {
-      LOG_WARN("io wait failed", K(ret), K(macro_id), K(io_timeout_ms));
-    } else if (NULL == macro_handle.get_buffer()
-            || macro_handle.get_data_size() != read_info.size_) {
+    } else if (OB_FAIL(macro_handle.wait())) {
+      LOG_WARN("io wait failed", K(ret), K(macro_id), K(read_info));
+    } else if (macro_handle.get_data_size() != read_info.size_) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("buf is null or buf size is too small", K(ret), K(macro_id),
-          KP(macro_handle.get_buffer()), K(macro_handle.get_data_size()), K(read_info.size_));
-    } else if (OB_FAIL(ObSSTableMacroBlockChecker::check(macro_handle.get_buffer(),
-        macro_handle.get_data_size(), ObMacroBlockCheckLevel::CHECK_LEVEL_PHYSICAL))) {
+      LOG_WARN("buf size is too small", K(ret), K(macro_id),
+          K(macro_handle.get_data_size()), K(read_info.size_));
+    } else if (OB_FAIL(ObSSTableMacroBlockChecker::check(read_info.buf_,
+        read_info.size_, ObMacroBlockCheckLevel::CHECK_LEVEL_PHYSICAL))) {
       LOG_ERROR("fail to check sstable macro block", K(ret), K(macro_id),
-          KP(macro_handle.get_buffer()),  K(macro_handle.get_data_size()));
+          KP(read_info.buf_),  K(read_info.size_));
       char error_msg[common::OB_MAX_ERROR_MSG_LEN];
       char macro_id_str[128];
       MEMSET(error_msg, 0, sizeof(error_msg));

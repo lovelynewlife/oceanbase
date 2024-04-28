@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include <chrono>
 #include <gtest/gtest.h>
 #include <thread>
@@ -122,7 +134,7 @@ TEST_F(TestBigTxData, big_tx_data)
     DO(ls_service->get_ls(ObLSID(1), handle, storage::ObLSGetMod::DEADLOCK_MOD));
     fprintf(stdout, "start read tx data from sstable, test_tx_id = %ld\n", TEST_TX_ID);
     ObTxDataMiniCache fake_cache;
-    ObReadTxDataArg read_arg(ObTransID(ATOMIC_LOAD(&TEST_TX_ID)), 0, fake_cache);
+    ObReadTxDataArg read_arg(ObTransID(ATOMIC_LOAD(&TEST_TX_ID)), 1, fake_cache);
     DO(handle.get_ls()->tx_table_.check_with_tx_data(read_arg, op));
     // 7，检查被测事务的tx data已经经过了deserialize
     ASSERT_EQ(ATOMIC_LOAD(&LOAD_BIG_TX_DATA), true);

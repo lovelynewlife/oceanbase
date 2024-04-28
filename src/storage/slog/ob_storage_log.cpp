@@ -149,6 +149,30 @@ DEF_TO_STRING(ObLSIDLog)
 
 OB_SERIALIZE_MEMBER(ObLSIDLog, ls_id_);
 
+ObCreateLSCommitSLog::ObCreateLSCommitSLog(ObLSID &ls_id,
+                                           const int64_t create_type)
+  : ObLSIDLog(ls_id),
+    create_type_(create_type)
+{
+}
+
+bool ObCreateLSCommitSLog::is_valid() const
+{
+  return ObLSIDLog::is_valid();
+}
+
+DEF_TO_STRING(ObCreateLSCommitSLog)
+{
+  int64_t pos = 0;
+  J_OBJ_START();
+  J_KV(K_(ls_id));
+  J_KV(K_(create_type));
+  J_OBJ_END();
+  return pos;
+}
+
+OB_SERIALIZE_MEMBER_INHERIT(ObCreateLSCommitSLog, ObLSIDLog, create_type_);
+
 ObCreateTabletLog::ObCreateTabletLog(ObTablet *tablet)
   : tablet_(tablet)
 {
@@ -282,6 +306,7 @@ int ObEmptyShellTabletLog::deserialize_id(
   return ret;
 }
 
+// shouldn't be called, since we can't set tablet addr here, but tablet addr should be set before deserialization
 int ObEmptyShellTabletLog::deserialize(
     const char *buf,
     const int64_t data_len,
@@ -295,25 +320,6 @@ int ObEmptyShellTabletLog::deserialize(
   } else if (OB_FAIL(tablet_id_.deserialize(buf, data_len, pos))) {
     STORAGE_LOG(WARN, "deserialize tablet_id_ failed", K(ret), KP(data_len), K(pos));
   } else if (OB_FAIL(tablet_->deserialize(buf, data_len, pos))) {
-    STORAGE_LOG(WARN, "deserialize tablet failed", K(ret), KP(data_len), K(pos));
-  }
-
-  return ret;
-}
-int ObEmptyShellTabletLog::deserialize(
-    ObArenaAllocator &allocator,
-    const char *buf,
-    const int64_t data_len,
-    int64_t &pos)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(serialization::decode(buf, data_len, pos, version_))) {
-    STORAGE_LOG(WARN, "deserialize version_ failed", K(ret), KP(data_len), K(pos));
-  } else if (OB_FAIL(ls_id_.deserialize(buf, data_len, pos))) {
-    STORAGE_LOG(WARN, "deserialize ls_id_ failed", K(ret), KP(data_len), K(pos));
-  } else if (OB_FAIL(tablet_id_.deserialize(buf, data_len, pos))) {
-    STORAGE_LOG(WARN, "deserialize tablet_id_ failed", K(ret), KP(data_len), K(pos));
-  } else if (OB_FAIL(tablet_->deserialize(allocator, buf, data_len, pos))) {
     STORAGE_LOG(WARN, "deserialize tablet failed", K(ret), KP(data_len), K(pos));
   }
 

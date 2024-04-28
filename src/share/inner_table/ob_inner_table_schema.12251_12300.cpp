@@ -1633,6 +1633,44 @@ int ObInnerTableSchema::all_virtual_ls_recovery_stat_schema(ObTableSchema &table
       drop_scn_default,
       drop_scn_default); //default_value
   }
+
+  if (OB_SUCC(ret)) {
+    ObObj config_version_default;
+    config_version_default.set_varchar(ObString::make_string(""));
+    ADD_COLUMN_SCHEMA_T("config_version", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      128, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      config_version_default,
+      config_version_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ObObj bconfig_version_default;
+    bconfig_version_default.set_varchar(ObString::make_string(""));
+    ADD_COLUMN_SCHEMA_T("bconfig_version", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      1024, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      bconfig_version_default,
+      bconfig_version_default); //default_value
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -2383,6 +2421,25 @@ int ObInnerTableSchema::all_virtual_ddl_checksum_schema(ObTableSchema &table_sch
       false, //is_nullable
       false); //is_autoincrement
   }
+
+  if (OB_SUCC(ret)) {
+    ObObj tablet_id_default;
+    tablet_id_default.set_int(0);
+    ADD_COLUMN_SCHEMA_T("tablet_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      tablet_id_default,
+      tablet_id_default); //default_value
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -2634,6 +2691,40 @@ int ObInnerTableSchema::all_virtual_ddl_error_message_schema(ObTableSchema &tabl
       ObVarcharType, //column_type
       CS_TYPE_INVALID, //column_collation_type
       OB_MAX_ERROR_MSG_LEN, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ObObj parent_task_id_default;
+    parent_task_id_default.set_int(0);
+    ADD_COLUMN_SCHEMA_T("parent_task_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      parent_task_id_default,
+      parent_task_id_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("trace_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      OB_MAX_TRACE_ID_BUFFER_SIZE, //column_length
       -1, //column_precision
       -1, //column_scale
       true, //is_nullable
@@ -3537,7 +3628,7 @@ int ObInnerTableSchema::all_virtual_tenant_scheduler_job_schema(ObTableSchema &t
       0, //part_key_pos
       ObVarcharType, //column_type
       CS_TYPE_INVALID, //column_collation_type
-      200, //column_length
+      4000, //column_length
       -1, //column_precision
       -1, //column_scale
       false, //is_nullable
@@ -3725,7 +3816,7 @@ int ObInnerTableSchema::all_virtual_tenant_scheduler_job_schema(ObTableSchema &t
       0, //part_key_pos
       ObVarcharType, //column_type
       CS_TYPE_INVALID, //column_collation_type
-      128, //column_length
+      4000, //column_length
       -1, //column_precision
       -1, //column_scale
       true, //is_nullable
@@ -3771,7 +3862,7 @@ int ObInnerTableSchema::all_virtual_tenant_scheduler_job_schema(ObTableSchema &t
       0, //part_key_pos
       ObVarcharType, //column_type
       CS_TYPE_INVALID, //column_collation_type
-      128, //column_length
+      4000, //column_length
       -1, //column_precision
       -1, //column_scale
       true, //is_nullable

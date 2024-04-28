@@ -1,7 +1,14 @@
-// Copyright 1999-2022 Alibaba Inc. All Rights Reserved.
-// Author:
-//
-//
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/px/datahub/components/ob_dh_opt_stats_gather.h"
@@ -45,7 +52,7 @@ OB_DEF_DESERIALIZE(ObOptStatsGatherPieceMsg)
       ObOptTableStat *tmp_stat = OB_NEWx(ObOptTableStat, (&arena_));
       if (OB_ISNULL(tmp_stat)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_WARN("failed to allocate memory");
+        LOG_WARN("failed to allocate memory", K(ret));
       } else if (OB_FAIL(tmp_stat->deserialize(buf, data_len, pos))) {
         LOG_WARN("deserialize datum store failed", K(ret), K(i));
       } else if (OB_FAIL(table_stats_.push_back(tmp_stat))) {
@@ -57,9 +64,10 @@ OB_DEF_DESERIALIZE(ObOptStatsGatherPieceMsg)
     for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
       int col_stat_size = 0;
       OB_UNIS_DECODE(col_stat_size);
-      ObOptColumnStat *tmp_col_stat = OB_NEWx(ObOptColumnStat, (&arena_), arena_);
+      ObOptColumnStat *tmp_col_stat = ObOptColumnStat::malloc_new_column_stat(arena_);
       if (OB_ISNULL(tmp_col_stat)) {
-        LOG_WARN("failed to create new col stat");
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to create new col stat", K(ret));
       } else if (OB_FAIL(tmp_col_stat->deserialize(buf, data_len, pos))) {
         LOG_WARN("deserialize datum store failed", K(ret), K(i));
       } else if (OB_FAIL(column_stats_.push_back(tmp_col_stat))) {

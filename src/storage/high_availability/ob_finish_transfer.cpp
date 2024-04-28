@@ -511,9 +511,9 @@ int ObTxFinishTransfer::inner_check_ls_logical_table_replaced_(const uint64_t te
     const common::ObArray<ObTransferTabletInfo> &tablet_list, const int64_t quorum, bool &all_backfilled)
 {
   int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-  int64_t cur_quorum = 0;
-  const int64_t cluster_id = GCONF.cluster_id;
+  all_backfilled = true;
+  storage::ObCheckTransferTabletBackfillProxy batch_proxy(
+      *(GCTX.storage_rpc_proxy_), &obrpc::ObStorageRpcProxy::check_transfer_tablet_backfill_completed);
   FOREACH_X(location, member_addr_list, OB_SUCC(ret))
   {
     if (OB_ISNULL(location)) {
@@ -521,20 +521,55 @@ int ObTxFinishTransfer::inner_check_ls_logical_table_replaced_(const uint64_t te
       LOG_WARN("location should not be null", K(ret));
     } else {
       const common::ObAddr &server = *location;
-      bool backfill_completed = false;
-      if (OB_FAIL(post_check_logical_table_replaced_request_(
-              cluster_id, server, tenant_id, dest_ls_id, tablet_list, backfill_completed))) {
-        LOG_WARN("failed to check criteria", K(ret), K(cluster_id), K(tenant_id), K(dest_ls_id), K(server));
-      } else if (!backfill_completed) {
-        LOG_INFO("server has not finish backfill", K(tenant_id), K(dest_ls_id), K(quorum), K(member_addr_list), K(server));
+      const int64_t timeout = GCONF.rpc_timeout;
+      const int64_t cluster_id = GCONF.cluster_id;
+      const uint64_t group_id = share::OBCG_STORAGE_HA_LEVEL2;
+      ObCheckTransferTabletBackfillArg arg;
+      arg.tenant_id_ = tenant_id;
+      arg.ls_id_ = dest_ls_id;
+      if (OB_FAIL(arg.tablet_list_.assign(tablet_list))) {
+        LOG_WARN("failed to assign tablet array", K(ret), K(tablet_list));
+      } else if (OB_FAIL(batch_proxy.call(server,
+                                          timeout,
+                                          cluster_id,
+                                          tenant_id,
+                                          group_id,
+                                          arg))) {
+        LOG_WARN("failed to send check transfer tablet backfill request", K(ret), K(server), K(tenant_id));
       } else {
-        cur_quorum++;
-        LOG_INFO("server has replayed passed finish scn", K(ret), K(server));
+        LOG_INFO("check_transfer_tablet_backfill_completed", K(arg), K(server));
       }
     }
   }
-  if (OB_SUCC(ret)) {
-    all_backfilled = cur_quorum == quorum;
+  ObArray<int> return_code_array;
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(batch_proxy.wait_all(return_code_array))) {
+    LOG_WARN("fail to wait all batch result", KR(ret), KR(tmp_ret));
+    ret = OB_SUCC(ret) ? tmp_ret : ret;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (return_code_array.count() != member_addr_list.count()
+      || return_code_array.count() != batch_proxy.get_results().count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("cnt not match", K(ret),
+             "return_cnt", return_code_array.count(),
+             "result_cnt", batch_proxy.get_results().count(),
+             "server_cnt", member_addr_list.count());
+  } else {
+    ARRAY_FOREACH_X(batch_proxy.get_results(), idx, cnt, OB_SUCC(ret)) {
+      const ObCheckTransferTabletBackfillRes *response = batch_proxy.get_results().at(idx);
+      const int res_ret = return_code_array.at(idx);
+      if (OB_SUCCESS != res_ret) {
+        ret = res_ret;
+        LOG_WARN("rpc execute failed", KR(ret), K(idx));
+      } else if (OB_ISNULL(response)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("response is null", K(ret));
+      } else if (!response->backfill_finished_) {
+        all_backfilled = false;
+        break;
+      }
+    }
   }
   return ret;
 }
@@ -642,20 +677,23 @@ int ObTxFinishTransfer::wait_all_ls_replica_replay_scn_(const ObTransferTaskID &
     const int64_t quorum, ObTimeoutCtx &timeout_ctx, bool &check_passed)
 {
   int ret = OB_SUCCESS;
+  common::ObArray<common::ObAddr> finished_addr_list;
+
   while (OB_SUCC(ret)) {
     check_passed = false;
     if (timeout_ctx.is_timeouted()) {
       ret = OB_TIMEOUT;
       LOG_WARN("some ls replay not finished", K(ret), K(tenant_id), K(ls_id));
     } else if (OB_FAIL(check_all_ls_replica_replay_scn_(
-            task_id, tenant_id, ls_id, member_addr_list, finish_scn, quorum, check_passed))) {
+            task_id, tenant_id, ls_id, member_addr_list, finish_scn, timeout_ctx, finished_addr_list))) {
       LOG_WARN("failed to check all ls replica replay scn",
           K(ret),
           K(tenant_id),
           K(member_addr_list),
           K(ls_id),
           K(quorum));
-    } else if (check_passed) {
+    } else if (finished_addr_list.count() == member_addr_list.count()) {
+      check_passed = true;
       LOG_INFO("all ls has passed ls replica replay scn", K(tenant_id), K(ls_id));
       break;
     } else {
@@ -678,48 +716,19 @@ int ObTxFinishTransfer::wait_all_ls_replica_replay_scn_(const ObTransferTaskID &
 }
 
 int ObTxFinishTransfer::check_all_ls_replica_replay_scn_(const ObTransferTaskID &task_id, const uint64_t tenant_id,
-    const share::ObLSID &ls_id, const common::ObArray<common::ObAddr> &member_addr_list, const share::SCN &finish_scn,
-    const int64_t quorum, bool &meet_criteria)
+    const share::ObLSID &ls_id, const common::ObIArray<common::ObAddr> &total_addr_list, const share::SCN &finish_scn,
+    ObTimeoutCtx &timeout_ctx, common::ObIArray<common::ObAddr> &finished_addr_list)
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   int64_t cur_quorum = 0;
-  FOREACH_X(location, member_addr_list, OB_SUCC(ret))
-  {
-    if (OB_ISNULL(location)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("location should not be null", K(ret));
-    } else {
-      const common::ObAddr &server = *location;
-      bool passed_finish_scn = false;
-      if (OB_FAIL(inner_check_ls_replay_scn_(task_id, tenant_id, ls_id, server, finish_scn, passed_finish_scn))) {
-        LOG_WARN("failed to check criteria", K(ret), K(task_id), K(tenant_id), K(ls_id), K(server));
-      } else if (!passed_finish_scn) {
-        LOG_INFO("server has not passed finish scn", K(task_id), K(tenant_id), K(server), K(finish_scn));
-      } else {
-        cur_quorum++;
-        LOG_INFO("server has replayed passed finish scn", K(ret), K(server));
-      }
-    }
-  }
-  if (OB_SUCC(ret)) {
-    meet_criteria = cur_quorum == quorum ;
-  }
-  return ret;
-}
-
-int ObTxFinishTransfer::inner_check_ls_replay_scn_(const ObTransferTaskID &task_id, const uint64_t tenant_id,
-    const share::ObLSID &ls_id, const common::ObAddr &addr, const SCN &finish_scn, bool &passed_scn)
-{
-  int ret = OB_SUCCESS;
-  passed_scn = false;
-  const int64_t cluster_id = GCONF.cluster_id;
-  SCN tmp_finish_scn;
-  if (OB_FAIL(fetch_ls_replay_scn_(task_id, cluster_id, addr, tenant_id, ls_id, tmp_finish_scn))) {
-    LOG_WARN("failed to fetch finish scn for transfer", K(ret), K(task_id), K(tenant_id), K(ls_id));
-  } else {
-    passed_scn = tmp_finish_scn >= finish_scn;
-    LOG_INFO("check ls replay scn", K(passed_scn), K(tmp_finish_scn), K(finish_scn));
+  common::ObArray<ObAddr> member_addr_list;
+  const int32_t group_id = share::OBCG_STORAGE_HA_LEVEL2;
+  if (OB_FAIL(ObTransferUtils::get_need_check_member(total_addr_list, finished_addr_list, member_addr_list))) {
+    LOG_WARN("failed to get need check member", K(ret), K(task_id), K(tenant_id), K(ls_id));
+  } else if (OB_FAIL(ObTransferUtils::check_ls_replay_scn(
+      tenant_id, ls_id, finish_scn, group_id, member_addr_list, timeout_ctx, finished_addr_list))) {
+    LOG_WARN("failed to check ls replay scn", K(ret), K(total_addr_list), K(finish_scn));
   }
   return ret;
 }
@@ -949,82 +958,13 @@ int ObTxFinishTransfer::report_result_(
   return ret;
 }
 
-int ObTxFinishTransfer::fetch_ls_replay_scn_(const ObTransferTaskID &task_id, const int64_t cluster_id,
-    const common::ObAddr &server_addr, const uint64_t tenant_id, const share::ObLSID &ls_id, share::SCN &finish_scn)
-{
-  int ret = OB_SUCCESS;
-  ObLSService *ls_service = NULL;
-  storage::ObStorageRpc *storage_rpc = NULL;
-  storage::ObStorageHASrcInfo src_info;
-  src_info.src_addr_ = server_addr;
-  src_info.cluster_id_ = GCONF.cluster_id;
-  if (!src_info.is_valid() || !ls_id.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("get invalid args", K(ret), K(src_info), K(ls_id));
-  } else if (OB_ISNULL(ls_service = MTL_WITH_CHECK_TENANT(ObLSService *, tenant_id))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("log stream service is NULL", K(ret));
-  } else if (OB_ISNULL(storage_rpc = ls_service->get_storage_rpc())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage rpc proxy is NULL", K(ret));
-  } else if (OB_FAIL(storage_rpc->fetch_ls_replay_scn(tenant_id, src_info, ls_id, finish_scn))) {
-    LOG_WARN("failed to fetch ls replay scn", K(ret), K(tenant_id), K(src_info), K(ls_id));
-  } else {
-    LOG_INFO("fetch ls replay scn", K(tenant_id), K(src_info), K(ls_id));
-  }
-  return ret;
-}
-
-int ObTxFinishTransfer::post_check_logical_table_replaced_request_(const int64_t cluster_id,
-    const common::ObAddr &server_addr, const uint64_t tenant_id, const share::ObLSID &dest_ls_id,
-    const common::ObIArray<share::ObTransferTabletInfo> &tablet_list, bool &replace_finished)
-{
-  int ret = OB_SUCCESS;
-  replace_finished = false;
-  ObLSService *ls_service = NULL;
-  storage::ObStorageRpc *storage_rpc = NULL;
-  storage::ObStorageHASrcInfo src_info;
-  src_info.src_addr_ = server_addr;
-  src_info.cluster_id_ = GCONF.cluster_id;
-  if (!src_info.is_valid() || !dest_ls_id.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("get invalid args", K(ret), K(src_info), K(dest_ls_id));
-  } else if (OB_ISNULL(ls_service = MTL_WITH_CHECK_TENANT(ObLSService *, tenant_id))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("log stream service is NULL", K(ret));
-  } else if (OB_ISNULL(storage_rpc = ls_service->get_storage_rpc())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage rpc proxy is NULL", K(ret));
-  } else if (OB_FAIL(storage_rpc->check_tablets_logical_table_replaced(
-                 tenant_id, src_info, dest_ls_id, tablet_list, replace_finished))) {
-    LOG_WARN(
-        "failed to post transfer backfill finished", K(ret), K(tenant_id), K(src_info), K(dest_ls_id), K(tablet_list));
-  } else {
-    LOG_INFO("check logical table replaced completed", K(tenant_id), K(src_info), K(dest_ls_id), K(replace_finished));
-  }
-  return ret;
-}
-
 int ObTxFinishTransfer::check_self_ls_leader_(const share::ObLSID &ls_id, bool &is_leader)
 {
   int ret = OB_SUCCESS;
-  ObRole role = ObRole::INVALID_ROLE;
-  int64_t proposal_id = 0;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
   const uint64_t tenant_id = MTL_ID();
   is_leader = false;
-  if (OB_FAIL(get_ls_handle_(tenant_id, ls_id, ls_handle))) {
-    LOG_WARN("failed to get ls handle", K(ret), K(tenant_id), K(ls_id));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), K(tenant_id), K(ls_id));
-  } else if (OB_FAIL(ls->get_log_handler()->get_role(role, proposal_id))) {
-    LOG_WARN("failed to get role", K(ret), K(tenant_id), K(ls_id));
-  } else if (is_strong_leader(role)) {
-    is_leader = true;
-  } else {
-    is_leader = false;
+  if (OB_FAIL(ObStorageHAUtils::check_ls_is_leader(tenant_id, ls_id, is_leader))) {
+    LOG_WARN("failed to check ls leader", K(ret), K(tenant_id), K(ls_id));
   }
   return ret;
 }
@@ -1136,7 +1076,7 @@ int ObTxFinishTransfer::record_server_event_(
           LOG_WARN("fail to write server event", K(ret), K(result), K(extra_info_str));
         }
       } else {
-        if (REACH_TIME_INTERVAL(10 * 1000 * 1000)) {
+        if (REACH_TENANT_TIME_INTERVAL(10 * 1000 * 1000)) {
           if (OB_FAIL(write_server_event_(result, extra_info_str, doing_status))) {
             LOG_WARN("fail to write server event", K(ret), K(result), K(extra_info_str));
           }

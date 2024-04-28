@@ -441,6 +441,10 @@ int ObTransformAggrSubquery::check_aggr_first_validity(ObQueryRefRawExpr &query_
   if (OB_ISNULL(subquery = query_ref.get_ref_stmt())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("subquery is null", K(ret));
+  } else if (OB_FAIL(check_nested_subquery(query_ref, is_valid))) {
+    LOG_WARN("failed to check nested subquery", K(ret));
+  } else if (!is_valid) {
+    OPT_TRACE("exec param reference another subquery");
     // 0. check single set
   } else if (OB_FAIL(check_single_set_subquery(*subquery,
                                                is_valid,
@@ -522,21 +526,26 @@ int ObTransformAggrSubquery::check_aggr_first_validity(ObQueryRefRawExpr &query_
     LOG_WARN("failed to check select validity for limit 1", K(ret));
   } else if (!is_valid) {
     OPT_TRACE("select item is lob or const");
+  } else if (OB_FAIL(check_subquery_orderby(query_ref, is_valid))) {
+    LOG_WARN("failed to check order_by validity", K(ret));
+  } else if (!is_valid) {
+    LOG_TRACE("order by item is invalid", K(is_valid));
+    OPT_TRACE("subquery order by item contain correlated subquery");
   }
   return ret;
 }
 
-int ObTransformAggrSubquery::check_subquery_select(ObQueryRefRawExpr &query_ref,
+int ObTransformAggrSubquery::check_subquery_select(const ObQueryRefRawExpr &query_ref,
                                                    bool &is_valid)
 {
   int ret = OB_SUCCESS;
-  ObSelectStmt *subquery = NULL;
+  const ObSelectStmt *subquery = NULL;
   if (OB_ISNULL(subquery = query_ref.get_ref_stmt())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("subquery stmt is null", K(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < subquery->get_select_item_size(); ++i) {
-    ObRawExpr *select_expr = NULL;
+    const ObRawExpr *select_expr = NULL;
     bool bret = false;
     if (OB_ISNULL(select_expr = subquery->get_select_item(i).expr_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -551,6 +560,35 @@ int ObTransformAggrSubquery::check_subquery_select(ObQueryRefRawExpr &query_ref,
   }
   return ret;
 }
+
+// whether 'order by' subquery in current subquery has any correlated expr.
+int ObTransformAggrSubquery::check_subquery_orderby(const ObQueryRefRawExpr &query_ref,
+                                                    bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  const ObSelectStmt *subquery = NULL;
+  is_valid = true;
+  if (OB_ISNULL(subquery = query_ref.get_ref_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("subquery stmt is null", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < subquery->get_order_item_size(); ++i) {
+    const ObRawExpr *expr = NULL;
+    bool is_correlated = false;
+    if (OB_ISNULL(expr = subquery->get_order_item(i).expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("select expr is null", K(ret));
+    } else if (OB_FAIL(ObTransformUtils::is_correlated_expr(query_ref.get_exec_params(),
+                                                            expr,
+                                                            is_correlated))) {
+      LOG_WARN("failed to check is correlated", K(ret));
+    } else if (is_correlated) {
+      is_valid = false;
+    }
+  }
+  return ret;
+}
+
 
 int ObTransformAggrSubquery::check_subquery_select_for_limit_1(ObSelectStmt &subquery,
                                                                bool &is_valid,
@@ -1405,6 +1443,10 @@ int ObTransformAggrSubquery::check_join_first_validity(ObQueryRefRawExpr &query_
   if (OB_ISNULL(subquery = query_ref.get_ref_stmt()) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->exec_ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("subquery is null", K(ret));
+  } else if (OB_FAIL(check_nested_subquery(query_ref, is_valid))) {
+    LOG_WARN("failed to check nested subquery", K(ret));
+  } else if (!is_valid) {
+    OPT_TRACE("exec param reference another subquery");
     // 0. check single set
   } else if (OB_FAIL(check_single_set_subquery(*subquery,
                                                is_valid,
@@ -2633,6 +2675,26 @@ int ObTransformAggrSubquery::convert_limit_as_aggr(ObSelectStmt *subquery,
       } else {
         subquery->set_limit_offset(NULL, NULL);
       }
+    }
+  }
+  return ret;
+}
+
+int ObTransformAggrSubquery::check_nested_subquery(ObQueryRefRawExpr &query_ref,
+                                                   bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < query_ref.get_exec_params().count(); i++) {
+    ObExecParamRawExpr* exec_param = NULL;
+    ObRawExpr* outer_expr = NULL;
+    if (OB_ISNULL(exec_param = query_ref.get_exec_params().at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (OB_ISNULL(outer_expr = exec_param->get_ref_expr())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (outer_expr->has_flag(CNT_SUB_QUERY)) {
+      is_valid = false;
     }
   }
   return ret;

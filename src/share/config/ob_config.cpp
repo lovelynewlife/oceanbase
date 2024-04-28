@@ -124,6 +124,72 @@ void ObConfigItem::init(Scope::ScopeInfo scope_info,
   inited_ = true;
 }
 
+const char *ObConfigItem::data_type() const
+{
+  const char *type_ptr = nullptr;
+  switch(get_config_item_type()) {
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_BOOL: {
+      type_ptr = DATA_TYPE_BOOL;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_INT: {
+      type_ptr = DATA_TYPE_INT;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_DOUBLE: {
+      type_ptr = DATA_TYPE_DOUBLE;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_STRING: {
+      type_ptr = DATA_TYPE_STRING;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_INTEGRAL: {
+      type_ptr = DATA_TYPE_INTEGRAL;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_STRLIST: {
+      type_ptr = DATA_TYPE_STRLIST;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_INTLIST: {
+      type_ptr = DATA_TYPE_INTLIST;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_TIME: {
+      type_ptr = DATA_TYPE_TIME;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_MOMENT: {
+      type_ptr = DATA_TYPE_MOMENT;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_CAPACITY: {
+      type_ptr = DATA_TYPE_CAPACITY;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_LOGARCHIVEOPT: {
+      type_ptr = DATA_TYPE_LOGARCHIVEOPT;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_VERSION: {
+      type_ptr = DATA_TYPE_VERSION;
+      break;
+    }
+    case ObConfigItemType::OB_CONF_ITEM_TYPE_MODE: {
+      type_ptr = DATA_TYPE_MODE;
+      break;
+    }
+    default: {
+      // default: ObConfigItemType::OB_CONF_ITEM_TYPE_UNKNOWN and
+      // other unexpected situations, return "UNKNOWN"
+      type_ptr = DATA_TYPE_UNKNOWN;
+      break;
+    }
+  }
+  return type_ptr;
+}
+
 // ObConfigIntListItem
 ObConfigIntListItem::ObConfigIntListItem(ObConfigContainer *container,
                                          Scope::ScopeInfo scope_info,
@@ -700,7 +766,7 @@ ObConfigMomentItem::ObConfigMomentItem(ObConfigContainer *container,
                                        const char *def,
                                        const char *info,
                                        const ObParameterAttr attr)
-    :  value_()
+    : value_()
 {
   MEMSET(value_str_, 0, sizeof(value_str_));
   MEMSET(value_reboot_str_, 0, sizeof(value_reboot_str_));

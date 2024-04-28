@@ -14,6 +14,7 @@
 
 #include "lib/oblog/ob_log.h"
 #include "share/ob_thread_mgr.h"
+#include "share/ob_errno.h"
 #include "storage/checkpoint/ob_data_checkpoint.h"
 #include "storage/tx_storage/ob_checkpoint_service.h"
 #include "storage/tx_storage/ob_ls_handle.h"
@@ -142,7 +143,7 @@ void ObCheckPointService::ObCheckpointTask::runTimerTask()
     DEBUG_SYNC(BEFORE_CHECKPOINT_TASK);
     ObLS *ls = nullptr;
     int ls_cnt = 0;
-    for (; OB_SUCC(ret) && OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
+    for (; OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
       ObLSHandle ls_handle;
       ObCheckpointExecutor *checkpoint_executor = nullptr;
       ObDataCheckpoint *data_checkpoint = nullptr;
@@ -316,7 +317,7 @@ void ObCheckPointService::ObTraversalFlushTask::runTimerTask()
   } else {
     ObLS *ls = nullptr;
     int ls_cnt = 0;
-    for (; OB_SUCC(ret) && OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
+    for (; OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
       ObLSHandle ls_handle;
       ObCheckpointExecutor *checkpoint_executor = nullptr;
       if (OB_FAIL(ls_svr->get_ls(ls->get_ls_id(), ls_handle, ObLSGetMod::APPLY_MOD))) {

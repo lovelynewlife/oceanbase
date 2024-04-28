@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include <gtest/gtest.h>
 #include <thread>
 #include <functional>
@@ -10,11 +22,46 @@
 #include "tx_node.h"
 #include "../mock_utils/async_util.h"
 #include "test_tx_dsl.h"
+#include "share/allocator/ob_shared_memory_allocator_mgr.h"
 namespace oceanbase
 {
 using namespace ::testing;
 using namespace transaction;
 using namespace share;
+
+static ObSharedMemAllocMgr MTL_MEM_ALLOC_MGR;
+
+namespace share {
+int ObTenantTxDataAllocator::init(const char *label)
+{
+  int ret = OB_SUCCESS;
+  ObMemAttr mem_attr;
+  throttle_tool_ = &(MTL_MEM_ALLOC_MGR.share_resource_throttle_tool());
+  if (OB_FAIL(slice_allocator_.init(
+                 storage::TX_DATA_SLICE_SIZE, OB_MALLOC_NORMAL_BLOCK_SIZE, block_alloc_, mem_attr))) {
+    SHARE_LOG(WARN, "init slice allocator failed", KR(ret));
+  } else {
+    slice_allocator_.set_nway(ObTenantTxDataAllocator::ALLOC_TX_DATA_MAX_CONCURRENCY);
+    is_inited_ = true;
+  }
+  return ret;
+}
+int ObMemstoreAllocator::init()
+{
+  throttle_tool_ = &MTL_MEM_ALLOC_MGR.share_resource_throttle_tool();
+  return arena_.init();
+}
+int ObMemstoreAllocator::AllocHandle::init()
+{
+  int ret = OB_SUCCESS;
+  uint64_t tenant_id = 1;
+  ObSharedMemAllocMgr *mtl_alloc_mgr = &MTL_MEM_ALLOC_MGR;
+  ObMemstoreAllocator &host = mtl_alloc_mgr->memstore_allocator();
+  (void)host.init_handle(*this);
+  return ret;
+}
+};  // namespace share
+
 namespace omt {
   bool the_ctrl_of_enable_transaction_free_route = true;
   ObTenantConfig *ObTenantConfigMgr::get_tenant_config_with_lock(const uint64_t tenant_id,
@@ -609,6 +656,7 @@ public:
     common::ObClusterVersion::get_instance().update_cluster_version(CLUSTER_VERSION_4_1_0_0);
     const testing::TestInfo* const test_info =
       testing::UnitTest::GetInstance()->current_test_info();
+    MTL_MEM_ALLOC_MGR.init();
     auto test_name = test_info->name();
     _TRANS_LOG(INFO, ">>>> starting test : %s", test_name);
   }
@@ -892,36 +940,36 @@ TEST_F(ObTestTxFreeRoute, upgrade_to_4_1)
   EX_COMMIT_TX();
 }
 
-TEST_F(ObTestTxFreeRoute, twiddle_knob_on_the_fly)
-{
-  TXFR_TEST_SETUP("127.0.0.1", "127.0.0.2", "127.0.0.3");
-  // previous is on
-  EX_START_TX(1);
-  EX_WRITE(102,2);
-  EX_WRITE(103,2);
-  EX_COMMIT_TX();
-  omt::the_ctrl_of_enable_transaction_free_route = false;
-  // off -> on
-  EX_START_TX(1);
-  A_T(proxy.in_txn_);
-  A_F(proxy.can_free_route_);
-  EX_WRITE(100, 1); // on server 2
-  omt::the_ctrl_of_enable_transaction_free_route = true;
-  A_T(proxy.in_txn_);
-  A_F(proxy.can_free_route_);
-  EX_WRITE(101, 1); // on server 2
-  EX_COMMIT_TX();
-  // on -> off
-  EX_START_TX(1);
-  A_T(proxy.in_txn_);
-  A_T(proxy.can_free_route_);
-  EX_WRITE(100, 1); // on server 1
-  omt::the_ctrl_of_enable_transaction_free_route = false;
-  A_T(proxy.in_txn_);
-  A_T(proxy.can_free_route_);
-  EX_WRITE(101, 1); // on server 2
-  EX_COMMIT_TX();
-}
+// TEST_F(ObTestTxFreeRoute, twiddle_knob_on_the_fly)
+// {
+//   TXFR_TEST_SETUP("127.0.0.1", "127.0.0.2", "127.0.0.3");
+//   // previous is on
+//   EX_START_TX(1);
+//   EX_WRITE(102,2);
+//   EX_WRITE(103,2);
+//   EX_COMMIT_TX();
+//   omt::the_ctrl_of_enable_transaction_free_route = false;
+//   // off -> on
+//   EX_START_TX(1);
+//   A_T(proxy.in_txn_);
+//   A_F(proxy.can_free_route_);
+//   EX_WRITE(100, 1); // on server 2
+//   omt::the_ctrl_of_enable_transaction_free_route = true;
+//   A_T(proxy.in_txn_);
+//   A_F(proxy.can_free_route_);
+//   EX_WRITE(101, 1); // on server 2
+//   EX_COMMIT_TX();
+//   // on -> off
+//   EX_START_TX(1);
+//   A_T(proxy.in_txn_);
+//   A_T(proxy.can_free_route_);
+//   EX_WRITE(100, 1); // on server 1
+//   omt::the_ctrl_of_enable_transaction_free_route = false;
+//   A_T(proxy.in_txn_);
+//   A_T(proxy.can_free_route_);
+//   EX_WRITE(101, 1); // on server 2
+//   EX_COMMIT_TX();
+// }
 
 
 TEST_F(ObTestTxFreeRoute, sample)

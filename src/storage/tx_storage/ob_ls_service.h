@@ -81,7 +81,8 @@ public:
   int replay_create_ls(const ObLSMeta &ls_meta);
   // replay create ls commit slog.
   // @param [in] ls_id, the create process of which is committed.
-  int replay_create_ls_commit(const share::ObLSID &ls_id);
+  // @param [in] create_type, the create type, it is maybe a normal ls/migrate ls/restore ls
+  int replay_create_ls_commit(const share::ObLSID &ls_id, const int64_t create_type);
   // create a LS for replay or update LS's meta
   // @param [in] ls_meta, all the parameters that is needed to create a LS for replay
   int replay_update_ls(const ObLSMeta &ls_meta);
@@ -103,8 +104,8 @@ public:
 
   // remove the ls that is creating and write abort slog.
   int gc_ls_after_replay_slog();
-  // enable replay all ls clog
-  int enable_replay();
+  // online all ls
+  int online_ls();
 
   // check whether a ls exist or not.
   // @param [in] ls_id, the ls we will check.
@@ -156,6 +157,22 @@ private:
       CREATE_STATE_PALF_ENABLED = 4, // enable_palf succ
       CREATE_STATE_FINISH
   };
+  struct ObCreateLSCommonArg {
+    share::ObLSID ls_id_;
+    share::SCN create_scn_;
+    palf::PalfBaseInfo palf_base_info_;
+    ObTenantRole tenant_role_;
+    ObReplicaType replica_type_;
+    lib::Worker::CompatMode compat_mode_;
+    int64_t create_type_;
+    ObMigrationStatus migration_status_;
+    ObLSRestoreStatus restore_status_;
+    share::ObTaskId task_id_;
+    bool need_create_inner_tablet_;
+  };
+
+  int create_ls_(const ObCreateLSCommonArg &arg,
+                 const ObMigrationOpArg &mig_arg);
   // the tenant smaller than 5G can only create 8 ls.
   // other tenant can create 100 ls.
   int check_tenant_ls_num_();
@@ -167,7 +184,8 @@ private:
   int inner_del_ls_(ObLS *&ls);
   int add_ls_to_map_(ObLS *ls);
   int write_prepare_create_ls_slog_(const ObLSMeta &ls_meta) const;
-  int write_commit_create_ls_slog_(const share::ObLSID &ls_id) const;
+  int write_commit_create_ls_slog_(const share::ObLSID &ls_id,
+                                   const int64_t create_type) const;
   int write_abort_create_ls_slog_(const share::ObLSID &ls_id) const;
   int write_remove_ls_slog_(const share::ObLSID &ls_id) const;
   int remove_ls_from_map_(const share::ObLSID &ls_id);
@@ -176,13 +194,18 @@ private:
   int restore_update_ls_(const ObLSMetaPackage &meta_package);
   int replay_remove_ls_(const share::ObLSID &ls_id);
   int replay_create_ls_(const ObLSMeta &ls_meta);
+  int post_create_ls_(const int64_t create_type,
+                      ObLS *&ls);
   void del_ls_after_create_ls_failed_(ObLSCreateState& ls_create_state, ObLS *ls);
 
   int alloc_ls_(ObLS *&ls);
   bool is_ls_to_restore_(const obrpc::ObCreateLSArg &arg) const;
+  bool is_ls_to_clone_(const obrpc::ObCreateLSArg &arg) const;
   bool need_create_inner_tablets_(const obrpc::ObCreateLSArg &arg) const;
   int get_restore_status_(
       share::ObLSRestoreStatus &restore_status);
+  ObLSRestoreStatus get_restore_status_by_tenant_role_(const ObTenantRole& tenant_role);
+  int64_t get_create_type_by_tenant_role_(const ObTenantRole& tenant_role);
 
 private:
   bool is_inited_;

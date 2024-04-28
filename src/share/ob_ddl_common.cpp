@@ -22,6 +22,7 @@
 #include "share/schema/ob_schema_getter_guard.h"
 #include "share/schema/ob_part_mgr_util.h"
 #include "share/location_cache/ob_location_service.h"
+#include "share/ob_ddl_sim_point.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/engine/table/ob_table_scan_op.h"
 #include "storage/tablet/ob_tablet.h"
@@ -35,6 +36,109 @@ using namespace oceanbase::common;
 using namespace oceanbase::share::schema;
 using namespace oceanbase::obrpc;
 using namespace oceanbase::sql;
+
+const char *oceanbase::share::get_ddl_type(ObDDLType ddl_type)
+{
+  const char *ret_name = "UNKNOWN_DDL_TYPE";
+  switch (ddl_type) {
+    case ObDDLType::DDL_INVALID:
+      ret_name = "DDL_INVALID";
+      break;
+    case ObDDLType::DDL_CHECK_CONSTRAINT:
+      ret_name = "DDL_CHECK_CONSTRAINT";
+      break;
+    case ObDDLType::DDL_FOREIGN_KEY_CONSTRAINT:
+      ret_name = "DDL_FOREIGN_KEY_CONSTRAINT";
+      break;
+    case ObDDLType::DDL_ADD_NOT_NULL_COLUMN:
+      ret_name = "DDL_ADD_NOT_NULL_COLUMN";
+      break;
+    case ObDDLType::DDL_MODIFY_AUTO_INCREMENT:
+      ret_name = "DDL_MODIFY_AUTO_INCREMENT";
+      break;
+    case ObDDLType::DDL_CREATE_INDEX:
+      ret_name = "DDL_CREATE_INDEX";
+      break;
+    case ObDDLType::DDL_DROP_INDEX:
+      ret_name = "DDL_DROP_INDEX";
+      break;
+    case ObDDLType::DDL_DROP_SCHEMA_AVOID_CONCURRENT_TRANS:
+      ret_name = "DDL_DROP_SCHEMA_AVOID_CONCURRENT_TRANS";
+      break;
+    case ObDDLType::DDL_DROP_DATABASE:
+      ret_name = "DDL_DROP_DATABASE";
+      break;
+    case ObDDLType::DDL_DROP_TABLE:
+      ret_name = "DDL_DROP_TABLE";
+      break;
+    case ObDDLType::DDL_TRUNCATE_TABLE:
+      ret_name = "DDL_TRUNCATE_TABLE";
+      break;
+    case ObDDLType::DDL_DROP_PARTITION:
+      ret_name = "DDL_DROP_PARTITION";
+      break;
+    case ObDDLType::DDL_DROP_SUB_PARTITION:
+      ret_name = "DDL_DROP_SUB_PARTITION";
+      break;
+    case ObDDLType::DDL_TRUNCATE_PARTITION:
+      ret_name = "DDL_TRUNCATE_PARTITION";
+      break;
+    case ObDDLType::DDL_TRUNCATE_SUB_PARTITION:
+      ret_name = "DDL_TRUNCATE_SUB_PARTITION";
+      break;
+    case ObDDLType::DDL_DOUBLE_TABLE_OFFLINE:
+      ret_name = "DDL_DOUBLE_TABLE_OFFLINE";
+      break;
+    case ObDDLType::DDL_MODIFY_COLUMN:
+      ret_name = "DDL_MODIFY_COLUMN";
+      break;
+    case ObDDLType::DDL_ADD_PRIMARY_KEY:
+      ret_name = "DDL_ADD_PRIMARY_KEY";
+      break;
+    case ObDDLType::DDL_DROP_PRIMARY_KEY:
+      ret_name = "DDL_DROP_PRIMARY_KEY";
+      break;
+    case ObDDLType::DDL_ALTER_PRIMARY_KEY:
+      ret_name = "DDL_ALTER_PRIMARY_KEY";
+      break;
+    case ObDDLType::DDL_ALTER_PARTITION_BY:
+      ret_name = "DDL_ALTER_PARTITION_BY";
+      break;
+    case ObDDLType::DDL_DROP_COLUMN:
+      ret_name = "DDL_DROP_COLUMN";
+      break;
+    case ObDDLType::DDL_CONVERT_TO_CHARACTER:
+      ret_name = "DDL_CONVERT_TO_CHARACTER";
+      break;
+    case ObDDLType::DDL_ADD_COLUMN_OFFLINE:
+      ret_name = "DDL_ADD_COLUMN_OFFLINE";
+      break;
+    case ObDDLType::DDL_COLUMN_REDEFINITION:
+      ret_name = "DDL_COLUMN_REDEFINITION";
+      break;
+    case ObDDLType::DDL_TABLE_REDEFINITION:
+      ret_name = "DDL_TABLE_REDEFINITION";
+      break;
+    case ObDDLType::DDL_DIRECT_LOAD:
+      ret_name = "DDL_DIRECT_LOAD";
+      break;
+    case ObDDLType::DDL_DIRECT_LOAD_INSERT:
+      ret_name = "DDL_DIRECT_LOAD_INSERT";
+      break;
+    case ObDDLType::DDL_NORMAL_TYPE:
+      ret_name = "DDL_NORMAL_TYPE";
+      break;
+    case ObDDLType::DDL_ADD_COLUMN_ONLINE:
+      ret_name = "DDL_ADD_COLUMN_ONLINE";
+      break;
+    case ObDDLType::DDL_CHANGE_COLUMN_NAME:
+      ret_name = "DDL_CHANGE_COLUMN_NAME";
+      break;
+    default:
+      break;
+  }
+  return ret_name;
+}
 
 int ObColumnNameMap::init(const ObTableSchema &orig_table_schema,
                           const AlterTableSchema &alter_table_schema)
@@ -486,6 +590,65 @@ int ObDDLUtil::generate_ddl_schema_hint_str(
   return ret;
 }
 
+int ObDDLUtil::generate_mview_ddl_schema_hint_str(
+    const uint64_t tenant_id,
+    const uint64_t mview_table_id,
+    share::schema::ObSchemaGetterGuard &schema_guard,
+    const ObIArray<ObBasedSchemaObjectInfo> &based_schema_object_infos,
+    const bool is_oracle_mode,
+    ObSqlString &sql_string)
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator("ObDDLTmp");
+  ObString database_name;
+  ObString table_name;
+  for (int64_t i = 0; OB_SUCC(ret) && i < based_schema_object_infos.count(); ++i) {
+    const ObBasedSchemaObjectInfo &based_info = based_schema_object_infos.at(i);
+    const ObTableSchema *table_schema = nullptr;
+    const ObDatabaseSchema *database_schema = nullptr;
+    database_name.reset();
+    table_name.reset();
+    allocator.reuse();
+    if (OB_FAIL(schema_guard.get_table_schema(tenant_id, based_info.schema_id_, table_schema))) {
+      LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(based_info));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_WARN("table not exist", KR(ret), K(tenant_id), K(based_info));
+    } else if (OB_FAIL(schema_guard.get_database_schema(tenant_id, table_schema->get_database_id(),
+                                                        database_schema))) {
+      LOG_WARN("fail to get database schema", KR(ret), K(tenant_id),
+               K(table_schema->get_database_id()));
+    } else if (OB_ISNULL(database_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("error unexpected, database schema must not be nullptr", KR(ret));
+    } else if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+                 allocator, database_schema->get_database_name_str(), database_name,
+                 is_oracle_mode))) {
+      LOG_WARN("fail to generate new name with escape character", KR(ret),
+               K(database_schema->get_database_name_str()), K(is_oracle_mode));
+    } else if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+                 allocator, table_schema->get_table_name_str(), table_name, is_oracle_mode))) {
+      LOG_WARN("fail to generate new name with escape character", KR(ret),
+               K(table_schema->get_table_name_str()), K(is_oracle_mode));
+    } else if (is_oracle_mode) {
+      if (OB_FAIL(sql_string.append_fmt("ob_ddl_schema_version(\"%.*s\".\"%.*s\", %ld) ",
+                                        static_cast<int>(database_name.length()), database_name.ptr(),
+                                        static_cast<int>(table_name.length()), table_name.ptr(),
+                                        based_info.schema_version_))) {
+        LOG_WARN("append sql string failed", KR(ret));
+      }
+    } else {
+      if (OB_FAIL(sql_string.append_fmt("ob_ddl_schema_version(`%.*s`.`%.*s`, %ld) ",
+                                        static_cast<int>(database_name.length()), database_name.ptr(),
+                                        static_cast<int>(table_name.length()), table_name.ptr(),
+                                        based_info.schema_version_))) {
+        LOG_WARN("append sql string failed", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDDLUtil::generate_spatial_index_column_names(const ObTableSchema &dest_table_schema,
                                                    const ObTableSchema &source_table_schema,
                                                    ObArray<ObColumnNameInfo> &insert_column_names,
@@ -560,6 +723,8 @@ int ObDDLUtil::generate_build_replica_sql(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), K(tenant_id), K(data_table_id), K(dest_table_id), K(schema_version),
                                   K(snapshot_version), K(execution_id), K(task_id));
+  } else if (OB_FAIL(DDL_SIM(tenant_id, task_id, GENERATE_BUILD_REPLICA_SQL))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id), K(task_id));
   } else if (OB_FAIL(ObMultiVersionSchemaService::get_instance().get_tenant_schema_guard(
       tenant_id, schema_guard, schema_version))) {
     LOG_WARN("fail to get tenant schema guard", K(ret), K(data_table_id));
@@ -597,7 +762,7 @@ int ObDDLUtil::generate_build_replica_sql(
       for (int64_t i = 0; OB_SUCC(ret) && i < column_ids.count(); ++i) {
         const ObColumnSchemaV2 *column_schema = nullptr;
         ObString orig_column_name;
-        is_shadow_column = column_ids.at(i).col_id_ >= OB_MIN_SHADOW_COLUMN_ID;
+        is_shadow_column = common::is_shadow_column(column_ids.at(i).col_id_);
         const int64_t col_id = is_shadow_column ? column_ids.at(i).col_id_ - OB_MIN_SHADOW_COLUMN_ID : column_ids.at(i).col_id_;
         if (OB_ISNULL(column_schema = dest_table_schema->get_column_schema(col_id))) {
           ret = OB_ERR_UNEXPECTED;
@@ -693,7 +858,7 @@ int ObDDLUtil::generate_build_replica_sql(
         if (OB_ISNULL(rowkey_column = rowkey_info.get_column(i))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("error unexpected, rowkey column must not be nullptr", K(ret));
-        } else if (FALSE_IT(is_shadow_column = rowkey_column->column_id_ >= OB_MIN_SHADOW_COLUMN_ID)) {
+        } else if (FALSE_IT(is_shadow_column = common::is_shadow_column(rowkey_column->column_id_))) {
         } else if (FALSE_IT(col_id = is_shadow_column ? rowkey_column->column_id_ - OB_MIN_SHADOW_COLUMN_ID : rowkey_column->column_id_)) {
         } else if (OB_ISNULL(column_schema = dest_table_schema->get_column_schema(col_id))) {
           ret = OB_ERR_UNEXPECTED;
@@ -828,6 +993,125 @@ int ObDDLUtil::generate_build_replica_sql(
   return ret;
 }
 
+int ObDDLUtil::generate_build_mview_replica_sql(
+    const uint64_t tenant_id,
+    const int64_t mview_table_id,
+    const int64_t container_table_id,
+    ObSchemaGetterGuard &schema_guard,
+    const int64_t snapshot_version,
+    const int64_t execution_id,
+    const int64_t task_id,
+    const int64_t parallelism,
+    const bool use_schema_version_hint_for_src_table,
+    const ObIArray<ObBasedSchemaObjectInfo> &based_schema_object_infos,
+    ObSqlString &sql_string)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(OB_INVALID_ID == tenant_id || OB_INVALID_ID == mview_table_id ||
+                  OB_INVALID_ID == container_table_id || snapshot_version <= 0 ||
+                  execution_id < 0 || task_id <= 0 || based_schema_object_infos.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", KR(ret), K(tenant_id), K(mview_table_id), K(container_table_id),
+             K(snapshot_version), K(execution_id), K(task_id), K(based_schema_object_infos));
+  } else {
+    const ObTableSchema *mview_table_schema = nullptr;
+    const ObTableSchema *container_table_schema = nullptr;
+    const ObDatabaseSchema *database_schema = nullptr;
+    bool is_oracle_mode = false;
+    if (OB_FAIL(schema_guard.get_table_schema(tenant_id, mview_table_id, mview_table_schema))) {
+      LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(mview_table_id));
+    } else if (OB_ISNULL(mview_table_schema)) {
+      ret = OB_ERR_MVIEW_NOT_EXIST;
+      LOG_WARN("fail to get mview table schema", KR(ret), K(mview_table_id));
+    } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, container_table_id,
+                                                     container_table_schema))) {
+      LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(container_table_id));
+    } else if (OB_ISNULL(container_table_schema)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_WARN("fail to get table schema", KR(ret), K(container_table_id));
+    } else if (OB_FAIL(ObCompatModeGetter::check_is_oracle_mode_with_table_id(
+                 tenant_id, mview_table_id, is_oracle_mode))) {
+      LOG_WARN("check if oracle mode failed", KR(ret), K(mview_table_id));
+    } else if (OB_FAIL(schema_guard.get_database_schema(
+                 tenant_id, mview_table_schema->get_database_id(), database_schema))) {
+      LOG_WARN("fail to get database schema", KR(ret), K(tenant_id),
+               K(mview_table_schema->get_database_id()));
+    } else if (OB_ISNULL(database_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("error unexpected, database schema must not be nullptr", KR(ret));
+    } else {
+      ObArenaAllocator allocator("ObDDLTmp");
+      ObString database_name;
+      ObString container_table_name;
+      ObSqlString src_table_schema_version_hint;
+      if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+            allocator, database_schema->get_database_name_str(), database_name, is_oracle_mode))) {
+        LOG_WARN("fail to generate new name with escape character", KR(ret),
+                 K(database_schema->get_database_name_str()), K(is_oracle_mode));
+      } else if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+                   allocator, container_table_schema->get_table_name_str(), container_table_name,
+                   is_oracle_mode))) {
+        LOG_WARN("fail to generate new name with escape character", KR(ret),
+                 K(container_table_schema->get_table_name_str()), K(is_oracle_mode));
+      } else if (use_schema_version_hint_for_src_table) {
+        int64_t based_schema_version = OB_INVALID_VERSION;
+        for (int64_t i = 0; OB_SUCC(ret) && i < based_schema_object_infos.count(); ++i) {
+          const ObBasedSchemaObjectInfo &based_info = based_schema_object_infos.at(i);
+          const ObTableSchema *based_table_schema = nullptr;
+          if (OB_FAIL(schema_guard.get_table_schema(tenant_id, based_info.schema_id_,
+                                                    based_table_schema))) {
+            LOG_WARN("fail to get table schema", KR(ret), K(based_info));
+          } else if (OB_ISNULL(based_table_schema)) {
+            ret = OB_OLD_SCHEMA_VERSION;
+            LOG_WARN("based table is not exist", KR(ret), K(based_info));
+          } else if (OB_UNLIKELY(based_table_schema->get_schema_version() !=
+                                 based_info.schema_version_)) {
+            ret = OB_OLD_SCHEMA_VERSION;
+            LOG_WARN("based table schema version is changed", KR(ret), K(based_info),
+                     KPC(based_table_schema));
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(generate_mview_ddl_schema_hint_str(
+                     tenant_id, mview_table_id, schema_guard, based_schema_object_infos,
+                     is_oracle_mode, src_table_schema_version_hint))) {
+          LOG_WARN("failed to generated mview ddl schema hint", KR(ret));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        int64_t real_parallelism = std::max(1L, parallelism);
+        real_parallelism = std::min(ObMacroDataSeq::MAX_PARALLEL_IDX + 1, real_parallelism);
+        const ObString &select_sql_string = mview_table_schema->get_view_schema().get_view_definition_str();
+        if (is_oracle_mode) {
+          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ monitor enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', 'false') use_px */ INTO \"%.*s\".\"%.*s\""
+                                            " SELECT /*+ %.*s */ * from (%.*s) as of scn %ld;",
+              real_parallelism, execution_id, task_id,
+              static_cast<int>(database_name.length()), database_name.ptr(),
+              static_cast<int>(container_table_name.length()), container_table_name.ptr(),
+              static_cast<int>(src_table_schema_version_hint.length()), src_table_schema_version_hint.ptr(),
+              static_cast<int>(select_sql_string.length()), select_sql_string.ptr(),
+              snapshot_version))) {
+            LOG_WARN("fail to assign sql string", KR(ret));
+          }
+        } else {
+          if (OB_FAIL(sql_string.assign_fmt("INSERT /*+ monitor enable_parallel_dml parallel(%ld) opt_param('ddl_execution_id', %ld) opt_param('ddl_task_id', %ld) opt_param('enable_newsort', 'false') use_px */ INTO `%.*s`.`%.*s`"
+                                            " SELECT /*+ %.*s */ * from (%.*s) as of snapshot %ld;",
+              real_parallelism, execution_id, task_id,
+              static_cast<int>(database_name.length()), database_name.ptr(),
+              static_cast<int>(container_table_name.length()), container_table_name.ptr(),
+              static_cast<int>(src_table_schema_version_hint.length()), src_table_schema_version_hint.ptr(),
+              static_cast<int>(select_sql_string.length()), select_sql_string.ptr(),
+              snapshot_version))) {
+            LOG_WARN("fail to assign sql string", KR(ret));
+          }
+        }
+      }
+    }
+    LOG_INFO("execute sql", K(sql_string));
+  }
+  return ret;
+}
+
 int ObDDLUtil::get_tablet_leader_addr(
     share::ObLocationService *location_service,
     const uint64_t tenant_id,
@@ -929,7 +1213,7 @@ int ObDDLUtil::ddl_get_tablet(
 
 bool ObDDLUtil::need_remote_write(const int ret_code)
 {
-  return ObTenantRole::PRIMARY_TENANT == MTL_GET_TENANT_ROLE()
+  return ObTenantRole::PRIMARY_TENANT == MTL_GET_TENANT_ROLE_CACHE()
     && (OB_NOT_MASTER == ret_code
         || OB_NOT_RUNNING == ret_code
         || OB_LS_LOCATION_LEADER_NOT_EXIST == ret_code
@@ -1060,9 +1344,8 @@ int ObDDLUtil::get_ddl_rpc_timeout(const int64_t tablet_count, int64_t &ddl_rpc_
   const int64_t rpc_timeout_upper = 20L * 60L * 1000L * 1000L; // upper 20 minutes
   const int64_t cost_per_tablet = 20L * 60L * 100L; // 10000 tablets use 20 minutes, so 1 tablet use 20 * 60 * 100 us
   ddl_rpc_timeout_us = tablet_count * cost_per_tablet;
-  ddl_rpc_timeout_us = max(ddl_rpc_timeout_us, GCONF._ob_ddl_timeout);
   ddl_rpc_timeout_us = min(ddl_rpc_timeout_us, rpc_timeout_upper);
-  ddl_rpc_timeout_us = max(ddl_rpc_timeout_us, GCONF.rpc_timeout);
+  ddl_rpc_timeout_us = max(ddl_rpc_timeout_us, GCONF._ob_ddl_timeout);
   return ret;
 }
 
@@ -1151,6 +1434,8 @@ int ObDDLUtil::get_data_format_version(
       || nullptr == GCTX.sql_proxy_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret), K(tenant_id), K(task_id), KP(GCTX.sql_proxy_));
+  } else if (OB_FAIL(DDL_SIM(tenant_id, task_id, GET_DATA_FORMAT_VERISON_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id), K(task_id));
   } else {
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       ObSqlString query_string;
@@ -1342,6 +1627,63 @@ int ObDDLUtil::get_tenant_schema_guard(
     if (OB_UNLIKELY(nullptr == src_tenant_schema_guard || nullptr == dst_tenant_schema_guard)) {
       ret = OB_TENANT_NOT_EXIST;
       LOG_WARN("tenant not exist", K(ret), K(src_tenant_id), K(dst_tenant_id), KP(src_tenant_schema_guard), KP(dst_tenant_schema_guard));
+    }
+  }
+  return ret;
+}
+
+int ObDDLUtil::check_tenant_status_normal(
+    ObISQLClient *proxy,
+    const uint64_t check_tenant_id)
+{
+  int ret = OB_SUCCESS;
+  bool is_tenant_dropped = false;
+  bool is_standby_tenant = false;
+  const ObSimpleTenantSchema *tenant_schema = nullptr;
+  ObSchemaGetterGuard schema_guard;
+  if (OB_ISNULL(proxy)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("proxy is null", K(ret));
+  } else if (OB_FAIL(GSCHEMASERVICE.get_tenant_schema_guard(OB_SYS_TENANT_ID, schema_guard))) {
+    LOG_WARN("get sys tenant schema guard failed", K(ret));
+  } else if (OB_FAIL(schema_guard.check_if_tenant_has_been_dropped(check_tenant_id, is_tenant_dropped))) {
+    LOG_WARN("check tenant dropped failed", K(ret), K(check_tenant_id));
+  } else if (is_tenant_dropped) {
+    ret = OB_TENANT_HAS_BEEN_DROPPED;
+    LOG_INFO("tenant has been dropped", K(ret), K(check_tenant_id));
+  } else if (OB_FAIL(schema_guard.get_tenant_info(check_tenant_id, tenant_schema))) {
+    LOG_WARN("get tenant schema failed", K(ret), K(check_tenant_id));
+  } else if (OB_ISNULL(tenant_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected error", K(ret), K(check_tenant_id));
+  } else if (tenant_schema->is_dropping() || tenant_schema->is_in_recyclebin()) {
+    ret = OB_TENANT_HAS_BEEN_DROPPED;
+    LOG_INFO("tenant in dropping or in recyclebin", K(ret), K(check_tenant_id));
+  } else if (OB_FAIL(ObAllTenantInfoProxy::is_standby_tenant(proxy, check_tenant_id, is_standby_tenant))) {
+    LOG_WARN("check is standby tenant failed", K(ret), K(check_tenant_id));
+  } else if (is_standby_tenant) {
+    ret = OB_STANDBY_READ_ONLY;
+    LOG_INFO("tenant is standby", K(ret), K(check_tenant_id));
+  }
+  return ret;
+}
+
+int ObDDLUtil::check_schema_version_refreshed(
+    const uint64_t tenant_id,
+    const int64_t target_schema_version)
+{
+  int ret = OB_SUCCESS;
+  int64_t refreshed_schema_version = 0;
+  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id || target_schema_version <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", K(ret), K(tenant_id), K(target_schema_version));
+  } else if (OB_FAIL(ObMultiVersionSchemaService::get_instance().get_tenant_refreshed_schema_version(
+      tenant_id, refreshed_schema_version))) {
+    LOG_WARN("get refreshed schema version failed", K(ret), K(tenant_id), K(refreshed_schema_version));
+  } else if (!ObSchemaService::is_formal_version(refreshed_schema_version) || refreshed_schema_version < target_schema_version) {
+    ret = OB_SCHEMA_EAGAIN;
+    if (REACH_TIME_INTERVAL(1000L * 1000L)) {
+      LOG_INFO("tenant schema not refreshed to the target version", K(ret), K(tenant_id), K(target_schema_version), K(refreshed_schema_version));
     }
   }
   return ret;
@@ -1667,10 +2009,13 @@ int ObCheckTabletDataComplementOp::do_check_tablets_merge_status(
     // handle batch result
     int tmp_ret = OB_SUCCESS;
     common::ObArray<int> return_ret_array;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_ret_array))) {
+    if (OB_TMP_FAIL(proxy.wait_all(return_ret_array))) {
       LOG_WARN("rpc proxy wait failed", K(tmp_ret));
       ret = OB_SUCCESS == ret ? tmp_ret : ret;
-    } else if (OB_SUCC(ret)) {
+    } else if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_ret_array.count()))) {
+      LOG_WARN("return cnt not match", KR(ret), "return_cnt", return_ret_array.count());
+    } else {
       if (return_ret_array.count() != ip_tablets_map.size()) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("rpc proxy rsp size not equal to send size", K(ret), K(return_ret_array.count()), K(ip_tablets_map.size()));
@@ -1814,6 +2159,8 @@ int ObCheckTabletDataComplementOp::check_tablet_checksum_update_status(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("fail to check and wait complement task",
       K(ret), K(tenant_id), K(index_table_id), K(tablet_ids), K(execution_id), K(ddl_task_id));
+  } else if (OB_FAIL(DDL_SIM(tenant_id, ddl_task_id, CHECK_TABLET_CHECKSUM_STATUS_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id), K(ddl_task_id));
   } else if (OB_FAIL(tablet_checksum_status_map.create(tablet_count, ObModIds::OB_SSTABLE_CREATE_INDEX))) {
     LOG_WARN("fail to create column checksum map", K(ret));
   } else if (OB_FAIL(ObDDLChecksumOperator::get_tablet_checksum_record(
@@ -1908,7 +2255,11 @@ int ObCheckTabletDataComplementOp::check_finish_report_checksum(
   int ret = OB_SUCCESS;
   bool is_checksums_all_report = false;
   ObArray<ObTabletID> dest_tablet_ids;
-
+#ifdef ERRSIM
+  if (GCONF.errsim_ddl_major_delay_time.get() > 0) {
+    return OB_SUCCESS;
+  }
+#endif
   if (OB_UNLIKELY(OB_INVALID_ID == tenant_id || OB_INVALID_ID == index_table_id ||
       ddl_task_id == OB_INVALID_ID || execution_id < 0)) {
     ret = OB_INVALID_ARGUMENT;
@@ -1950,6 +2301,8 @@ int ObCheckTabletDataComplementOp::check_and_wait_old_complement_task(
   if (OB_UNLIKELY(OB_INVALID_ID == tenant_id || OB_INVALID_ID == table_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("fail to check and wait complement task", K(ret), K(tenant_id), K(table_id));
+  } else if (OB_FAIL(DDL_SIM(tenant_id, ddl_task_id, CHECK_OLD_COMPLEMENT_TASK_FAILED))) {
+    LOG_WARN("ddl sim failure: check old complement task failed", K(ret), K(tenant_id), K(ddl_task_id));
   } else {
     if (OB_FAIL(check_task_inner_sql_session_status(inner_sql_exec_addr, trace_id, tenant_id, ddl_task_id, scn, is_old_task_session_exist))) {
       LOG_WARN("fail check task inner sql session status", K(ret), K(trace_id), K(inner_sql_exec_addr));
@@ -1988,4 +2341,42 @@ int ObCheckTabletDataComplementOp::check_and_wait_old_complement_task(
       K(table_id), K(is_old_task_session_exist), K(is_dst_checksums_all_report), K(need_exec_new_inner_sql));
   }
   return ret;
+}
+
+//record trace_id
+ObDDLEventInfo::ObDDLEventInfo()
+  : addr_(GCTX.self_addr()),
+    sub_id_(0),
+    event_ts_(ObTimeUtility::fast_current_time())
+{
+  init_sub_trace_id(sub_id_);
+}
+
+//modify trace_id
+ObDDLEventInfo::ObDDLEventInfo(const int32_t sub_id)
+  : addr_(GCTX.self_addr()),
+    sub_id_(sub_id),
+    event_ts_(ObTimeUtility::fast_current_time())
+{
+  init_sub_trace_id(sub_id_);
+}
+
+void ObDDLEventInfo::init_sub_trace_id(const int32_t sub_id)
+{
+  parent_trace_id_ = *ObCurTraceId::get_trace_id();
+  if (sub_id == 0) {
+    // ignore
+  } else {
+    ObCurTraceId::set_sub_id(sub_id);
+  }
+  trace_id_ = *ObCurTraceId::get_trace_id();
+}
+
+void ObDDLEventInfo::copy_event(const ObDDLEventInfo &other)
+{
+  addr_ = other.addr_;
+  sub_id_ = other.sub_id_;
+  parent_trace_id_ = other.parent_trace_id_;
+  trace_id_ = other.trace_id_;
+  event_ts_ = other.event_ts_;
 }

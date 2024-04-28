@@ -144,7 +144,7 @@ public:
   OB_INLINE int64_t get_snapshot_version() const { return snapshot_version_; }
   TO_STRING_KV(K_(tablet_id), K_(ls_id), K_(rowkey_column_num), K_(is_index_table), KP_(col_descs),
                K_(snapshot_version), K_(data_desc), K_(lob_cnt), K_(sql_mode_for_ddl_reshape),
-               KP_(reshape_ptr));
+               KP_(reshape_ptr), K_(lob_inrow_threshold));
 private:
   int prepare_reshape(
     const common::ObTabletID &tablet_id,
@@ -160,7 +160,7 @@ private:
   const blocksstable::ObColDescIArray *col_descs_;
   int64_t snapshot_version_;
   ObDDLSSTableRedoWriter sstable_redo_writer_;
-  blocksstable::ObDataStoreDesc data_desc_;
+  blocksstable::ObWholeDataStoreDesc data_desc_;
   /**
    * ATTENTION!
    * The deconstruction order of the `redo_log_writer_callback_` should be in front of the `macro_block_writer_`
@@ -176,6 +176,8 @@ private:
   ObStoreRow store_row_;
   blocksstable::ObDatumRow datum_row_;
   bool is_inited_;
+  blocksstable::ObNewRowBuilder new_row_builder_;
+  int64_t lob_inrow_threshold_;
 };
 
 class ObSSTableInsertTabletContext final

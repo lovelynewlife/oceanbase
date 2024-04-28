@@ -743,7 +743,8 @@ int ObDASTabletMapper::get_partition_id_map(ObObjectID partition_id,
 ObDASLocationRouter::ObDASLocationRouter(ObIAllocator &allocator)
   : last_errno_(OB_SUCCESS),
     cur_errno_(OB_SUCCESS),
-    retry_cnt_(0),
+    history_retry_cnt_(0),
+    cur_retry_cnt_(0),
     all_tablet_list_(allocator),
     succ_tablet_list_(allocator),
     virtual_server_list_(allocator),
@@ -1126,7 +1127,7 @@ OB_NOINLINE int ObDASLocationRouter::get_vt_ls_location(uint64_t table_id,
     ObReplicaProperty mock_prop;
     ObLSReplicaLocation ls_replica;
     ObAddr server;
-    ObLSRestoreStatus restore_status(ObLSRestoreStatus::RESTORE_NONE);
+    ObLSRestoreStatus restore_status(ObLSRestoreStatus::NONE);
     if (OB_FAIL(location.init(GCONF.cluster_id, MTL_ID(), ObLSID(ObLSID::VT_LS_ID), now))) {
       LOG_WARN("init location failed", KR(ret));
     } else if (OB_FAIL(server_pair->get_server_by_tablet_id(tablet_id, server))) {
@@ -1237,7 +1238,7 @@ int ObDASLocationRouter::block_renew_tablet_location(const ObTabletID &tablet_id
 void ObDASLocationRouter::set_retry_info(const ObQueryRetryInfo* retry_info)
 {
   last_errno_ = retry_info->get_last_query_retry_err();
-  retry_cnt_ = retry_info->get_retry_cnt();
+  history_retry_cnt_ = retry_info->get_retry_cnt();
 }
 
 int ObDASLocationRouter::get_external_table_ls_location(ObLSLocation &location)
@@ -1246,7 +1247,7 @@ int ObDASLocationRouter::get_external_table_ls_location(ObLSLocation &location)
   int64_t now = ObTimeUtility::current_time();
   ObReplicaProperty mock_prop;
   ObLSReplicaLocation ls_replica;
-  ObLSRestoreStatus ls_restore_status(ObLSRestoreStatus::RESTORE_NONE);
+  ObLSRestoreStatus ls_restore_status(ObLSRestoreStatus::NONE);
   OZ (location.init(GCONF.cluster_id, MTL_ID(), ObLSID(ObLSID::VT_LS_ID), now));
   OZ (ls_replica.init(GCTX.self_addr(), common::LEADER,
                       GCONF.mysql_port, REPLICA_TYPE_FULL,

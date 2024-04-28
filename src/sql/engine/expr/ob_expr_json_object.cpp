@@ -332,7 +332,7 @@ int ObExprJsonObject::eval_ora_json_object(const ObExpr &expr, ObEvalCtx &ctx, O
       bool is_format_json = format_type > 0;
 
       if (OB_FAIL(ObJsonExprHelper::eval_oracle_json_val(
-                    arg_value, ctx, &temp_allocator, j_val, is_format_json, is_strict, false))) {
+                    arg_value, ctx, &temp_allocator, j_val, is_format_json, is_strict, false, is_null_absent))) {
         LOG_WARN("failed to get json value node.", K(ret), K(value_data_type), K(i));
       } else {
         bool is_key_already_exist = (j_obj.get_value(key) != nullptr);
@@ -340,7 +340,7 @@ int ObExprJsonObject::eval_ora_json_object(const ObExpr &expr, ObEvalCtx &ctx, O
         if (is_key_already_exist && is_key_unique) {
           ret = OB_ERR_DUPLICATE_KEY;
           LOG_WARN("Found duplicate key inserted before!", K(key), K(ret));
-        } else if (is_null_absent && j_val->json_type() == ObJsonNodeType::J_NULL) {
+        } else if (OB_ISNULL(j_val)) {
         } else if (OB_FAIL(j_obj.add(key, static_cast<ObJsonNode*>(j_val), false, false, is_overwrite))) {
           LOG_WARN("failed to get json value node.", K(ret), K(val_type));
         }
@@ -357,18 +357,38 @@ int ObExprJsonObject::eval_ora_json_object(const ObExpr &expr, ObEvalCtx &ctx, O
         LOG_WARN("fail to pack json result", K(ret), K(raw_bin));
       }
     } else {
+
+      ObString temp_str;
+      ObString result_str;
+
       if (OB_FAIL(string_buffer.reserve(j_obj.get_serialize_size()))) {
         LOG_WARN("fail to reserve string.", K(ret), K(j_obj.get_serialize_size()));
       } else if (OB_FAIL(j_base->print(string_buffer, false, false))) {
         LOG_WARN("fail to transform to string.", K(ret), K(string_buffer.length()));
-      } else if (dst_type == ObVarcharType && string_buffer.length()  > dst_len) {
+      } else {
+        ObCollationType in_cs_type = CS_TYPE_UTF8MB4_BIN;
+        ObCollationType dst_cs_type = expr.obj_meta_.get_collation_type();
+        temp_str = string_buffer.string();
+        result_str = temp_str;
+
+        if (OB_FAIL(ObJsonExprHelper::convert_string_collation_type(in_cs_type,
+                                                                    dst_cs_type,
+                                                                    &temp_allocator,
+                                                                    temp_str,
+                                                                    result_str))) {
+          LOG_WARN("fail to convert string result", K(ret));
+        }
+      }
+
+
+      if (dst_type == ObVarcharType && result_str.length()  > dst_len) {
         char res_ptr[OB_MAX_DECIMAL_PRECISION] = {0};
         if (OB_ISNULL(ObCharset::lltostr(dst_len, res_ptr, 10, 1))) {
           LOG_WARN("dst_len fail to string.", K(ret));
         }
         ret = OB_OPERATE_OVERFLOW;
         LOG_USER_ERROR(OB_OPERATE_OVERFLOW, res_ptr, "json_object");
-      } else if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr, ctx, res, string_buffer.string()))) {
+      } else if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr, ctx, res, result_str))) {
         LOG_WARN("fail to pack json result", K(ret));
       }
     }
@@ -459,6 +479,57 @@ int ObExprJsonObject::eval_option_clause_value(ObExpr *expr,
     }
   }
   return ret;
+}
+
+ObExprJsonObjectStar::ObExprJsonObjectStar(ObIAllocator &alloc)
+    : ObFuncExprOperator(alloc, T_FUN_SYS_JSON_OBJECT_WILD_STAR, N_JSON_OBJECT_STAR, OCCUR_AS_PAIR, VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{
+}
+
+ObExprJsonObjectStar::~ObExprJsonObjectStar()
+{
+}
+
+int ObExprJsonObjectStar::calc_result_typeN(ObExprResType& type,
+                                            ObExprResType* types_stack,
+                                            int64_t param_num,
+                                            ObExprTypeCtx& type_ctx) const
+{
+  INIT_SUCC(ret);
+  if (param_num != 1) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("incorrect num of param", K(ret));
+  } else {
+    types_stack[0].set_calc_type(types_stack[0].get_type());
+    types_stack[0].set_calc_collation_type(types_stack[0].get_collation_type());
+    ObExprResType dst_type;
+    dst_type.set_type(ObObjType::ObVarcharType);
+    dst_type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+    dst_type.set_full_length(4000, 1);
+    if (OB_FAIL(ObJsonExprHelper::set_dest_type(types_stack[0], type, dst_type, type_ctx))) {
+      LOG_WARN("set dest type failed", K(ret));
+    } else {
+      type.set_calc_collation_type(type.get_collation_type());
+    }
+  }
+  return ret;
+}
+
+int ObExprJsonObjectStar::eval_ora_json_object_star(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+{
+  INIT_SUCC(ret);
+  ret = OB_ERR_UNEXPECTED;
+  LOG_WARN("can not be use this expr, should transform to real column", K(ret));
+  return ret;
+}
+
+int ObExprJsonObjectStar::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                                  ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  UNUSED(raw_expr);
+  rt_expr.eval_func_ = eval_ora_json_object_star;
+  return OB_SUCCESS;
 }
 
 } // sql

@@ -19,7 +19,6 @@
 #include "lib/string/ob_string.h"
 #include "lib/string/ob_sql_string.h"
 #include "share/schema/ob_ddl_sql_service.h"
-#include "share/schema/ob_dependency_info.h"
 #include "share/config/ob_server_config.h"
 #include "share/ob_get_compat_mode.h"
 #include "share/ob_partition_modify.h"
@@ -292,6 +291,11 @@ public:
   int get_part_array_from_table(const share::schema::ObTableSchema &orig_table_schema,
                                 const share::schema::ObTableSchema &inc_table_schema,
                                 common::ObIArray<share::schema::ObPartition*> &part_array);
+  int insert_column_groups(ObMySQLTransaction &trans, const ObTableSchema &new_table_schema);
+	int insert_column_ids_into_column_group(ObMySQLTransaction &trans,
+																				 const ObTableSchema &new_table_schema,
+																				 const ObIArray<uint64_t> &column_ids,
+																				 const ObColumnGroupSchema &column_group);
   int insert_single_column(common::ObMySQLTransaction &trans,
                            const share::schema::ObTableSchema &new_table_schema,
                            share::schema::ObColumnSchemaV2 &new_column);
@@ -307,6 +311,9 @@ public:
       const common::ObString *ddl_stmt_str = NULL);
   int reinit_autoinc_row(const ObTableSchema &table_schema,
                          common::ObMySQLTransaction &trans);
+  // for alter table autoinc to check __all_auto_increment
+  int try_reinit_autoinc_row(const ObTableSchema &table_schema,
+                             common::ObMySQLTransaction &trans);
   int create_sequence_in_create_table(share::schema::ObTableSchema &table_schema,
                                       common::ObMySQLTransaction &trans,
                                       share::schema::ObSchemaGetterGuard &schema_guard,
@@ -512,6 +519,11 @@ public:
                            const bool need_reset_object_status,
                            common::ObMySQLTransaction &trans,
                            const common::ObString *ddl_stmt_str);
+  virtual int rename_aux_table(const ObTableSchema &new_table_schema,
+                               const uint64_t table_id,
+                               ObSchemaGetterGuard &schema_guard,
+                               ObMySQLTransaction &trans,
+                               ObTableSchema &new_aux_table_schema);
   virtual int update_index_status(
               const uint64_t tenant_id,
               const uint64_t data_table_id,
@@ -790,6 +802,7 @@ public:
                      common::ObMySQLTransaction &trans,
                      share::schema::ObErrorInfo &error_info,
                      ObIArray<ObDependencyInfo> &dep_infos,
+                     int64_t &table_schema_version,
                      const common::ObString *ddl_stmt_str/*=NULL*/,
                      bool is_update_table_schema_version = true,
                      bool is_for_truncate_table = false);

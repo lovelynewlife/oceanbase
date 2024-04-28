@@ -54,6 +54,10 @@ const char* const CLUSTER_ID = "cluster_id";
 const char* const CLUSTER_NAME = "cluster";
 const char* const FREEZE_TRIGGER_PERCENTAGE = "freeze_trigger_percentage";
 const char* const WRITING_THROTTLEIUNG_TRIGGER_PERCENTAGE = "writing_throttling_trigger_percentage";
+const char* const _TX_SHARE_MEMORY_LIMIT_PERCENTAGE = "_tx_share_memory_limit_percentage";
+const char* const MEMSTORE_LIMIT_PERCENTAGE = "memstore_limit_percentage";
+const char* const _TX_DATA_MEMORY_LIMIT_PERCENTAGE = "_tx_data_memory_limit_percentage";
+const char* const _MDS_MEMORY_LIMIT_PERCENTAGE = "_mds_memory_limit_percentage";
 const char* const COMPATIBLE = "compatible";
 const char* const WEAK_READ_VERSION_REFRESH_INTERVAL = "weak_read_version_refresh_interval";
 const char* const PARTITION_BALANCE_SCHEDULE_INTERVAL = "partition_balance_schedule_interval";
@@ -168,7 +172,11 @@ public:
   int64_t get_hidden_sys_memory() { return hidden_sys_memory_; }
   //the extra_memory just used by real sys when non_mini_mode
   int64_t get_extra_memory();
+  void check_500_tenant_hold(bool ignore_error);
 
+#ifdef ENABLE_500_MEMORY_LIMIT
+  int set_500_tenant_limit(const int64_t limit_mode);
+#endif
 private:
   int64_t get_adaptive_memory_config(const int64_t memory_size,
                                      DependentMemConfig dep_mem_config,

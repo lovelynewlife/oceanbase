@@ -23,11 +23,17 @@ namespace sql
 class ObRawExprDeduceType: public ObRawExprVisitor
 {
 public:
-  ObRawExprDeduceType(const ObSQLSessionInfo *my_session)
+  ObRawExprDeduceType(const ObSQLSessionInfo *my_session,
+                      bool solidify_session_vars,
+                      const ObLocalSessionVar *local_vars,
+                      int64_t local_vars_id)
     : ObRawExprVisitor(),
       my_session_(my_session),
       alloc_(),
-      expr_factory_(NULL)
+      expr_factory_(NULL),
+      my_local_vars_(local_vars),
+      local_vars_id_(local_vars_id),
+      solidify_session_vars_(solidify_session_vars)
   {}
   virtual ~ObRawExprDeduceType()
   {
@@ -74,6 +80,7 @@ private:
                               const common::ObObjType to,
                               const common::ObCollationType to_cs_type,
                               ObExprOperatorType expr_type);
+  int push_back_types(const ObRawExpr *param_expr, ObExprResTypes &types);
   int calc_result_type(ObNonTerminalRawExpr &expr, ObIExprResTypes &types,
                        common::ObCastMode &cast_mode, int32_t row_dimension);
   int calc_result_type_with_const_arg(
@@ -102,6 +109,9 @@ private:
 
   int set_agg_json_array_result_type(ObAggFunRawExpr &expr, ObExprResType &result_type);
 
+  int set_agg_min_max_result_type(ObAggFunRawExpr &expr, ObExprResType &result_type,
+                                  bool &need_add_cast);
+  int set_agg_regr_result_type(ObAggFunRawExpr &expr, ObExprResType &result_type);
   int set_xmlagg_result_type(ObAggFunRawExpr &expr, ObExprResType& result_type);
 
   int set_agg_xmlagg_result_type(ObAggFunRawExpr &expr, ObExprResType& result_type);
@@ -133,10 +143,20 @@ private:
                                           const bool keep_type);
   int add_group_aggr_implicit_cast(ObAggFunRawExpr &expr, const ObCastMode& cast_mode);
   int adjust_cast_as_signed_unsigned(ObSysFunRawExpr &expr);
+
+  bool ignore_scale_adjust_for_decimal_int(const ObItemType expr_type);
+  int try_replace_casts_with_questionmarks_ora(ObRawExpr *row_expr);
+
+  int try_replace_cast_with_questionmark_ora(ObRawExpr &parent, ObRawExpr *cast_expr, int param_idx);
 private:
   const sql::ObSQLSessionInfo *my_session_;
   common::ObArenaAllocator alloc_;
   ObRawExprFactory *expr_factory_;
+  //deduce with current session vars if solidify_session_vars_ is true,
+  //otherwise deduce with my_local_vars_ if my_local_vars_ is not null
+  const ObLocalSessionVar *my_local_vars_;
+  int64_t local_vars_id_;
+  bool solidify_session_vars_;
   // data members
 };
 

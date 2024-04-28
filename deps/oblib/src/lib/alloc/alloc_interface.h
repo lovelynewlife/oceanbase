@@ -24,8 +24,15 @@ namespace oceanbase
 namespace lib
 {
 class ObTenantCtxAllocator;
+struct AChunk;
 struct ABlock;
 struct ObMemAttr;
+class IChunkMgr
+{
+public:
+  virtual AChunk *alloc_chunk(const uint64_t size, const ObMemAttr &attr) = 0;
+  virtual void free_chunk(AChunk *chunk, const ObMemAttr &attr) = 0;
+}; // end of class IChunkMgr
 
 class IBlockMgr
 {
@@ -84,10 +91,10 @@ private:
 };
 
 template<typename t_lock>
-class SetLockerForLogger : public ISetLocker
+class SetLockerNoLog : public ISetLocker
 {
 public:
-  SetLockerForLogger(t_lock &mutex)
+  SetLockerNoLog(t_lock &mutex)
     : mutex_(mutex), is_disable_(false) {}
   void lock() override
   {

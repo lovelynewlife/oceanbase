@@ -16,6 +16,7 @@
 #include "storage/ob_storage_schema.h"
 #include "lib/container/ob_array_array.h"
 #include "observer/ob_server_struct.h"
+#include "storage/compaction/ob_partition_merge_policy.h"
 
 namespace oceanbase
 {
@@ -156,7 +157,6 @@ public:
     return medium_snapshot_ != rhs.medium_snapshot_;
   }
   int64_t get_medium_snapshot() const { return medium_snapshot_; }
-  void set_medium_snapshot(const int64_t medium_snapshot) { medium_snapshot_ = medium_snapshot; }
 
   TO_STRING_KV(K_(medium_snapshot));
 private:
@@ -180,7 +180,16 @@ public:
 
   int assign(ObIAllocator &allocator, const ObMediumCompactionInfo &medium_info);
   int init(ObIAllocator &allocator, const ObMediumCompactionInfo &medium_info);
-  int init_data_version();
+  int init_data_version(const uint64_t compat_version);
+  void set_basic_info(
+    const ObCompactionType type,
+    const ObAdaptiveMergePolicy::AdaptiveMergeReason merge_reason,
+    const int64_t medium_snapshot)
+  {
+    compaction_type_ = type;
+    medium_merge_reason_ = merge_reason;
+    medium_snapshot_ = medium_snapshot;
+  }
   int gene_parallel_info(
       ObIAllocator &allocator,
       common::ObArrayArray<ObStoreRange> &paral_range);
@@ -207,13 +216,13 @@ public:
       const int64_t data_len,
       int64_t &pos);
   int64_t get_serialize_size() const;
-
   void gene_info(char* buf, const int64_t buf_len, int64_t &pos) const;
   int64_t to_string(char* buf, const int64_t buf_len) const;
 public:
   static const int64_t MEDIUM_COMPAT_VERSION = 1;
   static const int64_t MEDIUM_COMPAT_VERSION_V2 = 2; // for add last_medium_snapshot_
   static const int64_t MEDIUM_COMPAT_VERSION_V3 = 3; // for stanby tenant, not throw medium info
+  static const int64_t MEDIUM_COMPAT_VERSION_V4 = 4; // after this version, use is_schema_changed on medium info
 private:
   static const int32_t SCS_ONE_BIT = 1;
   static const int32_t SCS_RESERVED_BITS = 32;

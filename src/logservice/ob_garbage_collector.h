@@ -252,6 +252,8 @@ public:
   int gc_check_invalid_member_seq(const int64_t gc_seq, bool &need_gc);
   static bool is_valid_ls_gc_state(const LSGCState &state);
   static bool is_ls_offline_gc_state(const LSGCState &state);
+  void set_log_sync_stopped();
+  bool is_log_sync_stopped() const {return ATOMIC_LOAD(&log_sync_stopped_);}
 
   int diagnose(GCDiagnoseInfo &diagnose_info) const;
 
@@ -274,7 +276,9 @@ public:
   TO_STRING_KV(K(is_inited_),
                K(gc_seq_invalid_member_),
                K(gc_start_ts_),
-               K(block_tx_ts_));
+               K(block_tx_ts_),
+               K(block_log_debug_time_),
+               K(log_sync_stopped_));
 
 private:
   typedef common::SpinRWLock RWLock;
@@ -346,6 +350,8 @@ private:
   int64_t gc_seq_invalid_member_; //缓存gc检查当前ls不在成员列表时的轮次
   int64_t gc_start_ts_;
   int64_t block_tx_ts_;
+  int64_t block_log_debug_time_;
+  bool log_sync_stopped_;//used for trans_service to kill trx, True means this replica may not be able to fully synchronize the logs.
 };
 
 } // namespace logservice

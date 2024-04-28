@@ -37,7 +37,9 @@ static __thread int ussl_server_ctx_id = -1;
 static uint64_t global_gid_arr[USSL_MAX_FD_NUM];
 static int global_client_ctx_id_arr[USSL_MAX_FD_NUM];
 static int global_send_negotiation_arr[USSL_MAX_FD_NUM];
+
 int is_ussl_bg_thread_started = 0;
+static int ussl_is_stopped = 0;
 
 static __attribute__((constructor(102))) void init_global_array()
 {
@@ -193,6 +195,12 @@ void ussl_stop()
 {
   ATOMIC_STORE(&ussl_is_stopped, 1);
 }
+
+int ussl_is_stop()
+{
+  return ATOMIC_LOAD(&ussl_is_stopped);
+}
+
 void ussl_wait()
 {
   ussl_wait_bg_thread();
@@ -271,6 +279,7 @@ ssize_t ussl_write(int fd, const void *buf, size_t nbytes)
 
 int ussl_close(int fd)
 {
+  ussl_reset_rpc_connection_type(fd);
   fd_disable_ssl(fd);
   return libc_close(fd);
 }

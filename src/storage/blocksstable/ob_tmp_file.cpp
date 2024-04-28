@@ -24,7 +24,7 @@ namespace blocksstable
 {
 
 ObTmpFileIOInfo::ObTmpFileIOInfo()
-  : fd_(0), dir_id_(0), size_(0), tenant_id_(OB_INVALID_TENANT_ID), buf_(NULL), io_desc_()
+  : fd_(0), dir_id_(0), size_(0), io_timeout_ms_(DEFAULT_IO_WAIT_TIME_MS), tenant_id_(OB_INVALID_TENANT_ID), buf_(NULL), io_desc_()
 {
 }
 
@@ -37,6 +37,7 @@ void ObTmpFileIOInfo::reset()
   fd_ = 0;
   dir_id_ = 0;
   size_ = 0;
+  io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   tenant_id_ = OB_INVALID_TENANT_ID;
   buf_ = NULL;
 }
@@ -44,7 +45,7 @@ void ObTmpFileIOInfo::reset()
 bool ObTmpFileIOInfo::is_valid() const
 {
   return fd_ >= 0 && dir_id_ >= 0 && size_ > 0 && OB_INVALID_TENANT_ID != tenant_id_
-        && NULL != buf_ && io_desc_.is_valid();
+        && NULL != buf_ && io_desc_.is_valid() && io_timeout_ms_ > 0;
 }
 
 ObTmpFileIOHandle::ObTmpFileIOHandle()
@@ -68,6 +69,9 @@ ObTmpFileIOHandle::ObTmpFileIOHandle()
     last_fd_(OB_INVALID_FD),
     last_extent_id_(0)
 {
+  io_handles_.set_attr(ObMemAttr(MTL_ID(), "TMP_IO_HDL"));
+  page_cache_handles_.set_attr(ObMemAttr(MTL_ID(), "TMP_PCACHE_HDL"));
+  block_cache_handles_.set_attr(ObMemAttr(MTL_ID(), "TMP_BCACHE_HDL"));
 }
 
 ObTmpFileIOHandle::~ObTmpFileIOHandle()
@@ -135,9 +139,10 @@ int ObTmpFileIOHandle::prepare_write(
   return ret;
 }
 
-int ObTmpFileIOHandle::wait(const int64_t timeout_ms)
+int ObTmpFileIOHandle::wait()
 {
   int ret = OB_SUCCESS;
+  const int64_t timeout_ms = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
   if (timeout_ms < 0) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "invalid argument. timeout must be positive", K(ret), K(timeout_ms));
@@ -160,7 +165,7 @@ int ObTmpFileIOHandle::wait(const int64_t timeout_ms)
   return ret;
 }
 
-int ObTmpFileIOHandle::wait_write_finish(const int64_t timeout_ms)
+int ObTmpFileIOHandle::wait_write_finish(int64_t timeout_ms)
 {
   int ret = OB_SUCCESS;
   if (write_block_ids_.size() == 0) {
@@ -214,6 +219,7 @@ int ObTmpFileIOHandle::wait_read_finish(const int64_t timeout_ms)
       io_info.size_ = expect_read_size_;
       io_info.buf_ = buf_;
       io_info.io_desc_ = io_flag_;
+      io_info.io_timeout_ms_ = timeout_ms;
       while (OB_SUCC(ret) && size_ < expect_read_size_) {
         if (OB_FAIL(file_handle.get_resource_ptr()->once_aio_read_batch(io_info,
                                                     update_offset_in_file_,
@@ -262,7 +268,7 @@ int ObTmpFileIOHandle::do_read_wait(const int64_t timeout_ms)
 
   for (int32_t i = 0; OB_SUCC(ret) && i < io_handles_.count(); i++) {
     ObIOReadHandle &tmp = io_handles_.at(i);
-    if (OB_FAIL(tmp.macro_handle_.wait(timeout_ms))) {
+    if (OB_FAIL(tmp.macro_handle_.wait())) {
       STORAGE_LOG(WARN, "fail to wait tmp read io", K(ret));
     } else {
       MEMCPY(tmp.buf_, tmp.macro_handle_.get_buffer() + tmp.offset_, tmp.size_);
@@ -484,6 +490,7 @@ int ObTmpFileExtent::read(const ObTmpFileIOInfo &io_info, const int64_t offset, 
     info.offset_ = start_page_id_ * ObTmpMacroBlock::get_default_page_size() + offset;
     info.size_ = size;
     info.tenant_id_ = io_info.tenant_id_;
+    info.io_timeout_ms_ = io_info.io_timeout_ms_;
     if (OB_FAIL(OB_TMP_FILE_STORE.read(owner_->get_tenant_id(), info, handle))) {
       STORAGE_LOG(WARN, "fail to read the extent", K(ret), K(info), K(*this));
     } else {
@@ -520,6 +527,7 @@ int ObTmpFileExtent::write(const ObTmpFileIOInfo &io_info,int64_t &size, char *&
       info.offset_ = start_page_id_ * ObTmpMacroBlock::get_default_page_size() + get_offset();
       info.size_ = write_size;
       info.tenant_id_ = io_info.tenant_id_;
+      info.io_timeout_ms_ = io_info.io_timeout_ms_;
       if (OB_FAIL(OB_TMP_FILE_STORE.write(owner_->get_tenant_id(), info))) {
         STORAGE_LOG(WARN, "fail to write the extent", K(ret));
       } else {
@@ -628,7 +636,6 @@ int ObTmpFileExtent::try_sync_block()
 
   return ret;
 }
-
 
 void ObTmpFileExtent::unclose(const int32_t page_nums)
 {
@@ -972,30 +979,28 @@ int ObTmpFile::seek(const int64_t offset, const int whence)
   return ret;
 }
 
-int ObTmpFile::read(const ObTmpFileIOInfo &io_info, const int64_t timeout_ms,
-    ObTmpFileIOHandle &handle)
+int ObTmpFile::read(const ObTmpFileIOInfo &io_info, ObTmpFileIOHandle &handle)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(aio_read(io_info, handle))) {
     if (OB_ITER_END != ret) {
       STORAGE_LOG(WARN, "fail to read data using asynchronous io", K(ret), K(io_info));
     } else {
-      if (OB_FAIL(handle.wait(timeout_ms))) {
-        STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(timeout_ms));
+      if (OB_FAIL(handle.wait())) {
+        STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(io_info));
       } else {
         ret = OB_ITER_END;
       }
     }
-  } else if (OB_FAIL(handle.wait(timeout_ms))) {
+  } else if (OB_FAIL(handle.wait())) {
     if (OB_ITER_END != ret) {
-      STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(timeout_ms));
+      STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(io_info));
     }
   }
   return ret;
 }
 
-int ObTmpFile::pread(const ObTmpFileIOInfo &io_info, const int64_t offset, const int64_t timeout_ms,
-    ObTmpFileIOHandle &handle)
+int ObTmpFile::pread(const ObTmpFileIOInfo &io_info, const int64_t offset, ObTmpFileIOHandle &handle)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -1005,15 +1010,15 @@ int ObTmpFile::pread(const ObTmpFileIOInfo &io_info, const int64_t offset, const
     if (OB_ITER_END != ret) {
       STORAGE_LOG(WARN, "fail to read data using asynchronous io", K(ret), K(io_info));
     } else {
-      if (OB_FAIL(handle.wait(timeout_ms))) {
-        STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(timeout_ms));
+      if (OB_FAIL(handle.wait())) {
+        STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(io_info));
       } else {
         ret = OB_ITER_END;
       }
     }
-  } else if (OB_FAIL(handle.wait(timeout_ms))) {
+  } else if (OB_FAIL(handle.wait())) {
     if (OB_ITER_END != ret) {
-      STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(timeout_ms));
+      STORAGE_LOG(WARN, "fail to wait io finish", K(ret), K(io_info));
     }
   }
   return ret;
@@ -1171,7 +1176,8 @@ int ObTmpFile::sync(const int64_t timeout_ms)
     // all extents has been closed.
     const ObIArray<ObTmpFileExtent *> &extents = file_meta_.get_extents();
     common::hash::ObHashSet<int64_t> blk_id_set;
-    if (OB_FAIL(blk_id_set.create(extents.count()))){
+    lib::ObMemAttr attr(tenant_id_, "TmpBlkIDSet");
+    if (OB_FAIL(blk_id_set.create(extents.count(), attr))){
       STORAGE_LOG(WARN, "create block id set failed", K(ret), K(timeout_ms));
     } else {
       // get extents block id set.
@@ -1265,13 +1271,13 @@ int ObTmpFile::write_file_extent(const ObTmpFileIOInfo &io_info, ObTmpFileExtent
   return ret;
 }
 
-int ObTmpFile::write(const ObTmpFileIOInfo &io_info, const int64_t timeout_ms)
+int ObTmpFile::write(const ObTmpFileIOInfo &io_info)
 {
   int ret = OB_SUCCESS;
   ObTmpFileIOHandle handle;
   if (OB_FAIL(aio_write(io_info, handle))) {
     STORAGE_LOG(WARN, "fail to write using asynchronous io", K(ret), K(io_info));
-  } else if (OB_FAIL(handle.wait(timeout_ms))) {
+  } else if (OB_FAIL(handle.wait())) {
     STORAGE_LOG(WARN, "fail to wait io finish", K(ret));
   }
   return ret;
@@ -1453,8 +1459,7 @@ int ObTmpFileManager::aio_pread(const ObTmpFileIOInfo &io_info, const int64_t of
   return ret;
 }
 
-int ObTmpFileManager::read(const ObTmpFileIOInfo &io_info, const int64_t timeout_ms,
-    ObTmpFileIOHandle &handle)
+int ObTmpFileManager::read(const ObTmpFileIOInfo &io_info, ObTmpFileIOHandle &handle)
 {
   int ret = OB_SUCCESS;
   ObTmpFileHandle file_handle;
@@ -1467,7 +1472,7 @@ int ObTmpFileManager::read(const ObTmpFileIOInfo &io_info, const int64_t timeout
     STORAGE_LOG(WARN, "invalid argument", K(ret), K(io_info));
   } else if (OB_FAIL(files_.get(io_info.fd_, file_handle))) {
     STORAGE_LOG(WARN, "fail to get temporary file handle", K(ret), K(io_info));
-  } else if (OB_FAIL(file_handle.get_resource_ptr()->read(io_info, timeout_ms, handle))) {
+  } else if (OB_FAIL(file_handle.get_resource_ptr()->read(io_info, handle))) {
     if (OB_ITER_END != ret) {
       STORAGE_LOG(WARN, "fail to read", K(ret), K(io_info));
     }
@@ -1475,8 +1480,7 @@ int ObTmpFileManager::read(const ObTmpFileIOInfo &io_info, const int64_t timeout
   return ret;
 }
 
-int ObTmpFileManager::pread(const ObTmpFileIOInfo &io_info, const int64_t offset,
-    const int64_t timeout_ms, ObTmpFileIOHandle &handle)
+int ObTmpFileManager::pread(const ObTmpFileIOInfo &io_info, const int64_t offset, ObTmpFileIOHandle &handle)
 {
   int ret = OB_SUCCESS;
   ObTmpFileHandle file_handle;
@@ -1489,7 +1493,7 @@ int ObTmpFileManager::pread(const ObTmpFileIOInfo &io_info, const int64_t offset
     STORAGE_LOG(WARN, "invalid argument", K(ret), K(io_info));
   } else if (OB_FAIL(files_.get(io_info.fd_, file_handle))) {
     STORAGE_LOG(WARN, "fail to get tmp file handle", K(ret), K(io_info));
-  } else if (OB_FAIL(file_handle.get_resource_ptr()->pread(io_info, offset, timeout_ms, handle))) {
+  } else if (OB_FAIL(file_handle.get_resource_ptr()->pread(io_info, offset, handle))) {
     if (OB_ITER_END != ret) {
       STORAGE_LOG(WARN, "fail to pread", K(ret), K(io_info));
     }
@@ -1516,7 +1520,7 @@ int ObTmpFileManager::aio_write(const ObTmpFileIOInfo &io_info, ObTmpFileIOHandl
   return ret;
 }
 
-int ObTmpFileManager::write(const ObTmpFileIOInfo &io_info, const int64_t timeout_ms)
+int ObTmpFileManager::write(const ObTmpFileIOInfo &io_info)
 {
   int ret = OB_SUCCESS;
   ObTmpFileHandle file_handle;
@@ -1528,7 +1532,7 @@ int ObTmpFileManager::write(const ObTmpFileIOInfo &io_info, const int64_t timeou
     STORAGE_LOG(WARN, "invalid argument", K(ret), K(io_info));
   } else if (OB_FAIL(files_.get(io_info.fd_, file_handle))) {
     STORAGE_LOG(WARN, "fail to get temporary file handle", K(ret), K(io_info));
-  } else if (OB_FAIL(file_handle.get_resource_ptr()->write(io_info, timeout_ms))) {
+  } else if (OB_FAIL(file_handle.get_resource_ptr()->write(io_info))) {
     STORAGE_LOG(WARN, "fail to write", K(ret), K(io_info));
   }
   return ret;

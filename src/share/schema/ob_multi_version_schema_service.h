@@ -24,7 +24,6 @@
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "share/schema/ob_ddl_trans_controller.h"
 #include "share/schema/ob_ddl_epoch.h"
-#include "share/ob_rpc_struct.h"
 
 namespace oceanbase
 {
@@ -116,7 +115,6 @@ class ObMultiVersionSchemaService : public ObServerSchemaService
 typedef common::ObSortedVector<ObSchemaMgr *> SchemaMgrInfos;
 typedef SchemaMgrInfos::iterator SchemaMgrIterator;
 public:
-  static bool g_skip_resolve_materialized_view_definition_;
 
   enum RefreshSchemaMode
   {
@@ -254,7 +252,7 @@ public:
       const uint64_t tenant_id,
       const int64_t version_cnt,
       int64_t &schema_version);
-
+  int get_dropped_tenant_ids(common::ObIArray<uint64_t> &dropped_tenant_ids);
   /*----------- check schema interface -----------------*/
   bool is_sys_full_schema() const;
 
@@ -455,10 +453,6 @@ private:
   virtual int add_aux_schema_from_mgr(const ObSchemaMgr &mgr,
       ObTableSchema &table_schema,
       const ObTableType table_type) override;
-  int build_full_materalized_view_schema(
-      ObSchemaGetterGuard &schema_guard,
-      common::ObIAllocator &allocator,
-      ObTableSchema *&view_schema);
 
   //for liboblog
   int fallback_schema_mgr_for_liboblog(const ObRefreshSchemaStatus &schema_status,

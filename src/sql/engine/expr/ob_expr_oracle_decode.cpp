@@ -113,15 +113,19 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
       type.set_type(ObRawType);
       type.set_collation_level(CS_LEVEL_NUMERIC);
       type.set_collation_type(CS_TYPE_BINARY);
+    } else if (lib::is_oracle_mode() && types_stack[RESULT_TYPE_INDEX].is_decimal_int()) {
+      type.set_type(ObNumberType);
     } else if (lib::is_mysql_mode() && types_stack[RESULT_TYPE_INDEX].is_integer_type()) {
       bool has_number = false;
       for (int64_t i = RESULT_TYPE_INDEX; i < param_num && !has_number; i += 2 /*skip conditions */) {
-        if (ob_is_number_tc(types_stack[i].get_type())) {
+        if (ob_is_number_tc(types_stack[i].get_type())
+            || ob_is_decimal_int(types_stack[i].get_type())) {
           has_number = true;
         }
       }
       if (has_default && !has_number) {
-        has_number = ob_is_number_tc(types_stack[param_num - 1].get_type());
+        has_number = (ob_is_number_tc(types_stack[param_num - 1].get_type())
+                     || ob_is_decimal_int(types_stack[param_num - 1].get_type()));
       }
       if (has_number) {
         type.set_number();
@@ -130,6 +134,9 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
       }
     } else {
       type.set_type(types_stack[RESULT_TYPE_INDEX].get_type());
+    }
+    if (type.is_decimal_int()) { // decode expr's result type is ObNumberType
+      type.set_type(ObNumberType);
     }
     //deduce calc type
     ObExprResType &calc_type = types_stack[CALC_TYPE_INDEX];
@@ -147,6 +154,8 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
         type.set_calc_type(ObVarcharType);
       } else if (lib::is_oracle_mode() && ob_is_nchar(calc_type.get_type())) {
         type.set_calc_type(ObNVarchar2Type);
+      } else if (ob_is_decimal_int_tc(calc_type.get_type())) {
+        type.set_calc_type(ObNumberType);
       } else {
         // 保留原mysql下的行为
         type.set_calc_type(calc_type.get_type());
@@ -185,7 +194,8 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
             type.set_calc_type(ObDoubleType);
           } else if (ObOBinFloatType == ob_obj_type_to_oracle_type(types_stack[i].get_type())) {
             type.set_calc_type(ObFloatType);
-          } else if (ObNumberType == types_stack[i].get_type()
+          } else if ((ObNumberType == types_stack[i].get_type()
+                      || ObDecimalIntType == types_stack[i].get_type())
                      && !ob_is_float_type(type.get_calc_type())) {
             type.set_calc_type(ObNumberType);
           } else {
@@ -372,18 +382,16 @@ int ObExprOracleDecode::calc_result_type_for_literal(ObExprResType &type,
   ObObj *obj_stack = NULL;
   ObArenaAllocator allocator;
   const ObSQLSessionInfo *session = NULL;
-  const ObTimeZoneInfo *tz_info = NULL;
+  const ObTimeZoneInfo *tz_info = type_ctx.get_local_tz_wrap().get_time_zone_info();
+  ObSQLMode sql_mode = type_ctx.get_sql_mode();
   int64_t tz_offset = 0;
   ObExprCtx expr_ctx;
   if (OB_ISNULL(session = static_cast<const ObSQLSessionInfo*>(type_ctx.get_session()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("session is NULL", K(ret));
-  } else if (OB_ISNULL(tz_info = get_timezone_info(session))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get tz info pointer is null", K(ret));
   } else if (OB_FAIL(get_tz_offset(tz_info, tz_offset))) {
     LOG_WARN("get tz offset failed", K(ret));
-  } else if (OB_FAIL(ObSQLUtils::get_default_cast_mode(session, expr_ctx.cast_mode_))) {
+  } else if (OB_FALSE_IT(ObSQLUtils::get_default_cast_mode(sql_mode, expr_ctx.cast_mode_))) {
     LOG_WARN("failed to get default cast mode", K(ret));
   } else if (OB_ISNULL(obj_stack = static_cast<ObObj*>(allocator.alloc(sizeof(ObObj) * param_num)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -570,6 +578,15 @@ OB_SERIALIZE_MEMBER(ObExprOracleDecode,
                     input_types_,
                     id_,
                     param_flags_);
+
+DEF_SET_LOCAL_SESSION_VARS(ObExprOracleDecode, raw_expr) {
+  int ret = OB_SUCCESS;
+  SET_LOCAL_SYSVAR_CAPACITY(3);
+  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_SQL_MODE);
+  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_TIME_ZONE);
+  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  return ret;
+}
 
 } // namespace sql
 } // namespace oceanbase

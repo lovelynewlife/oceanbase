@@ -18,11 +18,13 @@ ob_define(ENABLE_MEMORY_DIAGNOSIS OFF)
 ob_define(ENABLE_OBJ_LEAK_CHECK OFF)
 ob_define(ENABLE_FATAL_ERROR_HANG ON)
 ob_define(ENABLE_SMART_VAR_CHECK OFF)
+ob_define(ENABLE_SERIALIZATION_CHECK OFF)
 ob_define(ENABLE_COMPILE_DLL_MODE OFF)
 ob_define(OB_CMAKE_RULES_CHECK ON)
 ob_define(OB_STATIC_LINK_LGPL_DEPS ON)
 ob_define(HOTFUNC_PATH "${CMAKE_SOURCE_DIR}/hotfuncs.txt")
 ob_define(OB_BUILD_CCLS OFF)
+ob_define(LTO_JOBS 32)
 # get compiler from build.sh
 ob_define(OB_CC "")
 ob_define(OB_CXX "")
@@ -62,7 +64,7 @@ ob_define(THIN_LTO_CONCURRENCY_LINK "")
 
 if(ENABLE_THIN_LTO)
   set(THIN_LTO_OPT "-flto=thin -fwhole-program-vtables")
-  set(THIN_LTO_CONCURRENCY_LINK "-Wl,--thinlto-jobs=32,--lto-whole-program-visibility")
+  set(THIN_LTO_CONCURRENCY_LINK "-Wl,--thinlto-jobs=${LTO_JOBS},--lto-whole-program-visibility")
 endif()
 
 set(ob_close_modules_static_name "")
@@ -81,8 +83,6 @@ if(OB_BUILD_CLOSE_MODULES)
   ob_define(OB_BUILD_TDE_SECURITY ON)
   ob_define(OB_BUILD_AUDIT_SECURITY ON)
   ob_define(OB_BUILD_LABEL_SECURITY ON)
-  # 字符集
-  ob_define(OB_BUILD_FULL_CHARSET ON)
   # SPM功能
   ob_define(OB_BUILD_SPM ON)
 
@@ -118,10 +118,6 @@ endif()
 
 if(OB_BUILD_LABEL_SECURITY)
   add_definitions(-DOB_BUILD_LABEL_SECURITY)
-endif()
-
-if(OB_BUILD_FULL_CHARSET)
-  add_definitions(-DOB_BUILD_FULL_CHARSET)
 endif()
 
 if(OB_BUILD_SPM)

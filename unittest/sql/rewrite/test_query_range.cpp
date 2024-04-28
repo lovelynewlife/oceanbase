@@ -21,6 +21,9 @@
 #include "common/ob_clock_generator.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "lib/geo/ob_s2adapter.h"
+#define private public
+#include "observer/ob_server.h"
+#undef private
 #include <fstream>
 #undef protected
 #undef private
@@ -701,6 +704,7 @@ void ObQueryRangeTest::get_query_range_collation(const char *sql_expr, const cha
 
 TEST_F(ObQueryRangeTest, collation_test)
 {
+  set_compat_mode(lib::Worker::CompatMode::MYSQL);
   static const char* test_file = "./test_query_range_collation.test";
   static const char* tmp_file = "./test_query_range_collation.tmp";
   static const char* result_file = "./test_query_range_collation.result";
@@ -1304,7 +1308,7 @@ int main(int argc, char **argv)
   ContextParam param;
   param.set_mem_attr(1001, "QueryRange", ObCtxIds::WORK_AREA)
        .set_page_size(OB_MALLOC_BIG_BLOCK_SIZE);
-
+  OBSERVER.init_version();
   ::testing::InitGoogleTest(&argc,argv);
   CREATE_WITH_TEMP_CONTEXT(param) {
     ret = RUN_ALL_TESTS();

@@ -82,31 +82,6 @@ bool Row<ObDatum>::equal_key(const Row<ObDatum> &other, void **cmp_funcs, const 
 }
 
 template <>
-bool Row<ObObj>::equal_key(const Row<ObObj> &other, void **cmp_funcs, const int idx) const
-{
-  UNUSED(cmp_funcs);/**nullptr**/
-  bool equal_ret = false;
-  if (OB_ISNULL(other.elems_) || OB_ISNULL(elems_)) {
-  } else {
-    bool is_equal = true;
-    int curr_idx = idx;
-    for (int i = 0; is_equal && 0 != curr_idx; ++i, curr_idx = curr_idx >> 1) {
-      if (1 == (curr_idx & 1)) {
-        if (elems_[i].is_null() && other.elems_[i].is_null()) {
-          //true
-        } else if (elems_[i].is_null() || other.elems_[i].is_null()) {
-          is_equal = false;
-        } else {
-          is_equal = elems_[i] == other.elems_[i];
-        }
-      }
-    }
-    equal_ret = is_equal;
-  }
-  return equal_ret;
-}
-
-template <>
 int Row<ObDatum>::hash_key(void **hash_funcs, const int idx, uint64_t seed, uint64_t &hash_val) const
 {
   int ret = OB_SUCCESS;
@@ -117,27 +92,6 @@ int Row<ObDatum>::hash_key(void **hash_funcs, const int idx, uint64_t seed, uint
     for (int i = 0; 0 != curr_idx && OB_SUCC(ret); ++i, curr_idx = curr_idx >> 1) {
       if (1 == (curr_idx & 1)) {
         ret = ((ObExprHashFuncType)hash_funcs[i])(elems_[i], seed, seed);
-      } else {
-        continue;
-      }
-    }
-    hash_val = seed;
-  }
-  return ret;
-}
-
-template <>
-int Row<ObObj>::hash_key(void **hash_funcs, const int idx, uint64_t seed, uint64_t &hash_val) const
-{
-  UNUSED(hash_funcs);/**nullptr**/
-  int ret = OB_SUCCESS;
-  hash_val = 0;
-  if (OB_ISNULL(elems_)) {
-  } else {
-    int curr_idx = idx;
-    for (int i = 0; 0 != curr_idx && OB_SUCC(ret); ++i, curr_idx = curr_idx >> 1) {
-      if (1 == (curr_idx & 1)) {
-        ret = elems_[i].hash(seed, seed);
       } else {
         continue;
       }
@@ -169,36 +123,6 @@ int Row<ObDatum>::compare_with_null(const Row<ObDatum> &other,
           LOG_WARN("failed to compare", K(ret));
         } else if (0 != cmp_ret) {
           exist_ret = ObExprInHashMap<ObDatum>::HASH_CMP_FALSE;
-        } else {
-          //do nothing
-        }
-      }
-    }
-  }
-  return ret;
-}
-//0 for true, -1 for false, 1 for NULL
-template <>
-int Row<ObObj>::compare_with_null(const Row<ObObj> &other,
-                                  void **cmp_funcs,
-                                  const int64_t row_dimension,
-                                  int &exist_ret) const
-{
-  UNUSED(cmp_funcs);/**nullptr**/
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(other.elems_) || OB_ISNULL(elems_)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("NULL pointer param", K(ret));
-  } else if (row_dimension > 0) {
-    exist_ret = ObExprInHashMap<ObDatum>::HASH_CMP_TRUE;
-    for (int i = 0;
-         ObExprInHashMap<ObObj>::HASH_CMP_FALSE != exist_ret && i < row_dimension; ++i) {
-      if (elems_[i].is_null() || other.elems_[i].is_null()) {
-        exist_ret = ObExprInHashMap<ObObj>::HASH_CMP_UNKNOWN;
-      } else {
-        int cmp_ret = (elems_[i] == other.elems_[i]) ? 0 : -1;
-        if (0 != cmp_ret) {
-          exist_ret = ObExprInHashMap<ObObj>::HASH_CMP_FALSE;
         } else {
           //do nothing
         }
@@ -243,6 +167,7 @@ int ObExprInHashMap<T>::set_refactored(const Row<T> &row)
   tmp_row_key.meta_ = &meta_;
   if (OB_ISNULL(arr_ptr = const_cast<ObArray<Row<T>> *> (map_.get(tmp_row_key)))) {
     ObArray<Row<T>> arr;
+    arr.set_tenant_id(MTL_ID());
     if (OB_FAIL(arr.push_back(row))) {
       LOG_WARN("failed to load row", K(ret));
     } else {
@@ -254,10 +179,10 @@ int ObExprInHashMap<T>::set_refactored(const Row<T> &row)
     for (int i = 0; OB_SUCC(ret)
                     && ObExprInHashMap<T>::HASH_CMP_TRUE != exist
                     && i < arr_ptr->count(); ++i) {
-      if (OB_FAIL(row.compare_with_null((*arr_ptr)[i],
-                                         meta_.cmp_funcs_,
-                                         meta_.row_dimension_,
-                                         exist))) {
+      if (OB_FAIL((*arr_ptr)[i].compare_with_null(row,
+                                                  meta_.cmp_funcs_,
+                                                  meta_.row_dimension_,
+                                                  exist))) {
         LOG_WARN("compare with null failed", K(ret));
       }
     }
@@ -281,10 +206,10 @@ int ObExprInHashMap<T>::exist_refactored(const Row<T> &row, int &exist_ret)
   } else {
     int exist = ObExprInHashMap<T>::HASH_CMP_FALSE;
     for (int i=0; 0 != exist_ret && i < arr_ptr->count(); ++i) {
-      if (OB_FAIL(row.compare_with_null((*arr_ptr)[i],
-                                         meta_.cmp_funcs_,
-                                         meta_.row_dimension_,
-                                         exist))) {
+      if (OB_FAIL((*arr_ptr)[i].compare_with_null(row,
+                                                  meta_.cmp_funcs_,
+                                                  meta_.row_dimension_,
+                                                  exist))) {
         LOG_WARN("compare with null failed", K(ret));
       } else if (ObExprInHashMap<T>::HASH_CMP_UNKNOWN == exist
                  || ObExprInHashMap<T>::HASH_CMP_TRUE == exist) {
@@ -325,40 +250,6 @@ int ObExprInHashSet<T>::exist_refactored(const Row<T> &row, bool &is_exist)
   return OB_SUCCESS;
 }
 
-
-int ObExprInOrNotIn::ObExprInCtx::init_hashset(int64_t param_num)
-{
-  return hashset_.create(param_num * 2);
-}
-
-int ObExprInOrNotIn::ObExprInCtx::init_hashset_vecs(int64_t param_num,
-                                                    int64_t row_dimension,
-                                                    ObExecContext *exec_ctx)
-{
-  int ret = OB_SUCCESS;
-  hashset_vecs_ = NULL;
-  int vecs_buf_size = sizeof(ObExprInHashMap<ObObj> ) * (1 << row_dimension);
-  if (OB_ISNULL(hashset_vecs_ =
-            (ObExprInHashMap<ObObj>  *)
-              ((exec_ctx->get_allocator()).alloc(vecs_buf_size)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to allocate memory", K(ret));
-  } else {
-    for (int64_t i = 0; i < (1 << row_dimension); ++i) {
-      new (&hashset_vecs_[i]) ObExprInHashMap<ObObj> ();
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && i < (1 << row_dimension); ++i) {
-      hashset_vecs_[i].set_meta_idx(i);
-      hashset_vecs_[i].set_meta_dimension(row_dimension);
-      if (OB_FAIL(hashset_vecs_[i].create(param_num))){
-        LOG_WARN("create static_engine_hashset_vecs failed", K(ret), K(i));
-      }
-    }
-  }
-  row_dimension_ = row_dimension;
-  return ret;
-}
-
 int ObExprInOrNotIn::ObExprInCtx::init_static_engine_hashset(int64_t param_num)
 {
   static_engine_hashset_.set_meta_idx(1);
@@ -367,19 +258,19 @@ int ObExprInOrNotIn::ObExprInCtx::init_static_engine_hashset(int64_t param_num)
   return static_engine_hashset_.create(param_num * 2);
 }
 
- int ObExprInOrNotIn::ObExprInCtx::init_static_engine_hashset_vecs(int64_t param_num,
-                                                                   int64_t row_dimension,
-                                                                   ObExecContext *exec_ctx)
- {
-   int ret = OB_SUCCESS;
-   static_engine_hashset_vecs_ = NULL;
-   int64_t vecs_buf_size = sizeof(ObExprInHashMap<ObDatum> ) * (1 << row_dimension);
-   if (OB_ISNULL(static_engine_hashset_vecs_ =
-              (ObExprInHashMap<ObDatum>  *)
-               ((exec_ctx->get_allocator()).alloc(vecs_buf_size)))) {
-     ret = OB_ALLOCATE_MEMORY_FAILED;
-     LOG_WARN("failed to allocate memory", K(ret));
-   } else {
+int ObExprInOrNotIn::ObExprInCtx::init_static_engine_hashset_vecs(int64_t param_num,
+                                                                  int64_t row_dimension,
+                                                                  ObExecContext *exec_ctx)
+{
+  int ret = OB_SUCCESS;
+  static_engine_hashset_vecs_ = NULL;
+  int64_t vecs_buf_size = sizeof(ObExprInHashMap<ObDatum> ) * (1 << row_dimension);
+  if (OB_ISNULL(static_engine_hashset_vecs_ =
+            (ObExprInHashMap<ObDatum>  *)
+              ((exec_ctx->get_allocator()).alloc(vecs_buf_size)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate memory", K(ret));
+  } else {
     for (int64_t i = 0; i < (1 << row_dimension); ++i) {
       new (&static_engine_hashset_vecs_[i]) ObExprInHashMap<ObDatum> ();
     }
@@ -387,35 +278,11 @@ int ObExprInOrNotIn::ObExprInCtx::init_static_engine_hashset(int64_t param_num)
       static_engine_hashset_vecs_[i].set_meta_idx(i);
       static_engine_hashset_vecs_[i].set_meta_dimension(row_dimension);
       if (OB_FAIL(static_engine_hashset_vecs_[i].create(param_num))) {
-       LOG_WARN("create static_engine_hashset_vecs failed", K(ret), K(i));
+        LOG_WARN("create static_engine_hashset_vecs failed", K(ret), K(i));
       }
     }
   }
   row_dimension_ = row_dimension;
-  return ret;
- }
-
-int ObExprInOrNotIn::ObExprInCtx::add_to_hashset(const ObObj &obj)
-{
-  int ret = hashset_.set_refactored(obj);
-  if (OB_FAIL(ret)) {
-    LOG_WARN("failed to add to hashset", K(ret), K(obj));
-  }
-  return ret;
-}
-
-int ObExprInOrNotIn::ObExprInCtx::add_to_hashset_vecs(const Row<ObObj> &row,
-                                                      const int idx)
-{
-  int ret = OB_SUCCESS;
-  if (idx >= (1 << row_dimension_)) {
-    ret = OB_INVALID_ARGUMENT;
-  } else {
-    ret = hashset_vecs_[idx].set_refactored(row);
-  }
-  if (OB_FAIL(ret)) {
-    LOG_WARN("failed to add to hashset_vecs", K(ret), K(idx));
-  }
   return ret;
 }
 
@@ -440,34 +307,6 @@ add_to_static_engine_hashset_vecs(const Row<common::ObDatum> &row, const int idx
   }
   if (OB_FAIL(ret)) {
     LOG_WARN("failed to add to hashset_vecs", K(ret), K(idx));
-  }
-  return ret;
-}
-
-int ObExprInOrNotIn::ObExprInCtx::exist_in_hashset(const ObObj &obj, bool &is_exist) const
-{
-  int ret = hashset_.exist_refactored(obj);
-  if (OB_HASH_EXIST == ret) {
-    ret = OB_SUCCESS;
-    is_exist = true;
-  } else if (OB_HASH_NOT_EXIST == ret) {
-    ret = OB_SUCCESS;
-    is_exist = false;
-  } else {
-    LOG_WARN("failed to search in hashset", K(ret), K(obj));
-  }
-  return OB_SUCCESS;
-}
-
-int ObExprInOrNotIn::ObExprInCtx::exist_in_hashset_vecs(const Row<ObObj> &row,
-                                                         const int idx,
-                                                         int &exist_ret) const
-{
-  int ret = OB_SUCCESS;
-  if (idx >= (1 << row_dimension_)) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(hashset_vecs_[idx].exist_refactored(row, exist_ret))){
-    LOG_WARN("failed to find in hash map", K(ret));
   }
   return ret;
 }
@@ -504,13 +343,6 @@ int ObExprInOrNotIn::ObExprInCtx::set_cmp_types(const ObExprCalcType &cmp_type,
     //do nothing
   }
   return ret;
-}
-
-int ObExprInOrNotIn::ObExprInCtx::init_cmp_types(const int64_t row_dimension,
-                                                 ObExecContext *exec_ctx)
-{
-  cmp_types_.set_allocator(&(exec_ctx->get_allocator()));
-  return cmp_types_.init(row_dimension);
 }
 
 
@@ -559,31 +391,6 @@ get_hashset_vecs_all_null(const int64_t idx,  bool &is_all_null) const
 }
 
 int ObExprInOrNotIn::ObExprInCtx::
-init_right_objs(int64_t param_num,
-                int64_t row_dimension,
-                ObExecContext *exec_ctx)
-{
-  int ret = OB_SUCCESS;
-  right_objs_ = NULL;
-  int objs_buf_size = sizeof(ObObj *) * param_num; //ObObj *指针数组大小
-  if (OB_ISNULL(right_objs_ =
-              (ObObj **)
-               ((exec_ctx->get_allocator()).alloc(objs_buf_size)))) {
-     ret = OB_ALLOCATE_MEMORY_FAILED;
-     LOG_WARN("failed to allocate memory for ObObj **", K(ret));
-  } else {
-    for (int i =0; OB_SUCC(ret) && i < param_num; ++i) {//初始化每个ObObj *
-       if (OB_ISNULL(right_objs_[i] =
-           static_cast<ObObj *> (((exec_ctx->get_allocator()).alloc(sizeof(ObObj) * row_dimension)))) ){
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to allocate memory for ObObj *", K(ret), K(i));
-       }
-     }
-  }
-  return ret;
-}
-
-int ObExprInOrNotIn::ObExprInCtx::
 init_right_datums(int64_t param_num,
                 int64_t row_dimension,
                 ObExecContext *exec_ctx)
@@ -608,25 +415,26 @@ init_right_datums(int64_t param_num,
   return ret;
 }
 
-int ObExprInOrNotIn::ObExprInCtx::set_right_obj(int64_t row_num,
-                                                int64_t col_num,
-                                                const int right_param_num,
-                                                const common::ObObj &obj)
+int ObExprInOrNotIn::ObExprInCtx::
+init_cmp_funcs(int64_t func_cnt,
+               ObExecContext *exec_ctx)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(right_objs_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("right_datums is not init", K(ret));
-  } else if (row_num < 0 || row_num >= right_param_num
-             || col_num < 0 || col_num >= row_dimension_) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("row_num or col_num out of bounds", K(ret));
-  } else {
-    right_objs_[row_num][col_num] = obj;
+  cmp_functions_ = NULL;
+  if (func_cnt > 0) {
+    cmp_functions_ = (void**)exec_ctx->get_allocator().alloc(func_cnt * sizeof(void*));
+    if (OB_ISNULL(cmp_functions_)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory for cmp_func **", K(ret));
+    } else {
+      for (int64_t i = 0; i < func_cnt; i++) {
+        cmp_functions_[i] = NULL;
+      }
+    }
   }
   return ret;
-
 }
+
 int ObExprInOrNotIn::ObExprInCtx::set_right_datum(int64_t row_num,
                                                   int64_t col_num,
                                                   const int right_param_num,
@@ -728,26 +536,6 @@ int ObExprInOrNotIn::eval_pl_udt_in(const ObExpr &expr,
   return ret;
 }
 
-inline int ObExprInOrNotIn::to_type(const ObObjType expect_type,
-                                    const ObCollationType expect_cs_type,
-                                    ObCastCtx &cast_ctx,
-                                    const ObObj &in_obj,
-                                    ObObj &out_obj) const
-{
-  int ret = OB_SUCCESS;
-  if (ob_is_string_type(expect_type) && in_obj.is_string_type()
-      && in_obj.get_collation_type() == expect_cs_type) {
-    out_obj = in_obj;
-    out_obj.set_type(expect_type);
-    out_obj.set_collation_type(expect_cs_type);
-  } else {
-    // otherwise ObObjCaster::to_type() will use cast_ctx.dest_collation_ as dst cs type
-    cast_ctx.dest_collation_ = CS_TYPE_INVALID;
-    ret = ObObjCaster::to_type(expect_type, expect_cs_type, cast_ctx, in_obj, out_obj);
-  }
-  return ret;
-}
-
 inline bool ObExprInOrNotIn::need_hash(ObExecContext *exec_ctx) const
 {
   return is_param_all_const() && is_param_all_same_type() && is_param_all_same_cs_type()
@@ -766,27 +554,9 @@ ObExprIn::ObExprIn(ObIAllocator &alloc)
   : ObExprInOrNotIn(alloc, T_OP_IN, N_IN)
 {}
 
-void ObExprIn::set_result(ObObj &result, bool is_exist, bool param_exist_null) const
-{
-  if (!is_exist && param_exist_null) {
-    result.set_null();
-  } else {
-    result.set_int(static_cast<int64_t>(is_exist));
-  }
-}
-
 ObExprNotIn::ObExprNotIn(ObIAllocator &alloc)
   : ObExprInOrNotIn(alloc, T_OP_NOT_IN, N_NOT_IN)
 {}
-
-void ObExprNotIn::set_result(ObObj &result, bool is_exist, bool param_exist_null) const
-{
-  if (!is_exist && param_exist_null) {
-    result.set_null();
-  } else {
-    result.set_int(static_cast<int64_t>(!is_exist));
-  }
-}
 
 int ObExprInOrNotIn::cg_expr(ObExprCGCtx &expr_cg_ctx,
                              const ObRawExpr &raw_expr,
@@ -846,17 +616,17 @@ int ObExprInOrNotIn::cg_expr_without_row(ObIAllocator &allocator,
                                   rt_expr.args_[1]->args_[0]->obj_meta_.has_lob_header();
       ObScale scale1 = rt_expr.args_[0]->datum_meta_.scale_;
       ObScale scale2 = rt_expr.args_[1]->datum_meta_.scale_;
+      ObPrecision prec1 = rt_expr.args_[0]->datum_meta_.precision_;
+      ObPrecision prec2 = rt_expr.args_[1]->args_[0]->datum_meta_.precision_;
       rt_expr.inner_functions_ = func_buf;
+      // hash table use self as left, so here right param is left for cmp func
       DatumCmpFunc func_ptr = ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
-          left_type, right_type, scale1, scale2, lib::is_oracle_mode(), left_cs, has_lob_header);
+        right_type, left_type, scale2, scale1, prec2, prec1, lib::is_oracle_mode(), left_cs,
+        has_lob_header);
       for (int i = 0; i < rt_expr.inner_func_cnt_; i++) {
         rt_expr.inner_functions_[i] = (void *)func_ptr;
       }
-      // expr in/not will use same hash func for both left/right param
-      // string and text type cannot share hash func now
-      bool is_string_text_cmp = (ob_is_string_tc(left_type) && ob_is_text_tc(right_type)) ||
-                                (ob_is_text_tc(left_type) && ob_is_string_tc(right_type));
-      if (!is_param_all_const() || rt_expr.inner_func_cnt_ <= 2 || is_string_text_cmp ||
+      if (!is_param_all_const() || rt_expr.inner_func_cnt_ <= 2 ||
           (ob_is_json(left_type) || ob_is_json(right_type)) ||
           (ob_is_urowid(left_type) || ob_is_urowid(right_type))) {
         rt_expr.eval_func_ = &ObExprInOrNotIn::eval_in_without_row_fallback;
@@ -866,7 +636,7 @@ int ObExprInOrNotIn::cg_expr_without_row(ObIAllocator &allocator,
       //now only support c1 in (1,2,3,4...) to be vectorized
       if (is_param_can_vectorized()) {
         //目前认为右边参数 <= 2时， nest_loop算法的效果一定比hash更好
-        if (rt_expr.inner_func_cnt_ <= 2 || is_string_text_cmp ||
+        if (rt_expr.inner_func_cnt_ <= 2 ||
             ob_is_urowid(left_type) || ob_is_urowid(right_type)) {
           rt_expr.eval_batch_func_ = &ObExprInOrNotIn::eval_batch_in_without_row_fallback;
         } else {
@@ -898,6 +668,8 @@ int ObExprInOrNotIn::cg_expr_with_row(ObIAllocator &allocator,
     ObSEArray<bool, 8> has_lob_headers;
     ObSEArray<ObScale, 8> left_scales;
     ObSEArray<ObScale, 8> right_scales;
+    ObSEArray<ObPrecision, 8> left_precs;
+    ObSEArray<ObPrecision, 8> rigth_precs;
 
     #define LEFT_ROW rt_expr.args_[0]
     #define LEFT_ROW_ELE(i) rt_expr.args_[0]->args_[i]
@@ -918,6 +690,8 @@ int ObExprInOrNotIn::cg_expr_with_row(ObIAllocator &allocator,
         LOG_WARN("failed to push back element", K(ret));
       } else if (OB_FAIL(left_scales.push_back(LEFT_ROW_ELE(i)->datum_meta_.scale_))) {
         LOG_WARN("failed to push back element", K(ret));
+      } else if (OB_FAIL(left_precs.push_back(LEFT_ROW_ELE(i)->datum_meta_.precision_))) {
+        LOG_WARN("failed to push back element", K(ret));
       } else { /* do nothing */ }
     } // end for
 
@@ -925,6 +699,8 @@ int ObExprInOrNotIn::cg_expr_with_row(ObIAllocator &allocator,
       if (OB_FAIL(right_types.push_back(RIGHT_ROW_ELE(0, i)->datum_meta_.type_))) {
         LOG_WARN("failed to push back element", K(ret));
       } else if (OB_FAIL(right_scales.push_back(RIGHT_ROW_ELE(0, i)->datum_meta_.scale_))) {
+        LOG_WARN("failed to push back element", K(ret));
+      } else if (OB_FAIL(rigth_precs.push_back(RIGHT_ROW_ELE(0, i)->datum_meta_.precision_))) {
         LOG_WARN("failed to push back element", K(ret));
       } else {
         has_lob_headers.at(i) = has_lob_headers.at(i) || (RIGHT_ROW_ELE(0, i)->obj_meta_.has_lob_header());
@@ -938,18 +714,15 @@ int ObExprInOrNotIn::cg_expr_with_row(ObIAllocator &allocator,
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("failed to allocate memory", K(ret));
       } else {
-        // expr in/not will use same hash func for both left/right param
-        // string and text type cannot share hash func now
-        bool is_string_text_cmp = false;
+        // hash table use self as left, so here right param is left for cmp func
         for (int i = 0; i < left_types.count(); i++) {
           DatumCmpFunc func_ptr = ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
-              left_types.at(i), right_types.at(i), left_scales.at(i), right_scales.at(i),
-              lib::is_oracle_mode(), left_cs_arr.at(i), has_lob_headers.at(i));
+            right_types.at(i), left_types.at(i), right_scales.at(i), left_scales.at(i),
+            rigth_precs.at(i), left_precs.at(i), lib::is_oracle_mode(), left_cs_arr.at(i),
+            has_lob_headers.at(i));
           func_buf[i] = (void *)func_ptr;
-          is_string_text_cmp |= (ob_is_string_tc(left_types.at(i)) && ob_is_text_tc(right_types.at(i))) ||
-                                (ob_is_text_tc(left_types.at(i)) && ob_is_string_tc(right_types.at(i)));
         }  // end for
-        if (!is_param_all_const() || is_string_text_cmp) {
+        if (!is_param_all_const()) {
           rt_expr.eval_func_ = &ObExprInOrNotIn::eval_in_with_row_fallback;
         } else {
           rt_expr.eval_func_ = &ObExprInOrNotIn::eval_in_with_row;
@@ -981,8 +754,7 @@ int ObExprInOrNotIn::cg_expr_with_subquery(common::ObIAllocator &allocator,
   } else {
     #define RIGHT_ROW(i) rt_expr.args_[1]->args_[i]
     #define RIGHT_ROW_ELE(i, j) rt_expr.args_[1]->args_[i]->args_[j]
-    ObSEArray<ObObjMeta, 1> left_types;
-    ObSEArray<ObObjMeta, 1> right_types;
+    ObSEArray<ObExprResType, 1> left_types;
     void **funcs = NULL;
 
     CK(2 == raw_expr.get_param_count());
@@ -1008,15 +780,18 @@ int ObExprInOrNotIn::cg_expr_with_subquery(common::ObIAllocator &allocator,
       for (int64_t i = 0; OB_SUCC(ret) && i < rt_expr.inner_func_cnt_; i++) {
         auto &l = left_types.at(i);
         auto &r = RIGHT_ROW_ELE(0, i)->obj_meta_;
+        auto &r_datum_meta_ = RIGHT_ROW_ELE(0, i)->datum_meta_;
         bool has_lob_header = l.has_lob_header() || r.has_lob_header();
         if (ObDatumFuncs::is_string_type(l.get_type())
             && ObDatumFuncs::is_string_type(r.get_type())) {
           CK(l.get_collation_type() == r.get_collation_type());
         }
         if (OB_SUCC(ret)) {
+          // hash table use self as left, so here right param is left for cmp func
           funcs[i] = (void *)ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
-              l.get_type(), r.get_type(), l.get_scale(), r.get_scale(),
-              lib::is_oracle_mode(), l.get_collation_type(), has_lob_header);
+            r.get_type(), l.get_type(), r_datum_meta_.scale_, l.get_scale(), r_datum_meta_.precision_,
+            l.get_precision(), lib::is_oracle_mode(), l.get_collation_type(),
+            has_lob_header);
           CK(NULL != funcs[i]);
         }
       }
@@ -1064,7 +839,7 @@ int ObExprInOrNotIn::eval_in_without_row_fallback(const ObExpr &expr,
       } else if (right->is_null()) {
         cnt_null = true;
       } else {
-        if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[0])(*left, *right, cmp_ret))) {
+        if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[0])(*right, *left, cmp_ret))) {
           LOG_WARN("failed to compare", K(ret));
         } else if (0 == cmp_ret) {
           is_equal = true;
@@ -1163,7 +938,7 @@ int ObExprInOrNotIn::eval_batch_in_without_row_fallback(const ObExpr &expr,
             for (int64_t j = 0; OB_SUCC(ret) && j < expr.inner_func_cnt_; ++j) {
               right = right_store[j];
               if (!left->is_null() && !right->is_null()) {
-                if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[0])(*left, *right, cmp_ret))) {
+                if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[0])(*right, *left, cmp_ret))) {
                   LOG_WARN("failed to compare", K(ret));
                 } else {
                   is_equal |= !(cmp_ret);
@@ -1223,6 +998,8 @@ int ObExprInOrNotIn::eval_in_with_row(const ObExpr &expr,
       LOG_WARN("failed to init hashset_vecs_all_null", K(ret));
     } else if (OB_FAIL(in_ctx->init_right_datums(right_param_num, row_dimension, exec_ctx))) {
       LOG_WARN("failed to init right datums", K(ret));
+    } else if (OB_FAIL(in_ctx->init_cmp_funcs(expr.inner_func_cnt_, exec_ctx))) {
+      LOG_WARN("failed to init cmp funcs", K(ret));
     } else {
       for (int i = 0; OB_SUCC(ret) && i < right_param_num; ++i) {
         if (OB_ISNULL(RIGHT_ROW(i))) {
@@ -1265,6 +1042,7 @@ int ObExprInOrNotIn::eval_in_with_row(const ObExpr &expr,
                 if (OB_SUCC(ret)) {
                   in_ctx->hash_func_buff_[j] =
                            (void *)(RIGHT_ROW_ELE(i, j)->basic_funcs_->murmur_hash_v2_);
+                  in_ctx->cmp_functions_[j] = (void *)(RIGHT_ROW_ELE(i, j)->basic_funcs_->null_first_cmp_);
                 }
               }
             } else {
@@ -1275,7 +1053,7 @@ int ObExprInOrNotIn::eval_in_with_row(const ObExpr &expr,
           if (OB_SUCC(ret) && !in_ctx->funcs_ptr_set) {
             for (int i = 0; i < (1 << row_dimension); ++i) {
               in_ctx->set_hash_funcs_ptr(i, in_ctx->hash_func_buff_);
-              in_ctx->set_cmp_funcs_ptr(i, expr.inner_functions_);
+              in_ctx->set_cmp_funcs_ptr(i, in_ctx->cmp_functions_);
             }
             in_ctx->funcs_ptr_set = true;
           }
@@ -1340,6 +1118,24 @@ int ObExprInOrNotIn::eval_in_with_row(const ObExpr &expr,
             //do nothing
           }
           datum_ptr[j] = *left;
+          // refresh hash fun to left row
+          if (OB_NOT_NULL(in_ctx->hash_func_buff_)) {
+            in_ctx->hash_func_buff_[j] =
+                      (void *)(LEFT_ROW_ELE(j)->basic_funcs_->murmur_hash_v2_);
+          }
+          // hash table use self as left, so here right param is left for cmp func
+          DatumCmpFunc func_ptr = ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
+                                  RIGHT_ROW_ELE(0, j)->datum_meta_.type_,
+                                  LEFT_ROW_ELE(j)->datum_meta_.type_,
+                                  RIGHT_ROW_ELE(0, j)->datum_meta_.scale_,
+                                  LEFT_ROW_ELE(j)->datum_meta_.scale_,
+                                  RIGHT_ROW_ELE(0, j)->datum_meta_.precision_,
+                                  LEFT_ROW_ELE(j)->datum_meta_.precision_,
+                                  lib::is_oracle_mode(),
+                                  LEFT_ROW_ELE(j)->datum_meta_.cs_type_,
+                                  LEFT_ROW_ELE(j)->obj_meta_.has_lob_header() ||
+                                  RIGHT_ROW_ELE(0, j)->obj_meta_.has_lob_header());
+          in_ctx->cmp_functions_[j] = (void *)(func_ptr);
         }
       }
       if (OB_SUCC(ret)) {
@@ -1427,6 +1223,28 @@ int ObExprInOrNotIn::eval_in_without_row(const ObExpr &expr,
       if (OB_FAIL(build_right_hash_without_row(in_id, right_param_num,
                                                expr, ctx, exec_ctx, in_ctx, cnt_null))) {
         LOG_WARN("failed to build hash table for right params", K(ret));
+      } else {
+        // refresh inctx hash fun to left hash func
+        if (!in_ctx->is_hash_calc_disabled() && OB_NOT_NULL(in_ctx->hash_func_buff_)) {
+          in_ctx->hash_func_buff_[0] = (void *)
+              (expr.args_[0]->basic_funcs_->murmur_hash_v2_);
+        }
+        // whatever fallback or not, need set cmp func to right and left
+        // hash table use self as left, so here right param is left for cmp func
+        DatumCmpFunc func_ptr = ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
+                                expr.args_[1]->args_[0]->datum_meta_.type_,
+                                expr.args_[0]->datum_meta_.type_,
+                                expr.args_[1]->args_[0]->datum_meta_.scale_,
+                                expr.args_[0]->datum_meta_.scale_,
+                                expr.args_[1]->args_[0]->datum_meta_.precision_,
+                                expr.args_[0]->datum_meta_.precision_,
+                                lib::is_oracle_mode(),
+                                expr.args_[0]->datum_meta_.cs_type_,
+                                expr.args_[0]->obj_meta_.has_lob_header() ||
+                                expr.args_[1]->args_[0]->obj_meta_.has_lob_header());
+        for (int i = 0; i < expr.inner_func_cnt_; i++) {
+          in_ctx->cmp_functions_[i] = (void *)func_ptr;
+        }
       }
       //second we search in hashset.
       if (OB_SUCC(ret) && OB_NOT_NULL(in_ctx)) {
@@ -1509,6 +1327,26 @@ int ObExprInOrNotIn::eval_batch_in_without_row(const ObExpr &expr,
          LOG_WARN("failed to build hash table for right params", K(ret));
       } else {
         fallback = in_ctx->is_hash_calc_disabled();
+        // refresh inctx hash fun to left hash func
+        if (!fallback && OB_NOT_NULL(in_ctx->hash_func_buff_)) {
+          in_ctx->hash_func_buff_[0] = (void *)
+              (expr.args_[0]->basic_funcs_->murmur_hash_v2_);
+        }
+        // hash table use self as left, so here right param is left for cmp func
+        DatumCmpFunc func_ptr = ObExprCmpFuncsHelper::get_datum_expr_cmp_func(
+                                expr.args_[1]->args_[0]->datum_meta_.type_,
+                                expr.args_[0]->datum_meta_.type_,
+                                expr.args_[1]->args_[0]->datum_meta_.scale_,
+                                expr.args_[0]->datum_meta_.scale_,
+                                expr.args_[1]->args_[0]->datum_meta_.precision_,
+                                expr.args_[0]->datum_meta_.precision_,
+                                lib::is_oracle_mode(),
+                                expr.args_[0]->datum_meta_.cs_type_,
+                                expr.args_[0]->obj_meta_.has_lob_header() ||
+                                expr.args_[1]->args_[0]->obj_meta_.has_lob_header());
+        for (int i = 0; i < expr.inner_func_cnt_; i++) {
+          in_ctx->cmp_functions_[i] = (void *)func_ptr;
+        }
       }
       for (int64_t left_idx = 0; OB_SUCC(ret) && !fallback && left_idx < batch_size; ++left_idx) {
         if (skip.at(left_idx) || eval_flags.at(left_idx)) {
@@ -1647,7 +1485,7 @@ int ObExprInOrNotIn::calc_for_row_static_engine(const ObExpr &expr,
           row_cnt_null = true;
         } else {
           int cmp_ret = 0;
-          if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[j])(*left, *right, cmp_ret))) {
+          if (OB_FAIL(((DatumCmpFunc)expr.inner_functions_[j])(*right, *left, cmp_ret))) {
             LOG_WARN("failed to compare", K(ret));
           } else if (0 != cmp_ret) {
             //如果在向量的比较中，有明确的false，表明这个向量不成立，所以应该将has_null置为false
@@ -1726,14 +1564,14 @@ int ObExprInOrNotIn::setup_row(ObExpr **expr,
 }
 
 int ObExprInOrNotIn::get_param_types(
-    const ObRawExpr &param, const bool is_iter, ObIArray<ObObjMeta> &types) const
+    const ObRawExpr &param, const bool is_iter, ObIArray<ObExprResType> &types) const
 {
   int ret = OB_SUCCESS;
   if (param.get_expr_type() == T_OP_ROW) {
     for (int64_t i = 0; OB_SUCC(ret) && i < param.get_param_count(); i++) {
       const ObRawExpr *e = param.get_param_expr(i);
       CK(NULL != e);
-      OZ(types.push_back(e->get_result_meta()));
+      OZ(types.push_back(e->get_result_type()));
     }
   } else if (param.get_expr_type() == T_REF_QUERY && is_iter) {
     const ObQueryRefRawExpr &ref = static_cast<const ObQueryRefRawExpr &>(param);
@@ -1741,7 +1579,7 @@ int ObExprInOrNotIn::get_param_types(
       OZ(types.push_back(*t));
     }
   } else {
-    OZ(types.push_back(param.get_result_meta()));
+    OZ(types.push_back(param.get_result_type()));
   }
   return ret;
 }
@@ -1764,8 +1602,10 @@ int ObExprInOrNotIn::build_right_hash_without_row(const int64_t in_id,
       LOG_WARN("failed to init hashset", K(ret));
     } else if (OB_FAIL(in_ctx->init_right_datums(right_param_num, row_dimension, exec_ctx))) {
       LOG_WARN("failed to init right datums", K(ret));
+    } else if (OB_FAIL(in_ctx->init_cmp_funcs(expr.inner_func_cnt_, exec_ctx))) {
+      LOG_WARN("failed to init cmp funcs", K(ret));
     } else {
-      for (int i = 0; OB_SUCC(ret) && i < right_param_num; ++i) {
+      for (int i = 0; OB_SUCC(ret) && !in_ctx->is_hash_calc_disabled() && i < right_param_num; ++i) {
         if (OB_ISNULL(expr.args_[1]->args_[i])) {
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("invalid null arg", K(ret), K(expr.args_[1]->args_[i]), K(i));
@@ -1776,6 +1616,7 @@ int ObExprInOrNotIn::build_right_hash_without_row(const int64_t in_id,
         } else if (right->is_null()) {
           cnt_null = true;
           in_ctx->ctx_hash_null_ = true;
+          in_ctx->cmp_functions_[i] = (void *)(expr.args_[1]->args_[i]->basic_funcs_->null_first_cmp_);
         } else {
           if (OB_FAIL(in_ctx->set_right_datum(i, 0, right_param_num, *right))) {
             LOG_WARN("failed to load right", K(ret), K(i));
@@ -1791,6 +1632,7 @@ int ObExprInOrNotIn::build_right_hash_without_row(const int64_t in_id,
             if (OB_SUCC(ret)) {
               in_ctx->hash_func_buff_[0] = (void *)
                               (expr.args_[1]->args_[i]->basic_funcs_->murmur_hash_v2_);
+              in_ctx->cmp_functions_[i] = (void *)(expr.args_[1]->args_[i]->basic_funcs_->null_first_cmp_);
             }
           }
           Row<ObDatum> tmp_row;
@@ -1800,7 +1642,7 @@ int ObExprInOrNotIn::build_right_hash_without_row(const int64_t in_id,
             LOG_WARN("failed to load datum", K(ret), K(i));
           } else {
             in_ctx->set_hash_funcs_ptr_for_set(in_ctx->hash_func_buff_);
-            in_ctx->set_cmp_funcs_ptr_for_set(expr.inner_functions_);
+            in_ctx->set_cmp_funcs_ptr_for_set(in_ctx->cmp_functions_);
           }
           if (OB_SUCC(ret) && OB_FAIL(in_ctx->add_to_static_engine_hashset(tmp_row))) {
             LOG_WARN("failed to add to hashset", K(ret));

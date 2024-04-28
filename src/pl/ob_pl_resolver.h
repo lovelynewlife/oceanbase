@@ -34,7 +34,7 @@
   } while(0);
 #endif
 
-#ifndef NDEBUG
+#ifdef NDEBUG
 #ifndef SET_LOG_CHECK_MODE
 #define SET_LOG_CHECK_MODE()                        \
   bool set_check_mode = false;                      \
@@ -264,9 +264,9 @@ public:
                                    GotoRestrictionType &result);
   int check_goto_cursor_stmts(ObPLGotoStmt &goto_stmt,
                               const ObPLStmt &dst_stmt);
-  int check_contain_cursor_loop_stmt(const ObPLStmtBlock *stmt_block,
-                                     const ObPLCursorForLoopStmt *cur_loop_stmt,
-                                     bool &is_contain);
+  int check_contain_goto_block(const ObPLStmt *cur_stmt,
+                               const ObPLStmtBlock *goto_block,
+                               bool &is_contain);
 public:
   inline ObPLExternalNS &get_external_ns() { return external_ns_; }
   inline const ObPLResolveCtx &get_resolve_ctx() const { return resolve_ctx_; }
@@ -325,7 +325,8 @@ public:
                                     const ObString &ident_name,
                                     const sql::ObSQLSessionInfo &session_info,
                                     ObPLDataType &data_type,
-                                    bool is_for_param_type = false);
+                                    bool is_for_param_type = false,
+                                    uint64_t package_id = OB_INVALID_ID);
   int resolve_var(sql::ObQualifiedName &q_name,
                   ObPLBlockNS &ns,
                   sql::ObRawExprFactory &expr_factory,
@@ -421,6 +422,13 @@ public:
                                const ObSQLSessionInfo &session_info,
                                const ObIArray<ObObjAccessIdent> &access_idents,
                                ObPLExternTypeInfo *extern_type_info);
+  static void pl_reset_warning_buffer()
+  {
+    ObWarningBuffer *buf = common::ob_get_tsi_warning_buffer();
+    if (NULL != buf) {
+      buf->reset();
+    }
+  }
   static bool is_object_not_exist_error(int ret)
   {
     return OB_ERR_SP_DOES_NOT_EXIST == ret
@@ -781,10 +789,11 @@ private:
                         const ObPLBlockNS &ns,
                         const ObPLConditionValue **value);
   int resolve_cursor(ObPLCompileUnitAST &func,
+                     const ObPLBlockNS &ns,
                      const ObString &db_name,
                      const ObString &package_name,
                      const ObString &cursor_name,
-                     const ObPLCursor *&cursor);
+                     int64_t &index);
   int resolve_cursor(const ObStmtNodeTree *parse_tree,
                      const ObPLBlockNS &ns,
                      int64_t &index,
@@ -1072,10 +1081,10 @@ private:
                                    ObPLFunctionAST &func,
                                    int64_t &idx);
   int check_update_column(const ObPLBlockNS &ns, const ObIArray<ObObjAccessIdx>& access_idxs);
-  static int get_udt_names(ObSchemaGetterGuard &schema_guard,
-                           const uint64_t udt_id,
-                           ObString &database_name,
-                           ObString &udt_name);
+  int get_udt_names(ObSchemaGetterGuard &schema_guard,
+                    const uint64_t udt_id,
+                    ObString &database_name,
+                    ObString &udt_name);
   static int get_udt_database_name(ObSchemaGetterGuard &schema_guard,
                                    const uint64_t udt_id, ObString &db_name);
   static bool check_with_rowid(const ObString &routine_name,
@@ -1170,6 +1179,24 @@ private:
   ObArray<ObPLStmt *> goto_stmts_; // goto语句的索引，用来二次解析。
   ObItemType item_type_;
 };
+
+class ObPLSwitchDatabaseGuard
+{
+public:
+  ObPLSwitchDatabaseGuard(sql::ObSQLSessionInfo &session_info,
+                          share::schema::ObSchemaGetterGuard &schema_guard,
+                          ObPLCompileUnitAST &func,
+                          int &ret,
+                          bool with_rowid);
+  virtual ~ObPLSwitchDatabaseGuard();
+private:
+  int &ret_;
+  sql::ObSQLSessionInfo &session_info_;
+  uint64_t database_id_;
+  bool need_reset_;
+  ObSqlString database_name_;
+};
+
 }
 }
 

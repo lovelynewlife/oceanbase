@@ -3459,8 +3459,9 @@ namespace memtable
 int ObMemtable::lock_row_on_frozen_stores_(
     const storage::ObTableIterParam &,
     const ObTxNodeArg &,
-    storage::ObTableAccessContext &,
     const ObMemtableKey *,
+    const bool check_exist,
+    storage::ObTableAccessContext &,
     ObMvccRow *,
     ObMvccWriteResult &)
 {
@@ -3494,7 +3495,7 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
       TRANS_LOG(WARN, "ls_tx_ctx_map_ init fail", KR(ret));
     } else {
       is_inited_ = true;
-      state_ = State::L_WORKING;
+      state_ = State::F_ALL_BLOCKED;
       tenant_id_ = tenant_id;
       ls_id_ = ls_id;
       tx_table_ = tx_table;

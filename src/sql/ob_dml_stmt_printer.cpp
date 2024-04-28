@@ -56,6 +56,28 @@ void ObDMLStmtPrinter::init(char *buf, int64_t buf_len, int64_t *pos, ObDMLStmt 
   print_cte_ = false;
 }
 
+int ObDMLStmtPrinter::set_synonym_name_recursively(ObRawExpr * cur_expr, const ObDMLStmt *stmt)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(cur_expr) || OB_ISNULL(stmt)) {
+  } else if (cur_expr->is_column_ref_expr()) {
+    ObColumnRefRawExpr *column_expr = static_cast<ObColumnRefRawExpr *>(cur_expr);
+    const TableItem *table_item = stmt->get_table_item_by_id(column_expr->get_table_id());
+    if (NULL != table_item && table_item->alias_name_.empty()) {
+      column_expr->set_synonym_name(table_item->synonym_name_);
+      column_expr->set_synonym_db_name(table_item->synonym_db_name_);
+    }
+  } else if (cur_expr->get_param_count() > 0) {
+    for (int64_t param_idx = 0; param_idx < cur_expr->get_param_count(); ++param_idx) {
+      ObRawExpr * param_expr = cur_expr->get_param_expr(param_idx);
+      OZ (SMART_CALL(set_synonym_name_recursively(param_expr, stmt)));
+    }
+  } else {
+    //do nothing
+  }
+  return ret;
+}
+
 int ObDMLStmtPrinter::print_hint()
 {
   int ret = OB_SUCCESS;
@@ -1194,8 +1216,13 @@ int ObDMLStmtPrinter::print_json_table_nested_column(const TableItem *table_item
           DATA_PRINTF(" null on empty");
         } else if (col_info.on_empty_ == 2) {
           DATA_PRINTF(" default ");
-          if (OB_SUCC(ret)
-              && OB_FAIL(expr_printer_.do_print(cur_def->empty_expr_, T_NONE_SCOPE))) {
+          if (OB_FAIL(ret)) {
+          } else if (T_BOOL == cur_def->empty_expr_->get_expr_type()) { // bool need print 'true' or 'false' int json_table, not 1=1'
+            ObConstRawExpr *con_expr = static_cast<ObConstRawExpr*>(cur_def->empty_expr_);
+            if (OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, con_expr->get_value().get_bool() ? "true" : "false"))) {
+              LOG_WARN("fail to print startup filter", K(ret));
+            }
+          } else if (OB_FAIL(expr_printer_.do_print(cur_def->empty_expr_, T_NONE_SCOPE))) {
             LOG_WARN("fail to print default value col", K(ret));
           }
           DATA_PRINTF(" on empty");
@@ -1208,8 +1235,13 @@ int ObDMLStmtPrinter::print_json_table_nested_column(const TableItem *table_item
           DATA_PRINTF(" null on error");
         } else if (col_info.on_error_ == 2) {
           DATA_PRINTF(" default ");
-          if (OB_SUCC(ret)
-              && OB_FAIL(expr_printer_.do_print(cur_def->error_expr_, T_NONE_SCOPE))) {
+          if (OB_FAIL(ret)) {
+          } else if (T_BOOL == cur_def->error_expr_->get_expr_type()) { // bool need print 'true' or 'false' int json_table, not 1=1'
+            ObConstRawExpr *con_expr = static_cast<ObConstRawExpr*>(cur_def->error_expr_);
+            if (OB_FAIL(databuff_printf(buf_, buf_len_, *pos_, con_expr->get_value().get_bool() ? "true" : "false"))) {
+              LOG_WARN("fail to print startup filter", K(ret));
+            }
+          } else if (OB_FAIL(expr_printer_.do_print(cur_def->error_expr_, T_NONE_SCOPE))) {
             LOG_WARN("fail to print default value col", K(ret));
           }
           DATA_PRINTF(" on error");
@@ -1321,7 +1353,8 @@ int ObDMLStmtPrinter::print_base_table(const TableItem *table_item)
         const ObIArray<ObString> &part_names = table_item->part_names_;
         DATA_PRINTF(" partition(");
         for (int64_t i = 0; OB_SUCC(ret) && i < part_names.count(); ++i) {
-          DATA_PRINTF("%.*s,", LEN_AND_PTR(part_names.at(i)));
+          PRINT_IDENT_WITH_QUOT(part_names.at(i));
+          DATA_PRINTF(",");
         }
         if (OB_SUCC(ret)) {
           --*pos_;
@@ -1757,9 +1790,11 @@ int ObDMLStmtPrinter::print_returning()
     const ObIArray<ObRawExpr*> &returning_exprs = dml_stmt.get_returning_exprs();
     if (returning_exprs.count() > 0) {
       DATA_PRINTF(" returning ");
+      OZ (set_synonym_name_recursively(returning_exprs.at(0), stmt_));
       OZ (expr_printer_.do_print(returning_exprs.at(0), T_NONE_SCOPE));
       for (uint64_t i = 1; OB_SUCC(ret) && i < returning_exprs.count(); ++i) {
         DATA_PRINTF(",");
+        OZ (set_synonym_name_recursively(returning_exprs.at(i), stmt_));
         OZ (expr_printer_.do_print(returning_exprs.at(i), T_NONE_SCOPE));
       }
     }

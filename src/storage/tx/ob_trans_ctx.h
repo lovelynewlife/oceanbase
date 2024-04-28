@@ -33,7 +33,7 @@
 #include "storage/memtable/ob_memtable_context.h"
 #include "ob_xa_define.h"
 #include "share/rc/ob_context.h"
-#include "ob_trans_hashmap.h"
+#include "share/ob_light_hashmap.h"
 #include "ob_tx_elr_handler.h"
 
 namespace oceanbase
@@ -93,7 +93,7 @@ static inline void protocol_error(const int64_t state, const int64_t msg_type)
 // For Example: If you change the signature of the function `commit` in
 // `ObTransCtx`, you should also modify the signatore of function `commit` in
 // `ObPartTransCtx`, `ObScheTransCtx`
-class ObTransCtx: public ObTransHashLink<ObTransCtx>
+class ObTransCtx: public share::ObLightHashLink<ObTransCtx>
 {
   friend class CtxLock;
 public:
@@ -104,6 +104,7 @@ public:
       cluster_version_(0), ls_tx_ctx_mgr_(NULL),
       session_id_(UINT32_MAX),
       stc_(0), part_trans_action_(ObPartTransAction::UNKNOWN),
+      callback_scheduler_on_clear_(false),
       pending_callback_param_(common::OB_SUCCESS), p_mt_ctx_(NULL),
       is_exiting_(false), for_replay_(false),
       has_pending_callback_(false),
@@ -201,13 +202,13 @@ protected:
   }
   int acquire_ctx_ref_()
   {
-    ObTransHashLink::inc_ref(1);
+    ObLightHashLink::inc_ref(1);
     TRANS_LOG(DEBUG, "inc tx ctx ref", KPC(this));
     return OB_SUCCESS;
   }
   void release_ctx_ref_()
   {
-    ObTransHashLink::dec_ref(1);
+    ObLightHashLink::dec_ref(1);
     TRANS_LOG(DEBUG, "dec tx ctx ref", KPC(this));
   }
 
@@ -260,6 +261,8 @@ protected:
   // the variable is used to record the action of the current transaction in the stmt execution
   int64_t part_trans_action_;
   ObTxCommitCallback commit_cb_;
+  // [only used by mysqltest]: will callback scheduler when clear log is persistented
+  bool callback_scheduler_on_clear_;
   ObTransNeedWaitWrap trans_need_wait_wrap_;
   int pending_callback_param_;
   // it is used to wake up the lock queue after submitting the log of elr trans

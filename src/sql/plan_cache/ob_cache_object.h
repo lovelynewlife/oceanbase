@@ -108,7 +108,8 @@ struct ObParamInfo
     type_(common::ObNullType),
     ext_real_type_(common::ObNullType),
     is_oracle_empty_string_(false),
-    col_type_(common::CS_TYPE_INVALID)
+    col_type_(common::CS_TYPE_INVALID),
+    precision_(PRECISION_UNKNOWN_YET)
   {}
   virtual ~ObParamInfo() {}
   void reset();
@@ -118,7 +119,8 @@ struct ObParamInfo
                K_(type),
                K_(ext_real_type),
                K_(is_oracle_empty_string),
-               K_(col_type));
+               K_(col_type),
+               K_(precision));
 
   static const int64_t MAX_STR_DES_LEN = 17;
   //存放是否需要check type和bool 值，以及期望的bool值
@@ -129,6 +131,8 @@ struct ObParamInfo
   //处理Oracle模式空串在plan_cache中的匹配
   bool is_oracle_empty_string_;
   common::ObCollationType col_type_;
+  common::ObPrecision precision_;
+  uint64_t udt_id_;
 
   OB_UNIS_VERSION_V(1);
 };
@@ -183,6 +187,16 @@ public:
   inline stmt::StmtType get_stmt_type() const { return stmt_type_; }
   inline void set_need_param(bool need_param) { need_param_ = need_param; }
   inline bool need_param() const { return need_param_; }
+  static int match_pre_calc_cons(common::ObDList<ObPreCalcExprConstraint> &cached_cons,
+                                 const ObPlanCacheCtx &pc_ctx,
+                                 const bool is_ignore_stmt,
+                                 bool &is_matched);
+  static int is_same_pre_calc_cons(const ObPreCalcExprConstraint &cons1,
+                                   const ObPreCalcExprConstraint &cons2,
+                                   bool &is_same);
+  static int is_same_expr(const ObExpr *expr1,
+                          const ObExpr *expr2,
+                          bool &is_same);
   static int check_pre_calc_cons(const bool is_ignore_stmt,
                                  bool &is_match,
                                  ObPreCalcExprConstraint &pre_calc_con,

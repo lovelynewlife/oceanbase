@@ -506,15 +506,22 @@ int ObLogArchivePieceContext::get_piece_(const SCN &scn,
       ret = get_(lsn, file_id, dest_id, round_id, piece_id, offset, max_lsn, done, to_newest);
     }
 
-    // 由于场景复杂, 为避免遗漏场景导致无法跳出循环, 每次重试sleep 100ms
+    // 由于场景复杂, 为避免遗漏场景导致无法跳出循环, 每次重试sleep 1ms
     if (! done) {
-      ob_usleep(100 * 1000L);
+      ob_usleep(1000L);
     }
 
     if (REACH_TIME_INTERVAL(10 * 1000 * 1000L)) {
       CLOG_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "get piece cost too much time", K(scn), K(lsn), KPC(this));
     }
+
+    // threads consume archive may increase or decrease, if threads stop, just retry
+    if (! done && OB_SUCC(ret) && OB_NOT_NULL(&lib::Thread::current()) ? lib::Thread::current().has_set_stop() : false) {
+      ret = OB_EAGAIN;
+      CLOG_LOG(INFO, "thread stop, try again", K(id_), K(scn), K(lsn));
+    }
   }
+
   return ret;
 }
 

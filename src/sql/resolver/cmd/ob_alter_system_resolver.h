@@ -230,7 +230,7 @@ public:
   virtual ~ObFreezeResolver() {}
   virtual int resolve(const ParseNode &parse_tree);
 private:
-  int resolve_major_freeze_(ObFreezeStmt *freeze_stmt, ParseNode *opt_tenant_list_v2);
+  int resolve_major_freeze_(ObFreezeStmt *freeze_stmt, ParseNode *opt_tenant_list_or_tablet_id, const ParseNode *opt_rebuild_column_group);
   int resolve_minor_freeze_(ObFreezeStmt *freeze_stmt,
                             ParseNode *opt_tenant_list_or_ls_or_tablet_id,
                             ParseNode *opt_server_list,
@@ -239,6 +239,27 @@ private:
   int resolve_tenant_ls_tablet_(ObFreezeStmt *freeze_stmt, ParseNode *opt_tenant_list_or_ls_or_tablet_id);
   int resolve_server_list_(ObFreezeStmt *freeze_stmt, ParseNode *opt_server_list);
 
+};
+
+class ObResetConfigResolver : public ObSystemCmdResolver
+{
+public:
+  ObResetConfigResolver(ObResolverParams &params) : ObSystemCmdResolver(params) {}
+  virtual ~ObResetConfigResolver() {}
+  virtual int resolve(const ParseNode &parse_tree);
+private:
+  int check_param_valid(int64_t tenant_id,
+      const common::ObString &name_node, const common::ObString &value_node);
+};
+class ObAlterSystemResetResolver : public ObSystemCmdResolver
+{
+public:
+  ObAlterSystemResetResolver(ObResolverParams &params) : ObSystemCmdResolver(params) {}
+  virtual ~ObAlterSystemResetResolver() {}
+  virtual int resolve(const ParseNode &parse_tree);
+private:
+  int check_param_valid(int64_t tenant_id,
+      const common::ObString &name_node, const common::ObString &value_node);
 };
 
 DEF_SIMPLE_CMD_RESOLVER(ObBackupDatabaseResolver);
@@ -283,6 +304,7 @@ private:
 };
 
 DEF_SIMPLE_CMD_RESOLVER(ObTableTTLResolver);
+DEF_SIMPLE_CMD_RESOLVER(ObCancelCloneResolver);
 
 #undef DEF_SIMPLE_CMD_RESOLVER
 

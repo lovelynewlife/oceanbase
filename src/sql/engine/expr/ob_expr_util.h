@@ -90,11 +90,15 @@ public:
 
   // truncate the decimal part, truncate to INT64_MAX/INT64_MIN too if out of range.
   static int trunc_num2int64(const common::number::ObNumber &nmb, int64_t &v);
+
+  static int trunc_decint2int64(const ObDecimalInt *decint, const int32_t int_bytes, const ObScale scale, int64_t &v);
   // get number out of ObDatum and truncate to int64
   static int trunc_num2int64(const common::ObDatum &datum, int64_t &v)
   {
     return trunc_num2int64(common::number::ObNumber(datum.get_number()), v);
   }
+
+  static int round_decint2int64(const ObDecimalInt *decint, const int32_t int_bytes, const ObScale scale, int64_t &v);
   // round the decimal part, round to INT64_MAX/INT64_MIN too if out of range.
   static int round_num2int64(const common::number::ObNumber &nmb, int64_t &v);
   
@@ -107,7 +111,7 @@ public:
   // or ObNumberType in oracle.
   //
   // Keep %int_val unchanged if datum is NULL or datum->is_null().
-  static int get_int_param_val(common::ObDatum *datum, int64_t &int_val);
+  static int get_int_param_val(common::ObDatum *datum, bool is_decint, int64_t &int_val);
 
   // Set the ASCII string to expression result.
   // e.g.:
@@ -223,6 +227,31 @@ int calc_##tritype##_expr(const ObExpr &expr, ObEvalCtx &ctx,                 \
   }                                                                           \
   return ret;                                                                 \
 }
+//Get the merged values of solidified vars and current session vars
+//If a var is solidified, return the solidified value. Otherwise return currrent session value.
+//e.g. :
+// ObSolidifiedVarsGetter helper(expr, ctx, session);
+// ObString format;
+// helper.get_local_nls_date_format(format);
+class ObSolidifiedVarsGetter
+{
+public:
+  ObSolidifiedVarsGetter(const ObExpr &expr, const ObEvalCtx &ctx, const ObBasicSessionInfo *session);
+  int get_dtc_params(ObDataTypeCastParams &dtc_params);
+  int get_time_zone_info(const common::ObTimeZoneInfo *&tz_info);
+  int get_sql_mode(ObSQLMode &sql_mode);
+  int get_local_nls_date_format(ObString &format);
+  int get_local_nls_timestamp_format(ObString &format);
+  int get_local_nls_timestamp_tz_format(ObString &format);
+  int get_local_nls_format_by_type(const ObObjType type, ObString &format_str);
+  int get_max_allowed_packet(int64_t &max_size);
+  //get the specified solidified var
+  int get_local_var(share::ObSysVarClassType var_type, share::schema::ObSessionSysVar *&sys_var);
+private:
+  const share::schema::ObLocalSessionVar *local_session_var_;
+  const ObBasicSessionInfo *session_;
+  ObTimeZoneInfoWrap local_tz_wrap_;
+};
 
 }
 }

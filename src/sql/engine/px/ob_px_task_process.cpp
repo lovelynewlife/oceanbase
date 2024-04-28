@@ -163,7 +163,6 @@ int ObPxTaskProcess::process()
     arg_.exec_ctx_->set_sqc_handler(arg_.sqc_handler_);
     arg_.exec_ctx_->set_px_task_id(arg_.task_.get_task_id());
     arg_.exec_ctx_->set_px_sqc_id(arg_.task_.get_sqc_id());
-
     ObMaxWaitGuard max_wait_guard(enable_perf_event ? &max_wait_desc : NULL);
     ObTotalWaitGuard total_wait_guard(enable_perf_event ? &total_wait_desc : NULL);
 
@@ -175,7 +174,7 @@ int ObPxTaskProcess::process()
     exec_start_timestamp_ = enqueue_timestamp_;
 
     if (OB_FAIL(do_process())) {
-      LOG_WARN("failed to process", K(get_tenant_id()), K(ret));
+      LOG_WARN("failed to process", K(get_tenant_id()), K(ret), K(get_qc_id()), K(get_dfo_id()));
     }
 
     //监控项统计结束
@@ -268,7 +267,7 @@ int ObPxTaskProcess::execute(ObOpSpec &root_spec)
       need_fill_batch_info = true;
     }
     LOG_TRACE("trace run op spec root", K(&ctx), K(ctx.get_frames()),
-              K(batch_count), K(need_fill_batch_info));
+              K(batch_count), K(need_fill_batch_info), K(root_spec.get_id()), K(&(root->get_exec_ctx())));
     CK(IS_PX_TRANSMIT(root_spec.get_type()));
     for (int i = 0; i < batch_count && OB_SUCC(ret); ++i) {
       if (need_fill_batch_info) {
@@ -447,7 +446,7 @@ int ObPxTaskProcess::do_process()
           arg_.exec_ctx_->get_my_session()->get_process_query_time());
         ObExtraServerAliveCheck::Guard check_guard(*arg_.exec_ctx_, qc_alive_checker);
         if (OB_FAIL(execute(*arg_.op_spec_root_))) {
-          LOG_WARN("failed to execute plan", K(ret));
+          LOG_WARN("failed to execute plan", K(ret), K(arg_.op_spec_root_->id_));
         }
       } else {
         ret = OB_ERR_UNEXPECTED;

@@ -256,9 +256,12 @@ int ObRawExpr::assign(const ObRawExpr &other)
       is_calculated_ = other.is_calculated_;
       is_deterministic_ = other.is_deterministic_;
       partition_id_calc_type_ = other.partition_id_calc_type_;
+      local_session_var_id_ = other.local_session_var_id_;
       if (OB_FAIL(enum_set_values_.assign(other.enum_set_values_))) {
         LOG_WARN("failed to assign enum set values", K(ret));
-      } else { /*do nothing*/ }
+      } else if (OB_FAIL(local_session_var_.assign(other.local_session_var_))) {
+        LOG_WARN("fail to assign local session vars", K(ret));
+      }
     }
   }
   return ret;
@@ -294,6 +297,8 @@ int ObRawExpr::inner_deep_copy(ObIRawExprCopier &copier)
       LOG_WARN("fail to write string", K(expr_name_), K(ret));
     } else if (OB_FAIL(deep_copy_obj(*inner_alloc_, result_type_.get_param(), param))) {
       LOG_WARN("failed to deep copy object", K(ret), K(param));
+    } else if (OB_FAIL(local_session_var_.deep_copy_self())) {
+        LOG_WARN("fail to deep opy local session vars", K(ret));
     } else {
       result_type_.set_param(param);
       for (int64_t i = 0; OB_SUCC(ret) && i < enum_set_values_.count(); i++) {
@@ -349,7 +354,7 @@ int ObRawExpr::get_type_and_length(char *buf, const int64_t buf_len, int64_t &po
 {
   int ret = OB_SUCCESS;
   if (EXPLAIN_EXTENDED == type || EXPLAIN_EXTENDED_NOADDR == type) {
-    const char* type_str = common::ob_obj_type_str(get_data_type());
+    const char* type_str = common::inner_obj_type_str(get_data_type());
     if (nullptr == type_str || strlen(type_str) > INT32_MAX) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("some error happend");
@@ -383,11 +388,14 @@ int ObRawExpr::extract_info()
   return ret;
 }
 
-int ObRawExpr::deduce_type(const ObSQLSessionInfo *session_info)
+int ObRawExpr::deduce_type(const ObSQLSessionInfo *session_info,
+                           bool solidify_session_vars,
+                           const ObLocalSessionVar *local_vars,
+                           int64_t local_var_id)
 {
   //LOG_DEBUG("deduce_type", "usec", ObSQLUtils::get_usec());
   int ret = OB_SUCCESS;
-  ObRawExprDeduceType expr_deducer(session_info);
+  ObRawExprDeduceType expr_deducer(session_info, solidify_session_vars, local_vars, local_var_id);
   expr_deducer.set_expr_factory(expr_factory_);
   if (OB_FAIL(expr_deducer.deduce(*this))) {
     if (session_info->is_varparams_sql_prepare()) {
@@ -401,7 +409,31 @@ int ObRawExpr::deduce_type(const ObSQLSessionInfo *session_info)
   return ret;
 }
 
-int ObRawExpr::formalize(const ObSQLSessionInfo *session_info)
+int ObRawExpr::formalize_with_local_vars(const ObSQLSessionInfo *session_info,
+                                         const ObLocalSessionVar *local_vars,
+                                         int64_t local_var_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(formalize(session_info, false, local_vars, local_var_id))) {
+    LOG_WARN("formalize with local vars failed", K(ret));
+  }
+  return ret;
+}
+
+int ObRawExpr::formalize(const ObSQLSessionInfo *session_info,
+                         bool solidify_session_vars)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(formalize(session_info, solidify_session_vars, NULL, OB_INVALID_INDEX_INT64))) {
+    LOG_WARN("formalize with local vars failed", K(ret));
+  }
+  return ret;
+}
+
+int ObRawExpr::formalize(const ObSQLSessionInfo *session_info,
+                         bool solidify_session_vars,
+                         const ObLocalSessionVar *local_vars,
+                         int64_t local_var_id)
 {
   int ret = OB_SUCCESS;
   bool is_stack_overflow = false;
@@ -412,7 +444,7 @@ int ObRawExpr::formalize(const ObSQLSessionInfo *session_info)
     LOG_WARN("too deep recursive", K(ret), K(is_stack_overflow));
   } else if (OB_FAIL(extract_info())) {
     LOG_WARN("failed to extract info", K(*this));
-  } else if (OB_FAIL(deduce_type(session_info))) {
+  } else if (OB_FAIL(deduce_type(session_info, solidify_session_vars, local_vars, local_var_id))) {
     LOG_WARN("failed to deduce type", K(*this));
   } else {}
   return ret;
@@ -642,6 +674,11 @@ bool ObRawExpr::same_as(const ObRawExpr &expr,
     if (NULL != check_context) {
       check_context->recursion_level_ -= 1;
     }
+
+    if (bret) {
+      //check if local vars are the same
+      bret = (l->get_local_session_var() == r->get_local_session_var());
+    }
   }
   return bret;
 }
@@ -867,6 +904,29 @@ bool ObRawExpr::is_specified_pseudocolumn_expr() const
   return false;
 }
 
+int ObRawExpr::extract_local_session_vars_recursively(ObIArray<const share::schema::ObSessionSysVar *> &var_array)
+{
+  int ret = OB_SUCCESS;
+  if (get_local_session_var().get_var_count() > 0) {
+    ObSEArray<const share::schema::ObSessionSysVar *, 4> local_vars;
+    if (OB_FAIL(get_local_session_var().get_local_vars(local_vars))) {
+      LOG_WARN("fail to append session var array", K(ret));
+    } else if (OB_FAIL(append(var_array, local_vars))) {
+      LOG_WARN("append local vars failed.", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < get_param_count(); ++i) {
+      if (OB_ISNULL(get_param_expr(i))){
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null", K(ret));
+      } else if (OB_FAIL(SMART_CALL(get_param_expr(i)->extract_local_session_vars_recursively(var_array)))) {
+        LOG_WARN("fail to extract sysvar from params", K(ret));
+      }
+    }
+  }
+  return ret;
+}
 
 ////////////////////////////////////////////////////////////////
 int ObConstRawExpr::assign(const ObRawExpr &other)
@@ -887,6 +947,8 @@ int ObConstRawExpr::assign(const ObRawExpr &other)
       is_date_unit_ = const_expr.is_date_unit_;
       is_literal_bool_ = const_expr.is_literal_bool();
       array_param_group_id_ = const_expr.get_array_param_group_id();
+      is_dynamic_eval_questionmark_ = const_expr.is_dynamic_eval_questionmark_;
+      orig_questionmark_type_.assign(const_expr.get_orig_qm_type());
     }
   }
   return ret;
@@ -942,6 +1004,9 @@ void ObConstRawExpr::reset()
   literal_prefix_.reset();
   is_literal_bool_ = false;
   array_param_group_id_ = -1;
+  is_dynamic_eval_questionmark_ = false;
+  orig_questionmark_type_.reset();
+
 }
 
 void ObConstRawExpr::set_is_date_unit()
@@ -958,6 +1023,32 @@ uint64_t ObConstRawExpr::hash_internal(uint64_t seed) const
 {
   uint64_t hash_val = seed;
   value_.hash(hash_val, seed);
+  if (T_QUESTIONMARK == get_expr_type() && is_dynamic_eval_questionmark()) {
+    if (!(result_type_.is_decimal_int() || result_type_.is_number())
+        || !(orig_questionmark_type_.is_decimal_int() || orig_questionmark_type_.is_number())) {
+      int ret = OB_NOT_SUPPORTED;
+      LOG_WARN("not supported dynamic eval quesiton mark", K(ret));
+      OB_ASSERT(false);
+      // do nothing
+    } else {
+      // if questionmark is evaluated during runtime, it's value is determined by:
+      // - value_
+      // - result_type_
+      // - result_type_'s cast_mode
+      ObCastMode cm = result_type_.get_cast_mode();
+      hash_val = ObMurmurHash::hash(&cm, sizeof(uint64_t), hash_val);
+      if (result_type_.is_decimal_int()) {
+        // value determined by precision & scale
+        ObPrecision prec = result_type_.get_precision();
+        ObScale scale = result_type_.get_scale();
+        hash_val = ObMurmurHash::hash(&prec, sizeof(ObPrecision), hash_val);
+        hash_val = ObMurmurHash::hash(&scale, sizeof(ObScale), hash_val);
+      } else if (result_type_.is_number()) {
+        // decint->number, precision & scale are both ignored
+        // do nothing
+      }
+    }
+  }
   return hash_val;
 }
 
@@ -966,7 +1057,32 @@ bool ObConstRawExpr::inner_same_as(
     ObExprEqualCheckContext *check_context) const
 {
   bool bool_ret = false;
-  if (check_context != NULL && check_context->override_const_compare_) {
+  bool left_dyn_const = (T_QUESTIONMARK == get_expr_type() && is_dynamic_eval_questionmark());
+  bool right_dyn_const = (T_QUESTIONMARK == expr.get_expr_type() && expr.is_static_const_expr()
+                          && static_cast<const ObConstRawExpr &>(expr).is_dynamic_eval_questionmark());
+  if (left_dyn_const && right_dyn_const) {
+    // if following conditions are matched, two dynamic evaluated question_marks are same:
+    // 1. param_idxes are same
+    // 2. result_types are same
+    // 3. cast modes are same
+    const ObConstRawExpr &r_expr = static_cast<const ObConstRawExpr &>(expr);
+    if (check_context != NULL) {
+      int64_t l_param_idx = -1, r_param_idx = -1;
+      int &ret = check_context->err_code_;
+      if (OB_FAIL(get_value().get_unknown(l_param_idx))) {
+        LOG_WARN("get param idx failed", K(ret));
+      } else if (OB_FAIL(r_expr.get_value().get_unknown(r_param_idx))) {
+        LOG_WARN("get param idx failed", K(ret));
+      } else if (l_param_idx == r_param_idx) {
+        bool_ret =
+          (get_result_type() == r_expr.get_result_type()
+           && get_result_type().get_cast_mode() == r_expr.get_result_type().get_cast_mode());
+      }
+    }
+  } else if (left_dyn_const || right_dyn_const) {
+    // for simplicity's sake, if question is evaluated during runtime, just return false
+    // do nothing
+  } else if (check_context != NULL && check_context->override_const_compare_) {
     if (expr.is_const_raw_expr()) {
       bool_ret = check_context->compare_const(*this, static_cast<const ObConstRawExpr&>(expr));
     }
@@ -974,7 +1090,9 @@ bool ObConstRawExpr::inner_same_as(
     //what are you doing ?
     if (NULL != check_context) {
       if (expr.is_const_raw_expr()) {
-        if (T_QUESTIONMARK == expr.get_expr_type()) {
+        if (check_context->ora_numeric_compare_ && T_FUN_SYS_CAST == expr.get_expr_type() && lib::is_oracle_mode()) {
+          bool_ret = check_context->compare_ora_numeric_consts(*this, static_cast<const ObSysFunRawExpr&>(expr));
+        } else if (T_QUESTIONMARK == expr.get_expr_type()) {
           bool_ret = true;
           const ObConstRawExpr *c_expr = static_cast<const ObConstRawExpr *>(&expr);
           int64_t param_idx = -1;
@@ -997,6 +1115,45 @@ bool ObConstRawExpr::inner_same_as(
     }
   }
   return bool_ret;
+}
+
+int ObConstRawExpr::set_local_session_vars(const share::schema::ObLocalSessionVar *local_sys_vars,
+                                            const ObBasicSessionInfo *session,
+                                            int64_t ctx_array_idx)
+{
+  int ret = OB_SUCCESS;
+  if (ob_is_string_type(get_result_type().get_type())) {
+    //solidify vars for parser
+    local_session_var_id_ = ctx_array_idx;
+    local_session_var_.reset();
+    local_session_var_.set_local_var_capacity(2);
+    if (OB_FAIL(ObExprOperator::add_local_var_to_expr(SYS_VAR_SQL_MODE, local_sys_vars,
+                                                      session, local_session_var_))) {
+      LOG_WARN("fail to add sql mode", K(ret));
+    } else if (OB_FAIL(ObExprOperator::add_local_var_to_expr(SYS_VAR_COLLATION_CONNECTION, local_sys_vars,
+                                                             session, local_session_var_))) {
+      LOG_WARN("fail to add collation connection", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObConstRawExpr::set_dynamic_eval_questionmark(const ObExprResType &dst_type)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!(dst_type.is_decimal_int() || dst_type.is_number())
+                  || !(result_type_.is_decimal_int() || result_type_.is_number()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("not supported types for questionmark dynamic eval", K(ret));
+  } else if (OB_UNLIKELY(is_dynamic_eval_questionmark_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpectedly set dynamic evaluation twice", K(ret));
+  } else {
+    is_dynamic_eval_questionmark_ = true;
+    orig_questionmark_type_.assign(result_type_);
+    result_type_.assign(dst_type);
+  }
+  return ret;
 }
 
 bool ObExprEqualCheckContext::compare_const(const ObConstRawExpr &left,
@@ -1023,6 +1180,58 @@ bool ObExprEqualCheckContext::compare_const(const ObConstRawExpr &left,
   if (OB_SUCC(ret) && result && right.get_value().is_unknown()) {
     if (OB_FAIL(add_param_pair(right.get_value().get_unknown(), NULL))) {
       LOG_WARN("add param pair failed", K(ret));
+    }
+  }
+  return result;
+}
+
+bool ObExprEqualCheckContext::compare_ora_numeric_consts(const ObConstRawExpr &left,
+                                                         const ObSysFunRawExpr &right)
+{
+  int &ret = err_code_;
+  bool result = false;
+  if (OB_LIKELY(lib::is_oracle_mode() && right.is_const_expr() && right.get_expr_type() == T_FUN_SYS_CAST)) {
+    ObCastMode cm = right.get_extra();
+    const ObRawExpr *real_right = nullptr;
+    bool is_lossless = false;
+    if (CM_IS_IMPLICIT_CAST(cm) && !CM_IS_CONST_TO_DECIMAL_INT(cm)) {
+      if (OB_FAIL(ObOptimizerUtil::is_lossless_column_cast(&right, is_lossless))) {
+        LOG_WARN("check lossless cast failed", K(ret));
+      } else if (is_lossless) {
+        real_right = right.get_param_expr(0);
+        if (OB_ISNULL(real_right)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid null param expr", K(ret));
+        } else {
+          result = left.same_as(*real_right, this);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+bool ObExprEqualCheckContext::compare_ora_numeric_consts(const ObSysFunRawExpr &left, const ObConstRawExpr &right)
+{
+  int &ret = err_code_;
+  LOG_INFO("debug test");
+  bool result = false;
+  if (OB_LIKELY(lib::is_oracle_mode() && left.get_expr_type()== T_FUN_SYS_CAST && left.is_const_expr())) {
+    ObCastMode cm = left.get_extra();
+    const ObRawExpr *real_left = nullptr;
+    bool is_lossless = false;
+    if (CM_IS_IMPLICIT_CAST(cm) && !CM_IS_CONST_TO_DECIMAL_INT(cm)) {
+      if (OB_FAIL(ObOptimizerUtil::is_lossless_column_cast(&left, is_lossless))) {
+        LOG_WARN("check lossless cast failed", K(ret));
+      } else if (is_lossless) {
+        real_left = left.get_param_expr(0);
+        if (OB_ISNULL(real_left)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid null param expr", K(ret));
+        } else {
+          result = real_left->same_as(right, this);
+        }
+      }
     }
   }
   return result;
@@ -1268,7 +1477,11 @@ int ObQueryRefRawExpr::inner_deep_copy(ObIRawExprCopier &copier)
   for (int64_t i = 0; OB_SUCC(ret) && i < exec_params_.count(); ++i) {
     ObRawExpr *exec_param = exec_params_.at(i);
     ObRawExpr *new_expr = NULL;
-    if (OB_FAIL(copier.do_copy_expr(exec_param, new_expr))) {
+    if (OB_FAIL(copier.find_in_copy_context(exec_param, new_expr))) {
+      LOG_WARN("failed to find in copy context", K(ret));
+    } else if (new_expr != NULL) {
+      exec_params_.at(i) = static_cast<ObExecParamRawExpr *>(new_expr);
+    } else if (OB_FAIL(copier.do_copy_expr(exec_param, new_expr))) {
       LOG_WARN("failed to copy exec param", K(ret));
     } else if (OB_ISNULL(new_expr) ||
                OB_UNLIKELY(!new_expr->is_exec_param_expr())) {
@@ -3663,6 +3876,10 @@ bool ObSysFunRawExpr::inner_same_as(
 {
   bool bool_ret = false;
   if (get_expr_type() != expr.get_expr_type()) {
+    if (check_context != NULL && check_context->ora_numeric_compare_ && expr.is_const_raw_expr()
+        && T_FUN_SYS_CAST == get_expr_type() && lib::is_oracle_mode()) {
+      bool_ret = check_context->compare_ora_numeric_consts(*this, static_cast<const ObConstRawExpr &>(expr));
+    }
   } else if (T_FUN_SYS_RAND == get_expr_type() ||
              T_FUN_SYS_RANDOM == get_expr_type() ||
              T_FUN_SYS_GUID == get_expr_type() ||
@@ -3715,7 +3932,8 @@ bool ObSysFunRawExpr::inner_same_as(
               || T_FUN_SYS_UTC_TIME == get_expr_type())) {
         bool_ret = result_type_.get_scale() == s_expr->get_result_type().get_scale();
       }
-      if ((T_FUN_SYS == get_expr_type() ||
+      if ((T_FUN_SYS_CAST == get_expr_type() ||
+           T_FUN_SYS == get_expr_type() ||
            T_FUN_SYS_CALC_TABLET_ID == get_expr_type() ||
            T_FUN_SYS_CALC_PARTITION_ID == get_expr_type() ||
            T_FUN_SYS_CALC_PARTITION_TABLET_ID == get_expr_type()) &&
@@ -3983,7 +4201,7 @@ int ObSysFunRawExpr::get_cast_type_name(char *buf, int64_t buf_len, int64_t &pos
       int32_t length = 0;
       int16_t precision = 0;
       int16_t scale = 0;
-      const char *type_str = ob_obj_type_str(dest_type);
+      const char *type_str = inner_obj_type_str(dest_type);
       if (ob_is_string_tc(dest_type)) {
         length = node.int32_values_[1] < 0 ?
             static_cast<int32_t>(OB_MAX_VARCHAR_LENGTH) : node.int32_values_[1];
@@ -4046,7 +4264,7 @@ int ObSysFunRawExpr::get_column_conv_name(char *buf, int64_t buf_len, int64_t &p
     accuracy.set_accuracy(accuray_value);
     const ObConstRawExpr *bool_expr = static_cast<const ObConstRawExpr*>(get_param_expr(3));
     bool is_nullable = bool_expr->get_value().get_bool();
-    const char *type_str = ob_obj_type_str(type);
+    const char *type_str = inner_obj_type_str(type);
     if (ob_is_string_type(type)) {
       if (OB_FAIL(BUF_PRINTF("%s,%s,length:%d,%s,", type_str, ObCharset::collation_name(cs_type),
                              accuracy.get_length(), is_nullable ? "NULL" : "NOT NULL"))) {
@@ -4084,6 +4302,22 @@ int ObSysFunRawExpr::get_autoinc_nextval_name(char *buf, int64_t buf_len, int64_
     if (OB_FAIL(BUF_PRINTF("%s.", autoinc_qualified_name.ptr()))) {
       LOG_WARN("fail to BUF_PRINTF", K(ret));
     }
+  }
+  return ret;
+}
+
+int ObSysFunRawExpr::set_local_session_vars(const share::schema::ObLocalSessionVar *local_var_info,
+                                            const ObBasicSessionInfo *session,
+                                            int64_t ctx_array_idx) {
+  int ret = OB_SUCCESS;
+  ObExprOperator * op = get_op();
+  local_session_var_id_ = ctx_array_idx;
+  local_session_var_.reset();
+  if (OB_ISNULL(op)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(op));
+  } else if (OB_FAIL(op->set_local_session_vars(this, local_var_info, session, local_session_var_))) {
+    LOG_WARN("fail to set local session info for expr operators", K(ret));
   }
   return ret;
 }

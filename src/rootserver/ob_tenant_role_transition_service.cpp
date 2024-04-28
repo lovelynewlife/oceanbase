@@ -302,8 +302,8 @@ int ObTenantRoleTransitionService::do_prepare_flashback_for_failover_to_primary_
                      SCN::min_scn()))) {
     LOG_WARN("failed to do_recover_tenant", KR(ret), K_(tenant_id));
     // reset error code and USER_ERROR to avoid print recover error log
-    ret = OB_ERR_UNEXPECTED;
-    LOG_USER_ERROR(OB_ERR_UNEXPECTED, "can not do recover cancel for tenant, failed to failover to primary");
+    ret = OB_OP_NOT_ALLOW;
+    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "recover cancel failed, failover to primary");
   } else if (OB_FAIL(wait_ls_balance_task_finish_())) {
     LOG_WARN("failed to wait ls balance task finish", KR(ret));
   } else if (OB_FAIL(ObAllTenantInfoProxy::update_tenant_switchover_status(
@@ -502,29 +502,81 @@ int ObTenantRoleTransitionService::get_tenant_ref_scn_(const share::SCN &sync_sc
 int ObTenantRoleTransitionService::wait_ls_balance_task_finish_()
 {
   int ret = OB_SUCCESS;
-  uint64_t compat_version = 0;
 
   if (OB_FAIL(check_inner_stat())) {
     LOG_WARN("error unexpected", KR(ret), K(tenant_id_), KP(sql_proxy_), KP(rpc_proxy_));
   } else {
+    uint64_t meta_compat_version = 0;
+    uint64_t user_compat_version = 0;
+
     ObGlobalStatProxy global_proxy(*sql_proxy_, gen_meta_tenant_id(tenant_id_));
-    if (OB_FAIL(global_proxy.get_current_data_version(compat_version))) {
+    ObGlobalStatProxy user_global_proxy(*sql_proxy_, tenant_id_);
+    if (OB_FAIL(global_proxy.get_current_data_version(meta_compat_version))) {
       LOG_WARN("failed to get current data version", KR(ret), K(tenant_id_));
-    } else if (compat_version < DATA_VERSION_4_2_0_0) {
+    } else if (meta_compat_version < DATA_VERSION_4_2_0_0) {
       //if tenant version is less than 4200, no need check
       //Regardless of the data_version change and switchover concurrency scenario
+      LOG_INFO("data version is smaller than 4200, no need check", K(meta_compat_version));
+    } else if (OB_FAIL(user_global_proxy.get_current_data_version(user_compat_version))) {
+      LOG_WARN("failed to get current data version", KR(ret), K(tenant_id_));
+    } else if (user_compat_version < DATA_VERSION_4_2_0_0) {
+      //if tenant version is less than 4200, no need check
+      //Ignore the situation where the accurate version is not obtained because the readable_scn is behind.
+      LOG_INFO("data version is smaller than 4200, no need check", K(user_compat_version));
     } else {
       bool is_finish = false;
       ObBalanceTaskHelper ls_balance_task;
+      ObBalanceTaskArray balance_task_array;
+      share::ObAllTenantInfo cur_tenant_info;
       while (!THIS_WORKER.is_timeout() && OB_SUCC(ret) && !is_finish) {
         if (FALSE_IT(ret = ObBalanceTaskHelperTableOperator::pop_task(tenant_id_,
                 *sql_proxy_, ls_balance_task))) {
         } else if (OB_ENTRY_NOT_EXIST == ret) {
           ret = OB_SUCCESS;
-          is_finish = true;
-        } else if (OB_SUCC(ret)) {
+          balance_task_array.reset();
+          /*
+             __all_balance_task_helper表被清空不代表没有transfer任务，例子：
+             租户A是主库，发起了一轮负载均衡，balance_task表里进入transfer状态但是没有结束的时候切换成备库。
+             租户B是备库，在切成主库的时候会在回放到最新的时候，把TRANSFER_BEGIN的给清理掉。
+             如果租户B作为主库的时候也执行了几轮transfer任务但是还是没有结束掉balance_task表的transfer状态。
+             这个时候租户A在切成主库的时候是没有办法判断自己是否有transfer的发生。
+             为了解决这个问题，我们去读取了__all_balance_task表，如果这个表中有处于transfer状态的任务，则一定要等回放到最新。
+             同时这里也有一个问题：可读点会不会特别落后，我们从两个方面论述A租户可读点不会有问题
+             1. 如果可以清理__all_balance_task_helper表，则可读点一定越过了表中的记录,即使B新开启了一轮负载均衡任务，那也不会有问题
+             2. 单纯的经过主切备，可读点会推高越过最新的GTS，所以肯定可以读到最新的transfer任务*/
+          if (OB_FAIL(ObBalanceTaskTableOperator::load_need_transfer_task(
+                  tenant_id_, balance_task_array, *sql_proxy_))) {
+            LOG_WARN("failed to load need transfer task", KR(ret), K(tenant_id_));
+          } else if (0 == balance_task_array.count()) {
+            is_finish = true;
+            LOG_INFO("balance task finish", K(tenant_id_));
+          } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(
+                  tenant_id_, sql_proxy_, false, cur_tenant_info))) {
+            LOG_WARN("failed to load tenant info", KR(ret), K(tenant_id_));
+          } else if (cur_tenant_info.get_sync_scn() == cur_tenant_info.get_standby_scn()) {
+            is_finish = true;
+            for (int64_t i = 0; OB_SUCC(ret) && i < balance_task_array.count() && !is_finish; ++i) {
+              const ObBalanceTask &task = balance_task_array.at(i);
+              if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(tenant_id_,
+                      task.get_src_ls_id(), task.get_dest_ls_id(), cur_tenant_info.get_sync_scn(),
+                      is_finish))) {
+                LOG_WARN("failed to check transfer task replay", KR(ret), K(cur_tenant_info), K(task));
+              } else if (!is_finish) {
+                LOG_INFO("has transfe task, and not replay to newest", K(task));
+              }
+            }//end for
+            if (OB_SUCC(ret) && is_finish) {
+            LOG_INFO("has transfer task, and replay to newest", KR(ret), K(cur_tenant_info));
+            }
+          }
+        } else if (OB_FAIL(ret)) {
+          LOG_WARN("failed to pop task", KR(ret), K(tenant_id_));
+        }
+
+        if (OB_SUCC(ret) && !is_finish) {
           usleep(100L * 1000L);
-          LOG_INFO("has balance task not finish", K(ls_balance_task));
+          LOG_INFO("has balance task not finish", K(ls_balance_task),
+              K(balance_task_array), K(cur_tenant_info));
         }
       }
       if (OB_SUCC(ret)) {
@@ -584,6 +636,7 @@ int ObTenantRoleTransitionService::do_switch_access_mode_to_raw_rw(
     LOG_WARN("fail to execute get_all_ls_status_and_change_access_mode_", KR(ret), K(tenant_info),
         K(target_access_mode), K(sys_ls_sync_scn));
   }
+  DEBUG_SYNC(AFTER_CHANGE_ACCESS_MODE);
   return ret;
 }
 
@@ -743,7 +796,6 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(
       ObGetLSAccessModeProxy proxy(
           *rpc_proxy_, &obrpc::ObSrvRpcProxy::get_ls_access_mode);
       obrpc::ObGetLSAccessModeInfoArg arg;
-      int64_t rpc_count = 0;
       ObArray<int> return_code_array;
       int tmp_ret = OB_SUCCESS;
       const uint64_t group_id = share::OBCG_DBA_COMMAND;
@@ -761,30 +813,28 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(
           //can not ignore error of each ls
           LOG_WARN("failed to send rpc", KR(ret), K(leader), K(timeout),
               K(tenant_id_), K(arg), K(group_id));
-        } else {
-          rpc_count++;
         }
         if (OB_FAIL(ret)) {
           int tmp_ret = OB_SUCCESS;
-          if (OB_SUCCESS !=(tmp_ret = GCTX.location_service_->nonblock_renew(
+          if (OB_TMP_FAIL(GCTX.location_service_->nonblock_renew(
                   GCONF.cluster_id, tenant_id_, info.ls_id_))) {
-            LOG_WARN("failed to renew location", KR(ret), K(tenant_id_), K(info));
+            LOG_WARN("failed to renew location", KR(ret), KR(tmp_ret), K(tenant_id_), K(info));
           }
         }
       }//end for
 
       //get result
-      if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_code_array))) {
+      if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
         LOG_WARN("wait all batch result failed", KR(ret), KR(tmp_ret));
         ret = OB_SUCC(ret) ? tmp_ret : ret;
       } else if (OB_FAIL(ret)) {
         //no need to process return code
-      } else if (rpc_count != return_code_array.count() ||
-                 rpc_count != proxy.get_results().count()) {
+      } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+        LOG_WARN("fail to check return cnt", KR(ret), "return_cnt", return_code_array.count());
+      } else if (status_info_array.count() != return_code_array.count()) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("rpc count not equal to result count", KR(ret),
-                 K(rpc_count), K(return_code_array), "arg count",
-                 proxy.get_args().count());
+                 K(return_code_array.count()), K(status_info_array.count()));
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {
           ret = return_code_array.at(i);
@@ -802,12 +852,11 @@ int ObTenantRoleTransitionService::get_ls_access_mode_(
             }
           }
           LOG_INFO("[ROLE_TRANSITION] get ls access mode", KR(ret), K(arg));
-       
         }
 
         if (OB_FAIL(ret)) {
           int tmp_ret = OB_SUCCESS;
-          if (OB_SUCCESS != (tmp_ret = do_nonblock_renew(status_info_array, success_ls_ids, tenant_id_))) {
+          if (OB_TMP_FAIL(do_nonblock_renew(status_info_array, success_ls_ids, tenant_id_))) {
             LOG_WARN("failed to renew location", KR(ret), KR(tmp_ret), K(tenant_id_), K(status_info_array), K(success_ls_ids));
           }
         }
@@ -869,11 +918,12 @@ int ObTenantRoleTransitionService::do_change_ls_access_mode_(
       ret = OB_SUCC(ret) ? tmp_ret : ret;
       LOG_WARN("wait all batch result failed", KR(ret), KR(tmp_ret));
     } else if (OB_FAIL(ret)) {
-    } else if (rpc_count != return_code_array.count() ||
-               rpc_count != proxy.get_results().count()) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("fail to check return cnt", KR(ret), "return_cnt", return_code_array.count());
+    } else if (rpc_count != return_code_array.count()) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("rpc count not equal to result count", KR(ret), K(rpc_count),
-               K(return_code_array), "arg count", proxy.get_args().count());
+      LOG_WARN("rpc count not equal to result count", KR(ret),
+               K(rpc_count), K(return_code_array.count()));
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {
         ret = return_code_array.at(i);
@@ -1248,7 +1298,6 @@ int ObTenantRoleTransitionService::get_checkpoints_by_rpc(const uint64_t tenant_
     ObGetLSSyncScnProxy proxy(
         *GCTX.srv_rpc_proxy_, &obrpc::ObSrvRpcProxy::get_ls_sync_scn);
     obrpc::ObGetLSSyncScnArg arg;
-    int64_t rpc_count = 0;
     const uint64_t group_id = share::OBCG_DBA_COMMAND;
     for (int64_t i = 0; OB_SUCC(ret) && i < status_info_array.count(); ++i) {
       const ObLSStatusInfo &info = status_info_array.at(i);
@@ -1263,23 +1312,21 @@ int ObTenantRoleTransitionService::get_checkpoints_by_rpc(const uint64_t tenant_
       } else if (OB_FAIL(proxy.call(leader, timeout_us, GCONF.cluster_id, tenant_id, group_id, arg))) {
         LOG_WARN("failed to send rpc", KR(ret), K(leader), K(timeout_us),
             K(tenant_id), K(arg), K(group_id));
-      } else {
-        rpc_count++;
       }
     }//end for
     //get result
     ObArray<int> return_code_array;
     int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_code_array))) {
+    if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
       LOG_WARN("wait all batch result failed", KR(ret), KR(tmp_ret));
       ret = OB_SUCCESS == ret ? tmp_ret : ret;
-    } else if (rpc_count != return_code_array.count() ||
-                rpc_count != proxy.get_results().count()) {
+    } else if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("fail to check return cnt", KR(ret), "return_cnt", return_code_array.count());
+    } else if (status_info_array.count() != return_code_array.count()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("rpc count not equal to result count", KR(ret),
-                K(rpc_count), K(return_code_array), "arg count",
-                proxy.get_args().count());
-    } else if (OB_FAIL(ret)) {
+                K(return_code_array.count()), K(return_code_array.count()));
     } else {
       ObGetLSSyncScnRes res;
       for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {
@@ -1449,16 +1496,16 @@ void ObTenantRoleTransitionService::broadcast_tenant_info(const char* const log_
     }
 
     int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_code_array))) {
+    if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
       LOG_WARN("wait all batch result failed", KR(ret), KR(tmp_ret));
       ret = OB_SUCCESS == ret ? tmp_ret : ret;
-    } else if (rpc_count != return_code_array.count() ||
-                rpc_count != proxy.get_results().count()) {
+    } else if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("fail to check return cnt", KR(ret), "return_cnt", return_code_array.count());
+    } else if (rpc_count != return_code_array.count()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("rpc count not equal to result count", KR(ret),
-                K(rpc_count), K(return_code_array), "arg count",
-                proxy.get_args().count(), K(proxy.get_results().count()));
-    } else if (OB_FAIL(ret)) {
+               K(rpc_count), K(return_code_array.count()));
     } else {
       ObRefreshTenantInfoRes res;
       for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); ++i) {

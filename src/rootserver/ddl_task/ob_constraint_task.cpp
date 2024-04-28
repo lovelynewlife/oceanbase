@@ -16,6 +16,7 @@
 #include "share/schema/ob_schema_struct.h"
 #include "share/ob_ddl_error_message_table_operator.h"
 #include "share/ob_ddl_common.h"
+#include "share/ob_ddl_sim_point.h"
 #include "storage/ddl/ob_ddl_lock.h"
 #include "rootserver/ob_root_service.h"
 #include "rootserver/ob_snapshot_info_manager.h"
@@ -67,6 +68,8 @@ int ObCheckConstraintValidationTask::process()
   } else if (OB_ISNULL(root_service)) {
     ret = OB_ERR_SYS;
     LOG_WARN("error sys, root service must not be nullptr", K(ret));
+  } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, VALIDATE_CONSTRAINT_OR_FOREIGN_KEY_TASK_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
   } else if (!check_table_empty_ && OB_ISNULL(constraint = table_schema->get_constraint(constraint_id_))) {
     ret = OB_ERR_CONTRAINT_NOT_FOUND;
     LOG_WARN("error unexpected, can not get constraint", K(ret));
@@ -153,6 +156,18 @@ int ObCheckConstraintValidationTask::process()
   if (OB_SUCCESS != (tmp_ret = root_service->get_ddl_scheduler().on_sstable_complement_job_reply(unused_tablet_id, task_key, 1L/*unused snapshot version*/, 1L/*unused execution id*/, ret, info))) {
     LOG_WARN("fail to finish check constraint task", K(ret), K(tmp_ret));
   }
+  char table_id_buffer[256];
+  snprintf(table_id_buffer, sizeof(table_id_buffer), "data_table_id:%ld, target_object_id:%ld",
+            data_table_id_, target_object_id_);
+  ROOTSERVICE_EVENT_ADD("ddl scheduler", "check constraint validation task process finish",
+    K_(tenant_id),
+    "ret", ret,
+    K_(trace_id),
+    K_(task_id),
+    K_(constraint_id),
+    K_(schema_version),
+    table_id_buffer);
+  LOG_INFO("process check constraint validation task", "ddl_event_info", ObDDLEventInfo(), K(task_id_), K(constraint_id_));
   return ret;
 }
 
@@ -189,6 +204,8 @@ int ObForeignKeyConstraintValidationTask::process()
   if (OB_ISNULL(root_service)) {
     ret = OB_ERR_SYS;
     LOG_WARN("error sys, root service must not be nullptr", K(ret));
+  } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, VALIDATE_CONSTRAINT_OR_FOREIGN_KEY_TASK_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
   } else {
     ObTabletID unused_tablet_id;
     ObDDLTaskKey task_key(tenant_id_, foregin_key_id_, schema_version_);
@@ -200,8 +217,16 @@ int ObForeignKeyConstraintValidationTask::process()
     if (OB_SUCCESS != (tmp_ret = root_service->get_ddl_scheduler().on_sstable_complement_job_reply(unused_tablet_id, task_key, 1L/*unused snapshot version*/, 1L/*unused execution id*/, ret, info))) {
       LOG_WARN("fail to finish check constraint task", K(ret));
     }
-    LOG_INFO("execute check foreign key task finish", K(ret), K(task_key), K(data_table_id_), K(foregin_key_id_));
+    LOG_INFO("execute check foreign key task finish", K(ret), "ddl_event_info", ObDDLEventInfo(), K(task_key), K(data_table_id_), K(foregin_key_id_));
   }
+  ROOTSERVICE_EVENT_ADD("ddl scheduler", "foreign key constraint validation task process finish",
+    K_(tenant_id),
+    "ret", ret,
+    K_(trace_id),
+    K_(task_id),
+    K_(foregin_key_id),
+    K_(schema_version),
+    data_table_id_);
   return ret;
 }
 
@@ -488,6 +513,7 @@ int ObConstraintTask::init(
     const int64_t schema_version,
     const ObAlterTableArg &alter_table_arg,
     const int64_t consumer_group_id,
+    const int32_t sub_task_trace_id,
     const int64_t parent_task_id,
     const int64_t status,
     const int64_t snapshot_version)
@@ -522,6 +548,7 @@ int ObConstraintTask::init(
     task_id_ = task_id;
     parent_task_id_ = parent_task_id;
     consumer_group_id_ = consumer_group_id;
+    sub_task_trace_id_ = sub_task_trace_id;
     task_version_ = OB_CONSTRAINT_TASK_VERSION;
     is_table_hidden_ = table_schema->is_user_hidden_table();
     dst_tenant_id_ = tenant_id_;
@@ -598,6 +625,8 @@ int ObConstraintTask::hold_snapshot(const int64_t snapshot_version)
   } else if (OB_UNLIKELY(snapshot_version < 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), K(snapshot_version));
+  } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, DDL_TASK_HOLD_SNAPSHOT_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
   } else if (OB_FAIL(snapshot_scn.convert_for_tx(snapshot_version))) {
     LOG_WARN("failed to convert", K(snapshot_version), K(ret));
   } else if (OB_FAIL(schema_service.get_tenant_schema_guard(tenant_id_, schema_guard))) {
@@ -635,6 +664,8 @@ int ObConstraintTask::release_snapshot(const int64_t snapshot_version)
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObConstraintTask has not been inited", K(ret));
+  } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, DDL_TASK_RELEASE_SNAPSHOT_FAILED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
   } else if (OB_FAIL(schema_service.get_tenant_schema_guard(tenant_id_, schema_guard))) {
     LOG_WARN("get tenant schema guard failed", K(ret));
   } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_, object_id_, table_schema))) {
@@ -673,7 +704,7 @@ int ObConstraintTask::wait_trans_end()
   }
 
   if (OB_SUCC(ret) && new_status != CHECK_CONSTRAINT_VALID && !wait_trans_ctx_.is_inited()) {
-    if (OB_FAIL(wait_trans_ctx_.init(tenant_id_, object_id_, ObDDLWaitTransEndCtx::WaitTransType::WAIT_SCHEMA_TRANS, schema_version_))) {
+    if (OB_FAIL(wait_trans_ctx_.init(tenant_id_, task_id_, object_id_, ObDDLWaitTransEndCtx::WaitTransType::WAIT_SCHEMA_TRANS, schema_version_))) {
       LOG_WARN("init wait trans ctx failed", K(ret));
     }
   }
@@ -1041,7 +1072,7 @@ int ObConstraintTask::report_check_constraint_error_code()
       }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(ObDDLErrorMessageTableOperator::report_ddl_error_message(error_message, tenant_id_, task_id_, object_id_, schema_version_, -1/*object id*/, GCTX.self_addr(), root_service->get_sql_proxy()))) {
+      if (OB_FAIL(ObDDLErrorMessageTableOperator::report_ddl_error_message(error_message, tenant_id_, trace_id_, task_id_, parent_task_id_, object_id_, schema_version_, -1/*object id*/, GCTX.self_addr(), root_service->get_sql_proxy()))) {
         LOG_WARN("report constraint ddl error message failed", K(ret));
       }
     }
@@ -1098,7 +1129,7 @@ int ObConstraintTask::report_foreign_key_constraint_error_code()
       }
   }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(ObDDLErrorMessageTableOperator::report_ddl_error_message(error_message, tenant_id_, task_id_, object_id_, schema_version_, -1/*object id*/, GCTX.self_addr(), root_service->get_sql_proxy()))) {
+      if (OB_FAIL(ObDDLErrorMessageTableOperator::report_ddl_error_message(error_message, tenant_id_, trace_id_, task_id_, parent_task_id_, object_id_, schema_version_, -1/*object id*/, GCTX.self_addr(), root_service->get_sql_proxy()))) {
         LOG_WARN("report constraint ddl error message failed", K(ret));
       }
     }
@@ -1115,7 +1146,9 @@ int ObConstraintTask::set_foreign_key_constraint_validated()
   obrpc::ObAlterTableRes res;
   ObArenaAllocator allocator(lib::ObLabel("ConstraiTask"));
   SMART_VAR(ObAlterTableArg, alter_table_arg) {
-    if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
+    if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_SET_VALIDATED))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
+    } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("deep copy table arg failed", K(ret));
     } else if (alter_table_arg.foreign_key_arg_list_.count() != 1) {
       ret = OB_ERR_UNEXPECTED;
@@ -1156,6 +1189,29 @@ int ObConstraintTask::set_foreign_key_constraint_validated()
   return ret;
 }
 
+int ObConstraintTask::check_column_is_nullable(const uint64_t column_id, bool &is_nullable) const
+{
+  int ret = OB_SUCCESS;
+  share::schema::ObSchemaGetterGuard schema_guard;
+  const share::schema::ObTableSchema *table_schema = nullptr;
+  const share::schema::ObColumnSchemaV2 *column_schema = nullptr;
+  if (OB_FAIL(share::schema::ObMultiVersionSchemaService::get_instance().get_tenant_schema_guard(
+      tenant_id_, schema_guard))) {
+    LOG_WARN("get tenant schema guard failed", K(ret), K(tenant_id_));
+  } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_, object_id_, table_schema))) {
+    LOG_WARN("get table schema failed", K(ret), K(tenant_id_), K(object_id_));
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("table dropped", K(ret), K(tenant_id_), K(object_id_));
+  } else if (OB_ISNULL(column_schema = table_schema->get_column_schema(column_id))) {
+    ret = OB_ERR_COLUMN_NOT_FOUND;
+    LOG_WARN("column not found", K(ret), K(column_id));
+  } else {
+    is_nullable = column_schema->is_nullable();
+  }
+  return ret;
+}
+
 int ObConstraintTask::set_check_constraint_validated()
 {
   int ret = OB_SUCCESS;
@@ -1169,6 +1225,8 @@ int ObConstraintTask::set_check_constraint_validated()
     if (OB_ISNULL(root_service)) {
       ret = OB_ERR_SYS;
       LOG_WARN("error sys, root serivce must not be nullptr", K(ret));
+    } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_SET_VALIDATED))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
     } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("deep copy table arg failed", K(ret));
     } else {
@@ -1179,8 +1237,6 @@ int ObConstraintTask::set_check_constraint_validated()
       alter_table_arg.based_schema_object_infos_.reset();
     }
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObDDLUtil::refresh_alter_table_arg(tenant_id_, object_id_, OB_INVALID_ID/*foreign_key_id*/, alter_table_arg))) {
-      LOG_WARN("failed to refresh name for alter table schema", K(ret));
     } else {
       alter_table_arg.index_arg_list_.reset();
       alter_table_arg.foreign_key_arg_list_.reset();
@@ -1211,6 +1267,7 @@ int ObConstraintTask::set_check_constraint_validated()
         alter_table_arg.alter_table_schema_.set_tenant_id(tenant_id_);
         if (is_table_hidden_) {
           if (!is_oracle_mode) {
+            // no need to refresh_alter_table_arg because MODIFY_NOT_NULL_COLUMN_STATE_TASK use constraint id instead of name
             // only mysql mode support modify not null column during offline ddl, support oracle later.
             ObSArray<uint64_t> unused_ids;
             alter_table_arg.ddl_task_type_ = share::MODIFY_NOT_NULL_COLUMN_STATE_TASK;
@@ -1224,7 +1281,6 @@ int ObConstraintTask::set_check_constraint_validated()
             }
           }
         } else {
-          // do nothing if is_table_hidden_ because schema is not set novalidate before.
           if ((obrpc::ObAlterTableArg::ADD_CONSTRAINT == alter_table_arg.alter_constraint_type_
                 && (*iter)->is_validated())
               || (obrpc::ObAlterTableArg::ALTER_CONSTRAINT_STATE == alter_table_arg.alter_constraint_type_
@@ -1232,10 +1288,14 @@ int ObConstraintTask::set_check_constraint_validated()
             alter_table_arg.exec_tenant_id_ = tenant_id_;
             uint64_t column_id = OB_INVALID_ID;
             if (is_oracle_mode) {
-              alter_table_arg.alter_constraint_type_ = obrpc::ObAlterTableArg::ALTER_CONSTRAINT_STATE;
-              (*iter)->set_is_modify_validate_flag(true);
-              (*iter)->set_validate_flag(CST_FK_VALIDATED);
-              (*iter)->set_need_validate_data(false);
+              if (OB_FAIL(ObDDLUtil::refresh_alter_table_arg(tenant_id_, object_id_, OB_INVALID_ID/*foreign_key_id*/, alter_table_arg))) {
+                LOG_WARN("failed to refresh name for alter table schema", K(ret));
+              } else {
+                alter_table_arg.alter_constraint_type_ = obrpc::ObAlterTableArg::ALTER_CONSTRAINT_STATE;
+                (*iter)->set_is_modify_validate_flag(true);
+                (*iter)->set_validate_flag(CST_FK_VALIDATED);
+                (*iter)->set_need_validate_data(false);
+              }
             } else {
               alter_table_arg.alter_constraint_type_ = obrpc::ObAlterTableArg::DROP_CONSTRAINT;
               if (OB_ISNULL((*iter)->cst_col_begin())) {
@@ -1256,12 +1316,35 @@ int ObConstraintTask::set_check_constraint_validated()
                   column->drop_not_null_cst();
                 }
               }
+              if (OB_FAIL(ret)) {
+              } else if (OB_UNLIKELY(OB_INVALID_ID == column_id)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("invalid column id", K(ret), K(alter_table_arg), K(column_id));
+              } else if (OB_FAIL(ObDDLUtil::refresh_alter_table_arg(tenant_id_, object_id_, OB_INVALID_ID/*foreign_key_id*/, alter_table_arg))) {
+                if (OB_ERR_CONTRAINT_NOT_FOUND == ret) {
+                  bool is_nullable = false;
+                  if (OB_FAIL(check_column_is_nullable(column_id, is_nullable))) { // overwrite ret
+                    LOG_WARN("failed to check column is nullable", K(ret));
+                  } else if (is_nullable) {
+                    ret = OB_ERR_CONTRAINT_NOT_FOUND;
+                    LOG_WARN("column is nullable without constraint, maybe constraint dropped by others", K(ret));
+                  } else {
+                    ret = OB_NO_NEED_UPDATE;
+                    LOG_INFO("already not null, maybe on retry", K(target_object_id_), K(column_id));
+                  }
+                } else {
+                  LOG_WARN("failed to refresh name for alter table schema", K(ret));
+                }
+              }
             }
             DEBUG_SYNC(CONSTRAINT_BEFORE_SET_CHECK_CONSTRAINT_VALIDATED_BEFORE_ALTER_TABLE);
             if (OB_FAIL(ret)) {
             } else if (OB_FAIL(root_service->get_ddl_service().get_common_rpc()->to(obrpc::ObRpcProxy::myaddr_).timeout(rpc_timeout).
                 alter_table(alter_table_arg, res))) {
               LOG_WARN("alter table failed", K(ret));
+            }
+            if (OB_NO_NEED_UPDATE == ret) {
+              ret = OB_SUCCESS;
             }
           }
         }
@@ -1283,6 +1366,8 @@ int ObConstraintTask::set_new_not_null_column_validate()
     if (OB_ISNULL(root_service)) {
       ret = OB_ERR_SYS;
       LOG_WARN("error sys, root serivce must not be nullptr", K(ret));
+    } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_SET_VALIDATED))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
     } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("deep copy table arg failed", K(ret));
     } else {
@@ -1368,7 +1453,9 @@ int ObConstraintTask::rollback_failed_check_constraint()
   obrpc::ObAlterTableRes tmp_res;
   ObArenaAllocator allocator(lib::ObLabel("ConstraiTask"));
   SMART_VAR(ObAlterTableArg, alter_table_arg) {
-    if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
+    if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_ROLL_BACK_SCHEMA))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
+    } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("fail to deep copy table arg", K(ret));
     } else {
       alter_table_arg.based_schema_object_infos_.reset();
@@ -1447,7 +1534,9 @@ int ObConstraintTask::rollback_failed_foregin_key()
   ObCreateForeignKeyArg &fk_arg = alter_table_arg_.foreign_key_arg_list_.at(0);
   SMART_VAR(ObAlterTableArg, alter_table_arg) {
     ObArenaAllocator allocator(lib::ObLabel("ConstraiTask"));
-    if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
+    if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_ROLL_BACK_SCHEMA))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
+    } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("deep copy table arg failed", K(ret));
     } else if (FALSE_IT(alter_table_arg.based_schema_object_infos_.reset())) {
     } else if (!is_table_hidden_ && OB_FAIL(ObDDLUtil::refresh_alter_table_arg(tenant_id_, object_id_, target_object_id_, alter_table_arg))) {
@@ -1533,7 +1622,9 @@ int ObConstraintTask::rollback_failed_add_not_null_columns()
   bool first_alter_clause = true;
   ObArenaAllocator allocator(lib::ObLabel("ConstraiTask"));
   SMART_VAR(ObAlterTableArg, alter_table_arg) {
-    if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
+    if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_ROLL_BACK_SCHEMA))) {
+      LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
+    } else if (OB_FAIL(deep_copy_table_arg(allocator, alter_table_arg_, alter_table_arg))) {
       LOG_WARN("deep copy table arg failed", K(ret));
     } else if (OB_ISNULL(buf = static_cast<char *>(allocator.alloc(buf_len)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1777,6 +1868,8 @@ int ObConstraintTask::set_constraint_validated()
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObConstraintTask has not been inited", K(ret));
+  } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, CONSTRAINT_TASK_SET_VALIDATED))) {
+    LOG_WARN("ddl sim failure", K(ret), K(tenant_id_), K(task_id_));
   } else if (task_type_ == ObDDLType::DDL_CHECK_CONSTRAINT) {
     if (OB_FAIL(set_check_constraint_validated())) {
       LOG_WARN("set check constraint validated failed", K(ret));
@@ -1838,6 +1931,10 @@ int ObConstraintTask::process()
         LOG_WARN("error unexpected, task status is not valid", K(ret), K(ret), K(task_status_));
     }
     ddl_tracing_.release_span_hierarchy();
+  }
+  if (OB_FAIL(ret)) {
+    add_event_info("constraint task process fail");
+    LOG_INFO("process constraint task fail", "ddl_event_info", ObDDLEventInfo());
   }
   return ret;
 }

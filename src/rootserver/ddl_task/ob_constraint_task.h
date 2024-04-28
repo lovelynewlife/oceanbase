@@ -98,6 +98,7 @@ public:
       const int64_t schema_version,
       const obrpc::ObAlterTableArg &alter_table_arg,
       const int64_t consumer_group_id,
+      const int32_t sub_task_trace_id,
       const int64_t parent_task_id = 0,
       const int64_t status = share::ObDDLTaskStatus::WAIT_TRANS_END,
       const int64_t snapshot_version = 0);
@@ -120,6 +121,7 @@ private:
   int send_check_constraint_request();
   int send_fk_constraint_request();
   int set_foreign_key_constraint_validated();
+  int check_column_is_nullable(const uint64_t column_id, bool &is_nullable) const;
   int set_check_constraint_validated();
   int set_constraint_validated();
   int set_new_not_null_column_validate();

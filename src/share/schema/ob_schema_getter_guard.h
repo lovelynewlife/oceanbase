@@ -164,6 +164,9 @@ public:
       bool with_global_index = true,
       bool with_domain_index = true,
       bool with_spatial_index = true);
+  int get_table_mlog_schema(const uint64_t tenant_id,
+                            const uint64_t data_table_id,
+                            const ObTableSchema *&mlog_schema);
   int check_has_local_unique_index(
       const uint64_t tenant_id,
       const uint64_t table_id,
@@ -466,7 +469,8 @@ public:
                                 const uint64_t table_id,
                                 uint64_t *index_tid_array,
                                 int64_t &size,
-                                bool only_global = false);
+                                bool only_global = false,
+                                bool with_mlog = false);
 
   // for readonly
   int verify_read_only(const uint64_t tenant_id, const ObStmtNeedPrivs &stmt_need_privs);
@@ -1007,8 +1011,6 @@ public:
   bool is_tenant_schema_guard() const { return common::OB_INVALID_TENANT_ID != tenant_id_; }
   uint64_t get_tenant_id() const { return tenant_id_; }
 
-  int get_tenant_mv_ids(const uint64_t tenant_id, common::ObArray<uint64_t> &mv_ids) const;
-
   SchemaGuardType get_schema_guard_type() const { return schema_guard_type_; }
 
   bool is_standby_cluster() { return is_standby_cluster_; }
@@ -1021,6 +1023,7 @@ public:
   int check_tenant_is_restore(const uint64_t tenant_id, bool &is_restore);
   int get_tenant_status(const uint64_t tenant_id, ObTenantStatus &status);
   int check_if_tenant_has_been_dropped(const uint64_t tenant_id, bool &is_dropped);
+  int get_dropped_tenant_ids(common::ObIArray<uint64_t> &dropped_tenant_ids) const;
   int check_is_creating_standby_tenant(const uint64_t tenant_id, bool &is_creating_standby);
 
   int check_keystore_exist(const uint64_t tenant_id, bool &exist);

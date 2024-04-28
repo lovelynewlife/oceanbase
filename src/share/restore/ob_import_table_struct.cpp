@@ -422,7 +422,7 @@ int ObImportTableTask::fill_dml(share::ObDMLSqlSplicer &dml) const
   if (OB_SUCC(ret) && status_.is_finish()) {
     if (FAILEDx(dml.add_column(OB_STR_RESULT, result_.get_result_str()))) {
       LOG_WARN("failed to add column", K(ret));
-    } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, result_.get_comment()))) {
+    } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, ObHexEscapeSqlStr(result_.get_comment_str())))) {
       LOG_WARN("failed to add column", K(ret));
     }
   }
@@ -726,7 +726,7 @@ int ObImportTableJob::fill_dml(share::ObDMLSqlSplicer &dml) const
     LOG_WARN("failed to add column", K(ret));
   } else if (OB_FAIL(dml.add_column("import_all", import_all))) {
     LOG_WARN("failed to add column", K(ret));
-  } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, result_.get_comment()))) {
+  } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, ObHexEscapeSqlStr(result_.get_comment())))) {
     LOG_WARN("failed to add column", K(ret));
   }
   FILL_INT_COLUMN(initiator_tenant_id)
@@ -867,6 +867,7 @@ const char* ObRecoverTableStatus::get_str() const
     "PREPARE",
     "RECOVERING",
     "RESTORE_AUX_TENANT",
+    "ACTIVE_AUX_TENANT",
     "PRECHECK_IMPORT",
     "GEN_IMPORT_JOB",
     "IMPORTING",
@@ -892,6 +893,7 @@ int ObRecoverTableStatus::set_status(const char *str)
     "PREPARE",
     "RECOVERING",
     "RESTORE_AUX_TENANT",
+    "ACTIVE_AUX_TENANT",
     "PRECHECK_IMPORT",
     "GEN_IMPORT_JOB",
     "IMPORTING",
@@ -945,6 +947,10 @@ ObRecoverTableStatus ObRecoverTableStatus::get_user_next_status(const ObRecoverT
       break;
     }
     case ObRecoverTableStatus::Status::RESTORE_AUX_TENANT: {
+      ret = ObRecoverTableStatus::Status::ACTIVE_AUX_TENANT;
+      break;
+    }
+    case ObRecoverTableStatus::Status::ACTIVE_AUX_TENANT: {
       ret = ObRecoverTableStatus::Status::GEN_IMPORT_JOB;
       break;
     }
@@ -1292,7 +1298,7 @@ int ObRecoverTableJob::fill_dml(share::ObDMLSqlSplicer &dml) const
   if (OB_SUCC(ret) && status_.is_finish()) {
     if (OB_FAIL(dml.add_column(OB_STR_RESULT, result_.get_result_str()))) {
       LOG_WARN("failed to add column", K(ret));
-    } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, result_.get_comment()))) {
+    } else if (OB_FAIL(dml.add_column(OB_STR_COMMENT, ObHexEscapeSqlStr(result_.get_comment())))) {
       LOG_WARN("failed to add column", K(ret));
     }
   }

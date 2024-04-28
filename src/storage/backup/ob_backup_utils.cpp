@@ -36,7 +36,9 @@
 #include "share/scn.h"
 #include "share/backup/ob_backup_data_table_operator.h"
 #include "storage/blocksstable/ob_logic_macro_id.h"
+#include "storage/column_store/ob_column_oriented_sstable.h"
 #include "storage/backup/ob_backup_data_store.h"
+#include "storage/ddl/ob_ddl_merge_task.h"
 
 #include <algorithm>
 
@@ -76,7 +78,7 @@ int ObBackupUtils::calc_start_replay_scn(
 }
 
 int ObBackupUtils::get_sstables_by_data_type(const storage::ObTabletHandle &tablet_handle, const share::ObBackupDataType &backup_data_type,
-    const storage::ObTabletTableStore &tablet_table_store, common::ObIArray<storage::ObITable *> &sstable_array)
+    const storage::ObTabletTableStore &tablet_table_store, common::ObIArray<storage::ObSSTableWrapper> &sstable_array)
 {
   int ret = OB_SUCCESS;
   sstable_array.reset();
@@ -88,13 +90,13 @@ int ObBackupUtils::get_sstables_by_data_type(const storage::ObTabletHandle &tabl
     const storage::ObSSTableArray *major_sstable_array_ptr = NULL;
     minor_sstable_array_ptr = &tablet_table_store.get_minor_sstables();
     major_sstable_array_ptr = &tablet_table_store.get_major_sstables();
-    ObArray<storage::ObITable *> minor_sstable_array;
-    ObArray<storage::ObITable *> major_sstable_array;
-    if (OB_FAIL(minor_sstable_array_ptr->get_all_tables(minor_sstable_array))) {
+    ObArray<storage::ObSSTableWrapper> minor_sstable_array;
+    ObArray<storage::ObSSTableWrapper> major_sstable_array;
+    if (OB_FAIL(minor_sstable_array_ptr->get_all_table_wrappers(minor_sstable_array))) {
       LOG_WARN("failed to get all tables", K(ret), KPC(minor_sstable_array_ptr));
     } else if (OB_FAIL(check_tablet_minor_sstable_validity_(tablet_handle, minor_sstable_array))) {
       LOG_WARN("failed to check tablet minor sstable validity", K(ret), K(tablet_handle), K(minor_sstable_array));
-    } else if (OB_FAIL(major_sstable_array_ptr->get_all_tables(major_sstable_array))) {
+    } else if (OB_FAIL(major_sstable_array_ptr->get_all_table_wrappers(major_sstable_array, true/*unpack_table*/))) {
       LOG_WARN("failed to get all tables", K(ret), KPC(minor_sstable_array_ptr));
     } else if (OB_FAIL(append(sstable_array, minor_sstable_array))) {
       LOG_WARN("failed to append", K(ret), K(minor_sstable_array));
@@ -106,11 +108,11 @@ int ObBackupUtils::get_sstables_by_data_type(const storage::ObTabletHandle &tabl
     const storage::ObSSTableArray *ddl_sstable_array_ptr = NULL;
     minor_sstable_array_ptr = &tablet_table_store.get_minor_sstables();
     ddl_sstable_array_ptr = &tablet_table_store.get_ddl_sstables();
-    ObArray<storage::ObITable *> minor_sstable_array;
-    ObArray<storage::ObITable *> ddl_sstable_array;
-    if (OB_FAIL(minor_sstable_array_ptr->get_all_tables(minor_sstable_array))) {
+    ObArray<storage::ObSSTableWrapper> minor_sstable_array;
+    ObArray<storage::ObSSTableWrapper> ddl_sstable_array;
+    if (OB_FAIL(minor_sstable_array_ptr->get_all_table_wrappers(minor_sstable_array))) {
       LOG_WARN("failed to get all tables", K(ret), KPC(minor_sstable_array_ptr));
-    } else if (OB_FAIL(ddl_sstable_array_ptr->get_all_tables(ddl_sstable_array))) {
+    } else if (OB_FAIL(ddl_sstable_array_ptr->get_all_table_wrappers(ddl_sstable_array))) {
       LOG_WARN("failed to get all tables", K(ret), KPC(ddl_sstable_array_ptr));
     } else if (OB_FAIL(check_tablet_minor_sstable_validity_(tablet_handle, minor_sstable_array))) {
       LOG_WARN("failed to check tablet minor sstable validity", K(ret), K(tablet_handle), K(minor_sstable_array));
@@ -125,9 +127,10 @@ int ObBackupUtils::get_sstables_by_data_type(const storage::ObTabletHandle &tabl
     const storage::ObSSTableArray *major_sstable_array_ptr = NULL;
     major_sstable_array_ptr = &tablet_table_store.get_major_sstables();
     ObITable *last_major_sstable_ptr = NULL;
+    ObArenaAllocator tmp_allocator("backup_medium", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
     bool with_major_sstable = true;
-    common::ObArenaAllocator allocator;
     compaction::ObMediumCompactionInfoList medium_info_list;
+    ObSSTableWrapper major_wrapper;
 
     if (OB_ISNULL(last_major_sstable_ptr = major_sstable_array_ptr->get_boundary_table(true /*last*/))) {
       if (OB_FAIL(check_tablet_with_major_sstable(tablet_handle, with_major_sstable))) {
@@ -137,15 +140,21 @@ int ObBackupUtils::get_sstables_by_data_type(const storage::ObTabletHandle &tabl
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("last major sstable should not be null", K(ret), K(tablet_handle));
       }
-    } else if (OB_FAIL(tablet_handle.get_obj()->get_medium_info_list(allocator, medium_info_list))) {
-      LOG_WARN("failed to get mediumn info list", K(ret));
+    } else if (OB_FAIL(tablet_handle.get_obj()->get_medium_info_list(tmp_allocator, medium_info_list))) {
+      LOG_WARN("failed to load medium info list", K(ret));
     } else if (medium_info_list.get_last_compaction_scn() > 0
         && medium_info_list.get_last_compaction_scn() != last_major_sstable_ptr->get_snapshot_version()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("medium list is invalid for last major sstable", K(ret), K(medium_info_list),
           KPC(last_major_sstable_ptr), K(tablet_handle));
-    } else if (OB_FAIL(sstable_array.push_back(last_major_sstable_ptr))) {
-      LOG_WARN("failed to push back", K(ret), KPC(last_major_sstable_ptr));
+    } else if (last_major_sstable_ptr->is_co_sstable()) {
+      if (OB_FAIL(static_cast<ObCOSSTableV2 *>(last_major_sstable_ptr)->get_all_tables(sstable_array))) {
+        LOG_WARN("failed to get all cg tables from co table", K(ret), KPC(last_major_sstable_ptr));
+      }
+    } else if (OB_FAIL(major_wrapper.set_sstable(static_cast<ObSSTable *>(last_major_sstable_ptr)))) {
+      LOG_WARN("failed to set major wrapper", K(ret), KPC(last_major_sstable_ptr));
+    } else if (OB_FAIL(sstable_array.push_back(major_wrapper))) {
+      LOG_WARN("failed to push back", K(ret), K(major_wrapper));
     }
   }
   return ret;
@@ -173,16 +182,21 @@ int ObBackupUtils::fetch_macro_block_logic_id_list(const storage::ObTabletHandle
   logic_id_list.reset();
   ObArenaAllocator allocator;
   ObDatumRange datum_range;
+  const storage::ObITableReadInfo *index_read_info = &tablet_handle.get_obj()->get_rowkey_read_info();
+
   SMART_VAR(ObSSTableSecMetaIterator, meta_iter)
   {
     if (!sstable.is_valid()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("get invalid args", K(ret), K(sstable));
     } else if (FALSE_IT(datum_range.set_whole_range())) {
+    } else if (sstable.is_normal_cg_sstable() &&
+        OB_FAIL(MTL(ObTenantCGReadInfoMgr *)->get_index_read_info(index_read_info))) {
+      LOG_WARN("failed to get index read info from ObTenantCGReadInfoMgr", K(ret), K(sstable));
     } else if (OB_FAIL(meta_iter.open(datum_range,
                    ObMacroBlockMetaType::DATA_BLOCK_META,
                    sstable,
-                   tablet_handle.get_obj()->get_rowkey_read_info(),
+                   *index_read_info,
                    allocator))) {
       LOG_WARN("failed to open sec meta iterator", K(ret));
     } else {
@@ -260,7 +274,7 @@ int ObBackupUtils::report_task_result(const int64_t job_id, const int64_t task_i
 }
 
 int ObBackupUtils::check_tablet_minor_sstable_validity_(const storage::ObTabletHandle &tablet_handle,
-    const common::ObIArray<storage::ObITable *> &minor_sstable_array)
+    const common::ObIArray<storage::ObSSTableWrapper> &minor_sstable_array)
 {
   int ret = OB_SUCCESS;
   ObTablet *tablet = NULL;
@@ -288,7 +302,7 @@ int ObBackupUtils::check_tablet_minor_sstable_validity_(const storage::ObTabletH
   if (OB_FAIL(ret)) {
   } else if (minor_sstable_array.empty()) {
     // do nothing
-  } else if (OB_ISNULL(last_table_ptr = minor_sstable_array.at(minor_sstable_array.count() - 1))) {
+  } else if (OB_ISNULL(last_table_ptr = minor_sstable_array.at(minor_sstable_array.count() - 1).get_sstable())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get invalid table ptr", K(ret), K(minor_sstable_array));
   } else if (!last_table_ptr->is_minor_sstable()) {
@@ -305,34 +319,38 @@ int ObBackupUtils::check_tablet_minor_sstable_validity_(const storage::ObTabletH
 }
 
 int ObBackupUtils::check_tablet_ddl_sstable_validity_(const storage::ObTabletHandle &tablet_handle,
-    const common::ObIArray<storage::ObITable *> &ddl_sstable_array)
+    const common::ObIArray<storage::ObSSTableWrapper> &ddl_sstable_array)
 {
   int ret = OB_SUCCESS;
   ObTablet *tablet = NULL;
   ObITable *last_table_ptr = NULL;
-  SCN tablet_ddl_checkpoint_scn = SCN::min_scn();
-  if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+  SCN ddl_start_scn = SCN::min_scn();
+  SCN ddl_checkpoint_scn = SCN::min_scn();
+  ObTableStoreIterator ddl_table_iter;
+  bool is_data_complete = false;
+  if (ddl_sstable_array.empty()) {
+    // do nothing
+  } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid tablet handle", K(ret), K(tablet_handle));
-  } else {
-    const ObTabletMeta &tablet_meta = tablet->get_tablet_meta();
-    tablet_ddl_checkpoint_scn = tablet_meta.ddl_checkpoint_scn_;
-  }
-  if (OB_FAIL(ret)) {
-  } else if (ddl_sstable_array.empty()) {
-    // do nothing
-  } else if (OB_ISNULL(last_table_ptr = ddl_sstable_array.at(ddl_sstable_array.count() - 1))) {
+  } else if (FALSE_IT(ddl_start_scn = tablet->get_tablet_meta().ddl_start_scn_)) {
+  } else if (FALSE_IT(ddl_checkpoint_scn = tablet->get_tablet_meta().ddl_checkpoint_scn_)) {
+  } else if (OB_ISNULL(last_table_ptr = ddl_sstable_array.at(ddl_sstable_array.count() - 1).get_sstable())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get invalid table ptr", K(ret), K(ddl_sstable_array));
   } else if (!last_table_ptr->is_ddl_dump_sstable()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table ptr not correct", K(ret), KPC(last_table_ptr));
+  } else if (OB_FAIL(tablet_handle.get_obj()->get_ddl_sstables(ddl_table_iter))) {
+    LOG_WARN("failed to get ddl sstables", K(ret), K(tablet_handle));
+  } else if (OB_FAIL(ObTabletDDLUtil::check_data_integrity(ddl_table_iter, ddl_start_scn, ddl_checkpoint_scn, is_data_complete))) {
+    LOG_WARN("failed to check data integrity", K(ret), K(ddl_start_scn), K(ddl_checkpoint_scn));
+  } else if (!is_data_complete) {
+    ret = OB_INVALID_TABLE_STORE;
+    LOG_WARN("get invalid ddl table store", K(ret), K(tablet_handle), K(ddl_sstable_array), K(ddl_table_iter));
   } else {
-    const ObITable::TableKey &table_key = last_table_ptr->get_key();
-    if (table_key.get_end_scn() != tablet_ddl_checkpoint_scn) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("tablet meta is not valid", K(ret), K(table_key), K(tablet_ddl_checkpoint_scn));
-    }
+    LOG_INFO("check data intergirty", K(tablet_handle), K(ddl_start_scn),
+        K(ddl_checkpoint_scn), K(ddl_table_iter), K(is_data_complete));
   }
   return ret;
 }
@@ -507,9 +525,9 @@ void ObBackupTabletCtx::print_ctx()
   LOG_INFO("print ctx", K_(total_tablet_meta_count), K_(finish_tablet_meta_count), K_(total_sstable_meta_count),
       K_(finish_sstable_meta_count), K_(reused_macro_block_count), K_(total_macro_block_count),
       K_(finish_macro_block_count), K_(is_all_loaded), "sstable_count", mappings_.sstable_count_);
-  for (int64_t i = 0; i < mappings_.sstable_count_; ++i) {
-    ObBackupMacroBlockIDMapping &mapping = mappings_.id_map_list_[i];
-    LOG_INFO("print backup macro block id mapping", K(i), K(mapping));
+  for (int64_t i = 0; i < mappings_.id_map_list_.count(); ++i) {
+    ObBackupMacroBlockIDMapping *mapping = mappings_.id_map_list_[i];
+    LOG_INFO("print backup macro block id mapping", K(i), KPC(mapping));
   }
 }
 
@@ -523,23 +541,26 @@ int ObBackupTabletCtx::record_macro_block_physical_id(const storage::ObITable::T
     LOG_WARN("get invalid args", K(ret), K(table_key), K(logic_id));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < mappings_.sstable_count_; ++i) {
-    ObBackupMacroBlockIDMapping &mapping = mappings_.id_map_list_[i];
-    if (mapping.table_key_ == table_key) {
+    ObBackupMacroBlockIDMapping *mapping = mappings_.id_map_list_[i];
+    if (OB_ISNULL(mapping)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("id mapping should not be null", K(ret), K(i), KPC(mapping));
+    } else if (mapping->table_key_ == table_key) {
       found = true;
       int64_t idx = 0;
-      if (!mapping.map_.created()) {
+      if (!mapping->map_.created()) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("id map not created", K(ret), K(i));
-      } else if (OB_FAIL(mapping.map_.get_refactored(logic_id, idx))) {
+      } else if (OB_FAIL(mapping->map_.get_refactored(logic_id, idx))) {
         LOG_WARN("failed to get refactored", K(ret), K(i), K(logic_id));
-      } else if (idx >= mapping.id_pair_list_.count()) {
+      } else if (idx >= mapping->id_pair_list_.count()) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("idx out of range", K(ret), K(idx), K(i), "array_count", mapping.id_pair_list_.count());
+        LOG_WARN("idx out of range", K(ret), K(idx), K(i), "array_count", mapping->id_pair_list_.count());
       } else {
         ObBackupMacroBlockIDPair pair;
         pair.logic_id_ = logic_id;
         pair.physical_id_ = physical_id;
-        mapping.id_pair_list_.at(idx) = pair;
+        mapping->id_pair_list_.at(idx) = pair;
         LOG_INFO("record macro block id", K(table_key), K(logic_id), K(physical_id));
       }
     }
@@ -599,7 +620,7 @@ int ObBackupTabletStat::init(const uint64_t tenant_id, const int64_t backup_set_
 
 int ObBackupTabletStat::prepare_tablet_sstables(const uint64_t tenant_id, const share::ObBackupDataType &backup_data_type,
     const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
-    const common::ObIArray<storage::ObITable *> &sstable_array)
+    const common::ObIArray<storage::ObSSTableWrapper> &sstable_array)
 {
   int ret = OB_SUCCESS;
   ObMutexGuard guard(mutex_);
@@ -616,29 +637,30 @@ int ObBackupTabletStat::prepare_tablet_sstables(const uint64_t tenant_id, const 
   } else if (backup_data_type.type_ != backup_data_type_.type_) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("backup data type not match", K(backup_data_type), K(backup_data_type_));
-  } else {
-    stat->mappings_.version_ = ObBackupMacroBlockIDMappingsMeta::MAPPING_META_VERSION_V1;
-    stat->mappings_.sstable_count_ = sstable_array.count();
-    for (int64_t i = 0; OB_SUCC(ret) && i < sstable_array.count(); ++i) {
-      ObITable *table_ptr = sstable_array.at(i);
-      if (OB_ISNULL(table_ptr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("table ptr should not be null", K(ret), K(i), K(sstable_array));
-      } else if (!table_ptr->is_sstable()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("table is not sstable", K(ret), KPC(table_ptr));
+  } else if (FALSE_IT(stat->mappings_.version_ = ObBackupMacroBlockIDMappingsMeta::MAPPING_META_VERSION_V1)) {
+  } else if (OB_FAIL(stat->mappings_.prepare_id_mappings(sstable_array.count()))) {
+    LOG_WARN("failed to prepare id mappings", K(ret), K(sstable_array.count()), K(stat->mappings_));
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < sstable_array.count(); ++i) {
+    ObSSTable *sstable_ptr = sstable_array.at(i).get_sstable();
+    if (OB_ISNULL(sstable_ptr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table ptr should not be null", K(ret), K(i), K(sstable_array));
+    } else if (!sstable_ptr->is_sstable()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table is not sstable", K(ret), KPC(sstable_ptr));
+    } else {
+      // TODO(COLUMN_STORE) Attention !!! MajorSSTable in column store canbe COSSTable, maybe should adapt here.
+      const ObITable::TableKey &table_key = sstable_ptr->get_key();
+      ObBackupMacroBlockIDMapping *id_mapping = stat->mappings_.id_map_list_[i];
+      common::ObArray<ObLogicMacroBlockId> logic_id_list;
+      if (OB_FAIL(ObBackupUtils::fetch_macro_block_logic_id_list(tablet_handle, *sstable_ptr, logic_id_list))) {
+        LOG_WARN("failed to fetch macro block logic id list", K(ret), K(tablet_handle), KPC(sstable_ptr));
+      } else if (OB_FAIL(id_mapping->prepare_tablet_sstable(tenant_id, table_key, logic_id_list))) {
+        LOG_WARN("failed to prepare tablet sstable", K(ret), K(table_key), K(logic_id_list));
       } else {
-        const ObITable::TableKey &table_key = table_ptr->get_key();
-        ObBackupMacroBlockIDMapping &id_mapping = stat->mappings_.id_map_list_[i];
-        common::ObArray<ObLogicMacroBlockId> logic_id_list;
-        ObSSTable *sstable_ptr = static_cast<ObSSTable *>(table_ptr);
-        if (OB_FAIL(ObBackupUtils::fetch_macro_block_logic_id_list(tablet_handle, *sstable_ptr, logic_id_list))) {
-          LOG_WARN("failed to fetch macro block logic id list", K(ret), K(tablet_handle), KPC(sstable_ptr));
-        } else if (OB_FAIL(id_mapping.prepare_tablet_sstable(tenant_id, table_key, logic_id_list))) {
-          LOG_WARN("failed to prepare tablet sstable", K(ret), K(table_key), K(logic_id_list));
-        } else {
-          LOG_INFO("prepare tablet sstable", K(backup_data_type), K(tablet_id), K(table_key), K(logic_id_list));
-        }
+        LOG_INFO("prepare tablet sstable", K(backup_data_type), K(tablet_id), K(table_key), K(logic_id_list));
       }
     }
   }
@@ -954,6 +976,8 @@ int ObBackupTabletStat::get_tablet_stat_(
         LOG_WARN("failed to alloc stat", K(ret));
       } else if (OB_FAIL(stat_map_.set_refactored(tablet_id, stat, 1))) {
         LOG_WARN("failed to set refactored", K(ret), K(tablet_id), KPC(stat));
+        free_stat_(stat);
+        stat = nullptr;
       } else {
         stat->mappings_.version_ = ObBackupMacroBlockIDMappingsMeta::MAPPING_META_VERSION_V1;
       }
@@ -1685,7 +1709,7 @@ int ObBackupTabletProvider::prepare_tablet_(const uint64_t tenant_id, const shar
 {
   int ret = OB_SUCCESS;
   total_count = 0;
-  ObArray<storage::ObITable *> sstable_array;
+  ObArray<storage::ObSSTableWrapper> sstable_array;
   ObTabletHandle tablet_handle;
   bool is_normal = false;
   bool can_explain = false;
@@ -1730,13 +1754,13 @@ int ObBackupTabletProvider::prepare_tablet_(const uint64_t tenant_id, const shar
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < sstable_array.count(); ++i) {
       int64_t count = 0;
-      ObITable *table_ptr = sstable_array.at(i);
-      if (OB_ISNULL(table_ptr)) {
+      ObSSTable *sstable = sstable_array.at(i).get_sstable();
+      if (OB_ISNULL(sstable)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("table should not be null", K(ret));
-      } else {
-        const ObITable::TableKey &table_key = table_ptr->get_key();
-        ObSSTable *sstable = static_cast<ObSSTable *>(table_ptr);
+      } else  {
+        // TODO(COLUMN_STORE) Attention !!! MajorSSTable in column store canbe COSSTable, maybe should adapt here.
+        const ObITable::TableKey &table_key = sstable->get_key();
         if (OB_FAIL(fetch_all_logic_macro_block_id_(tablet_id, tablet_handle, table_key, *sstable, count))) {
           LOG_WARN("failed to fetch all logic macro block id", K(ret), K(tablet_id), K(tablet_handle), K(table_key));
         } else {
@@ -1778,7 +1802,7 @@ int ObBackupTabletProvider::check_tx_data_can_explain_user_data_(
   // If tablet has no minor sstable, or has no uncommitted row in sstable, it's also no need to check tx_data.
   // The condition that tx_data can explain user data is that tx_data_table's filled_tx_scn is less than the
   // minimum tablet's minor sstable's filled_tx_scn.
-  // TODO(chongrong.th): 4.3 But when transfer supports not killing transaction, minor sstable may have uncommitted rows and it's
+  // TODO(zeyong): 4.3 But when transfer supports not killing transaction, minor sstable may have uncommitted rows and it's
   // filled_tx_scn may less than tx_data_table's filled_tx_scn, which is a bad case. Fix this in future by handora.qc.
 
   if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
@@ -2018,7 +2042,7 @@ int ObBackupTabletProvider::hold_tablet_handle_(
 
 int ObBackupTabletProvider::fetch_tablet_sstable_array_(const common::ObTabletID &tablet_id,
     const storage::ObTabletHandle &tablet_handle, const ObTabletTableStore &table_store,
-    const share::ObBackupDataType &backup_data_type, common::ObIArray<storage::ObITable *> &sstable_array)
+    const share::ObBackupDataType &backup_data_type, common::ObIArray<storage::ObSSTableWrapper> &sstable_array)
 {
   int ret = OB_SUCCESS;
   sstable_array.reset();
@@ -2050,6 +2074,10 @@ int ObBackupTabletProvider::prepare_tablet_logic_id_reader_(const common::ObTabl
     LOG_WARN("failed to init reader", K(ret), K(tablet_id), K(tablet_handle), K(table_key));
   } else {
     reader = tmp_reader;
+    tmp_reader = NULL;
+  }
+  if (OB_NOT_NULL(tmp_reader)) {
+    ObLSBackupFactory::free(tmp_reader);
   }
   return ret;
 }

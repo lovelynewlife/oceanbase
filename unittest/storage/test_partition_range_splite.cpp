@@ -1,10 +1,13 @@
 /**
- * (C) Copyright 2017-2020 OceanBase Inc. All Rights Reserved.
- *
- * test_partition_range_spliter.cpp
- *
- * Authors: chaser.ch
- *
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 
@@ -51,6 +54,8 @@ using namespace rpc::frame;
 using namespace memtable;
 namespace storage
 {
+
+static ObArenaAllocator global_allocator_;
 
 class TestRangeSpliter: public ObMultiVersionSSTableTest
 {
@@ -297,7 +302,7 @@ void TestRangeSpliter::prepare_sstable_handle(ObTableHandleV2 &handle,
       "bigint   var   bigint bigint  flag    multi_version_row_flag\n"
       "18       var1     -9    0     EXIST   CLF\n"
       "19       var1   -9    MIN      EXIST   SCF\n"
-      "19       var1     -9    0     EXIST   CF\n";
+      "19       var1     -9    0     EXIST   C\n";
 
   macro_data[13] =
       "bigint   var   bigint bigint  flag    multi_version_row_flag\n"
@@ -319,7 +324,7 @@ void TestRangeSpliter::prepare_sstable_handle(ObTableHandleV2 &handle,
       "bigint   var   bigint bigint  flag    multi_version_row_flag\n"
       "24       var1    -9    0     EXIST   CLF\n"
       "25       var1    -9    MIN      EXIST  SCF\n"
-      "25       var1    -9    0     EXIST   CF\n";
+      "25       var1    -9    0     EXIST   CL\n";
 
   macro_data[17] =
       "bigint   var   bigint bigint  flag    multi_version_row_flag\n"

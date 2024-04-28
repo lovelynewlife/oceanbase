@@ -371,6 +371,21 @@ int ObInnerTableSchema::tenant_virtual_table_column_ora_schema(ObTableSchema &ta
       false, //is_nullable
       false); //is_autoincrement
   }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("IS_HIDDEN", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObNumberType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      38, //column_length
+      38, //column_precision
+      0, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
   table_schema.set_index_using_type(USING_HASH);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -1932,6 +1947,36 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_ora_schema(ObTableSche
       true, //is_nullable
       false); //is_autoincrement
   }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("DEFAULT_VALUE", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_UTF8MB4_BIN, //column_collation_type
+      OB_MAX_CONFIG_VALUE_LEN, //column_length
+      2, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("ISDEFAULT", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObNumberType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      38, //column_length
+      38, //column_precision
+      0, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
   if (OB_SUCC(ret)) {
     table_schema.get_part_option().set_part_num(1);
     table_schema.set_part_level(PARTITION_LEVEL_ONE);
@@ -3209,6 +3254,21 @@ int ObInnerTableSchema::all_virtual_table_mgr_ora_schema(ObTableSchema &table_sc
   }
 
   if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("DATA_CHECKSUM", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObNumberType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      38, //column_length
+      38, //column_precision
+      0, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("SIZE", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -3330,6 +3390,21 @@ int ObInnerTableSchema::all_virtual_table_mgr_ora_schema(ObTableSchema &table_sc
 
   if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("NESTED_SIZE", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObNumberType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      38, //column_length
+      38, //column_precision
+      0, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("CG_IDX", //column_name
       ++column_id, //column_id
       0, //rowkey_id
       0, //index_id

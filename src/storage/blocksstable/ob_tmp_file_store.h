@@ -110,18 +110,19 @@ struct ObTmpBlockIOInfo final
 {
 public:
   ObTmpBlockIOInfo()
-    : block_id_(0), offset_(0), size_(0), tenant_id_(0),
+    : block_id_(0), offset_(0), size_(0), io_timeout_ms_(DEFAULT_IO_WAIT_TIME_MS), tenant_id_(0),
       buf_(NULL), io_desc_(), macro_block_id_()  {}
   ObTmpBlockIOInfo(const int64_t block_id, const int64_t offset, const int64_t size,
       const uint64_t tenant_id, const MacroBlockId macro_block_id, char *buf,
       const common::ObIOFlag io_desc)
     : block_id_(block_id), offset_(offset), size_(size), tenant_id_(tenant_id),
       buf_(buf), io_desc_(io_desc), macro_block_id_(macro_block_id) {}
-  TO_STRING_KV(K_(block_id), K_(offset), K_(size), K_(tenant_id), K_(macro_block_id), KP_(buf),
+  TO_STRING_KV(K_(block_id), K_(offset), K_(size), K_(io_timeout_ms), K_(tenant_id), K_(macro_block_id), KP_(buf),
       K_(io_desc));
   int64_t block_id_;
   int64_t offset_;
   int64_t size_;
+  int64_t io_timeout_ms_;
   uint64_t tenant_id_;
   char *buf_;
   common::ObIOFlag io_desc_;
@@ -249,6 +250,7 @@ public:
   int read(ObTmpBlockIOInfo &io_info, ObTmpFileIOHandle &handle);
   int write(const ObTmpBlockIOInfo &io_info);
   int wash_block(const int64_t block_id, ObTmpTenantMemBlockManager::ObIOWaitInfoHandle &handle);
+  void refresh_memory_limit(const uint64_t tenant_id);
   int sync_block(const int64_t block_id, ObTmpTenantMemBlockManager::ObIOWaitInfoHandle &handle);
   int wait_write_finish(const int64_t block_id, const int64_t timeout_ms);
   int get_disk_macro_block_list(common::ObIArray<MacroBlockId> &macro_id_list);
@@ -277,12 +279,14 @@ private:
   int free_extent(const int64_t block_id, const int32_t start_page_id, const int32_t page_nums);
   int free_macro_block(ObTmpMacroBlock *&t_mblk);
   int alloc_macro_block(const int64_t dir_id, const uint64_t tenant_id, ObTmpMacroBlock *&t_mblk);
-  int64_t get_memory_limit(const uint64_t tenant_id) const;
+  int64_t get_memory_limit(const uint64_t tenant_id);
+  int wait_write_io_finish_if_need();
 
 private:
   static const uint64_t IO_LIMIT = 4 * 1024L * 1024L * 1024L;
   static const uint64_t TOTAL_LIMIT = 15 * 1024L * 1024L * 1024L;
   static const uint64_t HOLD_LIMIT = 8 * 1024L * 1024L;
+  static const uint64_t REFRESH_CONFIG_INTERVAL = 5 * 60 * 1000 * 1000L; // 5min
   static const uint64_t BLOCK_SIZE = common::OB_MALLOC_MIDDLE_BLOCK_SIZE;
   static constexpr double DEFAULT_PAGE_IO_MERGE_RATIO = 0.5;
 
@@ -293,9 +297,11 @@ private:
   ObTmpPageCache *page_cache_;
   common::SpinRWLock lock_;
   common::ObConcurrentFIFOAllocator allocator_;
-  common::ObConcurrentFIFOAllocator io_allocator_;
+  common::ObFIFOAllocator io_allocator_;
   ObTmpTenantMacroBlockManager tmp_block_manager_;
   ObTmpTenantMemBlockManager tmp_mem_block_manager_;
+  int64_t last_access_tenant_config_ts_;
+  int64_t last_meta_mem_limit_;
 
   DISALLOW_COPY_AND_ASSIGN(ObTmpTenantFileStore);
 };
@@ -354,8 +360,6 @@ public:
   int dec_page_cache_num(const uint64_t tenant_id, const int64_t num);
   int inc_block_cache_num(const uint64_t tenant_id, const int64_t num);
   int dec_block_cache_num(const uint64_t tenant_id, const int64_t num);
-  int get_page_cache_num(const uint64_t tenant_id, int64_t &num);
-  int get_block_cache_num(const uint64_t tenant_id, int64_t &num);
 private:
   ObTmpFileStore();
   ~ObTmpFileStore();

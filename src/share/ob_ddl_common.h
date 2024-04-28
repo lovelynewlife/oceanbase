@@ -56,6 +56,10 @@ enum ObDDLType
   DDL_MODIFY_AUTO_INCREMENT = 4,
   DDL_CREATE_INDEX = 5,
   DDL_DROP_INDEX = 6,
+  DDL_CREATE_FTS_INDEX = 7,
+  DDL_CREATE_MLOG = 8,
+  DDL_DROP_MLOG = 9,
+  DDL_CREATE_PARTITIONED_LOCAL_INDEX = 10,
   ///< @note Drop schema, and refuse concurrent trans.  
   DDL_DROP_SCHEMA_AVOID_CONCURRENT_TRANS = 500,
   DDL_DROP_DATABASE = 501,
@@ -82,6 +86,8 @@ enum ObDDLType
   DDL_DIRECT_LOAD = 1011, // load data
   DDL_DIRECT_LOAD_INSERT = 1012, // insert into select
   DDL_TABLE_RESTORE = 1013, // table restore
+  DDL_MVIEW_COMPLETE_REFRESH = 1014,
+  DDL_CREATE_MVIEW = 1015,
 
   // @note new normal ddl type to be defined here !!!
   DDL_NORMAL_TYPE = 10001,
@@ -90,6 +96,7 @@ enum ObDDLType
   ///< @note add new normal ddl type before this line
   DDL_MAX
 };
+const char *get_ddl_type(ObDDLType ddl_type);
 
 enum ObDDLTaskType
 {
@@ -129,6 +136,7 @@ enum ObDDLTaskStatus {
   CHECK_TABLE_EMPTY = 15,
   WAIT_CHILD_TASK_FINISH = 16,
   REPENDING = 17,
+  START_REFRESH_MVIEW_TASK = 18,
   FAIL = 99,
   SUCCESS = 100
 };
@@ -190,6 +198,9 @@ static const char* ddl_task_status_to_str(const ObDDLTaskStatus &task_status) {
     case ObDDLTaskStatus::REPENDING:
       str = "REPENDING";
       break;
+    case ObDDLTaskStatus::START_REFRESH_MVIEW_TASK:
+      str = "START_REFRESH_MVIEW_TASK";
+      break;
     case ObDDLTaskStatus::FAIL:
       str = "FAIL";
       break;
@@ -220,6 +231,11 @@ static inline bool is_long_running_ddl(const ObDDLType type)
   return is_simple_table_long_running_ddl(type) || is_double_table_long_running_ddl(type);
 }
 
+static inline bool is_direct_load_task(const ObDDLType type)
+{
+  return DDL_DIRECT_LOAD == type || DDL_DIRECT_LOAD_INSERT == type;
+}
+
 static inline bool is_invalid_ddl_type(const ObDDLType type)
 {
   return DDL_INVALID == type;
@@ -231,7 +247,16 @@ static inline bool is_ddl_stmt_packet_retry_err(const int ret)
   return OB_EAGAIN == ret || OB_SNAPSHOT_DISCARDED == ret || OB_ERR_PARALLEL_DDL_CONFLICT == ret
       || OB_TRANS_KILLED == ret || OB_TRANS_ROLLBACKED == ret // table lock doesn't support leader switch
       || OB_PARTITION_IS_BLOCKED == ret // when LS is block_tx by a transfer task
+      || OB_TRANS_NEED_ROLLBACK == ret // transaction killed by leader switch
       ;
+}
+
+static inline bool is_direct_load_retry_err(const int ret)
+{
+  return is_ddl_stmt_packet_retry_err(ret) || ret == OB_TABLET_NOT_EXIST || ret == OB_LS_NOT_EXIST
+    || ret == OB_NOT_MASTER
+    || ret == OB_TASK_EXPIRED
+    ;
 }
 
 enum ObCheckExistedDDLMode
@@ -350,6 +375,19 @@ public:
       const ObColumnNameMap *col_name_map,
       ObSqlString &sql_string);
 
+  static int generate_build_mview_replica_sql(
+      const uint64_t tenant_id,
+      const int64_t mview_table_id,
+      const int64_t container_table_id,
+      share::schema::ObSchemaGetterGuard &schema_guard,
+      const int64_t snapshot_version,
+      const int64_t execution_id,
+      const int64_t task_id,
+      const int64_t parallelism,
+      const bool use_schema_version_hint_for_src_table,
+      const common::ObIArray<share::schema::ObBasedSchemaObjectInfo> &based_schema_object_infos,
+      ObSqlString &sql_string);
+
   static int get_tablet_leader_addr(
       share::ObLocationService *location_service,
       const uint64_t tenant_id,
@@ -367,6 +405,14 @@ public:
   static int generate_ddl_schema_hint_str(
       const ObString &table_name,
       const int64_t schema_version,
+      const bool is_oracle_mode,
+      ObSqlString &sql_string);
+
+  static int generate_mview_ddl_schema_hint_str(
+      const uint64_t tenant_id,
+      const uint64_t mview_table_id,
+      share::schema::ObSchemaGetterGuard &schema_guard,
+      const common::ObIArray<share::schema::ObBasedSchemaObjectInfo> &based_schema_object_infos,
       const bool is_oracle_mode,
       ObSqlString &sql_string);
 
@@ -485,6 +531,12 @@ public:
       share::schema::ObSchemaGetterGuard *&src_tenant_schema_guard,
       share::schema::ObSchemaGetterGuard *&dst_tenant_schema_guard);
 
+  static int check_tenant_status_normal(
+      ObISQLClient *proxy,
+      const uint64_t check_tenant_id);
+  static int check_schema_version_refreshed(
+      const uint64_t tenant_id,
+      const int64_t target_schema_version);
 private:
   static int generate_order_by_str(
       const ObIArray<int64_t> &select_column_ids,
@@ -581,6 +633,29 @@ private:
 
 };
 
+typedef common::ObCurTraceId::TraceId DDLTraceId;
+class ObDDLEventInfo final
+{
+public:
+  ObDDLEventInfo();
+  ObDDLEventInfo(const int32_t sub_id);
+  ~ObDDLEventInfo() = default;
+  void record_in_guard();
+  void copy_event(const ObDDLEventInfo &other);
+  void init_sub_trace_id(const int32_t sub_id);
+  const DDLTraceId &get_trace_id() const { return trace_id_; }
+  const DDLTraceId &get_parent_trace_id() const { return parent_trace_id_; }
+  int set_trace_id(const DDLTraceId &trace_id) { return trace_id_.set(trace_id.get()); }
+  void reset();
+  TO_STRING_KV(K(addr_), K(event_ts_), K(sub_id_), K(trace_id_), K(parent_trace_id_));
+
+public:
+  ObAddr addr_;
+  int32_t sub_id_;
+  int64_t event_ts_;
+  DDLTraceId parent_trace_id_;
+  DDLTraceId trace_id_;
+};
 
 
 }  // end namespace share

@@ -40,6 +40,7 @@ public:
   void reset();
   bool is_valid() const;
   bool is_same_tablet(const ObTabletChecksumItem &item) const;
+  int compare_tablet(const ObTabletReplicaChecksumItem &replica_item) const;
   int verify_tablet_column_checksum(const ObTabletReplicaChecksumItem &replica_item) const;
   int assign(const ObTabletReplicaChecksumItem &replica_item);
   int assign(const ObTabletChecksumItem &other);
@@ -124,6 +125,11 @@ public:
       const uint64_t tenant_id,
       const SCN &compaction_scn,
       bool &is_exist);
+  static int is_all_tablet_checksum_sync(
+      common::ObISQLClient &sql_client,
+      const uint64_t tenant_id,
+      common::ObIArray<uint64_t> &frozen_scn_vals,
+      bool &is_sync);
 
 private:
   static int construct_load_sql_str_(

@@ -18,6 +18,7 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/compaction/ob_schedule_dag_func.h"
 #include "storage/multi_data_source/ob_mds_table_merge_dag_param.h"
+#include "storage/tx/ob_multi_data_source.h"
 
 namespace oceanbase
 {
@@ -25,6 +26,8 @@ namespace storage
 {
 namespace mds
 {
+
+TLOCAL(transaction::NotifyType, TLOCAL_MDS_TRANS_NOTIFY_TYPE) = transaction::NotifyType::UNKNOWN;
 
 int MdsTableBase::advance_state_to(State new_state) const
 {
@@ -185,7 +188,7 @@ int MdsTableBase::merge(const int64_t construct_sequence, const share::SCN &flus
   param.flush_scn_ = flushing_scn;
   param.mds_construct_sequence_ = construct_sequence;
   param.generate_ts_ = ObClockGenerator::getClock();
-  param.merge_type_ = ObMergeType::MDS_TABLE_MERGE;
+  param.merge_type_ = compaction::ObMergeType::MDS_TABLE_MERGE;
   param.merge_version_ = 0;
   if (OB_FAIL(compaction::ObScheduleDagFunc::schedule_mds_table_merge_dag(param))) {
     if (OB_EAGAIN != ret && OB_SIZE_OVERFLOW != ret) {

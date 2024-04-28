@@ -83,11 +83,16 @@ public:
 
   int add_udt_hidden_column(ObAlterTableStmt *alter_table_stmt, AlterColumnSchema &column_schema);
 
+  int add_new_indexkey_for_oracle_temp_table(obrpc::ObCreateIndexArg &index_arg);
+
 private:
   int check_dup_foreign_keys_exist(
       share::schema::ObSchemaGetterGuard *schema_guard,
       const obrpc::ObCreateForeignKeyArg &foreign_key_arg);
   int resolve_alter_table_option_list(const ParseNode &node);
+  int check_drop_column_is_partition_key(const ObTableSchema &table_schema,
+                                         const ObString &column_name);
+
   int set_column_collation(share::schema::AlterColumnSchema &alter_column_schema);
   int resolve_index_column_list(const ParseNode &node,
                                 obrpc::ObCreateIndexArg &index_arg,
@@ -174,6 +179,7 @@ private:
   int check_alter_part_key_allowed(const share::schema::ObTableSchema &table_schema,
                                    const share::schema::ObColumnSchemaV2 &src_col_schema,
                                    const share::schema::ObColumnSchemaV2 &dst_col_schema);
+  int resolve_column_group();
   int generate_index_arg_cascade();
   bool is_ttl_column(const common::ObString &orig_column_name, const ObIArray<common::ObString> &ttl_columns);
 

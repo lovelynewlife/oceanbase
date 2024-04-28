@@ -208,7 +208,9 @@ int ObTenantWeakReadService::get_cluster_version_internal_(SCN &version,
   if (OB_UNLIKELY(! inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_FAIL(cluster_service_.get_cluster_version(version))) {
-    LOG_WARN("get weak read cluster version fail", KR(ret), K(version), K(tenant_id_));
+    if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+      LOG_WARN("get weak read cluster version fail", KR(ret), K(version), K(tenant_id_));
+    }
     if (OB_NEED_RETRY == ret) {
       // self may be WRS Leader while not ready, need retry
     } else if (OB_NOT_IN_SERVICE == ret || OB_NOT_MASTER == ret) {
@@ -444,7 +446,8 @@ void ObTenantWeakReadService::process_cluster_heartbeat_rpc_cb(
     ATOMIC_INC(&succ_cluster_heartbeat_count_);
     ATOMIC_SET(&last_succ_cluster_heartbeat_tstamp_, cur_tstamp);
   } else {
-    LOG_WARN_RET(OB_ERR_UNEXPECTED, "tenant weak read service cluster heartbeat RPC fail", K(rcode), K(tenant_id_),
+    int ret = err_code;
+    LOG_WARN("tenant weak read service cluster heartbeat RPC fail", K(ret), K(rcode), K(tenant_id_),
         K(dst), "cluster_service_tablet_id", cluster_service_.get_cluster_service_tablet_id());
     // force refresh cluster service master
     refresh_cluster_service_master_();
@@ -525,7 +528,7 @@ void ObTenantWeakReadService::print_stat_()
       K(min_cluster_version),
       K(max_cluster_version),
       K(get_cluster_version_err),
-      "cluster_version_delta", cur_tstamp - cluster_version.convert_to_ts(ignore_invalid),
+      "cluster_version_delta", (in_cluster_service ? cur_tstamp - cluster_version.convert_to_ts(ignore_invalid) : -1),
       K_(cluster_service_master),
       "cluster_service_tablet_id", cluster_service_.get_cluster_service_tablet_id(),
       K_(post_cluster_heartbeat_count),
@@ -901,7 +904,7 @@ int ObTenantWeakReadService::post_cluster_heartbeat_rpc_(const SCN version,
   if (OB_ISNULL(wrs_rpc_)) {
     ret = OB_NOT_INIT;
   } else if (OB_FAIL(get_cluster_service_master_(cluster_service_master))) {
-    LOG_WARN("get cluster service master fail", KR(ret), K(tenant_id_),
+    LOG_TRACE("get cluster service master fail", KR(ret), K(tenant_id_),
         "cluster_service_tablet_id", cluster_service_.get_cluster_service_tablet_id());
   } else if (OB_FAIL(wrs_rpc_->post_cluster_heartbeat(cluster_service_master, tenant_id_, req))) {
     LOG_WARN("post cluster heartbeat fail", KR(ret), K(cluster_service_master), K(tenant_id_),

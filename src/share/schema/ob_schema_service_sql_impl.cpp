@@ -65,6 +65,10 @@
 #define FETCH_ALL_DATABASE_HISTORY_SQL          COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_TABLEGROUP_HISTORY_SQL2       COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_TABLEGROUP_HISTORY_SQL        COMMON_SQL_WITH_TENANT
+#define FETCH_ALL_COLUMN_GROUP_SQL              COMMON_SQL_WITH_TENANT
+#define FETCH_ALL_COLUMN_GROUP_HISTORY_SQL      COMMON_SQL_WITH_TENANT
+#define FETCH_ALL_CG_MAPPING_SQL                COMMON_SQL_WITH_TENANT
+#define FETCH_ALL_CG_MAPPING_HISTORY_SQL        COMMON_SQL_WITH_TENANT
 
 #define FETCH_ALL_USER_HISTORY_SQL              COMMON_SQL_WITH_TENANT
 #define FETCH_ALL_DB_PRIV_HISTORY_SQL           COMMON_SQL_WITH_TENANT
@@ -269,7 +273,10 @@ ObSchemaServiceSQLImpl::ObSchemaServiceSQLImpl()
       rls_service_(*this),
       cluster_schema_status_(ObClusterSchemaStatus::NORMAL_STATUS),
       gen_schema_version_map_(),
-      schema_service_(NULL)
+      schema_service_(NULL),
+      object_ids_mutex_(),
+      normal_tablet_ids_mutex_(),
+      extended_tablet_ids_mutex_()
 {
 }
 
@@ -349,6 +356,8 @@ int ObSchemaServiceSQLImpl::get_core_table_schemas(
         ObTableSchema &core_schema = core_schemas.at(i);
         if (OB_FAIL(try_mock_partition_array(core_schema))) {
           LOG_WARN("fail to mock partition array", KR(ret), K(core_schema));
+        } else if (OB_FAIL(try_mock_default_column_group(core_schema))) {
+          LOG_WARN("fail to mock default column group", KR(ret), K(core_schema));
         }
       }
     }
@@ -433,6 +442,11 @@ int ObSchemaServiceSQLImpl::get_new_schema_version(uint64_t tenant_id, int64_t &
   return ret;
 }
 
+bool ObSchemaServiceSQLImpl::in_parallel_ddl_thread_()
+{
+  return 0 == STRCASECMP(PARALLEL_DDL_THREAD_NAME, ob_get_origin_thread_name());
+}
+
 int ObSchemaServiceSQLImpl::gen_new_schema_version(
     const uint64_t tenant_id,
     const int64_t refreshed_schema_version,
@@ -444,7 +458,7 @@ int ObSchemaServiceSQLImpl::gen_new_schema_version(
   if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tenant_id", KR(ret), K(tenant_id));
-  } else if (0 == STRCASECMP(PARALLEL_DDL_THREAD_NAME, ob_get_origin_thread_name())) {
+  } else if (in_parallel_ddl_thread_()) {
     auto *tsi_generator = GET_TSI(TSISchemaVersionGenerator);
     if (OB_ISNULL(tsi_generator)) {
       ret = OB_ERR_UNEXPECTED;
@@ -475,7 +489,7 @@ int ObSchemaServiceSQLImpl::gen_batch_new_schema_versions(
       || version_cnt < 1)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", KR(ret), K(tenant_id), K(version_cnt));
-  } else if (OB_UNLIKELY(0 != STRCASECMP(PARALLEL_DDL_THREAD_NAME, ob_get_origin_thread_name()))) {
+  } else if (OB_UNLIKELY(!in_parallel_ddl_thread_())) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("this interface only works in parallel ddl thread",
              KR(ret), "thread_name", ob_get_origin_thread_name());
@@ -747,6 +761,9 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schemas(
       } else if (OB_FAIL(fetch_all_column_info(schema_status, schema_version, tenant_id, sql_client,
                                                not_core_schemas, &table_ids.at(begin), end - begin))) {
         LOG_WARN("fetch all column info failed", K(schema_version), K(schema_status), K(tenant_id), K(ret));
+      } else if (OB_FAIL(fetch_all_column_group_info(schema_status, schema_version, tenant_id, sql_client,
+                                                     not_core_schemas, &table_ids.at(begin), end - begin))) {
+        LOG_WARN("fail to fetch all column_group info", KR(ret), K(schema_version), K(schema_status), K(tenant_id));
       } else if (OB_FAIL(fetch_all_partition_info(schema_status, schema_version, tenant_id, sql_client,
                                                   not_core_schemas, &table_ids.at(begin), end - begin))) {
         LOG_WARN("Failed to fetch all partition info", K(ret), K(schema_version), K(schema_status), K(tenant_id));
@@ -973,6 +990,8 @@ int ObSchemaServiceSQLImpl::get_full_table_schema_from_inner_table(
         tmp_table_schema->set_aux_lob_meta_tid(aux_table_meta.table_id_);
       } else if (AUX_LOB_PIECE == aux_table_meta.table_type_) {
         tmp_table_schema->set_aux_lob_piece_tid(aux_table_meta.table_id_);
+      } else if (MATERIALIZED_VIEW_LOG == aux_table_meta.table_type_) {
+        tmp_table_schema->set_mlog_tid(aux_table_meta.table_id_);
       }
     }
     if (OB_SUCC(ret)) {
@@ -1550,6 +1569,227 @@ int ObSchemaServiceSQLImpl::fetch_all_column_info(
       }
     }
   }
+  return ret;
+}
+
+int ObSchemaServiceSQLImpl::fetch_all_column_group_info(
+    const ObRefreshSchemaStatus &schema_status,
+    const int64_t schema_version,
+    const uint64_t tenant_id,
+    ObISQLClient &sql_client,
+    ObArray<ObTableSchema *> &table_schema_array,
+    const uint64_t *table_ids,
+    const int64_t table_ids_size)
+{
+  int ret = OB_SUCCESS;
+  if (!is_valid_tenant_id(tenant_id) || OB_ISNULL(table_ids) || (table_ids_size < 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid tenant_id", K(ret), K(tenant_id), K(table_ids_size), KP(table_ids));
+  } else {
+    ObSEArray<uint64_t, 16> tmp_table_ids;
+    ObTableSchema *table_schema = NULL;
+    for (int64_t i = 0; OB_SUCC(ret) && (i < table_ids_size); ++i) {
+      const uint64_t table_id = table_ids[i];
+      table_schema = ObSchemaRetrieveUtils::find_table_schema(table_id, table_schema_array);
+      if (OB_ISNULL(table_schema)) {
+        LOG_WARN("fail to find table schema", KR(ret), K(table_id));
+        continue; // for compatibility
+      } else if (need_column_group(*table_schema)) {
+        const uint64_t table_id = table_schema->get_table_id();
+        if (table_schema->is_column_store_supported()) {
+          if (OB_FAIL(tmp_table_ids.push_back(table_id))) {
+            LOG_WARN("fail to push back", KR(ret), K(table_id));
+          }
+        } else {
+          // TODO @donglou.zl user table only mock default cg now.
+          if (table_schema->get_column_group_count() < 1) {
+            if (table_schema->add_default_column_group()) {
+              LOG_WARN("fail to add default column group", KR(ret), K(tenant_id), K(table_id));
+            }
+          }
+        }
+      }
+    }
+
+    if (OB_SUCC(ret) && (tmp_table_ids.count() > 0)) {
+      const bool is_history = (INT64_MAX == schema_version) ? false : true;
+      const int64_t table_cnt = tmp_table_ids.count();
+      if (OB_FAIL(fetch_all_column_group_schema(schema_status, schema_version, tenant_id, sql_client,
+                  is_history, table_schema_array, &tmp_table_ids.at(0), table_cnt))) {
+        LOG_WARN("fail to fetch all column_group schema", KR(ret), K(tenant_id), K(schema_version),
+          K(is_history), K(table_cnt));
+      } else if (OB_FAIL(fetch_all_column_group_mapping(schema_status, schema_version, tenant_id, sql_client,
+                is_history, table_schema_array, &tmp_table_ids.at(0), table_cnt))) {
+        LOG_WARN("fail to fetch all column_group mapping", KR(ret), K(tenant_id), K(schema_version),
+          K(is_history), K(table_cnt));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObSchemaServiceSQLImpl::fetch_all_column_group_schema(
+    const ObRefreshSchemaStatus &schema_status,
+    const int64_t schema_version,
+    const uint64_t tenant_id,
+    common::ObISQLClient &sql_client,
+    const bool is_history,
+    ObArray<ObTableSchema *> &table_schema_array,
+    const uint64_t *table_ids,
+    const int64_t table_ids_size)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(table_ids) || (table_ids_size < 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret));
+  } else {
+    ObSqlString sql;
+    if (is_history) {
+      if (OB_FAIL(sql.append_fmt(FETCH_ALL_COLUMN_GROUP_HISTORY_SQL, OB_ALL_COLUMN_GROUP_HISTORY_TNAME,
+                  fill_extract_tenant_id(schema_status, tenant_id)))) {
+        LOG_WARN("fail to append sql", KR(ret), K(tenant_id), K(schema_status));
+      }
+    } else {
+      if (OB_FAIL(sql.append_fmt(FETCH_ALL_COLUMN_GROUP_SQL, OB_ALL_COLUMN_GROUP_TNAME,
+                  fill_extract_tenant_id(schema_status, tenant_id)))) {
+        LOG_WARN("fail to append sql", KR(ret), K(tenant_id), K(schema_status));
+      }
+    }
+
+    if (FAILEDx(sql.append_fmt(" AND table_id IN "))) {
+      LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(sql_append_pure_ids(schema_status, table_ids, table_ids_size, sql))) {
+      LOG_WARN("fail to append table ids into sql", KR(ret), K(table_ids_size));
+    } else if (is_history && OB_FAIL(sql.append_fmt(" AND SCHEMA_VERSION <= %ld", schema_version))) {
+      LOG_WARN("fail to append sql", KR(ret), K(schema_version));
+    } else if (OB_FAIL(sql.append_fmt(" ORDER BY TENANT_ID DESC, TABLE_ID DESC, COLUMN_GROUP_ID ASC"))) {
+      LOG_WARN("fail to append sql", KR(ret));
+    } else if (is_history && OB_FAIL(sql.append_fmt(", SCHEMA_VERSION DESC"))) {
+      LOG_WARN("fail to append sql", KR(ret));
+    }
+
+    if (OB_SUCC(ret)) {
+      SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+        ObMySQLResult *result = NULL;
+        const int64_t snapshot_timestamp = schema_status.snapshot_timestamp_;
+        const uint64_t exec_tenant_id = fill_exec_tenant_id(schema_status);
+        const bool check_deleted = is_history;
+        DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
+        if (OB_FAIL(sql_client_retry_weak.read(res, exec_tenant_id, sql.ptr()))) {
+          LOG_WARN("fail to execute sql", KR(ret), K(exec_tenant_id), K(sql));
+        } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("fail to get result", KR(ret), K(sql));
+        } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_column_group_schema(
+                           tenant_id, check_deleted, *result, table_schema_array))) {
+          LOG_WARN("failed to retrieve all column_group schema", KR(ret), K(sql));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObSchemaServiceSQLImpl::fetch_all_column_group_mapping(
+    const ObRefreshSchemaStatus &schema_status,
+    const int64_t schema_version,
+    const uint64_t tenant_id,
+    common::ObISQLClient &sql_client,
+    const bool is_history,
+    ObArray<ObTableSchema *> &table_schema_array,
+    const uint64_t *table_ids,
+    const int64_t table_ids_size)
+{
+  int ret = OB_SUCCESS;
+  const int64_t table_schema_cnt = table_schema_array.count();
+  if ((OB_ISNULL(table_ids) && table_ids_size > 0) || (OB_NOT_NULL(table_ids) && table_ids_size < 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(table_ids), K(table_ids_size));
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && (i < table_schema_cnt); ++i) {
+    ObTableSchema *table_schema = table_schema_array.at(i);
+    bool need_fetch = false;
+    if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table schema should not be null", KR(ret), K(i), K(table_schema_cnt));
+    } else if (table_ids_size > 0) { // if exists table_ids, only need to fetch these tables' column_group mapping
+      const uint64_t cur_table_id = table_schema->get_table_id();
+      for (int64_t j = 0; OB_SUCC(ret) && (!need_fetch) && (j < table_ids_size); ++j) {
+        if (cur_table_id == table_ids[j]) {
+          if (table_schema->get_column_group_count() > 0) {
+            need_fetch = true;
+          }
+        }
+      }
+    } else if (table_schema->get_column_group_count() > 0) {
+      need_fetch = true;
+    }
+
+    // fetch column_group mapping of one table if needed
+    if (OB_FAIL(ret)) {
+    } else if (need_fetch) {
+      const uint64_t table_id = table_schema->get_table_id();
+      ObSqlString sql;
+      if (is_history) {
+        if (OB_FAIL(sql.append_fmt(FETCH_ALL_CG_MAPPING_HISTORY_SQL, OB_ALL_COLUMN_GROUP_MAPPING_HISTORY_TNAME,
+                    fill_extract_tenant_id(schema_status, tenant_id)))) {
+          LOG_WARN("fail to append sql", KR(ret), K(table_id));
+        }
+      } else {
+        if (OB_FAIL(sql.append_fmt(FETCH_ALL_CG_MAPPING_SQL, OB_ALL_COLUMN_GROUP_MAPPING_TNAME,
+                    fill_extract_tenant_id(schema_status, tenant_id)))) {
+          LOG_WARN("fail to append sql", KR(ret), K(table_id));
+        }
+      }
+
+      // get all column_group ids of this table
+      ObArray<uint64_t> cg_ids;
+      ObTableSchema::const_column_group_iterator it_begin = table_schema->column_group_begin();
+      ObTableSchema::const_column_group_iterator it_end = table_schema->column_group_end();
+      const ObColumnGroupSchema *column_group = NULL;
+      for (; OB_SUCC(ret) && (it_begin != it_end); ++it_begin) {
+        column_group = *it_begin;
+        if (OB_ISNULL(column_group)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("column_group schema should not be null", KR(ret));
+        } else if (OB_FAIL(cg_ids.push_back(column_group->get_column_group_id()))) {
+          LOG_WARN("fail to push back column_group id", KR(ret), KPC(column_group));
+        }
+      }
+
+      // get all column_group mapping based on the cg ids
+      SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+        ObMySQLResult *result = NULL;
+        const int64_t snapshot_timestamp = schema_status.snapshot_timestamp_;
+        const uint64_t exec_tenant_id = fill_exec_tenant_id(schema_status);
+        if (FAILEDx(sql.append_fmt(" AND table_id = %lu AND column_group_id IN ",
+            fill_extract_schema_id(schema_status, table_id)))) {
+          LOG_WARN("fail to append sql", KR(ret), K(table_id), K(schema_version));
+        } else if (OB_FAIL(sql_append_pure_ids(schema_status, &cg_ids.at(0), cg_ids.count(), sql))) {
+          LOG_WARN("fail to append pure ids", KR(ret));
+        } else if (is_history && OB_FAIL(sql.append_fmt(" AND schema_version <= %ld", schema_version))) {
+          LOG_WARN("fail to append sql", KR(ret), K(schema_version));
+        } else if (OB_FAIL(sql.append_fmt(" ORDER BY TENANT_ID DESC, TABLE_ID DESC, COLUMN_GROUP_ID ASC, COLUMN_ID ASC"))) {
+          LOG_WARN("fail to append sql", KR(ret));
+        } else if (is_history && OB_FAIL(sql.append_fmt(", SCHEMA_VERSION DESC"))) {
+          LOG_WARN("fail to append sql", KR(ret));
+        } else {
+          const bool check_deleted = is_history;
+          DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
+          if (OB_FAIL(sql_client_retry_weak.read(res, exec_tenant_id, sql.ptr()))) {
+            LOG_WARN("fail to execute sql", KR(ret), K(sql));
+          } else if (OB_UNLIKELY(NULL == (result = res.get_result()))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("fail to get result", KR(ret), K(sql));
+          } else if (OB_FAIL(ObSchemaRetrieveUtils::retrieve_column_group_mapping(
+                    tenant_id, check_deleted, *result, table_schema))) {
+            LOG_WARN("fail to retrieve column group mapping", KR(ret), K(table_id), K(check_deleted), K(sql));
+          }
+        }
+      }
+    }
+  } // end loop
   return ret;
 }
 
@@ -2648,10 +2888,40 @@ int ObSchemaServiceSQLImpl::fetch_temp_table_schema(
 int ObSchemaServiceSQLImpl::fetch_new_tenant_id(uint64_t &new_tenant_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(fetch_new_schema_id(OB_SYS_TENANT_ID, OB_MAX_USED_TENANT_ID_TYPE, new_tenant_id))) {
+  if (OB_FAIL(fetch_new_schema_id_(OB_SYS_TENANT_ID, OB_MAX_USED_TENANT_ID_TYPE, new_tenant_id))) {
     LOG_WARN("fetch_new_tenant_id faild", K(ret));
   }
   return ret;
+}
+
+// When ret = OB_SUCCESS, object_ids are avaliable in [max_object_id - object_cnt + 1, max_object_id].
+int ObSchemaServiceSQLImpl::fetch_new_object_ids(
+    const uint64_t tenant_id,
+    const int64_t object_cnt,
+    uint64_t &max_object_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(mysql_proxy_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("proxy is NULL", KR(ret));
+  } else {
+    lib::ObMutexGuard mutex_guard(object_ids_mutex_);
+    ObMaxIdFetcher id_fetcher(*mysql_proxy_);
+    if (OB_FAIL(id_fetcher.fetch_new_max_id(tenant_id, OB_MAX_USED_OBJECT_ID_TYPE,
+        max_object_id, UINT64_MAX/*initial value should exist*/, object_cnt))) {
+      LOG_WARN("fail to fetch object id", KR(ret), K(tenant_id), K(object_cnt));
+    }
+  }
+  return ret;
+}
+
+// When ret = OB_SUCCESS, partition_ids are avaliable in [new_partition_id - partition_num + 1, partition_id].
+int ObSchemaServiceSQLImpl::fetch_new_partition_ids(
+    const uint64_t tenant_id,
+    const int64_t partition_num,
+    uint64_t &max_partition_id)
+{
+  return fetch_new_object_ids(tenant_id, partition_num, max_partition_id);
 }
 
 int ObSchemaServiceSQLImpl::fetch_new_tablet_ids(
@@ -2662,13 +2932,13 @@ int ObSchemaServiceSQLImpl::fetch_new_tablet_ids(
 {
   int ret = OB_SUCCESS;
   if (gen_normal_tablet) {
-    if (OB_FAIL(fetch_new_normal_rowid_table_tablet_ids(
-                tenant_id, min_tablet_id, size))) {
+    if (OB_FAIL(fetch_new_normal_rowid_table_tablet_ids_(
+                tenant_id, size, min_tablet_id))) {
       LOG_WARN("fail to fetch new tablet id", KR(ret), K(tenant_id));
     }
   } else {
-    if (OB_FAIL(fetch_new_extended_rowid_table_tablet_ids(
-                tenant_id, min_tablet_id, size))) {
+    if (OB_FAIL(fetch_new_extended_rowid_table_tablet_ids_(
+                tenant_id, size, min_tablet_id))) {
       LOG_WARN("fail to fetch new tablet id", KR(ret), K(tenant_id));
     }
   }
@@ -2679,24 +2949,8 @@ int ObSchemaServiceSQLImpl::fetch_new_tablet_ids(
 #define FETCH_NEW_SCHEMA_ID(SCHEMA_TYPE, SCHEMA) \
 int ObSchemaServiceSQLImpl::fetch_new_##SCHEMA##_id(const uint64_t tenant_id, uint64_t &new_schema_id)  \
 {                                                                                                    \
-  return fetch_new_schema_id(tenant_id, OB_MAX_USED_##SCHEMA_TYPE##_ID_TYPE, new_schema_id);         \
+  return fetch_new_schema_id_(tenant_id, OB_MAX_USED_##SCHEMA_TYPE##_ID_TYPE, new_schema_id);         \
 }
-// When ret = OB_SUCCESS, partition_ids in [new_partition_id - num + 1, partition_id] are available.
-int ObSchemaServiceSQLImpl::fetch_new_partition_ids(
-    const uint64_t tenant_id, const int64_t partition_num, uint64_t &new_partition_id)
-{
-  int ret = OB_SUCCESS;
-  ObMaxIdFetcher id_fetcher(*mysql_proxy_);
-  if (OB_ISNULL(mysql_proxy_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("proxy is NULL", KR(ret));
-  } else if (OB_FAIL(id_fetcher.fetch_new_max_id(tenant_id, OB_MAX_USED_PARTITION_ID_TYPE,
-    new_partition_id, UINT64_MAX/*initial value should exist*/, partition_num))) {
-    LOG_WARN("get new schema id failed", KR(ret), K(tenant_id), K(partition_num));
-  }
-  return ret;
-}
-
 FETCH_NEW_SCHEMA_ID(DATABASE, database);
 FETCH_NEW_SCHEMA_ID(TABLE, table);
 FETCH_NEW_SCHEMA_ID(TABLEGROUP, tablegroup);
@@ -2731,25 +2985,35 @@ FETCH_NEW_SCHEMA_ID(RLS_CONTEXT, rls_context);
 
 #undef FETCH_NEW_SCHEMA_ID
 
-int ObSchemaServiceSQLImpl::fetch_new_normal_rowid_table_tablet_ids(const uint64_t tenant_id, uint64_t &new_schema_id, const uint64_t size)
+int ObSchemaServiceSQLImpl::fetch_new_normal_rowid_table_tablet_ids_(
+    const uint64_t tenant_id,
+    const uint64_t size,
+    uint64_t &min_tablet_id)
 {
-  return fetch_new_schema_ids(tenant_id, OB_MAX_USED_NORMAL_ROWID_TABLE_TABLET_ID_TYPE, new_schema_id, size);
+  lib::ObMutexGuard mutex_guard(normal_tablet_ids_mutex_);
+  return fetch_new_tablet_ids_(tenant_id, OB_MAX_USED_NORMAL_ROWID_TABLE_TABLET_ID_TYPE, size, min_tablet_id);
 }
 
-int ObSchemaServiceSQLImpl::fetch_new_extended_rowid_table_tablet_ids(const uint64_t tenant_id, uint64_t &new_schema_id, const uint64_t size)
+int ObSchemaServiceSQLImpl::fetch_new_extended_rowid_table_tablet_ids_(
+    const uint64_t tenant_id,
+    const uint64_t size,
+    uint64_t &min_tablet_id)
 {
-  return fetch_new_schema_ids(tenant_id, OB_MAX_USED_EXTENDED_ROWID_TABLE_TABLET_ID_TYPE, new_schema_id, size);
+  lib::ObMutexGuard mutex_guard(extended_tablet_ids_mutex_);
+  return fetch_new_tablet_ids_(tenant_id, OB_MAX_USED_EXTENDED_ROWID_TABLE_TABLET_ID_TYPE, size, min_tablet_id);
 }
 
-int ObSchemaServiceSQLImpl::fetch_new_schema_id(const uint64_t tenant_id,
-                                                const enum ObMaxIdType max_id_type,
-                                                uint64_t &new_schema_id)
+int ObSchemaServiceSQLImpl::fetch_new_schema_id_(
+    const uint64_t tenant_id,
+    const enum ObMaxIdType max_id_type,
+    uint64_t &new_schema_id)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(mysql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("proxy is NULL");
   } else {
+    lib::ObMutexGuard mutex_guard(object_ids_mutex_);
     ObMaxIdFetcher id_fetcher(*mysql_proxy_);
     if (OB_FAIL(id_fetcher.fetch_new_max_id(tenant_id, max_id_type, new_schema_id))) {
       LOG_WARN("get new schema id failed", K(ret), K(max_id_type));
@@ -2758,10 +3022,11 @@ int ObSchemaServiceSQLImpl::fetch_new_schema_id(const uint64_t tenant_id,
   return ret;
 }
 
-int ObSchemaServiceSQLImpl::fetch_new_schema_ids(const uint64_t tenant_id,
-                                                const enum ObMaxIdType max_id_type,
-                                                uint64_t &new_schema_id,
-                                                const uint64_t size/* = 1 */)
+int ObSchemaServiceSQLImpl::fetch_new_tablet_ids_(
+    const uint64_t tenant_id,
+    const enum ObMaxIdType max_id_type,
+    const uint64_t size,
+    uint64_t &min_tablet_id)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(mysql_proxy_)) {
@@ -2769,7 +3034,7 @@ int ObSchemaServiceSQLImpl::fetch_new_schema_ids(const uint64_t tenant_id,
     LOG_WARN("proxy is NULL");
   } else {
     ObMaxIdFetcher id_fetcher(*mysql_proxy_);
-    if (OB_FAIL(id_fetcher.fetch_new_max_ids(tenant_id, max_id_type, new_schema_id, size))) {
+    if (OB_FAIL(id_fetcher.fetch_new_max_ids(tenant_id, max_id_type, min_tablet_id, size))) {
       LOG_WARN("get new schema id failed", K(ret), K(max_id_type));
     }
   }
@@ -4563,6 +4828,7 @@ int ObSchemaServiceSQLImpl::fetch_tables(
   const uint64_t exec_tenant_id = fill_exec_tenant_id(schema_status);
   const char *table_name = NULL;
   int64_t start_time = ObTimeUtility::current_time();
+  DEBUG_SYNC(BEFORE_FETCH_SIMPLE_TABLES);
   if (!check_inner_stat()) {
     ret = OB_NOT_INIT;
     LOG_WARN("check inner stat fail", K(ret));
@@ -5419,6 +5685,9 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
   } else if (OB_FAIL(fetch_partition_info(schema_status, tenant_id, table_id, schema_version,
                                          sql_client, table_schema))) {
     LOG_WARN("Failed to fetch part info", K(ret));
+  } else if (OB_FAIL(fetch_column_group_info(schema_status, tenant_id, table_id, schema_version,
+                                             sql_client, table_schema))) {
+    LOG_WARN("fail to fetch column_group info", KR(ret), K(table_id));
   }
   if (OB_SUCCESS == ret) {
     if (OB_FAIL(fetch_foreign_key_info(schema_status, tenant_id, table_id,
@@ -5685,6 +5954,48 @@ int ObSchemaServiceSQLImpl::fetch_partition_info(
   return ret;
 }
 
+int ObSchemaServiceSQLImpl::fetch_column_group_info(
+    const ObRefreshSchemaStatus &schema_status,
+    const uint64_t tenant_id,
+    const uint64_t table_id,
+    const int64_t schema_version,
+    ObISQLClient &sql_client,
+    ObTableSchema *&table_schema)
+{
+  int ret = OB_SUCCESS;
+  const bool is_history = true;
+  ObArray<ObTableSchema *> table_schema_arr;
+  ObArray<uint64_t> table_id_arr;
+  if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table schema should not be null", KR(ret), K(table_id));
+  } else if (!need_column_group(*table_schema) || (!table_schema->is_column_store_supported())) {
+    // skip
+  } else if (OB_FAIL(table_id_arr.reserve(1))) {
+    LOG_WARN("fail to reserve", KR(ret));
+  } else if (OB_FAIL(table_id_arr.push_back(table_id))) {
+    LOG_WARN("fail to push back", KR(ret), K(table_id));
+  } else if (OB_FAIL(table_schema_arr.reserve(1))) {
+    LOG_WARN("fail to reserve", KR(ret));
+  } else if (OB_FAIL(table_schema_arr.push_back(table_schema))) {
+    LOG_WARN("fail to push back", KR(ret), KP(table_schema));
+  }
+
+  // fetch column_group info & column_group mapping info
+  if (OB_FAIL(ret)) {
+  } else if (table_schema_arr.count() < 1) {
+    // skip
+  } else if (OB_FAIL(fetch_all_column_group_schema(schema_status, schema_version, tenant_id, sql_client,
+      is_history, table_schema_arr, &table_id_arr.at(0), table_id_arr.count()))) {
+    LOG_WARN("fail to fetch all column_group schema", KR(ret), K(tenant_id), K(table_id), K(schema_version));
+  } else if (OB_FAIL(fetch_all_column_group_mapping(schema_status, schema_version, tenant_id, sql_client,
+            is_history, table_schema_arr, nullptr/*table_ids*/, 0/*table_ids_size*/))) {
+    LOG_WARN("fail to fetch all column_group mapping", KR(ret), K(tenant_id), K(table_id), K(schema_version));
+  }
+
+  return ret;
+}
+
 /*
  * The function is implemented as follows:
  * case 1.
@@ -5750,6 +6061,22 @@ int ObSchemaServiceSQLImpl::try_mock_partition_array(
     // only mock vtable's partition array after 4.0
     if (OB_FAIL(table_schema.mock_list_partition_array())) {
       LOG_WARN("fail to mock list partition array", KR(ret), K(table_schema));
+    }
+  }
+  return ret;
+}
+
+template<typename SCHEMA>
+int ObSchemaServiceSQLImpl::try_mock_default_column_group(
+    SCHEMA &table_schema)
+{
+  int ret = OB_SUCCESS;
+  if (!table_schema.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid table_schema", KR(ret), K(table_schema));
+  } else if (table_schema.get_column_group_count() == 0) {
+    if (OB_FAIL(table_schema.add_default_column_group())) {
+      LOG_WARN("fail to add default column group", KR(ret), K(table_schema));
     }
   }
   return ret;
@@ -9202,6 +9529,21 @@ int ObSchemaServiceSQLImpl::calc_refresh_full_schema_timeout_ctx_(
     }
   } // end SMTART_VAR
   return ret;
+}
+
+bool ObSchemaServiceSQLImpl::need_column_group(const ObTableSchema &table_schema)
+{
+  bool need_cg = false;
+  const uint64_t table_id = table_schema.get_table_id();
+  if (is_sys_table(table_id)) {
+    need_cg = true;
+  } else if (table_schema.is_user_table()
+            || table_schema.is_index_table()
+            || table_schema.is_tmp_table()
+            || table_schema.is_aux_lob_table()) {
+    need_cg = true;
+  }
+  return need_cg;
 }
 
 int ObSchemaServiceSQLImpl::retrieve_schema_id_with_name_(

@@ -400,7 +400,7 @@ int ObBackupDataCtx::open_file_writer_(const share::ObBackupPath &backup_path)
 {
   int ret = OB_SUCCESS;
   common::ObBackupIoAdapter util;
-  const ObStorageAccessType access_type = OB_STORAGE_ACCESS_RANDOMWRITER;
+  const ObStorageAccessType access_type = OB_STORAGE_ACCESS_MULTIPART_WRITER;
   if (OB_FAIL(util.mk_parent_dir(backup_path.get_obstr(), param_.backup_dest_.get_storage_info()))) {
     LOG_WARN("failed to make parent dir", K(backup_path));
   } else if (OB_FAIL(util.open_with_access_type(
@@ -1213,7 +1213,8 @@ int ObLSBackupCtx::get_last_persist_macro_block_(const ObBackupRetryDesc &retry_
           param_.ls_id_,
           backup_data_type_,
           retry_desc.turn_id_,
-          retry_desc.retry_id_))) {
+          retry_desc.retry_id_,
+          true/*need_read_inner_table*/))) {
     LOG_WARN("failed to init iterator", K(ret), K_(param));
   } else {
     ObArray<ObBackupMacroBlockIndex> index_list;
@@ -1354,7 +1355,8 @@ int ObLSBackupCtx::inner_recover_need_reuse_macro_block_(const ObBackupRetryDesc
           param_.ls_id_,
           backup_data_type_,
           retry_desc.turn_id_,
-          retry_desc.retry_id_))) {
+          retry_desc.retry_id_,
+          true/*need_read_inner_table*/))) {
     LOG_WARN("failed to init iterator", K(ret), K_(param));
   } else {
     ObArray<ObBackupMacroBlockIndex> index_list;
@@ -1412,6 +1414,10 @@ int ObLSBackupCtx::prepare_tablet_id_reader_(ObILSTabletIdReader *&reader)
     LOG_WARN("failed to init tablet id reader", K(ret), K(param_));
   } else {
     reader = tmp_reader;
+    tmp_reader = NULL;
+  }
+  if (OB_NOT_NULL(tmp_reader)) {
+    ObLSBackupFactory::free(tmp_reader);
   }
   return ret;
 }

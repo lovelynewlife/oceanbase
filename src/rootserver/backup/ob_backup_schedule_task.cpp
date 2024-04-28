@@ -412,7 +412,7 @@ int ObBackupDataBaseTask::set_optional_servers_(const ObIArray<common::ObAddr> &
   uint64_t tenant_id = get_tenant_id();
   share::ObLSTableOperator *lst_operator = GCTX.lst_operator_;
   int64_t cluster_id = GCONF.cluster_id;
-  ObLSID server_ls_id = ls_id_.id() == 0 ? ObLSID(ObLSID::SYS_LS_ID) : ls_id_;
+  ObLSID server_ls_id = execute_on_sys_server_() ? ObLSID(ObLSID::SYS_LS_ID) : ls_id_;
   if (nullptr == lst_operator) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("lst_operator ptr is null", K(ret));
@@ -422,8 +422,9 @@ int ObBackupDataBaseTask::set_optional_servers_(const ObIArray<common::ObAddr> &
     const ObLSInfo::ReplicaArray &replica_array = ls_info.get_replicas();
     for (int i = 0; OB_SUCC(ret) && i < replica_array.count(); ++i) {
       const ObLSReplica &replica = replica_array.at(i);
-      if (replica.is_in_service() && !replica.is_strong_leader() && replica.is_valid() && !replica.is_in_restore()
-          && ObReplicaTypeCheck::is_full_replica(replica.get_replica_type()) // TODO(chongrong.th) 4.3 allow R replica backup later
+      if (replica.is_in_service() && !replica.is_strong_leader() && replica.is_valid()
+          && replica.get_restore_status().is_none()
+          && ObReplicaTypeCheck::is_full_replica(replica.get_replica_type()) // TODO(zeyong) 4.3 allow R replica backup later
           && !check_replica_in_black_server_(replica, black_servers)) { 
         ObBackupServer server;
         server.set(replica.get_server(), 0/*high priority*/);
@@ -434,7 +435,8 @@ int ObBackupDataBaseTask::set_optional_servers_(const ObIArray<common::ObAddr> &
     }
     for (int i = 0; OB_SUCC(ret) && i < replica_array.count(); ++i) {
       const ObLSReplica &replica = replica_array.at(i);
-      if (replica.is_in_service() && replica.is_strong_leader() && replica.is_valid() && !replica.is_in_restore()
+      if (replica.is_in_service() && replica.is_strong_leader() && replica.is_valid()
+          && replica.get_restore_status().is_none()
           && (replica_array.count() == 1 || !check_replica_in_black_server_(replica, black_servers))) {
         // if only has one replica. no use black server.
         ObBackupServer server;

@@ -21,11 +21,46 @@
 #include "tx_node.h"
 #include "../mock_utils/async_util.h"
 #include "test_tx_dsl.h"
+
 namespace oceanbase
 {
 using namespace ::testing;
 using namespace transaction;
 using namespace share;
+
+
+static ObSharedMemAllocMgr MTL_MEM_ALLOC_MGR;
+
+namespace share {
+int ObTenantTxDataAllocator::init(const char *label)
+{
+  int ret = OB_SUCCESS;
+  ObMemAttr mem_attr;
+  throttle_tool_ = &(MTL_MEM_ALLOC_MGR.share_resource_throttle_tool());
+  if (OB_FAIL(slice_allocator_.init(
+                 storage::TX_DATA_SLICE_SIZE, OB_MALLOC_NORMAL_BLOCK_SIZE, block_alloc_, mem_attr))) {
+    SHARE_LOG(WARN, "init slice allocator failed", KR(ret));
+  } else {
+    slice_allocator_.set_nway(ObTenantTxDataAllocator::ALLOC_TX_DATA_MAX_CONCURRENCY);
+    is_inited_ = true;
+  }
+  return ret;
+}
+int ObMemstoreAllocator::init()
+{
+  throttle_tool_ = &MTL_MEM_ALLOC_MGR.share_resource_throttle_tool();
+  return arena_.init();
+}
+int ObMemstoreAllocator::AllocHandle::init()
+{
+  int ret = OB_SUCCESS;
+  uint64_t tenant_id = 1;
+  ObSharedMemAllocMgr *mtl_alloc_mgr = &MTL_MEM_ALLOC_MGR;
+  ObMemstoreAllocator &host = mtl_alloc_mgr->memstore_allocator();
+  (void)host.init_handle(*this);
+  return ret;
+}
+};  // namespace share
 
 namespace concurrent_control
 {
@@ -55,6 +90,7 @@ public:
     ObClockGenerator::init();
     const testing::TestInfo* const test_info =
       testing::UnitTest::GetInstance()->current_test_info();
+    MTL_MEM_ALLOC_MGR.init();
     auto test_name = test_info->name();
     _TRANS_LOG(INFO, ">>>> starting test : %s", test_name);
   }
@@ -101,6 +137,57 @@ TEST_F(ObTestTx, basic)
   ASSERT_EQ(114, val1);
   ASSERT_EQ(115, val2);
   COMMIT_TX(n1, tx, 500 * 1000);
+}
+
+TEST_F(ObTestTx, tx_2pc_blocking_and_get_gts_callback_concurrent_problem)
+{
+  GCONF._ob_trans_rpc_timeout = 50;
+  ObTxNode::reset_localtion_adapter();
+
+  START_ONE_TX_NODE(n1);
+  PREPARE_TX(n1, tx);
+  PREPARE_TX_PARAM(tx_param);
+  GET_READ_SNAPSHOT(n1, tx, tx_param, snapshot);
+  ASSERT_EQ(OB_SUCCESS, n1->start_tx(tx, tx_param));
+  ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 112));
+
+  ObPartTransCtx *part_ctx = NULL;
+  ObLSID ls_id(1);
+  ASSERT_EQ(OB_SUCCESS, n1->get_tx_ctx(ls_id, tx.tx_id_, part_ctx));
+
+  // mock gts waiting
+  part_ctx->sub_state_.set_gts_waiting();
+
+  // mock transfer
+  part_ctx->sub_state_.set_transfer_blocking();
+
+  ObMonotonicTs stc(99);
+  ObMonotonicTs srr(100);
+  ObMonotonicTs rgt(100);
+  share::SCN scn;
+  scn.convert_for_gts(100);
+  part_ctx->stc_ = stc;
+  part_ctx->part_trans_action_ = ObPartTransAction::COMMIT;
+  EXPECT_EQ(OB_SUCCESS, part_ctx->get_gts_callback(srr, scn, rgt));
+  EXPECT_EQ(true, part_ctx->ctx_tx_data_.get_commit_version() >= scn);
+  ObLSID dst_ls_id(2);
+  share::SCN start_scn;
+  share::SCN end_scn;
+  start_scn.convert_for_gts(888);
+  end_scn.convert_for_gts(1000);
+  part_ctx->ctx_tx_data_.set_start_log_ts(start_scn);
+  ObSEArray<ObTabletID, 8> array;
+  ObTxCtxMoveArg arg;
+  bool is_collected;
+  TRANS_LOG(INFO, "qc debug");
+  ASSERT_EQ(OB_SUCCESS, part_ctx->collect_tx_ctx(dst_ls_id,
+                                                 end_scn,
+                                                 array,
+                                                 arg,
+                                                 is_collected));
+  ASSERT_EQ(true, is_collected);
+
+  n1->get_ts_mgr_().repair_get_gts_error();
 }
 
 TEST_F(ObTestTx, start_trans_expired)
@@ -221,6 +308,36 @@ TEST_F(ObTestTx, rollback_savepoint_with_uncertain_participants)
   ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_us(100000), &uncertain_parts));
   ASSERT_EQ(ObTxDesc::State::IDLE, tx.state_);
   ASSERT_EQ(0, tx.parts_.count());
+}
+
+TEST_F(ObTestTx, rollback_savepoint_with_need_retry_error)
+{
+  START_ONE_TX_NODE(n1);
+  PREPARE_TX(n1, tx);
+  PREPARE_TX_PARAM(tx_param);
+  GET_READ_SNAPSHOT(n1, tx, tx_param, snapshot);
+
+  {
+    CREATE_IMPLICIT_SAVEPOINT(n1, tx, tx_param, sp);
+    ASSERT_TRUE(sp.is_valid());
+    ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 200));
+    ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_ms(5), nullptr, OB_TRANSACTION_SET_VIOLATION));
+    ASSERT_EQ(ObTxDesc::State::IDLE, tx.state_);
+    ASSERT_EQ(0, tx.parts_.count());
+    ASSERT_EQ(ObTxSEQ::INVL(), tx.active_scn_);
+    ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_ms(5), nullptr));
+  }
+
+  {
+    CREATE_IMPLICIT_SAVEPOINT(n1, tx, tx_param, sp);
+    ASSERT_TRUE(sp.is_valid());
+    ASSERT_EQ(OB_SUCCESS, n1->write(tx, snapshot, 100, 200));
+    ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_ms(5), nullptr, OB_TRY_LOCK_ROW_CONFLICT));
+    ASSERT_EQ(ObTxDesc::State::IDLE, tx.state_);
+    ASSERT_EQ(0, tx.parts_.count());
+    ASSERT_EQ(ObTxSEQ::INVL(), tx.active_scn_);
+    ASSERT_EQ(OB_SUCCESS, n1->rollback_to_implicit_savepoint(tx, sp, n1->ts_after_ms(5), nullptr));
+  }
 }
 
 TEST_F(ObTestTx, switch_to_follower_gracefully)
@@ -522,7 +639,9 @@ TEST_F(ObTestTx, switch_to_follower_forcedly)
 
   ObLSTxCtxMgr *ls_tx_ctx_mgr = NULL;
   ASSERT_EQ(OB_SUCCESS, n1->txs_.tx_ctx_mgr_.get_ls_tx_ctx_mgr(n1->ls_id_, ls_tx_ctx_mgr));
-
+  // disable keepalive msg, because switch to follower forcedly will send keepalive msg to notify
+  // scheduler abort tx
+  n1->add_drop_msg_type(KEEPALIVE);
   {
     ls_tx_ctx_mgr->switch_to_follower_forcedly();
 

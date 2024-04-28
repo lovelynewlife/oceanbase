@@ -40,22 +40,25 @@
 #include "share/ob_io_device_helper.h"
 #include "share/ob_simple_mem_limit_getter.h"
 #include "share/resource_manager/ob_cgroup_ctrl.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_tenant_schema_service.h"
 #include "share/stat/ob_opt_stat_monitor_manager.h"
 #include "sql/ob_sql.h"
 #include "storage/blocksstable/ob_log_file_spec.h"
+#include "storage/blocksstable/ob_decode_resource_pool.h"
 #include "storage/slog_ckpt/ob_tenant_checkpoint_slog_handler.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_slog_handler.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
+#include "storage/compaction/ob_tenant_medium_checker.h"
 #include "storage/slog/ob_storage_logger_manager.h"
 #include "storage/slog/ob_storage_logger.h"
 #include "storage/compaction/ob_sstable_merge_info_mgr.h"
 #include "storage/compaction/ob_tenant_freeze_info_mgr.h"
 #include "storage/compaction/ob_compaction_diagnose.h"
+#include "storage/compaction/ob_compaction_suggestion.h"
 #include "storage/tx_storage/ob_checkpoint_service.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/tx_storage/ob_access_service.h"
@@ -82,10 +85,13 @@
 #include "storage/concurrency_control/ob_multi_version_garbage_collector.h"
 #include "storage/tablelock/ob_table_lock_service.h"
 #include "storage/tx/wrs/ob_tenant_weak_read_service.h"
+#include "share/allocator/ob_shared_memory_allocator_mgr.h"   // ObSharedMemAllocMgr
 #include "logservice/palf/log_define.h"
+#include "storage/access/ob_empty_read_bucket.h"
 #include "storage/high_availability/ob_rebuild_service.h"
 #include "observer/table/ob_htable_lock_mgr.h"
 #include "observer/table/ob_table_session_pool.h"
+#include "share/index_usage/ob_index_usage_info_mgr.h"
 
 namespace oceanbase
 {
@@ -135,15 +141,6 @@ public:
   {
     UNUSED(tenant_id);
     UNUSED(ls_id);
-    return OB_SUCCESS;
-  }
-  int submit_tablet_update_task(const uint64_t tenant_id,
-    const share::ObLSID &ls_id,
-    const common::ObTabletID &tablet_id)
-  {
-    UNUSED(tenant_id);
-    UNUSED(ls_id);
-    UNUSED(tablet_id);
     return OB_SUCCESS;
   }
 };
@@ -661,6 +658,8 @@ int MockTenantModuleEnv::init()
     if (inited_) {
       ret = OB_INIT_TWICE;
       STORAGE_LOG(ERROR, "init twice", K(ret));
+    } else if (OB_FAIL(ObClockGenerator::init())) {
+      STORAGE_LOG(ERROR, "init ClockGenerator failed", K(ret));
     } else if (FALSE_IT(init_gctx_gconf())) {
     } else if (OB_FAIL(init_before_start_mtl())) {
       STORAGE_LOG(ERROR, "init_before_start_mtl failed", K(ret));
@@ -671,6 +670,7 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, ObTenantSchemaService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObStorageLogger::mtl_init, ObStorageLogger::mtl_start, ObStorageLogger::mtl_stop, ObStorageLogger::mtl_wait, mtl_destroy_default);
       MTL_BIND2(ObTenantMetaMemMgr::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, share::ObSharedMemAllocMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTransService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, logservice::ObGarbageCollector::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTimestampService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
@@ -682,7 +682,9 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, checkpoint::ObCheckPointService::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, checkpoint::ObTabletGCService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObLogService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, ObTenantTabletScheduler::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, compaction::ObTenantTabletScheduler::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, compaction::ObTenantMediumChecker::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, observer::ObTabletTableUpdater::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::ObTenantDagScheduler::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTenantCheckpointSlogHandler::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, coordinator::ObLeaderCoordinator::mtl_init, coordinator::ObLeaderCoordinator::mtl_start, coordinator::ObLeaderCoordinator::mtl_stop, coordinator::ObLeaderCoordinator::mtl_wait, mtl_destroy_default);
@@ -690,9 +692,11 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(ObLobManager::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::detector::ObDeadLockDetectorMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTenantTabletStatMgr::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default)
+      MTL_BIND2(mtl_new_default, storage::ObTenantCompactionMemPool::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default)
       MTL_BIND2(mtl_new_default, storage::ObTenantSSTableMergeInfoMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::ObDagWarningHistoryManager::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, compaction::ObScheduleSuspectInfoMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, compaction::ObCompactionSuggestionMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTenantFreezeInfoMgr::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObSharedMacroBlockMgr::mtl_init,  mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::mds::ObTenantMdsService::mtl_init, storage::mds::ObTenantMdsService::mtl_start, storage::mds::ObTenantMdsService::mtl_stop, storage::mds::ObTenantMdsService::mtl_wait, mtl_destroy_default);
@@ -701,10 +705,15 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(server_obj_pool_mtl_new<transaction::ObPartTransCtx>, nullptr, nullptr, nullptr, nullptr, server_obj_pool_mtl_destroy<transaction::ObPartTransCtx>);
       MTL_BIND2(server_obj_pool_mtl_new<ObTableScanIterator>, nullptr, nullptr, nullptr, nullptr, server_obj_pool_mtl_destroy<ObTableScanIterator>);
       MTL_BIND(ObTenantSQLSessionMgr::mtl_init, ObTenantSQLSessionMgr::mtl_destroy);
+      MTL_BIND2(mtl_new_default, ObTenantCGReadInfoMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, ObDecodeResourcePool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, ObEmptyReadBucket::mtl_init, nullptr, nullptr, nullptr, ObEmptyReadBucket::mtl_destroy);
       MTL_BIND2(mtl_new_default, ObRebuildService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-      MTL_BIND(table::ObHTableLockMgr::mtl_init, table::ObHTableLockMgr::mtl_destroy);
+      MTL_BIND2(mtl_new_default, table::ObHTableLockMgr::mtl_init, nullptr, nullptr, nullptr, table::ObHTableLockMgr::mtl_destroy);
       MTL_BIND2(mtl_new_default, omt::ObTenantSrs::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, table::ObTableApiSessPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, ObIndexUsageInfoMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
+      MTL_BIND2(mtl_new_default, storage::ObTabletMemtableMgrPool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     }
     if (OB_FAIL(ret)) {
 

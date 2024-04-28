@@ -411,43 +411,6 @@ int ObMallocAllocator::with_resource_handle_invoke(uint64_t tenant_id, InvokeFun
   }
   return ret;
 }
-#ifdef ENABLE_500_MEMORY_LIMIT
-int ObMallocAllocator::set_500_tenant_limit(const bool unlimited)
-{
-  int ret = OB_SUCCESS;
-  for (int ctx_id = 0; OB_SUCC(ret) && ctx_id < ObCtxIds::MAX_CTX_ID; ++ctx_id) {
-    if (ObCtxIds::SCHEMA_SERVICE == ctx_id ||
-        ObCtxIds::PKT_NIO == ctx_id ||
-        ObCtxIds::CO_STACK == ctx_id ||
-        ObCtxIds::LIBEASY == ctx_id ||
-        ObCtxIds::GLIBC == ctx_id ||
-        ObCtxIds::LOGGER_CTX_ID== ctx_id ||
-        ObCtxIds::RPC_CTX_ID == ctx_id ||
-        ObCtxIds::UNEXPECTED_IN_500 == ctx_id) {
-      continue;
-    }
-    auto ta = get_tenant_ctx_allocator(OB_SERVER_TENANT_ID, ctx_id);
-    if (OB_NOT_NULL(ta)) {
-      int64_t ctx_limit = ObCtxIds::DEFAULT_CTX_ID == ctx_id ? (4LL<<30) : (50LL<<20);
-      if (unlimited) {
-        ctx_limit = INT64_MAX;
-      }
-      if (OB_FAIL(ta->set_limit(ctx_limit))) {
-        LIB_LOG(WARN, "set limit of 500 tenant failed", K(ret), K(ctx_limit),
-                "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
-      } else {
-        LIB_LOG(INFO, "set limit of 500 tenant succeed", K(ret), K(ctx_limit),
-                "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
-      }
-    } else {
-      ret = OB_INVALID_ARGUMENT;
-      LIB_LOG(WARN, "tenant ctx allocator is not exist", K(ret),
-              "ctx_name", get_global_ctx_info().get_ctx_name(ctx_id));
-    }
-  }
-  return ret;
-}
-#endif
 
 int ObMallocAllocator::set_tenant_limit(uint64_t tenant_id, int64_t bytes)
 {
@@ -475,6 +438,16 @@ int64_t ObMallocAllocator::get_tenant_hold(uint64_t tenant_id)
       return OB_SUCCESS;
     });
   return hold;
+}
+
+int64_t ObMallocAllocator::get_tenant_cache_hold(uint64_t tenant_id)
+{
+  int64_t cache_hold = 0;
+  with_resource_handle_invoke(tenant_id, [&cache_hold](ObTenantMemoryMgr *mgr) {
+      cache_hold = mgr->get_cache_hold();
+      return OB_SUCCESS;
+    });
+  return cache_hold;
 }
 
 int64_t ObMallocAllocator::get_tenant_remain(uint64_t tenant_id)
@@ -549,9 +522,6 @@ void ObMallocAllocator::print_tenant_memory_usage(uint64_t tenant_id) const
                 "[MEMORY] ctx_id=%25s hold_bytes=%'15ld limit=%'26ld\n",
                 get_global_ctx_info().get_ctx_name(i), ctx_hold_bytes[i], limit);
           }
-        }
-        if (OB_SUCC(ret)) {
-          ObPageManagerCenter::get_instance().print_tenant_stat(tenant_id, buf, BUFLEN, ctx_pos);
         }
         buf[std::min(ctx_pos, BUFLEN - 1)] = '\0';
         allow_next_syslog();
@@ -706,6 +676,7 @@ int ObMallocAllocator::recycle_tenant_allocator(uint64_t tenant_id)
     // wash idle chunks
     for (int64_t ctx_id = 0; ctx_id < ObCtxIds::MAX_CTX_ID; ctx_id++) {
       ta[ctx_id].set_idle(0);
+      ta[ctx_id].reset_req_chunk_mgr();
     }
 
     ObTenantCtxAllocator *tas[ObCtxIds::MAX_CTX_ID] = {NULL};

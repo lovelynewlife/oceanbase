@@ -508,14 +508,16 @@ int ObSqlParameterization::transform_tree(TransformTreeCtx &ctx,
         }
       }
     }
-
-    if (OB_SUCC(ret) && T_PROJECT_STRING == ctx.tree_->type_
+    bool enable_decimal_int = false;
+    if (OB_FAIL(ret)) {
+    } else if (T_PROJECT_STRING == ctx.tree_->type_
         && OB_FAIL(ctx.project_list_.push_back(ctx.tree_))) {
       LOG_WARN("failed to push back element", K(ret));
+    } else if (OB_FAIL(ObSQLUtils::check_enable_decimalint(&session_info, enable_decimal_int))) {
+      LOG_WARN("fail to check enable decimal int", K(ret));
     } else {
       // do nothing
     }
-
     if (OB_SUCC(ret)) {
       ObObjParam value;
       ObAccuracy tmp_accuracy;
@@ -555,7 +557,8 @@ int ObSqlParameterization::transform_tree(TransformTreeCtx &ctx,
                               literal_prefix,
                               ctx.default_length_semantics_,
                               static_cast<ObCollationType>(server_collation),
-                              NULL, session_info.get_sql_mode(), ctx.is_from_pl_))) {
+                              NULL, session_info.get_sql_mode(), enable_decimal_int,
+                              ctx.is_from_pl_))) {
             SQL_PC_LOG(WARN, "fail to resolve const", K(ret));
           } else {
             //对于字符串值，其T_VARCHAR型的parse node有一个T_VARCHAR类型的子node，该子node描述字符串的charset等信息。
@@ -582,7 +585,8 @@ int ObSqlParameterization::transform_tree(TransformTreeCtx &ctx,
               } else {
                 value.set_need_to_check_type(true); 
               }
-              if (ctx.ignore_scale_check_) {
+              // if value type is decimal int, it should not ignore scale check
+              if (ctx.ignore_scale_check_ && !value.is_decimal_int()) {
                 value.set_ignore_scale_check(true);
               }
             }
@@ -999,7 +1003,7 @@ int ObSqlParameterization::parameterize_syntax_tree(common::ObIAllocator &alloca
                                                     ObPlanCacheCtx &pc_ctx,
                                                     ParseNode *tree,
                                                     ParamStore &params,
-                                                    ObCollationType cs_type)
+                                                    ObCharsets4Parser charsets4parser)
 {
   int ret = OB_SUCCESS;
   SqlInfo sql_info;
@@ -1029,7 +1033,7 @@ int ObSqlParameterization::parameterize_syntax_tree(common::ObIAllocator &alloca
     // if so, faster parser is needed
     // otherwise, fast parser has been done before
     pc_ctx.fp_result_.reset();
-    FPContext fp_ctx(cs_type);
+    FPContext fp_ctx(charsets4parser);
     fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
     fp_ctx.sql_mode_ = session->get_sql_mode();
     fp_ctx.is_udr_mode_ = pc_ctx.is_rewrite_sql_;
@@ -1510,7 +1514,7 @@ int ObSqlParameterization::fast_parser(ObIAllocator &allocator,
       } else { /*do nothing*/}
     }
   } else {
-    ObParser parser(allocator, fp_ctx.sql_mode_, fp_ctx.conn_coll_);
+    ObParser parser(allocator, fp_ctx.sql_mode_, fp_ctx.charsets4parser_);
     SMART_VAR(ParseResult, parse_result) {
       if (OB_FAIL(parser.parse(sql, parse_result, FP_MODE, fp_ctx.enable_batched_multi_stmt_))) {
         SQL_PC_LOG(WARN, "fail to fast parser", K(sql), K(ret));
@@ -1556,7 +1560,7 @@ int ObSqlParameterization::raw_fast_parameterize_sql(ObIAllocator &allocator,
                                                      ParseMode parse_mode)
 {
   int ret = OB_SUCCESS;
-  ObParser parser(allocator, session.get_sql_mode(), session.get_local_collation_connection());
+  ObParser parser(allocator, session.get_sql_mode(), session.get_charsets4parser());
   ParseResult parse_result;
 
   NG_TRACE(pc_fast_parse_start);
@@ -2002,7 +2006,7 @@ int ObSqlParameterization::get_related_user_vars(const ParseNode *tree, common::
     // do nothing
   } else {
     if (T_USER_VARIABLE_IDENTIFIER == tree -> type_) {
-      if (OB_ISNULL(tree -> str_value_) || tree -> str_len_ <= 0) {
+      if (OB_ISNULL(tree -> str_value_) || tree -> str_len_ < 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("invalid argument", K(ret), K(tree -> str_value_), K(tree -> str_len_));
       } else {

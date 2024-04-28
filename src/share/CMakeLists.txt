@@ -13,11 +13,13 @@ ob_set_subtarget(ob_share SCHEMA_CPPS
 
 ob_set_subtarget(ob_share allocator
   allocator/ob_fifo_arena.cpp
-  allocator/ob_gmemstore_allocator.cpp
+  allocator/ob_memstore_allocator.cpp
   allocator/ob_handle_list.cpp
-  allocator/ob_memstore_allocator_mgr.cpp
+  allocator/ob_mds_allocator.cpp
+  allocator/ob_shared_memory_allocator_mgr.cpp
   allocator/ob_tenant_mutil_allocator.cpp
   allocator/ob_tenant_mutil_allocator_mgr.cpp
+  allocator/ob_tx_data_allocator.cpp
 )
 
 ob_set_subtarget(ob_share backup
@@ -58,14 +60,20 @@ ob_set_subtarget(ob_share cache
   cache/ob_kvcache_struct.cpp
   cache/ob_working_set_mgr.cpp
   cache/ob_kvcache_hazard_version.cpp
-  cache/ob_kvcache_handle_ref_checker.cpp
   cache/ob_kvcache_pre_warmer.cpp
 )
 
 ob_set_subtarget(ob_share scheduler
-  scheduler/ob_dag_scheduler.cpp
+  scheduler/ob_tenant_dag_scheduler.cpp
   scheduler/ob_sys_task_stat.cpp
   scheduler/ob_dag_warning_history_mgr.cpp
+)
+
+ob_set_subtarget(ob_share compaction
+  compaction/ob_compaction_locality_cache.cpp
+  compaction/ob_table_ckm_items.cpp
+  compaction/ob_compaction_time_guard.cpp
+  compaction/ob_schedule_batch_size_mgr.cpp
 )
 
 ob_set_subtarget(ob_share common
@@ -82,6 +90,7 @@ ob_set_subtarget(ob_share common
   ob_column_checksum_error_operator.cpp
   ob_core_table_proxy.cpp
   ob_ddl_checksum.cpp
+  ob_ddl_sim_point.cpp
   ob_ddl_common.cpp
   ob_ddl_error_message_table_operator.cpp
   ob_ddl_task_executor.cpp
@@ -150,7 +159,6 @@ ob_set_subtarget(ob_share common
   ob_tablet_autoincrement_service.cpp
   ob_tablet_checksum_iterator.cpp
   ob_tablet_checksum_operator.cpp
-  ob_tablet_replica_checksum_iterator.cpp
   ob_tablet_replica_checksum_operator.cpp
   ob_tablet_meta_table_compaction_operator.cpp
   ob_task_define.cpp
@@ -171,6 +179,7 @@ ob_set_subtarget(ob_share common
   ob_virtual_table_scanner_iterator.cpp
   ob_web_service_root_addr.cpp
   ob_zone_info.cpp
+  ob_freeze_info_manager.cpp
   ob_zone_merge_info.cpp
   ob_zone_merge_table_operator.cpp
   ob_zone_table_operation.cpp
@@ -203,7 +212,9 @@ ob_set_subtarget(ob_share common_mixed
   location_cache/ob_ls_location_map.cpp
   location_cache/ob_tablet_ls_service.cpp
   location_cache/ob_tablet_ls_map.cpp
+  location_cache/ob_tablet_location_broadcast.cpp
   location_cache/ob_vtable_location_service.cpp
+  location_cache/ob_tablet_location_refresh_service.cpp
   inner_table/ob_inner_table_schema.vt.cpp
   inner_table/ob_inner_table_schema.lob.cpp
   inner_table/ob_inner_table_schema_misc.ipp
@@ -217,7 +228,6 @@ ob_set_subtarget(ob_share common_mixed
   restore/ob_import_table_struct.cpp
   restore/ob_import_util.cpp
   restore/ob_recover_table_util.cpp
-  restore/ob_restore_args.cpp
   restore/ob_restore_uri_parser.cpp
   restore/ob_ls_restore_status.cpp
   restore/ob_restore_type.cpp
@@ -260,8 +270,13 @@ ob_set_subtarget(ob_share common_mixed
   detect/ob_detect_rpc_processor.cpp
   detect/ob_detect_manager_utils.cpp
   table/ob_table_load_sql_statistics.cpp
+  tenant_snapshot/ob_tenant_snapshot_id.cpp
+  tenant_snapshot/ob_tenant_snapshot_table_operator.cpp
   table/ob_ttl_util.cpp
   table/ob_table_config_util.cpp
+  restore/ob_tenant_clone_table_operator.cpp
+  index_usage/ob_index_usage_info_mgr.cpp
+  index_usage/ob_index_usage_report_task.cpp
 )
 
 ob_set_subtarget(ob_share tablet
@@ -439,11 +454,16 @@ ob_set_subtarget(ob_share schema
   schema/ob_server_schema_service.cpp
   schema/ob_table_schema.cpp
   schema/ob_latest_schema_guard.cpp
+  schema/ob_mlog_info.cpp
+  schema/ob_mview_info.cpp
+  schema/ob_mview_refresh_stats_params.cpp
+  schema/ob_mview_refresh_stats.cpp
 )
 
 ob_set_subtarget(ob_share stat
   stat/ob_basic_stats_estimator.cpp
   stat/ob_opt_stat_monitor_manager.cpp
+  stat/ob_dbms_stats_copy_table_stats.cpp
   stat/ob_dbms_stats_executor.cpp
   stat/ob_dbms_stats_export_import.cpp
   stat/ob_dbms_stats_history_manager.cpp
@@ -469,6 +489,9 @@ ob_set_subtarget(ob_share stat
   stat/ob_opt_stat_gather_stat.cpp
   stat/ob_opt_ds_stat.cpp
   stat/ob_opt_ds_stat_cache.cpp
+  stat/ob_dbms_stats_gather.cpp
+  stat/ob_opt_system_stat.cpp
+  stat/ob_opt_system_stat_cache.cpp
 )
 
 ob_set_subtarget(ob_share external_table
@@ -508,6 +531,7 @@ if (OB_ERRSIM)
 endif()
 
 ob_set_subtarget(ob_share throttle
+  throttle/ob_share_throttle_define.cpp
   throttle/ob_throttle_common.cpp
 )
 
@@ -520,7 +544,8 @@ ob_set_subtarget(ob_share wr
 
 ob_add_new_object_target(ob_share ob_share)
 
-target_compile_options(ob_share PRIVATE -Wshorten-64-to-32)
+target_compile_options(ob_share PRIVATE)
+#target_compile_options(ob_share PRIVATE -Wshorten-64-to-32)
 target_link_libraries(ob_share PUBLIC ob_base)
 
 add_library(ob_share_static

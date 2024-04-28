@@ -1,11 +1,19 @@
-// Copyright 2010-2016 Alibaba Inc. All Rights Reserved.
-// Author:
-//   yaojing
-// this file defines implementation of session info verification
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 
 #define USING_LOG_PREFIX SERVER
 
+#include <math.h>
 #include "sql/session/ob_sess_info_verify.h"
 #include "share/ob_define.h"
 #include "share/system_variable/ob_system_variable_factory.h"
@@ -351,10 +359,12 @@ int ObSessInfoVerify::deserialize_sess_info_veri_id(sql::ObSQLSessionInfo &sess,
       char* ptr = NULL;
       ObAddr addr;
       char ip_buf[MAX_IP_ADDR_LENGTH] = "";
+      uint64_t length = v_len;
       if (OB_FAIL(ObProtoTransUtil::get_str(buf, len, pos, v_len, ptr))) {
         OB_LOG(WARN,"failed to resolve veri level", K(ret));
-      } else if (FALSE_IT(memcpy(ip_buf, ptr, v_len))) {
-      } else if (FALSE_IT(ip_buf[v_len] = '\0')) {
+      } else if (FALSE_IT(length = std::min(length, uint64_t(MAX_IP_ADDR_LENGTH - 1)))) {
+      } else if (FALSE_IT(memcpy(ip_buf, ptr, length))) {
+      } else if (FALSE_IT(ip_buf[length] = '\0')) {
       } else if (OB_FAIL(addr.parse_from_cstring(ip_buf))) {
         OB_LOG(WARN,"failed to parse from cstring", K(ret));
       } else if (OB_FAIL(sess_info_verification.set_verify_info_addr(addr))) {

@@ -48,6 +48,7 @@ enum LockType
 class MemtableMgrLock
 {
 public:
+  MemtableMgrLock() : lock_type_(OB_LOCK_UNKNOWN), lock_(nullptr) {}
   MemtableMgrLock(const LockType lock_type, void *lock) : lock_type_(lock_type), lock_(lock) {}
   ~MemtableMgrLock() { reset(); }
   void reset()
@@ -137,7 +138,7 @@ public:
     }
   }
 
-private:
+public:
   LockType lock_type_;
   void *lock_;
 };
@@ -192,9 +193,8 @@ private:
 
 class ObIMemtableMgr
 {
-
 public:
-  ObIMemtableMgr(const LockType lock_type, void *lock)
+  ObIMemtableMgr()
     : is_inited_(false),
       ref_cnt_(0),
       tablet_id_(),
@@ -203,11 +203,16 @@ public:
       memtable_head_(0),
       memtable_tail_(0),
       t3m_(nullptr),
-      lock_(lock_type, lock)
+      lock_()
   {
     memset(tables_, 0, sizeof(tables_));
   }
-  virtual ~ObIMemtableMgr() { reset_tables(); }
+  virtual ~ObIMemtableMgr();
+
+  int init(
+      const share::ObLSID &ls_id,
+      const ObTabletID &tablet_id,
+      const lib::Worker::CompatMode compat_mode);
 
   int init(
       const ObTabletID &tablet_id,
@@ -221,10 +226,12 @@ public:
 
   virtual int create_memtable(const share::SCN clog_checkpoint_scn,
                               const int64_t schema_version,
+                              const share::SCN newest_clog_checkpoint_scn,
                               const bool for_replay = false)
   {
     UNUSED(clog_checkpoint_scn);
     UNUSED(schema_version);
+    UNUSED(newest_clog_checkpoint_scn);
     UNUSED(for_replay);
     return OB_NOT_SUPPORTED;
   }
@@ -264,11 +271,7 @@ public:
   OB_INLINE int64_t dec_ref() { return ATOMIC_SAF(&ref_cnt_, 1 /* just sub 1 */); }
   OB_INLINE int64_t get_ref() const { return ATOMIC_LOAD(&ref_cnt_); }
   OB_INLINE void inc_ref() { ATOMIC_INC(&ref_cnt_); }
-  OB_INLINE void reset()
-  {
-    destroy();
-    ATOMIC_STORE(&ref_cnt_, 0);
-  }
+
   virtual int init_storage_recorder(
       const ObTabletID &tablet_id,
       const share::ObLSID &ls_id,
@@ -285,11 +288,10 @@ public:
     UNUSED(log_handler);
     return OB_NOT_SUPPORTED;
   }
-  virtual int reset_storage_recorder()
-  { // do nothing
-    return OB_NOT_SUPPORTED;
-  }
-  virtual int set_frozen_for_all_memtables() { return OB_SUCCESS; }
+  virtual int reset_storage_recorder() { return common::OB_SUCCESS; }
+  virtual int set_frozen_for_all_memtables() { return common::OB_SUCCESS; }
+  virtual int set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle) { return OB_NOT_SUPPORTED; }
+  virtual int get_last_frozen_memtable(ObTableHandleV2 &handle) const { return OB_NOT_SUPPORTED; }
   DECLARE_VIRTUAL_TO_STRING;
 protected:
   static int64_t get_memtable_idx(const int64_t pos) { return pos & (MAX_MEMSTORE_CNT - 1); }
@@ -325,7 +327,7 @@ class ObMemtableMgrHandle final
 {
 public:
   ObMemtableMgrHandle();
-  ObMemtableMgrHandle(ObIMemtableMgr *memtable_mgr, ObITenantMetaObjPool *pool = nullptr);
+  ObMemtableMgrHandle(ObIMemtableMgr *memtable_mgr, ObTabletMemtableMgrPool *pool);
   ~ObMemtableMgrHandle();
 
   bool is_valid() const;
@@ -337,13 +339,13 @@ public:
   ObMemtableMgrHandle(const ObMemtableMgrHandle &other);
   ObMemtableMgrHandle &operator= (const ObMemtableMgrHandle &other);
 
-  int set_memtable_mgr(ObIMemtableMgr *memtable_mgr, ObITenantMetaObjPool *pool = nullptr);
+  int set_memtable_mgr(ObIMemtableMgr *memtable_mgr, ObTabletMemtableMgrPool *pool = nullptr);
 
-  TO_STRING_KV(KPC_(memtable_mgr), KP_(pool));
+  TO_STRING_KV(KP_(memtable_mgr), KP_(pool));
 
 private:
   ObIMemtableMgr *memtable_mgr_;
-  ObITenantMetaObjPool *pool_;
+  ObTabletMemtableMgrPool *pool_;
 };
 
 }  // namespace storage

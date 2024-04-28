@@ -203,7 +203,6 @@ int ObTxDataMemtableScanIterator::init(ObTxDataMemtable *tx_data_memtable)
   } else {
     STORAGE_LOG(INFO, "[TX DATA MERGE]init tx data dump iter finish", KR(ret), KPC(this), KPC(tx_data_memtable_));
   }
-
   return ret;
 }
 
@@ -426,18 +425,18 @@ int ObTxDataSingleRowGetter::get_next_row(ObTxData &tx_data)
     if (OB_TIMEOUT == ret || OB_DISK_HUNG == ret) {
       ret = OB_EAGAIN;
       STORAGE_LOG(WARN,
-                  "modify ret code from OB_TIMEOUT or OB_DISK_HUNG to OB_EAGAIN",
-                  KR(ret));
+          "modify ret code from OB_TIMEOUT or OB_DISK_HUNG to OB_EAGAIN",
+          KR(ret));
     } else if (OB_FAIL(ret)) {
-      ObSSTableMetaHandle sst_meta_handle;
-      int tmp_ret = static_cast<ObSSTable*>(sstables_[0])->get_meta(sst_meta_handle);
-      if (OB_TMP_FAIL(tmp_ret)) {
-        STORAGE_LOG(WARN, "get sstable meta handle failed", KR(tmp_ret));
+      ObSSTableMetaHandle sstable_meta_hdl;
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(static_cast<ObSSTable*>(sstables_[0])->get_meta(sstable_meta_hdl))) {
+        STORAGE_LOG(ERROR, "fail to get sstable meta handle", K(tmp_ret));
         recycled_scn_.set_invalid();
       } else {
-        recycled_scn_ = sst_meta_handle.get_sstable_meta().get_filled_tx_scn();
+        recycled_scn_ = sstable_meta_hdl.get_sstable_meta().get_filled_tx_scn();
       }
-      STORAGE_LOG(WARN, "get tx data from sstable failed", KR(ret), KR(tmp_ret), K(recycled_scn_));
+      STORAGE_LOG(WARN, "get tx data from sstable failed", K(recycled_scn_));
     }
   }
   return ret;
@@ -524,7 +523,7 @@ int ObTxDataSingleRowGetter::get_row_from_sstables_(blocksstable::ObDatumRowkey 
       ret = OB_ERR_SYS;
       STORAGE_LOG(ERROR, "Unexpected null table", KR(ret), K(i), K(sstables));
     } else if (table->is_loaded()) {
-    } else if (OB_FAIL(ObTabletTableStore::load_sstable(table->get_addr(), sstable_handle))) {
+    } else if (OB_FAIL(ObTabletTableStore::load_sstable(table->get_addr(), table->is_co_sstable(), sstable_handle))) {
       STORAGE_LOG(WARN, "fail to load sstable", K(ret), KPC(table));
     } else if (OB_FAIL(sstable_handle.get_sstable(table))) {
       STORAGE_LOG(WARN, "fail to get sstable", K(ret), K(sstable_handle));
@@ -589,7 +588,7 @@ int ObTxDataSingleRowGetter::deserialize_tx_data_from_store_buffers_(ObTxData &t
       p_dest += tx_data_buffers_[idx].get_ob_string().length();
     }
     tx_data.tx_id_ = tx_id_;
-    if (OB_FAIL(tx_data.deserialize(merge_buffer, total_buffer_size, pos, slice_allocator_))) {
+    if (OB_FAIL(tx_data.deserialize(merge_buffer, total_buffer_size, pos, tx_data_allocator_))) {
       STORAGE_LOG(WARN, "deserialize tx data failed",
                         KR(ret), KPHEX(merge_buffer, total_buffer_size));
       hex_dump(merge_buffer, total_buffer_size, true, OB_LOG_LEVEL_WARN);

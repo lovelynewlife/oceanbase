@@ -53,7 +53,7 @@ int ObTxTable::init(ObLS *ls)
     ls_ = ls;
     ls_id_ = ls->get_ls_id();
     epoch_ = 0;
-    state_ = TxTableState::ONLINE;
+    state_ = TxTableState::OFFLINE;
     mini_cache_hit_cnt_ = 0;
     kv_cache_hit_cnt_ = 0;
     read_tx_data_table_cnt_ = 0;
@@ -166,8 +166,8 @@ int ObTxTable::online()
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("tx table is not init.", KR(ret));
-  } else if (OB_FAIL(load_tx_data_table_())) {
-    LOG_WARN("failed to load tx data table", K(ret));
+  } else if (OB_FAIL(tx_data_table_.online())) {
+    LOG_WARN("failed to online tx data table", K(ret));
   } else if (OB_FAIL(load_tx_ctx_table_())) {
     LOG_WARN("failed to load tx ctx table", K(ret));
   } else {
@@ -284,13 +284,17 @@ int ObTxTable::create_ctx_tablet_(
 {
   int ret = OB_SUCCESS;
   share::schema::ObTableSchema table_schema;
+  ObArenaAllocator arena_allocator;
+  ObCreateTabletSchema create_tablet_schema;
   if (OB_FAIL(get_ctx_table_schema_(tenant_id, table_schema))) {
     LOG_WARN("get ctx table schema failed", K(ret));
+  } else if (OB_FAIL(create_tablet_schema.init(arena_allocator, table_schema, compat_mode,
+        false/*skip_column_info*/, ObCreateTabletSchema::STORAGE_SCHEMA_VERSION_V3))) {
+    LOG_WARN("failed to init storage schema", KR(ret), K(table_schema));
   } else if (OB_FAIL(ls_->create_ls_inner_tablet(ls_id,
                                                  LS_TX_CTX_TABLET,
                                                  ObLS::LS_INNER_TABLET_FROZEN_SCN,
-                                                 table_schema,
-                                                 compat_mode,
+                                                 create_tablet_schema,
                                                  create_scn))) {
     LOG_WARN("create tx ctx tablet failed", K(ret), K(ls_id),
              K(LS_TX_CTX_TABLET), K(ObLS::LS_INNER_TABLET_FROZEN_SCN),
@@ -405,13 +409,17 @@ int ObTxTable::create_data_tablet_(const uint64_t tenant_id,
 {
   int ret = OB_SUCCESS;
   share::schema::ObTableSchema table_schema;
+  ObArenaAllocator arena_allocator;
+  ObCreateTabletSchema create_tablet_schema;
   if (OB_FAIL(get_data_table_schema_(tenant_id, table_schema))) {
     LOG_WARN("get data table schema failed", K(ret));
+  } else if (OB_FAIL(create_tablet_schema.init(arena_allocator, table_schema, compat_mode,
+        false/*skip_column_info*/, ObCreateTabletSchema::STORAGE_SCHEMA_VERSION_V3))) {
+    LOG_WARN("failed to init storage schema", KR(ret), K(table_schema));
   } else if (OB_FAIL(ls_->create_ls_inner_tablet(ls_id,
                                                  LS_TX_DATA_TABLET,
                                                  ObLS::LS_INNER_TABLET_FROZEN_SCN,
-                                                 table_schema,
-                                                 compat_mode,
+                                                 create_tablet_schema,
                                                  create_scn))) {
     LOG_WARN("create tx data tablet failed", K(ret), K(ls_id),
              K(LS_TX_DATA_TABLET), K(ObLS::LS_INNER_TABLET_FROZEN_SCN),
@@ -469,7 +477,7 @@ int ObTxTable::load_tx_ctx_table_()
       ObStorageMetaHandle sstable_handle;
       ObSSTable *sstable = static_cast<ObSSTable *>(sstables[0]);
       if (sstable->is_loaded()) {
-      } else if (OB_FAIL(ObTabletTableStore::load_sstable(sstable->get_addr(), sstable_handle))) {
+      } else if (OB_FAIL(ObTabletTableStore::load_sstable(sstable->get_addr(), false/*load_co_sstable*/, sstable_handle))) {
         LOG_WARN("fail to load sstable", K(ret), KPC(sstable));
       } else if (OB_FAIL(sstable_handle.get_sstable(sstable))) {
         LOG_WARN("fail to get sstable", K(ret), K(sstable_handle));
@@ -478,46 +486,6 @@ int ObTxTable::load_tx_ctx_table_()
         LOG_WARN("fail to restore tx ctx table", K(ret), KPC(sstable));
       }
     }
-  }
-
-  return ret;
-}
-
-int ObTxTable::load_tx_data_table_()
-{
-  int ret = OB_SUCCESS;
-  ObTabletHandle handle;
-  ObTablet *tablet;
-  ObLSTabletService *ls_tablet_svr = ls_->get_tablet_svr();
-
-  if (NULL == ls_tablet_svr) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("get ls tablet svr failed", K(ret));
-  } else if (OB_FAIL(ls_tablet_svr->get_tablet(LS_TX_DATA_TABLET, handle))) {
-    LOG_WARN("get tablet failed", K(ret));
-  } else if (FALSE_IT(tablet = handle.get_obj())) {
-  } else if (OB_FAIL(ls_tablet_svr->create_memtable(LS_TX_DATA_TABLET, 0 /* schema_version */))) {
-    LOG_WARN("failed to create memtable", K(ret));
-  } else {
-    // load tx data table succed
-  }
-
-  return ret;
-}
-
-int ObTxTable::load_tx_table()
-{
-  int ret = OB_SUCCESS;
-
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("tx table is not init.", KR(ret));
-  } else if (OB_FAIL(load_tx_data_table_())) {
-    LOG_WARN("failed to load tx data table", K(ret));
-  } else if (OB_FAIL(load_tx_ctx_table_())) {
-    LOG_WARN("failed to load tx ctx table", K(ret));
-  } else {
-    // do nothing
   }
 
   return ret;
@@ -624,13 +592,13 @@ void ObTxTable::destroy()
   is_inited_ = false;
 }
 
-int ObTxTable::alloc_tx_data(ObTxDataGuard &tx_data_guard)
+int ObTxTable::alloc_tx_data(ObTxDataGuard &tx_data_guard, const bool enable_throttle, const int64_t abs_expire_time)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("tx table is not init.", KR(ret));
-  } else if (OB_FAIL(tx_data_table_.alloc_tx_data(tx_data_guard))) {
+  } else if (OB_FAIL(tx_data_table_.alloc_tx_data(tx_data_guard, enable_throttle, abs_expire_time))) {
     LOG_WARN("allocate tx data from tx data table fail.", KR(ret));
   }
   return ret;
@@ -872,7 +840,6 @@ int ObTxTable::check_row_locked(ObReadTxDataArg &read_tx_data_arg,
 {
   CheckRowLockedFunctor fn(read_tx_id, read_tx_data_arg.tx_id_, sql_sequence, lock_state);
   int ret = check_with_tx_data(read_tx_data_arg, fn);
-  // TODO(handora.qc): remove it
   LOG_DEBUG("finish check row locked", K(read_tx_data_arg), K(read_tx_id), K(sql_sequence), K(lock_state));
   return ret;
 }
@@ -883,7 +850,6 @@ int ObTxTable::check_sql_sequence_can_read(ObReadTxDataArg &read_tx_data_arg,
 {
   CheckSqlSequenceCanReadFunctor fn(sql_sequence, can_read);
   int ret = check_with_tx_data(read_tx_data_arg, fn);
-  // TODO(handora.qc): remove it
   LOG_DEBUG("finish check sql sequence can read", K(read_tx_data_arg), K(sql_sequence), K(can_read));
   return ret;
 }
@@ -895,7 +861,6 @@ int ObTxTable::get_tx_state_with_scn(ObReadTxDataArg &read_tx_data_arg,
 {
   GetTxStateWithSCNFunctor fn(scn, state, trans_version);
   int ret = check_with_tx_data(read_tx_data_arg, fn);
-  // TODO(handora.qc): remove it
   LOG_DEBUG("finish get tx state with scn", K(read_tx_data_arg), K(scn), K(state), K(trans_version));
   return ret;
 }
@@ -926,15 +891,17 @@ int ObTxTable::lock_for_read(ObReadTxDataArg &read_tx_data_arg,
                              const transaction::ObLockForReadArg &lock_for_read_arg,
                              bool &can_read,
                              SCN &trans_version,
-                             bool &is_determined_state,
                              ObCleanoutOp &cleanout_op,
                              ObReCheckOp &recheck_op)
 {
-  LockForReadFunctor fn(
-      lock_for_read_arg, can_read, trans_version, is_determined_state, ls_id_, cleanout_op, recheck_op);
+  LockForReadFunctor fn(lock_for_read_arg,
+                        can_read,
+                        trans_version,
+                        ls_id_,
+                        cleanout_op,
+                        recheck_op);
   int ret = check_with_tx_data(read_tx_data_arg, fn);
-  // TODO(handora.qc): remove it
-  LOG_DEBUG("finish lock for read", K(lock_for_read_arg), K(can_read), K(trans_version), K(is_determined_state));
+  LOG_DEBUG("finish lock for read", K(lock_for_read_arg), K(can_read), K(trans_version));
   return ret;
 }
 
@@ -943,7 +910,7 @@ int ObTxTable::get_recycle_scn(SCN &real_recycle_scn)
   int ret = OB_SUCCESS;
   real_recycle_scn = SCN::min_scn();
 
-  int64_t current_time_us = ObClockGenerator::getCurrentTime();
+  int64_t current_time_us = ObClockGenerator::getClock();
   int64_t tx_result_retention = DEFAULT_TX_RESULT_RETENTION_S;
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
   if (tenant_config.is_valid()) {
@@ -957,7 +924,9 @@ int ObTxTable::get_recycle_scn(SCN &real_recycle_scn)
   SCN tablet_recycle_scn = SCN::min_scn();
   const int64_t retain_tx_data_us = tx_result_retention * 1000L * 1000L;
 
-  if (current_time_us - recycle_scn_cache_.update_ts_ < retain_tx_data_us && recycle_scn_cache_.val_.is_valid()) {
+  if (current_time_us - recycle_scn_cache_.update_ts_ < retain_tx_data_us
+      && recycle_scn_cache_.val_.is_valid()
+      && (!recycle_scn_cache_.val_.is_min())) {
     // cache is valid, get recycle scn from cache
     real_recycle_scn = recycle_scn_cache_.val_;
     STORAGE_LOG(INFO, "use recycle scn cache", K(ls_id_), K(recycle_scn_cache_));
@@ -987,7 +956,7 @@ int ObTxTable::get_recycle_scn(SCN &real_recycle_scn)
 
     // update cache
     recycle_scn_cache_.val_ = real_recycle_scn;
-    recycle_scn_cache_.update_ts_ = ObClockGenerator::getCurrentTime();
+    recycle_scn_cache_.update_ts_ = ObClockGenerator::getClock();
   }
 
   return ret;
@@ -1013,12 +982,18 @@ int ObTxTable::cleanout_tx_node(ObReadTxDataArg &read_tx_data_arg,
                                 const bool need_row_latch)
 {
   ObCleanoutTxNodeOperation op(value, tnode, need_row_latch);
-  CleanoutTxStateFunctor fn(op);
+  CleanoutTxStateFunctor fn(tnode.seq_no_, op);
   int ret = check_with_tx_data(read_tx_data_arg, fn);
   if (OB_TRANS_CTX_NOT_EXIST == ret) {
     if (tnode.is_committed() || tnode.is_aborted()) {
       // may be the concurrent case between cleanout and commit/abort
       ret = OB_SUCCESS;
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (op.need_cleanout()) {
+      op(fn.get_tx_data_check_data());
     }
   }
   return ret;
@@ -1062,8 +1037,8 @@ int ObTxTable::dump_single_tx_data_2_text(const int64_t tx_id_int, const char *f
     ret = OB_IO_ERROR;
     STORAGE_LOG(WARN, "open file fail:", K(fname));
   } else {
-    auto ls_id = ls_->get_ls_id().id();
-    auto tenant_id = MTL_ID();
+    int64_t ls_id = ls_->get_ls_id().id();
+    int64_t tenant_id = MTL_ID();
     fprintf(fd, "tenant_id=%ld ls_id=%ld\n", tenant_id, ls_id);
 
     if (OB_SUCC(tx_ctx_table_.dump_single_tx_data_2_text(tx_id_int, fd))) {

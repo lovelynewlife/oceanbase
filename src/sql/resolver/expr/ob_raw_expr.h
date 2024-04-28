@@ -1371,7 +1371,8 @@ struct ObExprEqualCheckContext
     err_code_(common::OB_SUCCESS),
     param_expr_(),
     need_check_deterministic_(false),
-    ignore_param_(false)
+    ignore_param_(false),
+    ora_numeric_compare_(false)
   { }
   ObExprEqualCheckContext(bool need_check_deterministic)
   : override_const_compare_(false),
@@ -1383,7 +1384,8 @@ struct ObExprEqualCheckContext
     err_code_(common::OB_SUCCESS),
     param_expr_(),
     need_check_deterministic_(need_check_deterministic),
-    ignore_param_(false)
+    ignore_param_(false),
+    ora_numeric_compare_(false)
   { }
   virtual ~ObExprEqualCheckContext() {}
   struct ParamExprPair
@@ -1419,6 +1421,9 @@ struct ObExprEqualCheckContext
   virtual bool compare_set_op_expr(const ObSetOpRawExpr& left,
                                    const ObSetOpRawExpr& right);
 
+  virtual bool compare_ora_numeric_consts(const ObConstRawExpr &left, const ObSysFunRawExpr &right);
+
+  virtual bool compare_ora_numeric_consts(const ObSysFunRawExpr &right, const ObConstRawExpr &left);
   void reset() {
     override_const_compare_ = false;
     override_column_compare_ = false;
@@ -1442,6 +1447,7 @@ struct ObExprEqualCheckContext
   common::ObSEArray<ParamExprPair, 3, common::ModulePageAllocator, true> param_expr_;
   bool need_check_deterministic_;
   bool ignore_param_; // only compare structure of expr
+  bool ora_numeric_compare_;
 };
 
 struct ObExprParamCheckContext : ObExprEqualCheckContext
@@ -1565,7 +1571,8 @@ struct ObResolveContext
     is_for_dbms_sql_(false),
     tg_timing_event_(TG_TIMING_EVENT_INVALID),
     view_ref_id_(OB_INVALID_ID),
-    is_variable_allowed_(true)
+    is_variable_allowed_(true),
+    is_expanding_view_(false)
   {
   }
 
@@ -1611,6 +1618,7 @@ struct ObResolveContext
   TgTimingEvent tg_timing_event_; // for mysql trigger
   uint64_t view_ref_id_;
   bool is_variable_allowed_;
+  bool is_expanding_view_;
 };
 
 typedef ObResolveContext<ObRawExprFactory> ObExprResolveContext;
@@ -1648,7 +1656,9 @@ public:
        is_called_in_sql_(true),
        is_calculated_(false),
        is_deterministic_(true),
-       partition_id_calc_type_(CALC_INVALID)
+       partition_id_calc_type_(CALC_INVALID),
+       local_session_var_(),
+       local_session_var_id_(OB_INVALID_INDEX_INT64)
   {
   }
 
@@ -1669,7 +1679,9 @@ public:
        is_deterministic_(true),
        partition_id_calc_type_(CALC_INVALID),
        may_add_interval_part_(MayAddIntervalPart::NO),
-       runtime_filter_type_(NOT_INIT_RUNTIME_FILTER_TYPE)
+       runtime_filter_type_(NOT_INIT_RUNTIME_FILTER_TYPE),
+       local_session_var_(&alloc),
+       local_session_var_id_(OB_INVALID_INDEX_INT64)
   {
   }
   virtual ~ObRawExpr();
@@ -1800,10 +1812,17 @@ public:
   virtual int get_name_internal(char *buf, const int64_t buf_len, int64_t &pos, ExplainType type) const = 0;
 
   // post-processing for expressions
-  int formalize(const ObSQLSessionInfo *my_session);
+  int formalize(const ObSQLSessionInfo *my_session,
+                bool solidify_session_vars = false);
+  int formalize_with_local_vars(const ObSQLSessionInfo *session_info,
+                                const ObLocalSessionVar *local_vars,
+                                int64_t local_var_id = OB_INVALID_INDEX_INT64);
   int pull_relation_id();
   int extract_info();
-  int deduce_type(const ObSQLSessionInfo *my_session = NULL);
+  int deduce_type(const ObSQLSessionInfo *my_session = NULL,
+                  bool solidify_session_vars = false,
+                  const ObLocalSessionVar *local_vars = NULL,
+                  int64_t local_var_id = OB_INVALID_INDEX_INT64);
   inline ObExprInfo &get_flags() { return info_; }
   int set_enum_set_values(const common::ObIArray<common::ObString> &values);
   const common::ObIArray<common::ObString> &get_enum_set_values() const { return enum_set_values_; }
@@ -1886,10 +1905,23 @@ public:
                        K_(is_deterministic),
                        K_(partition_id_calc_type),
                        K_(may_add_interval_part));
+  virtual int set_local_session_vars(const share::schema::ObLocalSessionVar *local_sys_vars,
+                                     const ObBasicSessionInfo *session,
+                                     int64_t ctx_array_idx)
+  { return OB_SUCCESS; }
+  share::schema::ObLocalSessionVar& get_local_session_var() { return local_session_var_; }
+  const share::schema::ObLocalSessionVar& get_local_session_var() const { return local_session_var_; }
+  int extract_local_session_vars_recursively(ObIArray<const share::schema::ObSessionSysVar *> &var_array);
+  void set_local_session_var_id(int64_t idx) { local_session_var_id_ = idx; }
+  int64_t get_local_session_var_id() { return local_session_var_id_; }
 
 private:
   const ObRawExpr *get_same_identify(const ObRawExpr *e,
                                      const ObExprEqualCheckContext *check_ctx) const;
+  int formalize(const ObSQLSessionInfo *session_info,
+                bool solidify_session_vars,
+                const ObLocalSessionVar *local_vars,
+                int64_t local_var_id);
 
 public:
   uint32_t magic_num_;
@@ -1922,6 +1954,8 @@ protected:
   PartitionIdCalcType partition_id_calc_type_; //for calc_partition_id func to mark calc part type
   MayAddIntervalPart may_add_interval_part_; // for calc_partition_id
   RuntimeFilterType runtime_filter_type_; // for runtime filter
+  share::schema::ObLocalSessionVar local_session_var_;
+  int64_t local_session_var_id_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObRawExpr);
 };
@@ -1930,6 +1964,7 @@ inline void ObRawExpr::set_allocator(ObIAllocator &alloc)
 {
   inner_alloc_ = &alloc;
   result_type_.set_allocator(&alloc);
+  local_session_var_.set_allocator(&alloc);
 }
 
 inline void ObRawExpr::unset_result_flag(uint32_t result_flag)
@@ -2082,7 +2117,9 @@ public:
     :is_date_unit_(false),
      is_literal_bool_(false),
      is_batch_stmt_parameter_(false),/*: precalc_expr_(NULL)*/
-     array_param_group_id_(-1)
+     array_param_group_id_(-1),
+     is_dynamic_eval_questionmark_(false),
+     orig_questionmark_type_()
   { ObRawExpr::set_expr_class(ObRawExpr::EXPR_CONST); }
   ObConstRawExpr(common::ObIAllocator &alloc)
     : ObIRawExpr(alloc),
@@ -2091,7 +2128,9 @@ public:
       is_date_unit_(false),
       is_literal_bool_(false),
       is_batch_stmt_parameter_(false),
-      array_param_group_id_(-1)
+      array_param_group_id_(-1),
+      is_dynamic_eval_questionmark_(false),
+      orig_questionmark_type_()
   { ObIRawExpr::set_expr_class(ObIRawExpr::EXPR_CONST); }
   ObConstRawExpr(const oceanbase::common::ObObj &val, ObItemType expr_type = T_INVALID)
     : ObIRawExpr(expr_type),
@@ -2100,7 +2139,9 @@ public:
       is_date_unit_(false),
       is_literal_bool_(false),
       is_batch_stmt_parameter_(false),
-      array_param_group_id_(-1)
+      array_param_group_id_(-1),
+      is_dynamic_eval_questionmark_(false),
+      orig_questionmark_type_()
   {
     set_value(val);
     set_expr_class(ObIRawExpr::EXPR_CONST);
@@ -2132,6 +2173,13 @@ public:
   bool is_batch_stmt_parameter() { return is_batch_stmt_parameter_; }
   void set_array_param_group_id(int64_t id) { array_param_group_id_ = id; }
   int64_t get_array_param_group_id() const { return array_param_group_id_; }
+  virtual int set_local_session_vars(const share::schema::ObLocalSessionVar *local_sys_vars,
+                                    const ObBasicSessionInfo *session,
+                                    int64_t ctx_array_idx);
+  int set_dynamic_eval_questionmark(const ObExprResType &dst_type);
+
+  bool is_dynamic_eval_questionmark() const { return is_dynamic_eval_questionmark_; }
+  const ObExprResType &get_orig_qm_type() const { return orig_questionmark_type_; }
   DECLARE_VIRTUAL_TO_STRING;
 
 private:
@@ -2144,6 +2192,9 @@ private:
   // Indicates that the current parameter is the batch parameter
   bool is_batch_stmt_parameter_;
   int64_t array_param_group_id_;
+
+  bool is_dynamic_eval_questionmark_;
+  ObExprResType orig_questionmark_type_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConstRawExpr);
 };
@@ -2363,6 +2414,7 @@ public:
   bool has_nl_param() const { return has_nl_param_; }
   void set_is_multiset(bool is_multiset) { is_multiset_ = is_multiset; }
   bool is_multiset() const {return is_multiset_; }
+  bool is_scalar() const { return !is_set_ && !is_multiset_ && get_output_column() == 1; }
   virtual void reset();
   virtual bool inner_same_as(const ObRawExpr &expr,
                              ObExprEqualCheckContext *check_context = NULL) const override;
@@ -3465,7 +3517,12 @@ public:
                                             N_CHILDREN, exprs_,
                                             K_(enum_set_values),
                                             K_(dblink_name),
-                                            K_(dblink_id));
+                                            K_(dblink_id),
+                                            K_(local_session_var),
+                                            K_(local_session_var_id));
+  virtual int set_local_session_vars(const share::schema::ObLocalSessionVar *local_sys_vars,
+                                     const ObBasicSessionInfo *session,
+                                     int64_t ctx_array_idx);
 private:
   int check_param_num_internal(int32_t param_num, int32_t param_count, ObExprOperatorType type);
   DISALLOW_COPY_AND_ASSIGN(ObSysFunRawExpr);

@@ -119,135 +119,6 @@ int ObDupTabletScanTask::refresh_dup_tablet_schema_(
   return ret;
 }
 
-int ObDupTabletScanTask::execute_()
-{
-  int ret = OB_SUCCESS;
-  int iter_ret = OB_SUCCESS;
-
-  ObSharedGuard<ObLSIterator> ls_iter_guard;
-  ObLSIterator *ls_iter_ptr = nullptr;
-  ObLS *cur_ls_ptr = nullptr;
-  TabletIDArray tablet_id_array;
-  ObTenantDupTabletSchemaHelper::TabletIDSet tenant_dup_tablet_set;
-  bool need_refreh_dup_schema = true;
-  share::ObLSStatusInfo dup_ls_status_info;
-
-  // compute scan task max execute interval
-  const int64_t cur_time = ObTimeUtility::fast_current_time();
-  if (cur_time - last_execute_time_ > 0) {
-    if (0 != last_execute_time_) {
-      max_execute_interval_ = max(max_execute_interval_, cur_time - last_execute_time_);
-      last_execute_time_ = cur_time;
-    } else {
-      last_execute_time_ = ObTimeUtility::fast_current_time();
-    }
-  }
-
-  if (OB_ISNULL(MTL(ObLSService *)) || OB_ISNULL(dup_loop_worker_)
-      || (OB_FAIL(MTL(ObLSService *)->get_ls_iter(ls_iter_guard, ObLSGetMod::TRANS_MOD))
-          || !ls_iter_guard.is_valid())) {
-    if (OB_SUCC(ret)) {
-      ret = OB_INVALID_ARGUMENT;
-    }
-    DUP_TABLE_LOG(WARN, "invalid arguments", K(ret));
-  } else if (OB_ISNULL(ls_iter_ptr = ls_iter_guard.get_ptr())) {
-    ret = OB_INVALID_ARGUMENT;
-    DUP_TABLE_LOG(WARN, "invalid arguments", K(ret));
-  } else {
-    iter_ret = OB_SUCCESS;
-    cur_ls_ptr = nullptr;
-    // const int64_t gc_time = ObTimeUtility::fast_current_time();
-    while (OB_SUCCESS == (iter_ret = ls_iter_ptr->get_next(cur_ls_ptr))) {
-      tablet_id_array.reset();
-
-      ObRole ls_role;
-      int64_t unused_proposal_id;
-
-      if (OB_ISNULL(cur_ls_ptr)) {
-        ret = OB_INVALID_ARGUMENT;
-        DUP_TABLE_LOG(WARN, "invalid ls ptr", K(ret), KP(cur_ls_ptr));
-      } else if (!cur_ls_ptr->get_dup_table_ls_handler()->is_master()) {
-        // do nothing
-        DUP_TABLE_LOG(DEBUG, "ls not leader", K(cur_ls_ptr->get_ls_id()));
-      } else if (OB_FAIL(refresh_dup_tablet_schema_(need_refreh_dup_schema, tenant_dup_tablet_set, dup_ls_status_info))) {
-        DUP_TABLE_LOG(INFO, "refresh dup table schema failed", K(ret));
-      } else if (OB_FALSE_IT(need_refreh_dup_schema = false)) {
-        // do nothing
-      } else {
-        // TODO
-        // Only need all tablet_ids in LS.
-        // No need to get tx data from tablet_meta
-        storage::ObHALSTabletIDIterator ls_tablet_id_iter(cur_ls_ptr->get_ls_id(), true);
-        if (OB_FAIL(cur_ls_ptr->build_tablet_iter(ls_tablet_id_iter))) {
-          DUP_TABLE_LOG(WARN, "build ls tablet iter failed", K(cur_ls_ptr->get_ls_id()));
-        } else if (!ls_tablet_id_iter.is_valid()) {
-          DUP_TABLE_LOG(WARN, "invalid tablet id iterator", K(cur_ls_ptr->get_ls_id()));
-        } else {
-          ObTabletID tmp_tablet_id;
-          bool is_dup_tablet = false;
-          int64_t refresh_time = ObTimeUtility::fast_current_time();
-          while (OB_SUCC(ls_tablet_id_iter.get_next_tablet_id(tmp_tablet_id))) {
-            is_dup_tablet = false;
-            ret = tenant_dup_tablet_set.exist_refactored(tmp_tablet_id);
-            if (OB_HASH_EXIST == ret) {
-              is_dup_tablet = true;
-              ret = OB_SUCCESS;
-            } else if (OB_HASH_NOT_EXIST == ret) {
-              is_dup_tablet = false;
-              ret = OB_SUCCESS;
-            } else {
-              DUP_TABLE_LOG(
-                  WARN, "Failed to check whether the tablet exists in the tenant_dup_tablet_set",
-                  K(ret), K(cur_ls_ptr->get_ls_id()), K(tmp_tablet_id));
-            }
-
-            if (!cur_ls_ptr->get_dup_table_ls_handler()->is_inited() && !is_dup_tablet) {
-              // do nothing
-            } else if (OB_FAIL(cur_ls_ptr->get_dup_table_ls_handler()->init(is_dup_tablet))
-                       && OB_INIT_TWICE != ret) {
-              DUP_TABLE_LOG(WARN, "init dup tablet ls handler", K(ret));
-            } else if (OB_FAIL(cur_ls_ptr->get_dup_table_ls_handler()->refresh_dup_table_tablet(
-                           tmp_tablet_id, is_dup_tablet, refresh_time))) {
-              if (is_dup_tablet || OB_NOT_INIT != ret) {
-                DUP_TABLE_LOG(WARN, "refresh ls dup table tablets failed", K(ret), K(tmp_tablet_id),
-                              K(is_dup_tablet));
-              } else {
-                ret = OB_SUCCESS;
-              }
-            }
-          }
-
-          if (OB_ITER_END == ret) {
-            // ret = OB_SUCCESS;
-            if (OB_FAIL(cur_ls_ptr->get_dup_table_ls_handler()->gc_dup_tablets(
-                    refresh_time, max_execute_interval_))) {
-              DUP_TABLE_LOG(WARN, "ls gc dup_tablet failed", KR(ret), K(refresh_time),
-                            K(max_execute_interval_));
-            }
-          }
-        }
-      }
-      // refresh dup_table_ls on leader and follower
-
-      if (!cur_ls_ptr->get_dup_table_ls_handler()->has_dup_tablet()) {
-        // do nothing
-      } else if (OB_FAIL(dup_loop_worker_->append_dup_table_ls(cur_ls_ptr->get_ls_id()))) {
-        DUP_TABLE_LOG(WARN, "refresh dup_table ls failed", K(ret));
-      }
-    }
-  }
-
-  // DUP_TABLE_LOG(INFO, "scan all ls to find dup_tablet", KR(ret), K(tenant_dup_tablet_set.size()));
-  if (tenant_dup_tablet_set.created()) {
-    tenant_dup_tablet_set.destroy();
-  }
-
-  if (OB_FAIL(ret)) {
-    DUP_TABLE_LOG(WARN, "scan all ls to find dup_tablet failed", KR(ret));
-  }
-  return ret;
-}
-
 int ObDupTabletScanTask::execute_for_dup_ls_()
 {
   int ret = OB_SUCCESS;
@@ -340,7 +211,7 @@ int ObDupTabletScanTask::execute_for_dup_ls_()
 
         if (OB_ITER_END == ret) {
           // ret = OB_SUCCESS;
-          if (OB_FAIL(cur_ls_ptr->get_dup_table_ls_handler()->gc_dup_tablets(
+          if (OB_FAIL(cur_ls_ptr->get_dup_table_ls_handler()->gc_temporary_dup_tablets(
                   refresh_time, max_execute_interval_))) {
             DUP_TABLE_LOG(WARN, "ls gc dup_tablet failed", KR(ret), K(refresh_time),
                           K(max_execute_interval_));
@@ -503,6 +374,7 @@ int ObDupTableLSHandler::offline()
                                                    restore_state_container))) {
       DUP_TABLE_LOG(ERROR, "change ls role state error", K(ret), KPC(this));
     }
+    interface_stat_.reset();
   }
   return ret;
 }
@@ -960,7 +832,7 @@ int ObDupTableLSHandler::block_confirm_with_dup_tablet_change_snapshot(
   return ret;
 }
 
-int ObDupTableLSHandler::gc_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval)
+int ObDupTableLSHandler::gc_temporary_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval)
 {
   int ret = OB_SUCCESS;
 
@@ -973,7 +845,7 @@ int ObDupTableLSHandler::gc_dup_tablets(const int64_t gc_ts, const int64_t max_t
   } else if (0 > gc_ts || 0 > max_task_interval) {
     ret = OB_INVALID_ARGUMENT;
     DUP_TABLE_LOG(WARN, "invalid gc_time", K(ret), K(gc_ts), K(max_task_interval));
-  } else if (OB_FAIL(tablets_mgr_ptr_->gc_dup_tablets(gc_ts, max_task_interval))) {
+  } else if (OB_FAIL(tablets_mgr_ptr_->gc_tmporary_dup_tablets(gc_ts, max_task_interval))) {
     DUP_TABLE_LOG(WARN, "lose dup tablet failed", KR(ret), K(gc_ts));
   }
 
@@ -1139,6 +1011,13 @@ bool ObDupTableLSHandler::is_dup_table_lease_valid()
     is_dup_lease_ls = false;
   }
 
+  DUP_TABLE_LOG(DEBUG,
+                "is dup table lease valid",
+                KP(lease_mgr_ptr_),
+                K(ls_state_helper_.is_leader()),
+                K(has_dup_tablet()),
+                K(is_dup_lease_ls));
+
   return is_dup_lease_ls;
 }
 
@@ -1264,6 +1143,8 @@ int ObDupTableLSHandler::replay(const void *buffer,
     DUP_TABLE_LOG(WARN, "init dup_ls_handle in replay failed", K(ret));
   } else if (OB_FAIL(prepare_log_operator_())) {
     DUP_TABLE_LOG(WARN, "init dup_table log operator failed", K(ret));
+  } else if (OB_FALSE_IT(log_operator_->set_logging_scn(ts_ns))) {
+
   } else if (OB_FAIL(
                  log_operator_->merge_replay_block(static_cast<const char *>(buffer), nbytes))) {
     if (OB_SUCCESS == ret) {
@@ -1280,11 +1161,12 @@ int ObDupTableLSHandler::replay(const void *buffer,
   } else if (OB_FAIL(lease_mgr_ptr_->follower_try_acquire_lease(ts_ns))) {
     DUP_TABLE_LOG(WARN, "acquire lease from lease log error", K(ret), K(ts_ns));
   } else {
-    log_operator_->set_logging_scn(ts_ns);
     ret = log_operator_->replay_succ();
-    DUP_TABLE_LOG(INFO, "replay dup_table log success", K(ret), K(nbytes), K(lsn), K(ts_ns),
+    DUP_TABLE_LOG(DEBUG, "replay dup_table log success", K(ret), K(nbytes), K(lsn), K(ts_ns),
                   KPC(tablets_mgr_ptr_), KPC(lease_mgr_ptr_));
     // log_operator_->reuse();V
+    interface_stat_.dup_table_log_entry_cnt_ += 1;
+    interface_stat_.dup_table_log_entry_total_size_ += nbytes;
   }
 
   // start require lease instantly
@@ -1300,7 +1182,6 @@ int ObDupTableLSHandler::replay(const void *buffer,
 
   return ret;
 }
-
 void ObDupTableLSHandler::switch_to_follower_forcedly()
 {
   int ret = OB_SUCCESS;
@@ -1477,7 +1358,6 @@ int ObDupTableLSHandler::leader_revoke_(const bool is_forcedly)
     }
   }
 
-  interface_stat_.reset();
   DUP_TABLE_LOG(INFO, "Leader Revoke", K(ret), K(is_forcedly), KPC(this));
   return ret;
 }
@@ -1502,7 +1382,6 @@ int ObDupTableLSHandler::leader_takeover_(const bool is_resume)
     }
   }
 
-  interface_stat_.reset();
   DUP_TABLE_LOG(INFO, "Leader Takeover", K(ret), K(is_resume), KPC(this));
   return ret;
 }
@@ -1519,7 +1398,7 @@ int ObDupTableLSHandler::prepare_log_operator_()
       DUP_TABLE_LOG(WARN, "malloc log operator failed", K(ret));
     } else {
       new (log_operator_) ObDupTableLogOperator(ls_id_, log_handler_, &dup_ls_ckpt_, lease_mgr_ptr_,
-                                                tablets_mgr_ptr_);
+                                                tablets_mgr_ptr_, &interface_stat_);
     }
   }
 
@@ -1948,11 +1827,9 @@ int ObDupTableLoopWorker::iterate_dup_ls(ObDupLSTabletSetStatIterator &collect_i
           DUP_TABLE_LOG(WARN, "dup ls handler not init", K(ret), K(cur_ls_id),
                         KPC(cur_dup_ls_handler));
         } else if (OB_FAIL(cur_dup_ls_handler->get_ls_tablet_set_stat(collect_iter))) {
-          DUP_TABLE_LOG(WARN, "collect lease mgr stat failed", K(ret), K(cur_ls_id),
+          DUP_TABLE_LOG(WARN, "collect tablet set stat failed", K(ret), K(cur_ls_id),
                         KPC(cur_dup_ls_handler));
         }
-        DUP_TABLE_LOG(WARN, "iter dup ls handler", K(ret), K(cur_ls_id),
-              KPC(cur_dup_ls_handler));
       }
     }
   }
@@ -1987,7 +1864,7 @@ int ObDupTableLoopWorker::iterate_dup_ls(ObDupLSTabletsStatIterator &collect_ite
           DUP_TABLE_LOG(WARN, "dup ls handler not init", K(ret), K(cur_ls_id),
                         KPC(cur_dup_ls_handler));
         } else if (OB_FAIL(cur_dup_ls_handler->get_ls_tablets_stat(collect_iter))) {
-          DUP_TABLE_LOG(WARN, "collect lease mgr stat failed", K(ret), K(cur_ls_id),
+          DUP_TABLE_LOG(WARN, "collect tablets stat failed", K(ret), K(cur_ls_id),
                         KPC(cur_dup_ls_handler));
         }
       }

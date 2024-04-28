@@ -35,6 +35,7 @@ public:
                   const int64_t date_unit,
                   const T &date,
                   common::ObObjType date_type,
+                  const ObScale scale,
                   const common::ObCastMode cast_mode,
                   const common::ObTimeZoneInfo *tz_info,
                   const int64_t cur_ts_value,
@@ -46,6 +47,8 @@ public:
                         const T &date,
                         common::ObObjType type,
                         const ObSQLSessionInfo *session,
+                        const ObEvalCtx &ctx,
+                        const ObExpr &expr,
                         common::ObIAllocator *calc_buf);
   virtual int cg_expr(ObExprCGCtx &op_cg_ctx,
                       const ObRawExpr &raw_expr,
@@ -57,6 +60,7 @@ public:
       const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &skip, const int64_t batch_size);
   static int calc_extract_mysql_batch(
       const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &skip, const int64_t batch_size);
+  DECLARE_SET_LOCAL_SESSION_VARS;
 
 private:
   int set_result_type_oracle(common::ObExprTypeCtx &type_ctx,

@@ -137,6 +137,7 @@ int ObLSTxLogAdapter::submit_log(const char *buf,
     TRANS_LOG(WARN, "append log to palf failed", K(ret), KP(log_handler_), KP(buf), K(size), K(base_scn),
               K(need_nonblock));
   } else {
+    cb->set_base_ts(base_scn);
     cb->set_lsn(lsn);
     cb->set_log_ts(scn);
     cb->set_submit_ts(ObTimeUtility::current_time());
@@ -287,7 +288,7 @@ bool ObLSTxLogAdapter::has_dup_tablet()
   if (OB_ISNULL(dup_table_ls_handler_)) {
     has_dup = false;
   } else {
-    has_dup = dup_table_ls_handler_->has_dup_tablet();
+    has_dup = dup_table_ls_handler_->check_tablet_set_exist();
   }
   return has_dup;
 }

@@ -10,11 +10,13 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#define USING_LOG_PREFIX STORAGE
 #include "storage/tx/wrs/ob_ls_wrs_handler.h"
 #include "lib/utility/ob_print_utils.h"
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "logservice/ob_log_service.h"
+#include "share/ob_force_print_log.h"
 
 namespace oceanbase
 {
@@ -33,7 +35,8 @@ int ObLSWRSHandler::init(const share::ObLSID &ls_id)
     ret = OB_INIT_TWICE;
     STORAGE_LOG(WARN, "ObLSWRSHandler init twice", K(ret), K(is_inited_));
   } else {
-    is_enabled_ = true;
+    is_enabled_ = false;
+    ls_weak_read_ts_.set_min();
     is_inited_ = true;
     ls_id_ = ls_id;
     STORAGE_LOG(INFO, "ObLSWRSHandler init success", K(*this));
@@ -98,6 +101,12 @@ int ObLSWRSHandler::generate_ls_weak_read_snapshot_version(ObLS &ls,
     need_skip = true;
     if (REACH_TIME_INTERVAL(60 * 1000 * 1000)) {
       STORAGE_LOG(INFO, "weak read handler not enabled", K(*this));
+    }
+  } else if (ls.get_transfer_status().get_transfer_prepare_enable()) {
+    // do nothing
+    need_skip = true;
+    if (REACH_TIME_INTERVAL(60 * 1000 * 1000)) {
+      STORAGE_LOG(INFO, "ls in transfer status", K(*this));
     }
   } else if (OB_FAIL(generate_weak_read_timestamp_(ls, max_stale_time, timestamp))) {
     STORAGE_LOG(DEBUG, "fail to generate weak read timestamp", KR(ret), K(max_stale_time));

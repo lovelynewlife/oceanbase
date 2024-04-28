@@ -238,6 +238,7 @@ int ObGVTxStat::inner_get_next_row(ObNewRow *&row)
           ctx_addr_buffer_[0] = 0;
           snprintf(ctx_addr_buffer_, 18, "0x%lx", (uint64_t)tx_stat.tx_ctx_addr_);
           cur_row_.cells_[i].set_varchar(ctx_addr_buffer_);
+          cur_row_.cells_[i].set_default_collation_type();
           break;
         case MEM_CTX_ID:
           //TODO shanyan.g removed schema
@@ -285,6 +286,18 @@ int ObGVTxStat::inner_get_next_row(ObNewRow *&row)
           } else {
             cur_row_.cells_[i].set_int(-1);
           }
+          break;
+        case START_SCN:
+          cur_row_.cells_[i].set_uint64(tx_stat.start_scn_.get_val_for_inner_table_field());
+          break;
+        case END_SCN:
+          cur_row_.cells_[i].set_uint64(tx_stat.end_scn_.get_val_for_inner_table_field());
+          break;
+        case REC_SCN:
+          cur_row_.cells_[i].set_uint64(tx_stat.rec_scn_.get_val_for_inner_table_field());
+          break;
+        case TRANSFER_BLOCKING:
+          cur_row_.cells_[i].set_bool(tx_stat.transfer_blocking_);
           break;
         default:
           ret = OB_ERR_UNEXPECTED;

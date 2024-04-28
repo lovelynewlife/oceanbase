@@ -22,6 +22,7 @@
 #include "sql/engine/expr/ob_datum_cast.h"
 #include "ob_expr_util.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "sql/engine/expr/ob_expr_func_round.h"
 
 using namespace oceanbase::common;
 
@@ -59,7 +60,7 @@ int ObExprHex::calc_result_type1(ObExprResType &type,
     type.set_varchar();
   }
   type.set_collation_level(common::CS_LEVEL_COERCIBLE);
-  type.set_collation_type(get_default_collation_type(type.get_type(), *type_ctx.get_session()));
+  type.set_collation_type(get_default_collation_type(type.get_type(), type_ctx));
 
   //calc length now...
   common::ObLength length = -1;
@@ -81,8 +82,8 @@ int ObExprHex::calc_result_type1(ObExprResType &type,
   }
 
   if (OB_SUCC(ret)) {
-    if (text.is_number()) {
-      // accept number
+    if (text.is_number() || text.is_decimal_int()) {
+      // accept number and decimal int
     } else if (text.get_type() == ObYearType || text.is_numeric_type()) {
       text.set_calc_type(ObUInt64Type);
       type_ctx.set_cast_mode(type_ctx.get_cast_mode() | CM_NO_RANGE_CHECK);
@@ -164,6 +165,38 @@ int ObExprHex::number_uint64(const number::ObNumber &num_val, uint64_t &out)
   return ret;
 }
 
+int ObExprHex::decimalint_uint64(
+    const ObDatumMeta &in_meta, const ObDatum *datum, uint64_t &out)
+{
+  int ret = OB_SUCCESS;
+  int64_t tmp_int = 0;
+  uint64_t tmp_uint = 0;
+  ObDecimalIntBuilder builder;
+  bool is_valid_int64 = true;
+  bool is_valid_uint64 = true;
+  if (OB_FAIL(ObExprFuncRound::do_round_decimalint(
+              in_meta.precision_, in_meta.scale_,
+              in_meta.precision_ - in_meta.scale_ + 1, 0, 0,
+              *datum, builder))) {
+    LOG_WARN("do_round_decimalint failed",
+             K(ret), K(in_meta.precision_), K(in_meta.scale_),
+             K(in_meta.precision_ - in_meta.scale_ + 1));
+  } else if (OB_FAIL(wide::check_range_valid_int64(
+             builder.get_decimal_int(), builder.get_int_bytes(), is_valid_int64, tmp_int))) {
+    LOG_WARN("check_range_valid_int64 failed", K(ret), K(builder.get_int_bytes()));
+  } else if (is_valid_int64) {
+    out = static_cast<uint64_t>(tmp_int);
+  } else if (OB_FAIL(wide::check_range_valid_uint64(
+      builder.get_decimal_int(), builder.get_int_bytes(), is_valid_uint64, tmp_uint))) {
+    LOG_WARN("check_range_valid_int64 failed", K(ret), K(builder.get_int_bytes()));
+  } else if (is_valid_uint64) {
+    out = tmp_uint;
+  } else {
+    out = UINT64_MAX;
+  }
+  return ret;
+}
+
 int ObExprHex::cg_expr(ObExprCGCtx &, const ObRawExpr &, ObExpr &rt_expr) const
 {
   int ret = OB_SUCCESS;
@@ -181,10 +214,14 @@ int ObExprHex::eval_hex(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
     expr_datum.set_null();
   } else {
     const ObObjType in_type = expr.args_[0]->datum_meta_.type_;
-    if (ObUInt64Type == in_type || ObNumberType == in_type) {
+    if (ObUInt64Type == in_type || ObNumberType == in_type || ObDecimalIntType == in_type) {
       uint64_t val = 0;
       if (ObNumberType == in_type) {
         OZ(number_uint64(number::ObNumber(arg->get_number()), val));
+      } else if (ObDecimalIntType == in_type) {
+        if (OB_FAIL(decimalint_uint64(expr.args_[0]->datum_meta_, arg, val))) {
+          LOG_WARN("decimalint_uint64 failed", K(ret));
+        }
       } else {
         val = arg->get_uint();
       }
@@ -226,5 +263,15 @@ int ObExprHex::eval_hex(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
   }
   return ret;
 }
+
+DEF_SET_LOCAL_SESSION_VARS(ObExprHex, raw_expr) {
+  int ret = OB_SUCCESS;
+  if (lib::is_mysql_mode()) {
+    SET_LOCAL_SYSVAR_CAPACITY(1);
+    EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_COLLATION_CONNECTION);
+  }
+  return ret;
+}
+
 }
 }

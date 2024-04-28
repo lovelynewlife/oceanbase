@@ -12,6 +12,7 @@
 
 #include "ob_urowid.h"
 
+#include "common/ob_smart_call.h"
 #include "common/ob_tablet_id.h"
 #include "common/object/ob_object.h"
 #include "lib/encode/ob_base64_encode.h"
@@ -69,8 +70,10 @@ int ObURowIDData::compare(const ObURowIDData &other) const
 
       ObObjType type1 = get_pk_type(this_pos);
       ObObjType type2 = other.get_pk_type(that_pos);
-
-      if (type1 != type2) {
+      // decimal int and number types are synonymous
+      bool all_decimals = (type1 == ObDecimalIntType && type2 == ObNumberType)
+                          || (type1 == ObNumberType && type2 == ObDecimalIntType);
+      if (type1 != type2 && !all_decimals) {
         compare_ret = type1 < type2 ? -1 : 1;
       } else {
         ObObj pk_val1;
@@ -135,6 +138,29 @@ int ObURowIDData::inner_get_pk_value<ObURowIDType>(const uint8_t *rowid_buf,
     const char *rowid_content = (const char *)rowid_buf + pos;
     pk_val.set_urowid(rowid_content, rowid_len);
     pos += rowid_len;
+  } else {
+    ret = OB_INVALID_ROWID;
+  }
+  return ret;
+}
+
+template <>
+int ObURowIDData::inner_get_pk_value<ObDecimalIntType>(const uint8_t *rowid_buf,
+                                                       const int64_t rowid_buf_len, int64_t &pos,
+                                                       ObObj &pk_val)
+{
+  int ret = OB_SUCCESS;
+  if (OB_LIKELY(pos + sizeof(ObScale) + sizeof(uint32_t) <= rowid_buf_len)) {
+    ObScale scale = *reinterpret_cast<const ObScale *>(rowid_buf + pos);
+    pos += sizeof(ObScale);
+    int32_t int_bytes = *reinterpret_cast<const int32_t *>(rowid_buf + pos);
+    pos += sizeof(int32_t);
+    if (OB_LIKELY(pos + int_bytes <= rowid_buf_len)) {
+      pk_val.set_decimal_int(int_bytes, scale, (ObDecimalInt *)(rowid_buf + pos));
+      pos += int_bytes;
+    } else {
+      ret = OB_INVALID_ROWID;
+    }
   } else {
     ret = OB_INVALID_ROWID;
   }
@@ -326,7 +352,12 @@ DEF_GET_OTIME_PK_VALUE(ObTimestampNanoType, timestamp_nano, uint16_t);
   ObNVarchar2Type,                   \
   ObNCharType,                       \
                                      \
-  ObURowIDType
+  ObURowIDType,                      \
+  ObLobType,                         \
+  ObJsonType,                        \
+  ObGeometryType,                    \
+  ObUserDefinedSQLType,              \
+  ObDecimalIntType
 
 #define DEF_GET_PK_FUNC(obj_type) ObURowIDData::inner_get_pk_value<obj_type>
 
@@ -447,10 +478,10 @@ int ObURowIDData::decode2urowid(const char* input, const int64_t input_len,
     urowid_data.rowid_content_ = decoded_buf;
     urowid_data.rowid_len_ = pos;
     // check validity after decoding
-    if (!urowid_data.is_valid_urowid()) {
+    if (OB_FAIL(urowid_data.check_is_valid_urowid())) {
       urowid_data.rowid_content_ = NULL;
       urowid_data.rowid_len_ = 0;
-      ret = OB_INVALID_ROWID;
+      COMMON_LOG(WARN, "invalid rowid", K(ret));
     } else {
       // do nothing
     }
@@ -487,35 +518,44 @@ int ObURowIDData::build_invalid_rowid_obj(ObIAllocator &alloc, ObObj *&rowid_obj
   return ret;
 }
 
-bool ObURowIDData::is_valid_urowid() const
+int ObURowIDData::check_is_valid_urowid() const
 {
-  bool is_valid = true;
   int ret = OB_SUCCESS;
   const uint8_t version = get_version();
   if (HEAP_TABLE_ROWID_VERSION == version) {
-    is_valid = rowid_len_ == HEAP_ORGANIZED_TABLE_ROWID_CONTENT_BUF_SIZE;
+    if (rowid_len_ != HEAP_ORGANIZED_TABLE_ROWID_CONTENT_BUF_SIZE) {
+      ret = OB_INVALID_ROWID;
+    }
   } else if (EXT_HEAP_TABLE_ROWID_VERSION == version) {
-    is_valid = rowid_len_ == EXT_HEAP_ORGANIZED_TABLE_ROWID_CONTENT_BUF_SIZE;
+    if (rowid_len_ != EXT_HEAP_ORGANIZED_TABLE_ROWID_CONTENT_BUF_SIZE) {
+      ret = OB_INVALID_ROWID;
+    }
   } else if (NO_PK_ROWID_VERSION == version
              || PK_ROWID_VERSION == version
              || LOB_NO_PK_ROWID_VERSION == version
              || EXTERNAL_TABLE_ROWID_VERSION == version) {
     int64_t pos = get_pk_content_offset();
     ObObj obj;
-    for (; is_valid && pos < rowid_len_; ) {
+    for (; OB_SUCC(ret) && pos < rowid_len_; ) {
       ObObjType obj_type = get_pk_type(pos);
       if (OB_UNLIKELY(ob_is_invalid_obj_type(obj_type))) {
-        is_valid = false;
+        ret = OB_INVALID_ROWID;
+        COMMON_LOG(WARN, "invalid obj type in rowid", K(ret), K(obj_type), K(pos), KPC(this));
       } else if (OB_FAIL(get_pk_value(obj_type, pos, obj))) {
-        is_valid = false;
-      } else {
-        // do nothing
+        if (OB_NOT_SUPPORTED == ret) {
+          ret = OB_INVALID_ROWID; // oracle doesn't have such kind of rowkey
+        }
+        COMMON_LOG(WARN, "failed to get pk value", K(ret), K(obj_type), K(pos), KPC(this));
+      } else if (obj.is_urowid()) {
+        if (OB_FAIL(SMART_CALL(obj.get_urowid().check_is_valid_urowid()))) {
+          COMMON_LOG(WARN, "failed to check is valid urowid", K(ret), K(pos));
+        }
       }
     }
   } else {
-    is_valid = false;
+    ret = OB_INVALID_ROWID;
   }
-  return is_valid;
+  return ret;
 }
 
 bool ObURowIDData::is_valid_version(int64_t v)
@@ -643,6 +683,10 @@ int64_t ObURowIDData::get_obj_size(const ObObj &pk_val)
     break;
   case ObURowIDType:
     ret_size += sizeof(uint32_t) + pk_val.get_string_len();
+    break;
+  case ObDecimalIntType:
+    ret_size += sizeof(ObScale); // scale
+    ret_size += sizeof(uint32_t) + pk_val.get_int_bytes(); // length & decimal int data
     break;
   default:
     ret_size = 0;
@@ -830,6 +874,24 @@ DEF_SET_CHAR_PK_VALUE(ObRawType);
 DEF_SET_OTIME_PK_VALUE(ObTimestampTZType, 0);
 DEF_SET_OTIME_PK_VALUE(ObTimestampLTZType, 1);
 DEF_SET_OTIME_PK_VALUE(ObTimestampNanoType, 2);
+
+template<>
+int ObURowIDData::inner_set_pk_value<ObDecimalIntType>(const ObObj &pk_val, uint8_t *buf, const int64_t buf_len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  int64_t needed_size = 1 + sizeof(int32_t) + sizeof(ObScale) + pk_val.get_int_bytes();
+  OB_ASSERT(NULL != buf);
+  OB_ASSERT(pk_val.is_decimal_int());
+  OB_ASSERT(pos + needed_size <= buf_len && pos >= 0);
+  buf[pos++] = static_cast<uint8_t>(ObDecimalIntType);
+  *reinterpret_cast<ObScale *>(buf + pos) = pk_val.get_scale();
+  pos += sizeof(ObScale);
+  *reinterpret_cast<int32_t *>(buf + pos) = pk_val.get_int_bytes();
+  pos += sizeof(int32_t);
+  MEMCPY(buf + pos, pk_val.get_decimal_int(), pk_val.get_int_bytes());
+  pos += pk_val.get_int_bytes();
+  return ret;
+}
 
 #define DEF_SET_PK_FUNC(obj_type) ObURowIDData::inner_set_pk_value<obj_type>
 
@@ -1028,8 +1090,7 @@ int ObURowIDData::get_pk_vals(ObIArray<ObObj> &pk_vals) const
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;
-  if (OB_UNLIKELY(!is_valid_urowid())) {
-    ret = OB_INVALID_ROWID;
+  if (OB_FAIL(check_is_valid_urowid())) {
     COMMON_LOG(WARN, "invalid rowid", K(ret));
   } else if (is_physical_rowid()) {
     if (OB_FAIL(get_rowkey_for_heap_organized_table(pk_vals))) {

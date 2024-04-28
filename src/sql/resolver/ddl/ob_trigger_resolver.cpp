@@ -159,6 +159,18 @@ int ObTriggerResolver::resolve_create_trigger_stmt(const ParseNode &parse_node,
   OZ (resolve_sp_definer(is_ora ? nullptr : parse_node.children_[0], trigger_arg));
   OZ (resolve_trigger_source(*parse_node.children_[is_ora ? 0 : 1], trigger_arg));
   if (OB_SUCC(ret)) {
+    const ObTableSchema *table_schema = NULL;
+    CK (OB_NOT_NULL(schema_checker_));
+    CK (OB_NOT_NULL(schema_checker_->get_schema_guard()));
+    OZ (schema_checker_->get_schema_guard()->get_table_schema(trigger_arg.trigger_info_.get_tenant_id(),
+                                                              trigger_arg.trigger_info_.get_base_object_id(),
+                                                              table_schema));
+    CK (OB_NOT_NULL(table_schema));
+    OZ (trigger_arg.based_schema_object_infos_.push_back(ObBasedSchemaObjectInfo(table_schema->get_table_id(),
+                                                                                 TABLE_SCHEMA,
+                                                                                 table_schema->get_schema_version())));
+  }
+  if (OB_SUCC(ret)) {
     ObErrorInfo &error_info = trigger_arg.error_info_;
     error_info.collect_error_info(&(trigger_arg.trigger_info_));
   }
@@ -473,7 +485,7 @@ int ObTriggerResolver::resolve_timing_point(int16_t before_or_after, int16_t stm
                                             ObCreateTriggerArg &trigger_arg)
 {
   int ret = OB_SUCCESS;
-  pl::ObPLParser pl_parser(*allocator_, session_info_->get_local_collation_connection(), session_info_->get_sql_mode());
+  pl::ObPLParser pl_parser(*allocator_, session_info_->get_charsets4parser(), session_info_->get_sql_mode());
   ParseResult parse_result;
   const ObStmtNodeTree *parse_tree = NULL;
   bool is_include_old_new_in_trigger = false;
@@ -759,7 +771,7 @@ int ObTriggerResolver::resolve_trigger_body(const ParseNode &parse_node,
                                       session_info_->get_dtc_params()));
   if (OB_SUCC(ret) && lib::is_mysql_mode()) {
     ObString procedure_source;
-    pl::ObPLParser parser(*allocator_, session_info_->get_local_collation_connection(), session_info_->get_sql_mode());
+    pl::ObPLParser parser(*allocator_, session_info_->get_charsets4parser(), session_info_->get_sql_mode());
     ObStmtNodeTree *parse_tree = NULL;
     CHECK_COMPATIBILITY_MODE(session_info_);
     OZ (trigger_info.gen_procedure_source(trigger_arg.base_object_database_,
@@ -1103,7 +1115,7 @@ int ObTriggerResolver::analyze_trigger(ObSchemaGetterGuard &schema_guard,
       ObPLCompiler compiler(allocator, *session_info, schema_guard, package_guard, *sql_proxy);
       const ObPackageInfo &package_spec_info = trigger_info.get_package_spec_info();
       if (!trigger_info.get_update_columns().empty()) {
-        ObPLParser parser(allocator, session_info->get_local_collation_connection(), session_info->get_sql_mode());
+        ObPLParser parser(allocator, session_info->get_charsets4parser(), session_info->get_sql_mode());
         ObStmtNodeTree *column_list = NULL;
         ParseResult parse_result;
         OZ (parser.parse(trigger_info.get_update_columns(), trigger_info.get_update_columns(), parse_result, true));

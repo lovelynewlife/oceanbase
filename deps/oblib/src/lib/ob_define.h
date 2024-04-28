@@ -88,6 +88,7 @@ const int64_t OB_MAX_ACT_NAME_LENGTH = 32;
 const int64_t OB_MAX_UUID_LENGTH = 16;
 const int64_t OB_MAX_UUID_STR_LENGTH = 36;
 const int64_t OB_MAX_CON_INFO_STR_LENGTH = 512;
+const int64_t MAX_LOAD_DATA_MESSAGE_LENGTH = 4096;
 const int64_t MAX_ZONE_LENGTH = 128;
 const int64_t MAX_REGION_LENGTH = 128;
 const int64_t MAX_GTS_NAME_LENGTH = 128;
@@ -142,7 +143,7 @@ const int64_t MAX_LLC_BITMAP_LENGTH = 4096;
 const int64_t MAX_CLUSTER_EVENT_NAME_LENGTH = 256;
 const int64_t MAX_CLUSTER_EVENT_VALUE_LENGTH = 4096;
 const int64_t MAX_ROOTSERVICE_EVENT_NAME_LENGTH = 256;
-const int64_t MAX_ROOTSERVICE_EVENT_VALUE_LENGTH = 256;
+const int64_t MAX_ROOTSERVICE_EVENT_VALUE_LENGTH = 512;
 const int64_t MAX_ROOTSERVICE_EVENT_DESC_LENGTH = 64;
 const int64_t MAX_ROOTSERVICE_EVENT_EXTRA_INFO_LENGTH = 512;
 const int64_t MAX_TENANT_EVENT_NAME_LENGTH = 256;
@@ -174,6 +175,8 @@ const int64_t USER_RESOURCE_GROUP_START_ID = 10000;
 const int64_t USER_RESOURCE_GROUP_END_ID = 19999;
 const int64_t SYS_RESOURCE_GROUP_START_ID = 20000;
 const int64_t SYS_RESOURCE_GROUP_CNT = 21; //accord ObIOModule
+// The timeout provided to the storage layer will be reduced by 100ms
+const int64_t ESTIMATE_PS_RESERVE_TIME = 100 * 1000;
 OB_INLINE bool is_user_group(const int64_t group_id)
 {
   return group_id >= USER_RESOURCE_GROUP_START_ID && group_id <= USER_RESOURCE_GROUP_END_ID;
@@ -220,6 +223,7 @@ const int64_t OB_MAX_VIEW_COLUMN_NAME_LENGTH_MYSQL  = 64;
 const int64_t OB_MAX_COLUMN_NAME_LENGTH = 128; // Compatible with oracle, OB code logic is greater than Times TODO:xiyu
 const int64_t OB_MAX_COLUMN_NAME_BUF_LENGTH = OB_MAX_COLUMN_NAME_LENGTH + 1;
 const int64_t OB_MAX_COLUMN_NAMES_LENGTH = 2 * 1024;
+const int64_t OB_MAX_COLUMN_GROUP_NAME_LENGTH = 256; // need to larger than max_column_name_length
 const int64_t OB_MAX_APP_NAME_LENGTH = 128;
 const int64_t OB_MAX_OPERATOR_PROPERTY_LENGTH = 4 * 1024;
 const int64_t OB_MAX_DATA_SOURCE_NAME_LENGTH = 128;
@@ -272,6 +276,8 @@ const int64_t OB_MAX_RESERVED_POINT_TYPE_LENGTH = 32;
 const int64_t OB_MAX_RESERVED_POINT_NAME_LENGTH = 128;
 const int64_t OB_MAX_EXTRA_ROWKEY_COLUMN_NUMBER = 2; //storage extra rowkey column number, it contains trans version column and sql sequence column
 const int64_t OB_INNER_MAX_ROWKEY_COLUMN_NUMBER = OB_MAX_ROWKEY_COLUMN_NUMBER + OB_MAX_EXTRA_ROWKEY_COLUMN_NUMBER;
+const int64_t OB_MAX_TENANT_SNAPSHOT_NAME_LENGTH = 64;
+const int64_t OB_MAX_TENANT_SNAPSHOT_NAME_LENGTH_STORE = 128;
 
 
 //for recybin
@@ -563,6 +569,8 @@ const int64_t OB_MAX_SCHEMA_BUF_SIZE = 10L * 1024L * 1024L;//10MB
 const int64_t OB_MAX_PART_LIST_SIZE = 10L * 1024L * 1024L;//10MB
 const int64_t OB_MAX_TABLE_ID_LIST_SIZE = 10L * 1024L * 1024L;//10MB
 
+const int64_t OB_MAX_SCHEDULER_JOB_NAME_LENGTH = 128;
+
 enum ObServerRole
 {
   OB_INVALID = 0,
@@ -603,8 +611,26 @@ const uint64_t OB_HIDDEN_FILE_ID_COLUMN_ID = 14; // used for external table
 const uint64_t OB_HIDDEN_LINE_NUMBER_COLUMN_ID = 15; // used for external table
 const int64_t OB_END_RESERVED_COLUMN_ID_NUM = 16;
 const uint64_t OB_APP_MIN_COLUMN_ID = 16;
+
 const uint64_t OB_ACTION_FLAG_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
                                           - OB_END_RESERVED_COLUMN_ID_NUM + 1; /* 65520 */
+// materialized view log
+const uint64_t OB_MLOG_SEQ_NO_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
+                                          - OB_END_RESERVED_COLUMN_ID_NUM + 2; /* 65521 */
+const uint64_t OB_MLOG_DML_TYPE_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
+                                          - OB_END_RESERVED_COLUMN_ID_NUM + 3; /* 65522 */
+const uint64_t OB_MLOG_OLD_NEW_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
+                                           - OB_END_RESERVED_COLUMN_ID_NUM + 4; /* 65523 */
+const uint64_t OB_MLOG_ROWID_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
+                                         - OB_END_RESERVED_COLUMN_ID_NUM + 5; /* 65524 */
+const uint64_t OB_MIN_MLOG_SPECIAL_COLUMN_ID = OB_MLOG_SEQ_NO_COLUMN_ID;
+const uint64_t OB_MAX_MLOG_SPECIAL_COLUMN_ID = OB_MLOG_ROWID_COLUMN_ID;
+
+const char *const OB_MLOG_SEQ_NO_COLUMN_NAME = "SEQUENCE$$";
+const char *const OB_MLOG_DML_TYPE_COLUMN_NAME = "DMLTYPE$$";
+const char *const OB_MLOG_OLD_NEW_COLUMN_NAME = "OLD_NEW$$";
+const char *const OB_MLOG_ROWID_COLUMN_NAME = "M_ROW$$";
+
 const uint64_t OB_MAX_TMP_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
                                       - OB_END_RESERVED_COLUMN_ID_NUM;
 const int32_t OB_COUNT_AGG_PD_COLUMN_ID = INT32_MAX - 1;
@@ -636,6 +662,9 @@ const int32_t OB_HIDDEN_LOGICAL_ROWID_INDEX_NAME_LENGTH = 11;
 
 // internal index prefix
 const char *const OB_INDEX_PREFIX = "__idx_";
+// internal materialized view log prefix
+const char *const OB_MLOG_PREFIX_MYSQL = "mlog$_";
+const char *const OB_MLOG_PREFIX_ORACLE = "MLOG$_";
 
 // internal user
 const char *const OB_INTERNAL_USER = "__ob_server";
@@ -682,6 +711,11 @@ const char *const OB_LOCAL_PREFIX = "local://";
 const char *const OB_OSS_PREFIX = "oss://";
 const char *const OB_FILE_PREFIX = "file://";
 const char *const OB_COS_PREFIX = "cos://";
+const char *const OB_S3_PREFIX = "s3://";
+const char *const OB_S3_APPENDABLE_FORMAT_META = "FORMAT_META";
+const char *const OB_S3_APPENDABLE_SEAL_META = "SEAL_META";
+const char *const OB_S3_APPENDABLE_FRAGMENT_PREFIX = "@APD_PART@";
+const int64_t OB_STORAGE_LIST_MAX_NUM = 1000;
 const char *const OB_RESOURCE_UNIT_DEFINITION = "resource_unit_definition";
 const char *const OB_RESOURCE_POOL_DEFINITION = "resource_pool_definition";
 const char *const OB_CREATE_TENANT_DEFINITION = "create_tenant_definition";
@@ -717,6 +751,7 @@ const char *const OB_SECURITY_AUDIT_DEFINITION = "security_audit_definition";
 const char *const OB_SYNONYM_IDS_LIST = "synonym_ids_list";
 const char *const OB_CREATE_SYNONYM_DEFINITION = "create_synonym_definition";
 const char *const OB_TIMEZONE_INFO_DEFINITION = "timezone_info_definition";
+const char *const OB_MASKED_STR = "***";
 
 enum ObCopySSTableType
 {
@@ -790,6 +825,9 @@ const int64_t MAX_INFOSCHEMA_COLUMN_PRIVILEGE_LENGTH = 64;
 const int64_t MAX_COLUMN_YES_NO_LENGTH = 3;
 const int64_t MAX_COLUMN_VARCHAR_LENGTH = 262143;
 const int64_t MAX_COLUMN_CHAR_LENGTH = 255;
+//column group
+const uint64_t DEFAULT_TYPE_COLUMN_GROUP_ID = 1; // reserve 2~999
+const uint64_t COLUMN_GROUP_START_ID = 1000;
 
 //Oracle
 const int64_t MAX_ORACLE_COMMENT_LENGTH = 4000;
@@ -833,7 +871,11 @@ const char *const OB_DIAG_TENANT_NAME = "diag";
 //for sync ddl (ClusterID_TenantID_SchemaVersion)
 const char *const OB_DDL_ID_VAR_NAME = "__oceanbase_ddl_id";
 const int64_t OB_MAX_DDL_ID_STR_LENGTH = 64;
+#ifdef ERRSIM
+const int64_t OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT = 30L * 60L * 1000L * 1000L; // 30 minutes
+#else
 const int64_t OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT = 7L * 24L * 60L * 60L * 1000L * 1000L; // 7days
+#endif
 
 const int64_t OB_MAX_PARTITION_SHARDING_LENGTH = 10;
 
@@ -1265,7 +1307,7 @@ OB_INLINE bool is_inner_keystore_id(const uint64_t keystore_id)
 
 /*
  * ################################################################################
- * OBJECT_ID FOR KEYSTORE/MASTER KEY (202100, 202200)
+ * OBJECT_ID FOR PROFILE (202200, 202300)
  * ################################################################################
  */
 const uint64_t OB_MIN_INNER_PROFILE_ID           = 202200;
@@ -1391,10 +1433,14 @@ const int64_t OB_MERGE_TYPE_STR_LENGTH = 64;
 const int64_t OB_MERGE_STATUS_STR_LENGTH = 15;
 const int64_t OB_DIAGNOSE_INFO_LENGTH = 1024;
 const int64_t OB_PARALLEL_MERGE_INFO_LENGTH = 512;
-const int64_t OB_COMPACTION_EVENT_STR_LENGTH = 256;
+const int64_t OB_COMPACTION_EVENT_STR_LENGTH = 1024;
 const int64_t OB_PART_TABLE_INFO_LENGTH = 512;
 const int64_t OB_MACRO_ID_INFO_LENGTH = 256;
+const int64_t OB_COMPACTION_COMMENT_STR_LENGTH = 1024;
 const int64_t OB_COMPACTION_INFO_LENGTH = 128;
+const int64_t OB_MERGE_LEVEL_STR_LENGTH = 64;
+const int64_t OB_MERGE_ROLE_STR_LENGTH = 64;
+const int64_t OB_MERGE_COMMENT_INNER_STR_LENGTH = 800;
 
 // for erasure code
 const int64_t OB_MAX_EC_STRIPE_COUNT = 32;
@@ -1428,6 +1474,10 @@ const char *const OB_MYSQL_CLIENT_OBPROXY_MODE_NAME = "__ob_proxy";
 const char *const OB_MYSQL_CONNECTION_ID = "__connection_id";
 const char *const OB_MYSQL_GLOBAL_VARS_VERSION = "__global_vars_version";
 const char *const OB_MYSQL_PROXY_CONNECTION_ID = "__proxy_connection_id";
+// add client_session_id, addr_port & client session create time us
+const char *const OB_MYSQL_CLIENT_SESSION_ID = "__client_session_id";
+const char *const OB_MYSQL_CLIENT_ADDR_PORT = "__client_addr_port";
+const char *const OB_MYSQL_CLIENT_CONNECT_TIME_US = "__client_connect_time";
 const char *const OB_MYSQL_PROXY_SESSION_CREATE_TIME_US = "__proxy_session_create_time_us";
 const char *const OB_MYSQL_CLUSTER_NAME = "__cluster_name";
 const char *const OB_MYSQL_CLUSTER_ID = "__cluster_id";
@@ -1509,6 +1559,11 @@ OB_INLINE bool is_sys_tenant(const uint64_t tenant_id)
   return OB_SYS_TENANT_ID == tenant_id;
 }
 
+OB_INLINE bool is_server_tenant(const uint64_t tenant_id)
+{
+  return OB_SERVER_TENANT_ID == tenant_id;
+}
+
 //check whether an tenant_id is virtual
 OB_INLINE bool is_virtual_tenant_id(const uint64_t tenant_id)
 {
@@ -1587,9 +1642,21 @@ OB_INLINE uint64_t combine_two_ids(uint64_t high_id, uint64_t low_id)
 
 const char *const OB_RANDOM_PRIMARY_ZONE = "RANDOM";
 
+OB_INLINE bool is_mlog_reference_column(const uint64_t column_id)
+{
+  return (common::OB_MLOG_ROWID_COLUMN_ID == column_id);
+}
+
+OB_INLINE bool is_mlog_special_column(const uint64_t column_id)
+{
+  return (column_id >= common::OB_MIN_MLOG_SPECIAL_COLUMN_ID
+          && column_id <= common::OB_MAX_MLOG_SPECIAL_COLUMN_ID);
+}
+
 OB_INLINE bool is_shadow_column(const uint64_t column_id)
 {
-  return column_id > common::OB_MIN_SHADOW_COLUMN_ID;
+  return (column_id > common::OB_MIN_SHADOW_COLUMN_ID)
+          && !is_mlog_special_column(column_id);
 }
 
 OB_INLINE bool is_bootstrap_resource_pool(const uint64_t resource_pool_id)
@@ -1601,6 +1668,7 @@ OB_INLINE bool is_bootstrap_resource_pool(const uint64_t resource_pool_id)
 const int64_t OB_MALLOC_NORMAL_BLOCK_SIZE = (1LL << 13) - 256;                 // 8KB
 const int64_t OB_MALLOC_MIDDLE_BLOCK_SIZE = (1LL << 16) - 128;                 // 64KB
 const int64_t OB_MALLOC_BIG_BLOCK_SIZE = (1LL << 21) - ACHUNK_PRESERVE_SIZE;// 2MB (-17KB)
+const int64_t OB_MALLOC_REQ_NORMAL_BLOCK_SIZE = (256LL << 10);                 // 256KB
 
 const int64_t OB_MAX_MYSQL_RESPONSE_PACKET_SIZE = OB_MALLOC_BIG_BLOCK_SIZE;
 
@@ -1647,6 +1715,7 @@ const int64_t OB_MAX_BINARY_LENGTH = 255;
 const int64_t OB_MAX_VARBINARY_LENGTH = 64 * 1024L;
 const int64_t OB_MAX_EXTENDED_TYPE_INFO_LENGTH = OB_MAX_VARBINARY_LENGTH;//TODO(yts): large object
 const int64_t OB_MAX_DECIMAL_PRECISION = 65;
+const int64_t OB_MAX_DECIMAL_POSSIBLE_PRECISION = 81;
 const int64_t OB_MIN_DECIMAL_PRECISION = 1;
 const int64_t OB_MAX_DECIMAL_SCALE = 30;
 const int64_t OB_MIN_NUMBER_PRECISION = 1;          //Number in Oracle: p:[1, 38]
@@ -1674,6 +1743,7 @@ const int64_t OB_MIN_NUMBER_FLOAT_PRECISION = 1;     //Float in Oracle: p[1, 126
 const int64_t OB_MAX_NUMBER_FLOAT_PRECISION = 126;
 const double OB_PRECISION_BINARY_TO_DECIMAL_FACTOR = 0.30103;
 const double OB_PRECISION_DECIMAL_TO_BINARY_FACTOR = 3.32193;
+const int64_t OB_DECIMAL_LONGLONG_DIGITS = 22;
 
 const int64_t OB_MAX_DOUBLE_FLOAT_SCALE = 30;
 const int64_t OB_NOT_FIXED_SCALE = OB_MAX_DOUBLE_FLOAT_SCALE + 1;
@@ -1694,6 +1764,15 @@ const int64_t OB_MAX_DATE_PRECISION = 0;
 const int64_t OB_MAX_DATETIME_PRECISION = 6;
 const int64_t OB_MAX_TIMESTAMP_TZ_PRECISION = 9;
 
+// decimal int related
+const int16_t MAX_PRECISION_DECIMAL_INT_32  = 9;
+const int16_t MAX_PRECISION_DECIMAL_INT_64  = 18;
+const int16_t MAX_PRECISION_DECIMAL_INT_128 = 38;
+const int16_t MAX_PRECISION_DECIMAL_INT_256 = 76;
+const int16_t MAX_PRECISION_DECIMAL_INT_512 = 154;
+
+const int16_t MAX_SIGNED_INTEGER_PRECISION = 18;
+
 // TODO@hanhui lob handle length will be much shorter in 2.0
 const int64_t OB_MAX_LOB_INLINE_LENGTH = OB_MAX_VARCHAR_LENGTH;
 const int64_t OB_MAX_LOB_HANDLE_LENGTH = 2 * 1024L;
@@ -1703,6 +1782,14 @@ const int64_t OB_MAX_MEDIUMTEXT_LENGTH = 16 *  1024 * 1024L;  // mysql (1LL << 2
 const int64_t OB_MAX_LONGTEXT_LENGTH = 512 * 1024 * 1024L - 1; // 2^29-1,for datum.len_ only has 29 bit // mysql (1LL << 32)
 const int64_t OB_MAX_MEDIUMTEXT_LENGTH_OLD = 256 * 1024L;  // for compatibility
 const int64_t OB_MAX_LONGTEXT_LENGTH_OLD = 512 * 1024L;  // for compatibility
+
+const int64_t OB_MIN_LOB_CHUNK_SIZE = 1024; // 1K
+const int64_t OB_MAX_LOB_CHUNK_SIZE = 256 * 1024; // 256K
+const int64_t OB_DEFAULT_LOB_CHUNK_SIZE = OB_MAX_LOB_CHUNK_SIZE;
+
+const int64_t OB_MIN_LOB_INROW_THRESHOLD = 0; // 0 means disable inrow lob
+const int64_t OB_MAX_LOB_INROW_THRESHOLD = OB_MAX_USER_ROW_LENGTH / 2; // 1.5M/2
+const int64_t OB_DEFAULT_LOB_INROW_THRESHOLD = 4096; // 4K
 
 const int64_t OB_MAX_CAST_CHAR_VARCHAR_LENGTH = 512;
 const int64_t OB_MAX_CAST_CHAR_TEXT_LENGTH = 16383;
@@ -1772,6 +1859,7 @@ const int64_t OB_DUMP_ROOT_TABLE_TYPE = 1;
 const int64_t OB_DUMP_UNUSUAL_TABLET_TYPE = 2;
 const int64_t OB_MAX_SYS_VAR_NON_STRING_VAL_LENGTH = 128;
 const int64_t OB_MAX_SYS_VAR_VAL_LENGTH = 4096;//original 128 is too small
+const int64_t OB_MAX_TCP_INVITED_NODES_LENGTH = 64 * 1024; // 64K
 
 // bitset defines
 const int64_t OB_DEFAULT_BITSET_SIZE = OB_MAX_TABLE_NUM_PER_STMT;
@@ -1788,6 +1876,7 @@ const int64_t MAX_SSTABLE_CNT_IN_STORAGE = 64;
 const int64_t RESERVED_STORE_CNT_IN_STORAGE = 8; // Avoid mistakenly triggering minor or major freeze to cause the problem of unsuccessful merge.
 const int64_t DIAGNOSE_TABLE_CNT_IN_STORAGE = 12;
 const int64_t MAX_FROZEN_MEMSTORE_CNT_IN_STORAGE = 7;
+const int64_t BASIC_MEMSTORE_CNT = 8;
 const int64_t MAX_MEMSTORE_CNT = 16;
 // some frozen memstores and one active memstore
 // Only limited to minor freeze, major freeze is not subject to this restriction
@@ -2409,13 +2498,14 @@ OB_INLINE char* ob_get_tname()
   return tname;
 }
 
-OB_INLINE const char*& ob_get_origin_thread_name()
+OB_INLINE char* ob_get_origin_thread_name()
 {
-  thread_local const char* tname = nullptr;
-  return tname;
+  thread_local char ori_tname[oceanbase::OB_THREAD_NAME_BUF_LEN] = {0};
+  return ori_tname;
 }
 
 static const char* PARALLEL_DDL_THREAD_NAME = "DDLPQueueTh";
+static const char* REPLAY_SERVICE_THREAD_NAME = "ReplaySrv";
 
 // There are many clusters in arbitration server, we need a field identify the different clusters.
 OB_INLINE int64_t &ob_get_cluster_id()
@@ -2464,7 +2554,7 @@ inline bool is_x86() {
 #endif
 }
 #define __maybe_unused  __attribute__((unused))
-#define DO_PRAGMA(x) _Pragma (#x)
+#define DO_PRAGMA(x) _Pragma(#x)
 #define DISABLE_WARNING_GCC_PUSH _Pragma("GCC diagnostic push")
 #define DISABLE_WARNING_GCC(option) DO_PRAGMA(GCC diagnostic ignored option)
 #define DISABLE_WARNING_GCC_POP _Pragma("GCC diagnostic pop")

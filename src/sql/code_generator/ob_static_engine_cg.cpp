@@ -1037,6 +1037,13 @@ int ObStaticEngineCG::generate_spec(
       if (OB_ISNULL(raw_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_ERROR("null pointer", K(ret));
+      } else if (is_oracle_mode() && OB_UNLIKELY(ObLongTextType == raw_expr->get_data_type()
+                                                 || ObLobType == raw_expr->get_data_type())) {
+        ret = OB_ERR_INVALID_TYPE_FOR_OP;
+        LOG_WARN("select distinct lob not allowed", K(ret));
+      } else if (is_oracle_mode() && OB_UNLIKELY(ObJsonType == raw_expr->get_data_type())) {
+        ret = OB_ERR_INVALID_CMP_OP;
+        LOG_WARN("select distinct json not allowed", K(ret));
       } else if (raw_expr->is_const_expr()) {
           // distinct const value, 这里需要注意：distinct 1被跳过了，
           // 但ObMergeDistinct中，如果没有distinct列，则默认所有值都相等，这个语义正好是符合预期的。
@@ -1105,6 +1112,13 @@ int ObStaticEngineCG::generate_spec(
         if (OB_ISNULL(raw_expr)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_ERROR("null pointer", K(ret));
+        } else if (is_oracle_mode() && OB_UNLIKELY(ObLongTextType == raw_expr->get_data_type()
+                                                   || ObLobType == raw_expr->get_data_type())) {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_WARN("select distinct lob not allowed", K(ret));
+        } else if (is_oracle_mode() && OB_UNLIKELY(ObJsonType == raw_expr->get_data_type())) {
+          ret = OB_ERR_INVALID_CMP_OP;
+          LOG_WARN("select distinct json not allowed", K(ret));
         } else if (raw_expr->is_const_expr()) {
             // distinct const value, 这里需要注意：distinct 1被跳过了，
             // 但ObMergeDistinct中，如果没有distinct列，则默认所有值都相等，这个语义正好是符合预期的。
@@ -1135,7 +1149,9 @@ int ObStaticEngineCG::generate_spec(
                                 expr->datum_meta_.cs_type_,
                                 expr->datum_meta_.scale_,
                                 lib::is_oracle_mode(),
-                                expr->obj_meta_.has_lob_header());
+                                expr->obj_meta_.has_lob_header(),
+                                expr->datum_meta_.precision_,
+                                expr->datum_meta_.precision_);
           ObHashFunc hash_func;
           set_murmur_hash_func(hash_func, expr->basic_funcs_);
           if (OB_ISNULL(cmp_func.cmp_func_) || OB_ISNULL(hash_func.hash_func_)
@@ -1328,7 +1344,9 @@ int ObStaticEngineCG::generate_hash_set_spec(ObLogSet &op, ObHashSetSpec &spec)
                                                                 field_collation.cs_type_,
                                                                 expr->datum_meta_.scale_,
                                                                 lib::is_oracle_mode(),
-                                                                expr->obj_meta_.has_lob_header());
+                                                                expr->obj_meta_.has_lob_header(),
+                                                                expr->datum_meta_.precision_,
+                                                                expr->datum_meta_.precision_);
         ObHashFunc hash_func;
         set_murmur_hash_func(hash_func, expr->basic_funcs_);
         if (OB_ISNULL(cmp_func.cmp_func_) || OB_ISNULL(hash_func.hash_func_)
@@ -1502,7 +1520,9 @@ int ObStaticEngineCG::generate_merge_set_spec(ObLogSet &op, ObMergeSetSpec &spec
                                                                   field_collation.cs_type_,
                                                                   expr->datum_meta_.scale_,
                                                                   lib::is_oracle_mode(),
-                                                                  expr->obj_meta_.has_lob_header());
+                                                                  expr->obj_meta_.has_lob_header(),
+                                                                  expr->datum_meta_.precision_,
+                                                                  expr->datum_meta_.precision_);
           if (OB_ISNULL(cmp_func.cmp_func_)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("cmp_func is null, check datatype is valid", K(cmp_func.cmp_func_), K(ret));
@@ -1693,6 +1713,13 @@ int ObStaticEngineCG::fill_sort_funcs(
         // other udt types not supported, xmltype does not have order or map member function
         ret = OB_ERR_NO_ORDER_MAP_SQL;
         LOG_WARN("cannot ORDER objects without MAP or ORDER method", K(ret));
+      } else if (is_oracle_mode() && OB_UNLIKELY(ObLongTextType == expr->datum_meta_.type_
+                                                 || ObLobType == expr->datum_meta_.type_)) {
+        ret = OB_ERR_INVALID_TYPE_FOR_OP;
+        LOG_WARN("order by lob not allowed", K(ret));
+      } else if (is_oracle_mode() && OB_UNLIKELY(ObJsonType == expr->datum_meta_.type_)) {
+        ret = OB_ERR_INVALID_CMP_OP;
+        LOG_WARN("order by json not allowed", K(ret));
       } else {
         ObSortCmpFunc cmp_func;
         cmp_func.cmp_func_ = ObDatumFuncs::get_nullsafe_cmp_func(expr->datum_meta_.type_,
@@ -1701,7 +1728,9 @@ int ObStaticEngineCG::fill_sort_funcs(
                                                                 sort_collation.cs_type_,
                                                                 expr->datum_meta_.scale_,
                                                                 lib::is_oracle_mode(),
-                                                                expr->obj_meta_.has_lob_header());
+                                                                expr->obj_meta_.has_lob_header(),
+                                                                expr->datum_meta_.precision_,
+                                                                expr->datum_meta_.precision_);
         if (OB_ISNULL(cmp_func.cmp_func_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("cmp_func is null, check datatype is valid", K(ret));
@@ -3945,6 +3974,7 @@ int ObStaticEngineCG::generate_normal_tsc(ObLogTableScan &op, ObTableScanSpec &s
       LOG_WARN("extract the query range whether get failed", K(ret));
     }
   }
+  OZ(generate_tsc_flags(op, spec));
 
   bool is_equal_and = true;
   ObKeyPart* root = spec.tsc_ctdef_.pre_query_range_.get_table_grapth().key_part_head_;
@@ -3979,7 +4009,7 @@ int ObStaticEngineCG::generate_normal_tsc(ObLogTableScan &op, ObTableScanSpec &s
     }
     root = root->and_next_;
   }
-  // TODO @baixian.zr the above optimization is overrode by ObTscCgService::generate_tsc_ctdef before this commit
+  // TODO the above optimization is overrode by ObTscCgService::generate_tsc_ctdef before this commit
   // but after the deep copy of pre_query_range_ is removed in ObTscCgService::generate_tsc_ctdef,
   // error is returned in such sql 'set global x=y', should fix this;
   // spec.tsc_ctdef_.pre_query_range_.set_is_equal_and(is_equal_and);
@@ -4005,7 +4035,7 @@ int ObStaticEngineCG::generate_normal_tsc(ObLogTableScan &op, ObTableScanSpec &s
     spec.batch_scan_flag_ = op.use_batch();
     spec.table_row_count_ = op.get_table_row_count();
     spec.output_row_count_ = static_cast<int64_t>(op.get_output_row_count());
-    spec.query_range_row_count_ = static_cast<int64_t>(op.get_query_range_row_count());
+    spec.query_range_row_count_ = static_cast<int64_t>(op.get_logical_query_range_row_count());
     spec.index_back_row_count_ = static_cast<int64_t>(op.get_index_back_row_count());
     spec.estimate_method_ = op.get_estimate_method();
     spec.table_name_ = tbl_name;
@@ -4029,7 +4059,9 @@ int ObStaticEngineCG::generate_normal_tsc(ObLogTableScan &op, ObTableScanSpec &s
   }
 
   if (OB_SUCC(ret)) {
-    if (opt_ctx_->is_online_ddl() && stmt::T_INSERT == opt_ctx_->get_session_info()->get_stmt_type()) {
+    if (opt_ctx_->is_online_ddl() &&
+        stmt::T_INSERT == opt_ctx_->get_session_info()->get_stmt_type() &&
+        !opt_ctx_->get_session_info()->get_ddl_info().is_mview_complete_refresh()) {
       spec.report_col_checksum_ = true;
     }
   }
@@ -4124,6 +4156,45 @@ int ObStaticEngineCG::generate_normal_tsc(ObLogTableScan &op, ObTableScanSpec &s
     spec.is_external_table_ = true;
   }
 
+  return ret;
+}
+
+int ObStaticEngineCG::generate_tsc_flags(ObLogTableScan &op, ObTableScanSpec &spec)
+{
+  int ret = OB_SUCCESS;
+  bool pd_blockscan = false;
+  bool pd_filter = false;
+  bool enable_skip_index = false;
+  bool enable_prefetch_limit = false;
+  bool enable_column_store = false;
+  ObBasicSessionInfo *session_info = NULL;
+  ObLogPlan *log_plan = op.get_plan();
+  if (OB_ISNULL(log_plan)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid argument", K(ret), K(log_plan));
+  } else if (OB_ISNULL(session_info = log_plan->get_optimizer_context().get_session_info())) {
+  } else {
+    uint64_t tenant_id = session_info->get_effective_tenant_id();
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+    if (OB_UNLIKELY(!tenant_config.is_valid())) {
+      LOG_WARN("failed to init tenant config", K(tenant_id));
+    } else {
+      const int64_t pd_level = tenant_config->_pushdown_storage_level;
+      pd_blockscan = ObPushdownFilterUtils::is_blockscan_pushdown_enabled(pd_level);
+      pd_filter = ObPushdownFilterUtils::is_filter_pushdown_enabled(pd_level);
+      enable_skip_index = tenant_config->_enable_skip_index;
+      enable_prefetch_limit = tenant_config->_enable_prefetch_limiting;
+      enable_column_store = op.use_column_store();
+      ObDASScanCtDef &scan_ctdef = spec.tsc_ctdef_.scan_ctdef_;
+      ObDASScanCtDef *lookup_ctdef = spec.tsc_ctdef_.lookup_ctdef_;
+      scan_ctdef.pd_expr_spec_.pd_storage_flag_.set_flags(pd_blockscan, pd_filter, enable_skip_index,
+                                                          enable_column_store, enable_prefetch_limit);
+      if (nullptr != lookup_ctdef) {
+        lookup_ctdef->pd_expr_spec_.pd_storage_flag_.set_flags(pd_blockscan, pd_filter, enable_skip_index,
+                                                               enable_column_store, enable_prefetch_limit);
+      }
+    }
+  }
   return ret;
 }
 
@@ -4317,7 +4388,9 @@ int ObStaticEngineCG::generate_pump_exprs(ObLogJoin &op, ObNLConnectBySpecBase &
                                 expr->datum_meta_.cs_type_,
                                 expr->datum_meta_.scale_,
                                 lib::is_oracle_mode(),
-                                expr->obj_meta_.has_lob_header());
+                                expr->obj_meta_.has_lob_header(),
+                                expr->datum_meta_.precision_,
+                                expr->datum_meta_.precision_);
           if (OB_ISNULL(cmp_func.cmp_func_)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("cmp_func is null, check datatype is valid", K(ret));
@@ -4573,11 +4646,11 @@ int ObStaticEngineCG::generate_join_spec(ObLogJoin &op, ObJoinSpec &spec)
             if (equal_cond_info.is_opposite_) {
               equal_cond_info.ns_cmp_func_ = ObDatumFuncs::get_nullsafe_cmp_func(r.type_,
                                 l.type_, default_null_pos(), r.cs_type_, scale, is_oracle_mode(),
-                                has_lob_header);
+                                has_lob_header, l.precision_, r.precision_);
             } else {
               equal_cond_info.ns_cmp_func_ = ObDatumFuncs::get_nullsafe_cmp_func(l.type_,
                                 r.type_, default_null_pos(), l.cs_type_, scale, is_oracle_mode(),
-                                has_lob_header);
+                                has_lob_header, l.precision_, r.precision_);
             }
           }
           CK(OB_NOT_NULL(equal_cond_info.ns_cmp_func_));
@@ -4878,9 +4951,8 @@ int ObStaticEngineCG::set_optimization_info(ObLogTableScan &op, ObTableScanSpec 
   if (OB_SUCC(ret)) {
     spec.table_row_count_ = op.get_table_row_count();
     spec.output_row_count_ = static_cast<int64_t>(op.get_output_row_count());
-    spec.phy_query_range_row_count_ = static_cast<int64_t>(
-        op.get_phy_query_range_row_count());
-    spec.query_range_row_count_ = static_cast<int64_t>(op.get_query_range_row_count());
+    spec.phy_query_range_row_count_ = static_cast<int64_t>(op.get_phy_query_range_row_count());
+    spec.query_range_row_count_ = static_cast<int64_t>(op.get_logical_query_range_row_count());
     spec.index_back_row_count_ = static_cast<int64_t>(op.get_index_back_row_count());
   }
   if (OB_NOT_NULL(op.get_table_opt_info())) {
@@ -5723,7 +5795,9 @@ int ObStaticEngineCG::fill_aggr_info(ObAggFunRawExpr &raw_expr,
                                                                     field_collation.cs_type_,
                                                                     expr->datum_meta_.scale_,
                                                                     lib::is_oracle_mode(),
-                                                                    expr->obj_meta_.has_lob_header());
+                                                                    expr->obj_meta_.has_lob_header(),
+                                                                    expr->datum_meta_.precision_,
+                                                                    expr->datum_meta_.precision_);
             if (OB_ISNULL(cmp_func.cmp_func_)) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("cmp_func is null, check datatype is valid", K(ret));
@@ -6299,7 +6373,9 @@ int ObStaticEngineCG::fil_sort_info(const ObIArray<OrderItem> &sort_keys,
                                                                  field_collation.cs_type_,
                                                                  expr->datum_meta_.scale_,
                                                                  lib::is_oracle_mode(),
-                                                                 expr->obj_meta_.has_lob_header());
+                                                                 expr->obj_meta_.has_lob_header(),
+                                                                 expr->datum_meta_.precision_,
+                                                                 expr->datum_meta_.precision_);
         if (OB_ISNULL(cmp_func.cmp_func_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("cmp_func is null, check datatype is valid", K(ret));
@@ -6340,32 +6416,39 @@ int ObStaticEngineCG::generate_top_fre_hist_expr_operator(ObAggFunRawExpr &raw_e
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(T_FUN_TOP_FRE_HIST != raw_expr.get_expr_type() ||
-                  raw_expr.get_param_count() != 3)) {
+                  raw_expr.get_param_count() != 4)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get invalid argument", K(raw_expr), K(ret));
   } else {
     ObRawExpr *win_raw_expr = raw_expr.get_param_expr(0);
     ObRawExpr *param_raw_expr = raw_expr.get_param_expr(1);
     ObRawExpr *item_raw_expr = raw_expr.get_param_expr(2);
+    ObRawExpr *max_disuse_raw_expr = raw_expr.get_param_expr(3);
     ObExpr *win_expr = NULL;
     ObExpr *item_expr = NULL;
+    ObExpr *max_disuse_expr = NULL;
     raw_expr.get_real_param_exprs_for_update().reset();
-    if (OB_ISNULL(win_raw_expr) || OB_ISNULL(param_raw_expr) || OB_ISNULL(item_raw_expr)) {
+    if (OB_ISNULL(win_raw_expr) || OB_ISNULL(param_raw_expr) ||
+        OB_ISNULL(item_raw_expr) || OB_ISNULL(max_disuse_raw_expr)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected null", K(win_raw_expr), K(param_raw_expr), K(item_raw_expr), K(ret));
+      LOG_WARN("get unexpected null", K(win_raw_expr), K(param_raw_expr),
+                                      K(item_raw_expr), K(max_disuse_raw_expr), K(ret));
     } else if (OB_FAIL(generate_rt_expr(*win_raw_expr, win_expr)) ||
-               OB_FAIL(generate_rt_expr(*item_raw_expr, item_expr))) {
-      LOG_WARN("failed to generate_rt_expr", K(ret), K(*win_raw_expr), K(*item_raw_expr));
-    } else if (OB_ISNULL(win_expr) || OB_ISNULL(item_expr)) {
+               OB_FAIL(generate_rt_expr(*item_raw_expr, item_expr)) ||
+               OB_FAIL(generate_rt_expr(*max_disuse_raw_expr, max_disuse_expr))) {
+      LOG_WARN("failed to generate_rt_expr", K(ret), K(*win_raw_expr), K(*item_raw_expr), K(*max_disuse_raw_expr));
+    } else if (OB_ISNULL(win_expr) || OB_ISNULL(item_expr) || OB_ISNULL(max_disuse_expr)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("expr is null ", K(ret), K(win_expr), K(item_expr));
+      LOG_WARN("expr is null ", K(ret), K(win_expr), K(item_expr), K(max_disuse_expr));
     } else if (OB_UNLIKELY(!win_expr->obj_meta_.is_numeric_type() ||
-                           !item_expr->obj_meta_.is_numeric_type())) {
+                           !item_expr->obj_meta_.is_numeric_type() ||
+                           !max_disuse_expr->obj_meta_.is_numeric_type())) {
       ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("expr node is null", K(ret), K(win_expr->obj_meta_), K(item_expr->obj_meta_));
+      LOG_WARN("expr node is null", K(ret), K(win_expr->obj_meta_), K(item_expr->obj_meta_), K(max_disuse_expr->obj_meta_));
     } else {
       aggr_info.window_size_param_expr_ = win_expr;
       aggr_info.item_size_param_expr_ = item_expr;
+      aggr_info.max_disuse_param_expr_ = max_disuse_expr;
       aggr_info.is_need_deserialize_row_ = raw_expr.is_need_deserialize_row();
       if (OB_FAIL(raw_expr.add_real_param_expr(param_raw_expr))) {
         LOG_WARN("fail to add param expr to agg expr", K(ret));
@@ -6923,6 +7006,44 @@ int ObStaticEngineCG::set_other_properties(const ObLogPlan &log_plan, ObPhysical
   //set user and system variables
   if (OB_SUCC(ret)) {
     ret = phy_plan.set_vars(log_plan.get_stmt()->get_query_ctx()->variables_);
+  }
+
+  if (OB_SUCC(ret) && !log_plan.get_stmt()->is_explain_stmt()) {
+    const ObIArray<ObRawExpr*> &var_init_exprs = log_plan.get_stmt()->get_query_ctx()->var_init_exprs_;
+    phy_plan.var_init_exprs_.set_capacity(var_init_exprs.count());
+    for (int i = 0; OB_SUCC(ret) && i < var_init_exprs.count(); ++i) {
+      const ObRawExpr *var_init_expr = var_init_exprs.at(i);
+      LOG_DEBUG("start to generate var init expr", KPC(var_init_expr));
+      /**
+       * What is a user variable initialization expression?
+       * In MySQL, the user variable assignment clause in SELECT FROM DUAL statement will always be
+       * executed before the statement is executed.
+       * However, in OceanBase, such clauses may not be executed due to short-circuit operation in the execution path,
+       * leading to uninitialized user variables.
+       * For example: SELECT * FROM t1, (SELECT @rownum:=0) AS init;
+       * In this statement, if t1 is an empty table, MySQL will still execute SELECT @rownum:=0,
+       * while OB will not.
+       * To accommodate this behavior,
+       * we collect the expressions that appear in SELECT FROM DUAL and can be executed independently,
+       * and execute them once as the initialization operation for user variables before the plan is executed.
+       **/
+      if (!var_init_expr->has_flag(CNT_SUB_QUERY) &&
+          !var_init_expr->has_flag(CNT_AGG) &&
+          !var_init_expr->has_flag(CNT_WINDOW_FUNC) &&
+          !var_init_expr->has_flag(CNT_ONETIME) &&
+          !var_init_expr->has_flag(CNT_ALIAS) &&
+          !var_init_expr->has_flag(CNT_DYNAMIC_PARAM) &&
+          !ObOptimizerUtil::has_psedu_column(*var_init_expr) &&
+          !ObOptimizerUtil::has_hierarchical_expr(*var_init_expr) &&
+          var_init_expr->get_relation_ids().is_empty()) {
+        ObExpr *var_rt_expr = nullptr;
+        if (OB_FAIL(generate_rt_expr(*var_init_expr, var_rt_expr))) {
+          LOG_WARN("generate var init expr failed", KR(ret), KPC(var_init_expr));
+        } else if (OB_FAIL(phy_plan.var_init_exprs_.push_back(var_rt_expr))) {
+          LOG_WARN("store var rt expr failed", KR(ret));
+        }
+      }
+    }
   }
 
   if (OB_SUCC(ret)) {

@@ -768,6 +768,7 @@ int ObRADatumStore::switch_idx_block(bool finish_add /* = false */)
  * 从operator的ObExpr的ObDatum中写入到ObChunkDatumStore时，使用add_row
  * 理论上只有这两个接口
  */
+template<bool NEED_EVAL>
 int ObRADatumStore::add_row(const common::ObIArray<ObExpr*> &exprs,
     ObEvalCtx *ctx, StoredRow **stored_row)
 {
@@ -776,7 +777,7 @@ int ObRADatumStore::add_row(const common::ObIArray<ObExpr*> &exprs,
   if (OB_UNLIKELY(!is_inited())) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(Block::row_store_size(exprs, *ctx, row_size, row_extend_size_))) {
+  } else if (OB_FAIL(Block::row_store_size<NEED_EVAL>(exprs, *ctx, row_size, row_extend_size_))) {
     // row store size确保exprs被计算过
     LOG_WARN("failed to calc store size");
   } else {
@@ -801,6 +802,13 @@ int ObRADatumStore::add_row(const common::ObIArray<ObExpr*> &exprs,
   }
   return ret;
 }
+
+template int ObRADatumStore::add_row<true>(const common::ObIArray<ObExpr*> &exprs,
+                                           ObEvalCtx *ctx,
+                                           StoredRow **stored_row);
+template int ObRADatumStore::add_row<false>(const common::ObIArray<ObExpr*> &exprs,
+                                           ObEvalCtx *ctx,
+                                           StoredRow **stored_row);
 
 int ObRADatumStore::add_row(const common::ObIArray<ObDatum> &datums,
     StoredRow **stored_row)
@@ -1142,8 +1150,9 @@ int ObRADatumStore::write_file(BlockIndex &bi, void *buf, int64_t size)
     io.size_ = size;
     io.tenant_id_ = tenant_id_;
     io.io_desc_.set_wait_event(ObWaitEventIds::ROW_STORE_DISK_WRITE);
+    io.io_timeout_ms_ = timeout_ms;
     const uint64_t start = rdtsc();
-    if (OB_FAIL(FILE_MANAGER_INSTANCE_V2.write(io, timeout_ms))) {
+    if (OB_FAIL(FILE_MANAGER_INSTANCE_V2.write(io))) {
       LOG_WARN("write to file failed", K(ret), K(io), K(timeout_ms));
     }
     if (NULL != io_observer_) {
@@ -1182,9 +1191,10 @@ int ObRADatumStore::read_file(void *buf, const int64_t size, const int64_t offse
     io.size_ = size;
     io.tenant_id_ = tenant_id_;
     io.io_desc_.set_wait_event(ObWaitEventIds::ROW_STORE_DISK_READ);
+    io.io_timeout_ms_ = timeout_ms;
     const uint64_t start = rdtsc();
     blocksstable::ObTmpFileIOHandle handle;
-    if (OB_FAIL(FILE_MANAGER_INSTANCE_V2.pread(io, offset, timeout_ms, handle))) {
+    if (OB_FAIL(FILE_MANAGER_INSTANCE_V2.pread(io, offset, handle))) {
       LOG_WARN("read form file failed", K(ret), K(io), K(offset), K(timeout_ms));
     } else if (OB_UNLIKELY(handle.get_data_size() != size)) {
       ret = OB_INNER_STAT_ERROR;

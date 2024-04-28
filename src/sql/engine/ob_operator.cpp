@@ -645,6 +645,67 @@ int ObOperator::output_expr_sanity_check_batch()
   return ret;
 }
 
+int ObOperator::output_expr_decint_datum_len_check()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < spec_.output_.count(); ++i) {
+    ObDatum *datum = NULL;
+    const ObExpr *expr = spec_.output_[i];
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("error unexpected, expr is nullptr", K(ret));
+    } else if (!ob_is_decimal_int(expr->datum_meta_.get_type())) {
+      // do nothing
+    } else if (OB_FAIL(expr->eval(eval_ctx_, datum))) {
+      LOG_WARN("evaluate expression failed", K(ret));
+    } else {
+      const int16_t precision = expr->datum_meta_.precision_;
+      if (OB_UNLIKELY(precision < 0)) {
+        LOG_WARN("the precision of decimal int expr is unknown", K(ret), K(precision), K(*expr));
+      } else if (!datum->is_null() && datum->len_ != 0) {
+        const int len = wide::ObDecimalIntConstValue::get_int_bytes_by_precision(precision);
+        OB_ASSERT (len == datum->len_);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObOperator::output_expr_decint_datum_len_check_batch()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < spec_.output_.count(); ++i) {
+    const ObExpr *expr = spec_.output_[i];
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("error unexpected, expr is nullptr", K(ret));
+    } else if (!ob_is_decimal_int(expr->datum_meta_.get_type())) {
+      // do nothing
+    } else {
+      const int16_t precision = expr->datum_meta_.precision_;
+      const int len = wide::ObDecimalIntConstValue::get_int_bytes_by_precision(precision);
+      if (OB_UNLIKELY(precision < 0)) {
+        LOG_WARN("the precision of decimal int expr is unknown", K(ret), K(precision), K(*expr));
+      } else if (OB_FAIL(expr->eval_batch(eval_ctx_, *brs_.skip_, brs_.size_))) {
+        LOG_WARN("evaluate expression failed", K(ret));
+      } else if (!expr->is_batch_result()) {
+        const ObDatum &datum = expr->locate_expr_datum(eval_ctx_);
+        if (!datum.is_null() && datum.len_ != 0) {
+          OB_ASSERT (len == datum.len_);
+        }
+      } else {
+        const ObDatum *datums = expr->locate_batch_datums(eval_ctx_);
+        for (int64_t j = 0; j < brs_.size_; j++) {
+          if (!brs_.skip_->at(j) && !datums[j].is_null()) {
+            OB_ASSERT (len == datums[j].len_);
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 // copy from ob_phy_operator.cpp
 int ObOperator::open()
 {
@@ -825,6 +886,9 @@ int ObOperator::inner_rescan()
   if (br_it_) {
     br_it_->rescan();
   }
+  // If an operator rescan after drained, the exch_drained_ must be reset
+  // so it can be drained again.
+  exch_drained_ = false;
   batch_reach_end_ = false;
   row_reach_end_ = false;
   clear_batch_end_flag();
@@ -1087,6 +1151,8 @@ int ObOperator::get_next_row()
             LOG_WARN("inner get next row failed", K(ret), "type", spec_.type_, "op", op_name(),
               "op_id", spec_.id_);
           }
+        } else if (OB_FAIL(try_check_status())) {
+          LOG_WARN("check status failed", K(ret));
         } else {
           bool filtered = false;
           if (!spec_.filters_.empty()) {
@@ -1101,6 +1167,13 @@ int ObOperator::get_next_row()
 #ifdef ENABLE_SANITY
           if (OB_SUCC(ret) && !filtered) {
             if (OB_FAIL(output_expr_sanity_check())) {
+              LOG_WARN("output expr sanity check failed", K(ret));
+            }
+          }
+#endif
+#ifndef NDEBUG
+          if (OB_SUCC(ret) && !filtered) {
+            if (OB_FAIL(output_expr_decint_datum_len_check())) {
               LOG_WARN("output expr sanity check failed", K(ret));
             }
           }
@@ -1224,6 +1297,13 @@ int ObOperator::get_next_batch(const int64_t max_row_cnt, const ObBatchRows *&ba
 #ifdef ENABLE_SANITY
         if (OB_SUCC(ret) && !all_filtered) {
           if (OB_FAIL(output_expr_sanity_check_batch())) {
+            LOG_WARN("output expr sanity check batch failed", K(ret));
+          }
+        }
+#endif
+#ifndef NDEBUG
+        if (OB_SUCC(ret) && !all_filtered) {
+          if (OB_FAIL(output_expr_decint_datum_len_check_batch())) {
             LOG_WARN("output expr sanity check batch failed", K(ret));
           }
         }
@@ -1370,6 +1450,14 @@ int ObOperator::do_drain_exch()
   } else if (!exch_drained_) {
     int tmp_ret = inner_drain_exch();
     exch_drained_ = true;
+    // If an operator is drained, it means that the parent operator will never call its
+    // get_next_batch function again theoretically. However, we cannot guarantee that there won't be
+    // any bugs that call get_next_batch again after drain. To prevent this situation, we set the
+    // all iter end flags here.
+    // For specific case, refer to issue:
+    brs_.end_ = true;
+    batch_reach_end_ = true;
+    row_reach_end_ = true;
     if (!spec_.is_receive()) {
       for (int64_t i = 0; i < child_cnt_ && OB_SUCC(ret); i++) {
         if (OB_ISNULL(children_[i])) {

@@ -1670,8 +1670,8 @@ int ObTransformPredicateMoveAround::pushdown_into_set_stmt(ObSelectStmt *stmt,
     ObSEArray<ObRawExpr*, 16> invalid_pushdown_preds;
     ObSEArray<ObRawExpr*, 16> invalid_pullup_preds;
     const int64_t pushdown_preds_cnt = pushdown_preds.count();
-    if (OB_FAIL(extract_valid_preds(parent_stmt, pushdown_preds, valid_preds, invalid_pushdown_preds))
-        || OB_FAIL(extract_valid_preds(parent_stmt, pullup_preds, valid_preds, invalid_pullup_preds))) {
+    if (OB_FAIL(extract_valid_preds(parent_stmt, stmt, pushdown_preds, valid_preds, invalid_pushdown_preds))
+        || OB_FAIL(extract_valid_preds(parent_stmt, stmt, pullup_preds, valid_preds, invalid_pullup_preds))) {
       LOG_WARN("failed to check push down", K(ret));
     } else if (OB_FAIL(rename_preds.assign(valid_preds))) {
       LOG_WARN("failed to assign rename preds", K(ret));
@@ -1722,6 +1722,7 @@ int ObTransformPredicateMoveAround::pushdown_into_set_stmt(ObSelectStmt *stmt,
  * @return int 
  */
 int ObTransformPredicateMoveAround::extract_valid_preds(ObSelectStmt *stmt,
+                                                        ObSelectStmt *child_stmt,
                                                         ObIArray<ObRawExpr *> &all_preds,
                                                         ObIArray<ObRawExpr *> &valid_preds,
                                                         ObIArray<ObRawExpr *> &invalid_preds)
@@ -1745,7 +1746,8 @@ int ObTransformPredicateMoveAround::extract_valid_preds(ObSelectStmt *stmt,
       is_valid = false;
     }
     if (OB_SUCC(ret) && is_valid) {
-      if (OB_FAIL(ObTransformUtils::check_pushdown_into_set_valid(expr,
+      if (OB_FAIL(ObTransformUtils::check_pushdown_into_set_valid(child_stmt,
+                                                                  expr,
                                                                   parent_set_exprs,
                                                                   is_valid))) {
         LOG_WARN("failed to check expr pushdown validity", K(ret));
@@ -2404,13 +2406,7 @@ int ObTransformPredicateMoveAround::pushdown_into_joined_table(
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr *, 4> all_preds;
   /// STEP 1. deduce new join conditions
-  bool is_stack_overflow = false;
-  if (OB_FAIL(check_stack_overflow(is_stack_overflow))) {
-    LOG_WARN("failed to check stack overflow", K(ret));
-  } else if (is_stack_overflow) {
-    ret = OB_SIZE_OVERFLOW;
-    LOG_WARN("too deep recursive", K(ret), K(is_stack_overflow));
-  } else if (OB_ISNULL(stmt) || OB_ISNULL(joined_table) || OB_ISNULL(joined_table->left_table_) ||
+  if (OB_ISNULL(stmt) || OB_ISNULL(joined_table) || OB_ISNULL(joined_table->left_table_) ||
       OB_ISNULL(joined_table->right_table_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("params are invalid", K(ret), K(stmt), K(joined_table));
@@ -2545,17 +2541,17 @@ int ObTransformPredicateMoveAround::pushdown_into_joined_table(
       //can pushdown nothing
     }
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(pushdown_into_table(stmt,
+    } else if (OB_FAIL(SMART_CALL(pushdown_into_table(stmt,
                                            joined_table->left_table_,
                                            pullup_preds,
                                            left_down,
-                                           left_conditions))) {
+                                           left_conditions)))) {
       LOG_WARN("failed to push down predicates", K(ret));
-    } else if (OB_FAIL(pushdown_into_table(stmt,
+    } else if (OB_FAIL(SMART_CALL(pushdown_into_table(stmt,
                                            joined_table->right_table_,
                                            pullup_preds,
                                            right_down,
-                                           right_conditions))) {
+                                           right_conditions)))) {
       LOG_WARN("failed to push down predicates", K(ret));
     } else {
       //删除下推的谓词
@@ -2874,19 +2870,13 @@ int ObTransformPredicateMoveAround::pushdown_into_table(ObDMLStmt *stmt,
                                                         ObIArray<ObRawExprCondition *> &pred_conditions)
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObRawExpr*, 8> rename_preds;
-  ObSEArray<ObRawExpr*, 8> table_preds;
-  ObSEArray<ObRawExpr*, 8> candi_preds;
-  ObSEArray<ObRawExpr*, 8> table_pullup_preds;
-  ObSEArray<ObRawExprCondition*, 8> table_conditions;
-  bool is_stack_overflow = false;
+  ObSEArray<ObRawExpr*, 4> rename_preds;
+  ObSEArray<ObRawExpr*, 4> table_preds;
+  ObSEArray<ObRawExpr*, 4> candi_preds;
+  ObSEArray<ObRawExpr*, 4> table_pullup_preds;
+  ObSEArray<ObRawExprCondition*, 4> table_conditions;
   OPT_TRACE("try to pushdown preds into", table_item);
-  if (OB_FAIL(check_stack_overflow(is_stack_overflow))) {
-    LOG_WARN("failed to check stack overflow", K(ret));
-  } else if (is_stack_overflow) {
-    ret = OB_SIZE_OVERFLOW;
-    LOG_WARN("too deep recursive", K(ret), K(is_stack_overflow));
-  } else if (OB_ISNULL(stmt) || OB_ISNULL(table_item)) {
+  if (OB_ISNULL(stmt) || OB_ISNULL(table_item)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("params have null", K(ret), K(stmt), K(table_item));
   } else if (OB_FAIL(get_pushdown_predicates(
@@ -2930,12 +2920,12 @@ int ObTransformPredicateMoveAround::pushdown_into_table(ObDMLStmt *stmt,
   if (OB_SUCC(ret) && table_item->is_joined_table()) {
     if (OB_FAIL(candi_preds.assign(rename_preds))) {
       LOG_WARN("failed to assgin exprs", K(ret));
-    } else if (OB_FAIL(pushdown_into_joined_table(
+    } else if (OB_FAIL(SMART_CALL(pushdown_into_joined_table(
                          stmt,
                          static_cast<JoinedTable*>(table_item),
                          table_pullup_preds,
                          candi_preds,
-                         table_conditions))) {
+                         table_conditions)))) {
       LOG_WARN("failed to push down predicates", K(ret));
     }
   }
@@ -3074,6 +3064,7 @@ int ObTransformPredicateMoveAround::transform_predicates(
   ObSEArray<ObRawExpr *, 4> simple_preds;
   ObSEArray<ObRawExpr *, 4> general_preds;
   ObSEArray<ObRawExpr *, 4> aggr_bound_preds;
+  ObSEArray<std::pair<ObRawExpr*, ObRawExpr*>, 4> lossless_cast_preds;
   ObSqlBitSet<> visited;
   if (OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -3084,8 +3075,18 @@ int ObTransformPredicateMoveAround::transform_predicates(
     if (OB_FAIL(ObPredicateDeduce::check_deduce_validity(input_preds.at(i), is_valid))) {
       LOG_WARN("failed to check condition validity", K(ret));
     } else if (is_valid) {
+      ObRawExpr *cast_expr = NULL;
       if (OB_FAIL(valid_preds.push_back(input_preds.at(i)))) {
         LOG_WARN("failed to push back predicates for deduce", K(ret));
+      } else if (OB_FAIL(ObPredicateDeduce::check_lossless_cast_table_filter(input_preds.at(i),
+                                                                             cast_expr,
+                                                                             is_valid))) {
+        LOG_WARN("failed to check lossless cast table filter", K(ret));
+      } else if (!is_valid) {
+        // do nothing
+      } else if (OB_FAIL(lossless_cast_preds.push_back(std::pair<ObRawExpr*, ObRawExpr*>(
+                                                  cast_expr, input_preds.at(i))))) {
+        LOG_WARN("failed to push back preds", K(ret));
       }
     } else if (OB_FAIL(other_preds.push_back(input_preds.at(i)))) {
       LOG_WARN("failed to push back complex predicates", K(ret));
@@ -3108,7 +3109,8 @@ int ObTransformPredicateMoveAround::transform_predicates(
       if (OB_FAIL(deducer.deduce_simple_predicates(*ctx_, simple_preds))) {
         LOG_WARN("failed to deduce predicates for target", K(ret));
       } else if (OB_FAIL(deducer.deduce_general_predicates(
-                           *ctx_, target_exprs, other_preds, general_preds))) {
+                           *ctx_, target_exprs, other_preds,
+                           lossless_cast_preds, general_preds))) {
         LOG_WARN("failed to deduce special predicates", K(ret));
       } else if (!is_pullup) {
         // do nothing

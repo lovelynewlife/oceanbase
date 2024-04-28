@@ -78,6 +78,8 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
         session_info_->get_local_nls_timestamp_format(),
         session_info_->get_local_nls_timestamp_tz_format()))) {
       SQL_RESV_LOG(WARN, "failed to set_nls_formats", K(ret));
+    } else if (OB_FAIL(alter_table_stmt->fill_session_vars(*session_info_))) {
+      SQL_RESV_LOG(WARN, "failed to init local session vars with session", K(ret));
     } else {
       stmt_ = alter_table_stmt;
     }
@@ -229,6 +231,12 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
         LOG_USER_ERROR(OB_OP_NOT_ALLOW, "alter table localiy and tablegroup at the same time");
       } else if (OB_FAIL(set_table_options())) {
         SQL_RESV_LOG(WARN, "failed to set table options.", K(ret));
+      } else if ((table_schema_->has_mlog_table() || table_schema_->is_mlog_table())
+          && OB_FAIL(ObResolverUtils::check_allowed_alter_operations_for_mlog(
+              alter_table_stmt->get_tenant_id(),
+              alter_table_stmt->get_alter_table_arg(),
+              *table_schema_))) {
+        LOG_WARN("failed to check allowed alter operations for mlog", KR(ret));
       } else {
         // deal with alter table rename to mock_fk_parent_table_name
         if (is_mysql_mode()
@@ -391,6 +399,7 @@ int ObAlterTableResolver::set_table_options()
     alter_table_schema.set_table_mode_struct(table_mode_);
     alter_table_schema.set_tablespace_id(tablespace_id_);
     alter_table_schema.set_dop(table_dop_);
+    alter_table_schema.set_lob_inrow_threshold(lob_inrow_threshold_);
     //deep copy
     if (OB_FAIL(ret)) {
       //do nothing
@@ -418,6 +427,18 @@ int ObAlterTableResolver::set_table_options()
       SQL_RESV_LOG(WARN, "Write kv_attributes to alter_table_schema failed!", K(ret));
     } else {
       alter_table_schema.alter_option_bitset_ = alter_table_bitset_;
+    }
+
+    if (OB_SUCC(ret) && alter_table_schema.get_compressor_type() == ObCompressorType::ZLIB_LITE_COMPRESSOR) {
+      uint64_t tenant_data_version = 0;
+      if (OB_FAIL(GET_MIN_DATA_VERSION(session_info_->get_effective_tenant_id(), tenant_data_version))) {
+        LOG_WARN("get tenant data version failed", K(ret));
+      } else if (tenant_data_version < DATA_VERSION_4_3_0_0) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("tenant version is less than 4.3, zlib_lite compress method is not supported",
+                 K(ret), K(tenant_data_version));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "version is less than 4.3, zlib_lite");
+      }
     }
 
     if (OB_FAIL(ret)) {
@@ -877,11 +898,23 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
             break;
         }
         case T_REMOVE_TTL: {
+          uint64_t tenant_data_version = 0;
+          if (OB_ISNULL(session_info_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected null", K(ret));
+          } else if (OB_FAIL(GET_MIN_DATA_VERSION(session_info_->get_effective_tenant_id(), tenant_data_version))) {
+            LOG_WARN("get tenant data version failed", K(ret), K(session_info_->get_effective_tenant_id()));
+          } else if (tenant_data_version < DATA_VERSION_4_2_1_0) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_WARN("REMOVE TTL is not supported in data version less than 4.2.1", K(ret), K(tenant_data_version));
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "REMOVE TTL in data version less than 4.2.1");
+          } else {
             ttl_definition_.reset();
             if (OB_FAIL(alter_table_bitset_.add_member(ObAlterTableArg::TTL_DEFINITION))) {
               SQL_RESV_LOG(WARN, "failed to add member to bitset!", K(ret));
             }
-            break;
+          }
+          break;
         }
         default: {
             ret = OB_ERR_UNEXPECTED;
@@ -891,6 +924,12 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
           }
         }
       }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(resolve_column_group())) {
+      LOG_WARN("failed to resolve column group", K(ret));
+    } else if (OB_FAIL(check_skip_index(alter_table_stmt->get_alter_table_arg().alter_table_schema_))) {
+      LOG_WARN("failed to resolve skip index", K(ret));
     }
     //deal with drop column affer drop constraint (mysql mode)
     if (OB_SUCC(ret) && lib::is_mysql_mode() && drop_col_act_position_list.count() > 0) {
@@ -1184,6 +1223,7 @@ int ObAlterTableResolver::resolve_index_column_list(const ParseNode &node,
     //reset sort column set
     sort_column_array_.reset();
     cnt_func_index = false;
+    OZ (add_new_indexkey_for_oracle_temp_table(index_arg));
     for (int32_t i = 0; OB_SUCC(ret) && i < node.num_child_; ++i) {
       ParseNode *sort_column_node = node.children_[i];
       if (OB_ISNULL(sort_column_node) ||
@@ -1497,7 +1537,7 @@ int ObAlterTableResolver::resolve_add_index(const ParseNode &node)
             }
             if (OB_SUCC(ret) && is_mysql_mode()) {
               if (NULL != index_partition_option) {
-                if (2 != index_partition_option->num_child_ || T_PARTITION_OPTION != index_partition_option->type_) {
+                if (1 != index_partition_option->num_child_ || T_PARTITION_OPTION != index_partition_option->type_) {
                   ret = OB_NOT_SUPPORTED;
                   LOG_WARN("column vectical partition for index not supported", K(ret));
                   LOG_USER_ERROR(OB_NOT_SUPPORTED, "Column vertical partition for index");
@@ -1520,7 +1560,15 @@ int ObAlterTableResolver::resolve_add_index(const ParseNode &node)
               }
             }
             if (OB_SUCC(ret)) {
+              uint64_t tenant_data_version = 0;
               create_index_arg->sql_mode_ = session_info_->get_sql_mode();
+              if (OB_FAIL(GET_MIN_DATA_VERSION(session_info_->get_effective_tenant_id(), tenant_data_version))) {
+                LOG_WARN("get tenant data version failed", K(ret));
+              } else if (tenant_data_version < DATA_VERSION_4_2_2_0) {
+                //do nothing
+              } else if (OB_FAIL(create_index_arg->local_session_var_.load_session_vars(session_info_))) {
+                LOG_WARN("fail to fill session info into local_session_var", K(ret));
+              }
             }
             if (OB_SUCC(ret)) {
               if (OB_FAIL(generate_index_arg(*create_index_arg, is_unique_key))) {
@@ -2028,6 +2076,9 @@ int ObAlterTableResolver::generate_index_arg(obrpc::ObCreateIndexArg &index_arg,
     index_arg.with_rowid_ = with_rowid_;
     if (OB_SUCC(ret)) {
       ObIndexType type = INDEX_TYPE_IS_NOT;
+      if (OB_NOT_NULL(table_schema_) && table_schema_->is_oracle_tmp_table()) {
+        index_scope_ = LOCAL_INDEX;
+      }
       if (NOT_SPECIFIED == index_scope_) {
         // MySQL default index mode is local,
         // and Oracle default index mode is global
@@ -4432,6 +4483,9 @@ int ObAlterTableResolver::resolve_convert_to_character(const ParseNode &node)
     } else if (OB_FAIL(sql::ObSQLUtils::is_charset_data_version_valid(common::ObCharset::charset_type_by_coll(collation_type),
                                                                       session_info_->get_effective_tenant_id()))) {
       LOG_WARN("failed to check charset data version valid", K(ret));
+    } else if (OB_FAIL(sql::ObSQLUtils::is_collation_data_version_valid(collation_type,
+                                                                        session_info_->get_effective_tenant_id()))) {
+      LOG_WARN("failed to check collation data version valid", K(ret));
     } else {
       collation_type_ = collation_type;
     }
@@ -4816,7 +4870,10 @@ int ObAlterTableResolver::resolve_alter_table_column_definition(AlterColumnSchem
   tmp_str[ObNLSFormatEnum::NLS_TIMESTAMP_TZ] = session_info_->get_local_nls_timestamp_tz_format();
   AlterColumnSchema dummy_column(column.get_allocator());
   ObTableSchema tmp_table_schema; // check_default_value will change table_schema
-  if (OB_FAIL(tmp_table_schema.assign(*table_schema_))) {
+  if (OB_ISNULL(node)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), KP(node));
+  } else if (OB_FAIL(tmp_table_schema.assign(*table_schema_))) {
     LOG_WARN("failed to assign a table schema", K(ret));
   } else if (OB_FAIL(resolve_column_definition(column, node, stat,
               is_modify_column_visibility, pk_name,
@@ -4843,7 +4900,8 @@ int ObAlterTableResolver::resolve_alter_table_column_definition(AlterColumnSchem
                               session_info_->get_sql_mode(),
                               session_info_,
                               false, /* allow_sequence*/
-                              schema_checker_))) {
+                              schema_checker_,
+                              NULL == node->children_[1]))) {
     SQL_RESV_LOG(WARN, "failed to check default value", K(column), K(ret));
   } else if (OB_FAIL(column.set_cur_default_value(dummy_column.get_cur_default_value()))) {
     LOG_WARN("failed to set default value", K(ret));
@@ -5280,10 +5338,13 @@ int ObAlterTableResolver::check_modify_column_allowed(
   const ObAccuracy &alter_col_accuracy = alter_column_schema.get_accuracy();
   // The number type does not specify precision, which means that it is the largest range and requires special judgment
   if (lib::is_oracle_mode()
-      && origin_col_type == alter_col_type
+      && (origin_col_type == alter_col_type
+          || (origin_col_type == ObDecimalIntType && alter_col_type == ObNumberType)
+          || (origin_col_type == ObNumberType && alter_col_type == ObDecimalIntType))
       && (origin_col_type == ObNumberType
           || origin_col_type == ObUNumberType
-          || origin_col_type == ObNumberFloatType)
+          || origin_col_type == ObNumberFloatType
+          || origin_col_type == ObDecimalIntType)
       && (origin_col_accuracy.get_precision() >
           alter_col_accuracy.get_precision()
           || origin_col_accuracy.get_scale() >
@@ -5626,6 +5687,9 @@ int ObAlterTableResolver::resolve_drop_column(const ParseNode &node, ObReducedVi
                               alter_column_schema.get_origin_column_name(),
                               alter_table_stmt))) {
           SQL_RESV_LOG(WARN, "failed to check column in foreign key for oracle mode", K(ret));
+        } else if (OB_FAIL(check_drop_column_is_partition_key(*table_schema_,
+                                                              alter_column_schema.get_origin_column_name()))) {
+          SQL_RESV_LOG(WARN, "failed to check column in parition key", K(ret));
         } else if (OB_FAIL(check_column_in_check_constraint(
                            *table_schema_,
                            alter_column_schema.get_origin_column_name(),
@@ -5869,6 +5933,62 @@ int ObAlterTableResolver::resolve_modify_all_trigger(const ParseNode &node)
   return ret;
 }
 
+int ObAlterTableResolver::resolve_column_group()
+{
+  int ret = OB_SUCCESS;
+  bool is_normal_column_store_table = false;
+  ObAlterTableStmt *alter_table_stmt = get_alter_table_stmt();
+  uint64_t compat_version = 0;
+  const uint64_t tenant_id = table_schema_->get_tenant_id();
+  if (OB_ISNULL(alter_table_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null alter_table_stmt", K(ret));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
+    LOG_WARN("fail to get min data version", KR(ret), K(tenant_id));
+  } else if (compat_version < DATA_VERSION_4_3_0_0) { //skip resolve cg
+  } else if (table_schema_->is_normal_column_store_table()) {
+    ObColumnGroupSchema column_group;
+    char cg_name[OB_MAX_COLUMN_GROUP_NAME_LENGTH];
+    ObArray<uint64_t> column_ids;
+    const share::schema::AlterTableSchema &alter_table_schema =
+        alter_table_stmt->get_alter_table_arg().alter_table_schema_;
+    uint64_t cur_column_group_id = table_schema_->get_max_used_column_group_id();
+    ObTableSchema::const_column_iterator tmp_begin = alter_table_schema.column_begin();
+    ObTableSchema::const_column_iterator tmp_end = alter_table_schema.column_end();
+    for (; OB_SUCC(ret) && (tmp_begin != tmp_end); tmp_begin++) {
+      column_group.reset();
+      AlterColumnSchema *column = static_cast<AlterColumnSchema *>(*tmp_begin);
+      MEMSET(cg_name, '\0', OB_MAX_COLUMN_GROUP_NAME_LENGTH);
+      if (OB_ISNULL(column)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column should not be null", KR(ret));
+      } else if (column->alter_type_ != OB_DDL_ADD_COLUMN) { // if not add_column, skip
+      } else if (column->is_virtual_generated_column()) { // skip virtual column
+      } else if (0 >= snprintf(cg_name, OB_MAX_COLUMN_GROUP_NAME_LENGTH, "%s_%s",
+          OB_COLUMN_GROUP_NAME_PREFIX, column->get_column_name_str().ptr())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("fail to snprintf", K(ret), KPC(column));
+      // real column_id will be generated later, thus column_ids is empty here
+      } else if (OB_FAIL(build_column_group(*table_schema_, ObColumnGroupType::SINGLE_COLUMN_GROUP,
+            cg_name, column_ids, ++cur_column_group_id, column_group))) {
+        LOG_WARN("failed to build column group", K(ret), KPC(column));
+      } else if (OB_FAIL(alter_table_stmt->add_column_group(column_group))) {
+        // only used for duplicate column in sql
+        if (OB_HASH_EXIST == ret) {
+          ret = OB_ERR_COLUMN_DUPLICATE;
+          LOG_USER_ERROR(OB_ERR_COLUMN_DUPLICATE, column->get_column_name_str().length(), column->get_column_name_str().ptr());
+          LOG_WARN("duplicate column name", K(ret), K(column));
+        } else {
+          LOG_WARN("failed to add column group", K(ret));
+        }
+      } else if (OB_FAIL(column->set_column_group_name(cg_name))) {
+        LOG_WARN("failed to set column group name", K(ret), KPC(column));
+      }
+    }
+  }
+  return ret;
+}
+
 bool ObAlterTableResolver::is_ttl_column(const ObString &orig_column_name, const ObIArray<ObString> &ttl_columns)
 {
   bool bret = false;
@@ -5952,6 +6072,50 @@ int ObAlterTableResolver::check_mysql_rename_column(const AlterColumnSchema &alt
           LOG_WARN("column has contraint deps", K(ret), K(alter_column_schema));
         }
       }
+    }
+  }
+  return ret;
+}
+
+/*
+* chech the droped column is partition key,
+* if ture, forbid the action
+*/
+int ObAlterTableResolver::check_drop_column_is_partition_key(const ObTableSchema &table_schema, const ObString &column_name)
+{
+  int ret=OB_SUCCESS;
+  if (!table_schema.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    SQL_RESV_LOG(WARN, "invalid arguemnt", K(ret), K(table_schema));
+  } else {
+    const ObColumnSchemaV2 *origin_column = table_schema.get_column_schema(column_name);
+    if (OB_ISNULL(origin_column)) {
+      // do nothing
+      // 根据列名查不到列是因为表中不存在该列，后面会在 RS 端再检查一遍表中是否存在该列，并在 RS 端根据操作的不同报不同的错误
+    } else if (origin_column->is_tbl_part_key_column()){
+      ret = OB_ERR_DEPENDENT_BY_PARTITION_FUNC;
+      LOG_USER_ERROR(OB_ERR_DEPENDENT_BY_PARTITION_FUNC,
+                     column_name.length(),
+                     column_name.ptr());
+      LOG_WARN("alter column has table part key deps", K(ret), K(origin_column));
+    }
+  }
+  return ret;
+}
+
+int ObAlterTableResolver::add_new_indexkey_for_oracle_temp_table(obrpc::ObCreateIndexArg &index_arg)
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(table_schema_) && table_schema_->is_oracle_tmp_table()) {
+    ObColumnSortItem sort_item;
+    sort_item.column_name_.assign_ptr(OB_HIDDEN_SESSION_ID_COLUMN_NAME,
+                                      static_cast<int32_t>(strlen(OB_HIDDEN_SESSION_ID_COLUMN_NAME)));
+    sort_item.prefix_len_ = 0;
+    sort_item.order_type_ = common::ObOrderType::ASC;
+    if (OB_FAIL(add_sort_column(sort_item, index_arg))) {
+      SQL_RESV_LOG(WARN, "add sort column failed", K(ret), K(sort_item));
+    } else {
+      LOG_DEBUG("add __session_id as first index key succeed", K(sort_item));
     }
   }
   return ret;

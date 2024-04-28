@@ -277,7 +277,7 @@ int ObBackupTaskSchedulerQueue::pop_task(ObBackupScheduleTask *&output_task, com
     DLIST_FOREACH(t, wait_list_)
     {
       if (!backup_zone.empty() || !backup_region.empty()) {
-  // TODO(chongrong.th): when backup zone and backup region scheme is ready, adjust this code in 4.3
+  // TODO(zeyong): when backup zone and backup region scheme is ready, adjust this code in 4.3
   // only backup ls task need the defensive operation
         ObArray<common::ObAddr> empty_block_server;
         if (!t->can_execute_on_any_server() && BackupJobType::BACKUP_BACKUP_DATA_JOB == t->get_type()) {
@@ -368,7 +368,7 @@ int ObBackupTaskSchedulerQueue::get_backup_region_and_zone_(
     ObIArray<ObBackupRegion> &backup_region)
 {
   int ret = OB_SUCCESS;
-  // TODO(chongrong.th) redefine backup region and backup zone in 4.3
+  // TODO(zeyong) redefine backup region and backup zone in 4.3
   return ret;
 }
 
@@ -1335,8 +1335,17 @@ int ObBackupTaskScheduler::check_alive_(int64_t &last_check_task_on_server_ts, b
   Bool res = false;
   bool force_update = false;
   const int64_t now = ObTimeUtility::current_time();
-  const int64_t backup_task_keep_alive_interval = GCONF._backup_task_keep_alive_interval;
-  const int64_t backup_task_keep_alive_timeout = GCONF._backup_task_keep_alive_timeout;
+  int64_t backup_task_keep_alive_interval = 0;
+  int64_t backup_task_keep_alive_timeout = 0;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+  if (!tenant_config.is_valid()) {
+    backup_task_keep_alive_interval = 10_s;
+    backup_task_keep_alive_timeout = 10_min;
+  } else {
+    backup_task_keep_alive_interval = tenant_config->_backup_task_keep_alive_interval;
+    backup_task_keep_alive_timeout = tenant_config->_backup_task_keep_alive_timeout;
+  }
+
   if ((now <= backup_task_keep_alive_interval + last_check_task_on_server_ts) && !reload_flag) {
   } else if (OB_FAIL(queue_.get_schedule_tasks(schedule_tasks, allocator))) {
     LOG_WARN("get scheduelr tasks error", K(ret));

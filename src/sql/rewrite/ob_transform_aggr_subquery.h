@@ -228,8 +228,8 @@ private:
   int replace_count_const(ObAggFunRawExpr *agg_expr, ObRawExpr *not_null_expr);
 
   int check_can_use_outer_join(TransformParam &param, bool &is_valid);
-
-  int check_subquery_select(ObQueryRefRawExpr &query_ref, bool &is_valid);
+  int check_subquery_select(const ObQueryRefRawExpr &query_ref, bool &is_valid);
+  int check_subquery_orderby(const ObQueryRefRawExpr &query_ref, bool &is_valid);
 
   int check_subquery_select_for_limit_1(ObSelectStmt &subquery, bool &is_valid, ObIArray<ObPCParamEqualInfo>& equal_param_info);
 
@@ -281,6 +281,8 @@ private:
   int convert_limit_as_aggr(ObSelectStmt *subquery, TransformParam &trans_param);
   ObHint* get_sub_unnest_hint(ObSelectStmt &subquery, int64_t pullup_strategy);
   ObItemType get_unnest_strategy(int64_t pullup_strategy);
+  int check_nested_subquery(ObQueryRefRawExpr &query_ref, bool &is_valid);
+
 private:
   common::ObSEArray<ObRawExpr *, 8, common::ModulePageAllocator, true> no_rewrite_exprs_;
   common::ObSEArray<TransStmtInfo, 4, common::ModulePageAllocator, true> trans_stmt_infos_;

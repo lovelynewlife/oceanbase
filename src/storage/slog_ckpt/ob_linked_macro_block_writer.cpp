@@ -59,12 +59,12 @@ int ObLinkedMacroBlockWriter::write_block(const char *buf, const int64_t buf_len
     write_info.size_ = buf_len;
     write_info.io_desc_ = io_desc_;
     write_info.buffer_ = buf;
+    write_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
     write_info.io_desc_.set_group_id(ObIOModule::LINKED_MACRO_BLOCK_IO);
     MacroBlockId previous_block_id;
     previous_block_id.set_block_index(MacroBlockId::EMPTY_ENTRY_BLOCK_INDEX);
     if (!handle_.is_empty()) {
-      const int64_t io_timeout_ms = GCONF._data_storage_io_timeout / 1000L;
-      if (OB_FAIL(handle_.wait(io_timeout_ms))) {
+      if (OB_FAIL(handle_.wait())) {
         LOG_WARN("fail to wait io finish", K(ret));
       } else {
         previous_block_id = handle_.get_macro_id();
@@ -99,8 +99,7 @@ int ObLinkedMacroBlockWriter::close(MacroBlockId &pre_block_id)
   } else if (handle_.is_empty()) {
     // do nothing
   } else {
-    const int64_t io_timeout_ms = GCONF._data_storage_io_timeout / 1000L;
-    if (OB_FAIL(handle_.wait(io_timeout_ms))) {
+    if (OB_FAIL(handle_.wait())) {
       LOG_WARN("fail to wait io finish", K(ret));
     } else {
       entry_block_id_ = handle_.get_macro_id();
@@ -143,7 +142,8 @@ ObLinkedMacroBlockItemWriter::ObLinkedMacroBlockItemWriter()
   : is_inited_(false), is_closed_(false), written_items_cnt_(0),
     need_disk_addr_(false), first_inflight_item_idx_(0),
     pre_block_inflight_items_cnt_(0), curr_block_inflight_items_cnt_(0),
-    allocator_(ObModIds::OB_CHECKPOINT), block_writer_(), io_buf_(nullptr), io_buf_size_(0),
+    allocator_(ObModIds::OB_CHECKPOINT, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+    block_writer_(), io_buf_(nullptr), io_buf_size_(0),
     io_buf_pos_(0), common_header_(nullptr), linked_header_(nullptr)
 {
 }
@@ -302,7 +302,7 @@ int ObLinkedMacroBlockItemWriter::set_pre_block_inflight_items_addr(
     for (int64_t idx = first_inflight_item_idx_;
         OB_SUCC(ret) && idx < first_inflight_item_idx_ + pre_block_inflight_items_cnt_; idx++) {
       ObMetaDiskAddr addr;
-      if (OB_FAIL(addr.set_block_addr(pre_block_id, offset, item_size_arr_.at(idx)))) {
+      if (OB_FAIL(addr.set_block_addr(pre_block_id, offset, item_size_arr_.at(idx), ObMetaDiskAddr::DiskType::BLOCK))) {
         LOG_WARN("fail to push back address", K(ret), K(addr));
       } else if (OB_FAIL(item_disk_addr_arr_.push_back(addr))) {
         LOG_WARN("fail to push back address", K(ret), K(addr));

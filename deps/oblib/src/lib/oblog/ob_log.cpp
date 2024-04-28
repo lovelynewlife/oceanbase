@@ -40,6 +40,20 @@ namespace oceanbase
 namespace common
 {
 
+int64_t ObSyslogTimeGuard::to_string(char *buf, const int64_t buf_len) const
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (click_count_ > 0) {
+    ret = databuff_printf(buf, buf_len, pos, "time dist: %s=%d", click_str_[0], click_[0]);
+    for (int i = 1; OB_SUCC(ret) && i < click_count_; i++) {
+      ret = databuff_printf(buf, buf_len, pos, ", %s=%d", click_str_[i], click_[i]);
+    }
+  }
+  if (OB_FAIL(ret)) pos = 0;
+  return pos;
+}
+
 void __attribute__((weak)) allow_next_syslog(int64_t)
 {
   // do nothing
@@ -529,6 +543,15 @@ void ObLogger::destroy()
   }
 }
 
+void ObLogger::drop_log_items(ObIBaseLogItem **items, const int64_t item_cnt)
+{
+  ObPLogItem **log_item = reinterpret_cast<ObPLogItem **>(items);
+  for (int64_t i = 0; i < item_cnt; ++i) {
+    free_log_item(log_item[i]);
+    items[i] = NULL;
+  }
+}
+
 void ObLogger::set_trace_mode(bool trace_mode)
 {
   trace_mode_ = trace_mode;
@@ -654,13 +677,20 @@ int ObLogger::log_tail(int32_t level, char *buf, const int64_t buf_len, int64_t 
   return ret;
 }
 
-int ObLogger::log_head(const char *mod_name,
-                        const int32_t level,
-                        const char *file,
-                        const int32_t line,
-                        const char *function,
-                        const int errcode,
-                        char *buf, const int64_t buf_len, int64_t &pos)
+void ts_to_tv(int64_t ts, timeval &tv)
+{
+  tv.tv_sec = static_cast<long>(ts / 1000000);
+  tv.tv_usec = static_cast<long>(ts % 1000000);
+}
+
+int ObLogger::log_head(const int64_t ts,
+                       const char *mod_name,
+                       const int32_t level,
+                       const char *file,
+                       const int32_t line,
+                       const char *function,
+                       const int errcode,
+                       char *buf, const int64_t buf_len, int64_t &pos)
 {
   int ret = OB_SUCCESS;
   if (level >= 0 && level < static_cast<int>(sizeof(errstr_) / sizeof(char *))
@@ -670,7 +700,7 @@ int ObLogger::log_head(const char *mod_name,
     base_file_name = (NULL != base_file_name) ? base_file_name + 1 : file;
 
     struct timeval tv;
-    (void)gettimeofday(&tv, NULL);
+    ts_to_tv(ts, tv);
     struct tm tm;
     ob_fast_localtime(last_unix_sec_, last_localtime_, static_cast<time_t>(tv.tv_sec), &tm);
     const uint64_t *trace_id = ObCurTraceId::get();
@@ -1386,7 +1416,7 @@ int ObLogger::init(const ObBaseLogWriterCfg &log_cfg,
     for (int i = 0; i < ARRAYSIZEOF(per_log_limiters_); i++) {
       new (&per_log_limiters_[i])ObSyslogSampleRateLimiter(limiter_initial, limiter_thereafter);
     }
-    const int64_t limit = ObBaseLogWriterCfg::DEFAULT_MAX_BUFFER_ITEM_CNT * OB_MALLOC_BIG_BLOCK_SIZE / 2; // 512M
+    const int64_t limit = ObBaseLogWriterCfg::DEFAULT_MAX_BUFFER_ITEM_CNT * OB_MALLOC_BIG_BLOCK_SIZE / 8; // 256M
     log_mem_limiter_ = new (buf) ObBlockAllocMgr(limit);
     allocator_ = new (log_mem_limiter_ + 1) ObVSliceAlloc();
     error_allocator_ = new (allocator_ + 1) ObFIFOAllocator();
@@ -1626,7 +1656,8 @@ int ObLogger::check_tl_log_limiter(const uint64_t location_hash_val,
                                    const int32_t level,
                                    const int errcode,
                                    const int64_t log_size,
-                                   bool &allow)
+                                   bool &allow,
+                                   const char *&limiter_info)
 {
   int ret = OB_SUCCESS;
   allow = true;
@@ -1635,13 +1666,15 @@ int ObLogger::check_tl_log_limiter(const uint64_t location_hash_val,
     if (enable_log_limit_) {
       if (nullptr != log_limiter) {
         allow = OB_SUCCESS == log_limiter->try_acquire(log_size, level, errcode);
+        if (!allow) { limiter_info = " REACH SYSLOG RATE LIMIT [bandwidth]"; }
       }
       if (allow) {
         int64_t idx0 = (location_hash_val >> 32) % N_LIMITER;
         int64_t idx1 = ((location_hash_val << 32) >> 32) % N_LIMITER;
         bool r0 = OB_SUCCESS == per_log_limiters_[idx0].try_acquire(1, level, errcode);
         bool r1 = OB_SUCCESS == per_log_limiters_[idx1].try_acquire(1, level, errcode);
-        allow = r0 || r1;
+        allow = r0 && r1;
+        if (!allow) { limiter_info = " REACH SYSLOG RATE LIMIT [frequency]"; }
       }
       if (!allow && nullptr != log_limiter && log_limiter->is_force_allows()) {
         allow = true;
@@ -1704,6 +1737,7 @@ int ObLogger::async_audit_dump(const common::ObBasebLogPrint &info)
     //1. fill log buffer
     if (OB_FAIL(alloc_log_item(level, MAX_LOG_SIZE, log_item))) {
       LOG_STDERR("alloc_log_item error, ret=%d\n", ret);
+      ret = OB_SUCCESS; // ignore alloc memory fails
     } else if (OB_ISNULL(log_item)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
@@ -1732,6 +1766,7 @@ int ObLogger::async_audit_dump(const common::ObBasebLogPrint &info)
 
 int ObLogger::alloc_log_item(const int32_t level, const int64_t size, ObPLogItem *&log_item)
 {
+  ObDisableDiagnoseGuard disable_diagnose_guard;
   UNUSED(level);
   int ret = OB_SUCCESS;
   log_item = NULL;
@@ -1775,6 +1810,7 @@ int ObLogger::alloc_log_item(const int32_t level, const int64_t size, ObPLogItem
 
 void ObLogger::free_log_item(ObPLogItem *log_item)
 {
+  ObDisableDiagnoseGuard disable_diagnose_guard;
   if (NULL != log_item) {
     const int level = log_item->get_log_level();
     auto *p_alloc = (level == OB_LOG_LEVEL_ERROR

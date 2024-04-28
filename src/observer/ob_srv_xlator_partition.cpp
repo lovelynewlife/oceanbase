@@ -101,6 +101,8 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObGetMasterKeyP, gctx_);
   RPC_PROCESSOR(ObRestoreKeyP, gctx_);
   RPC_PROCESSOR(ObSetRootKeyP, gctx_);
+  RPC_PROCESSOR(ObCloneKeyP, gctx_);
+  RPC_PROCESSOR(ObTrimKeyListP, gctx_);
 #endif
   RPC_PROCESSOR(ObHandlePartTransCtxP, gctx_);
 #ifdef OB_BUILD_TDE_SECURITY
@@ -117,6 +119,7 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObRegisterTxDataP, gctx_);
   RPC_PROCESSOR(ObRpcGetLSAccessModeP, gctx_);
   RPC_PROCESSOR(ObRpcChangeLSAccessModeP, gctx_);
+  RPC_PROCESSOR(ObTabletLocationReceiveP, gctx_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_migrator(ObSrvRpcXlator *xlator) {
@@ -155,12 +158,14 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(ObUpdateLSMetaP, gctx_.bandwidth_throttle_);
 
   //transfer
-  RPC_PROCESSOR(ObCheckStartTransferTabletsP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObCheckStartTransferTabletsP);
   RPC_PROCESSOR(ObGetLSActiveTransCountP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObGetTransferStartScnP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObFetchLSReplayScnP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObCheckTransferTabletsBackfillP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObStorageGetConfigVersionAndTransferScnP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObFetchLSReplayScnP);
+  RPC_PROCESSOR(ObCheckTransferTabletsBackfillP);
+  RPC_PROCESSOR(ObStorageGetConfigVersionAndTransferScnP);
+  RPC_PROCESSOR(ObStorageSubmitTxLogP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObStorageGetTransferDestPrepareSCNP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageLockConfigChangeP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageUnlockConfigChangeP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageGetLogConfigStatP, gctx_.bandwidth_throttle_);
@@ -305,4 +310,8 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObWrSyncUserSubmitSnapshotTaskP, gctx_);
   RPC_PROCESSOR(ObWrSyncUserModifySettingsTaskP, gctx_);
 
+  // kill client session
+  RPC_PROCESSOR(ObKillClientSessionP, gctx_);
+  // client session create time
+  RPC_PROCESSOR(ObClientSessionConnectTimeP, gctx_);
 }

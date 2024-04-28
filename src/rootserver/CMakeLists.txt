@@ -42,6 +42,7 @@ ob_set_subtarget(ob_rootserver common
   ob_ddl_operator.cpp
   ob_ddl_sql_generator.cpp
   ob_index_builder.cpp
+  ob_mlog_builder.cpp
   ob_locality_util.cpp
   ob_resource_weight_parser.cpp
   ob_root_balancer.cpp
@@ -118,6 +119,7 @@ ob_set_subtarget(ob_rootserver ddl_task
   ddl_task/ob_drop_index_task.cpp
   ddl_task/ob_drop_primary_key_task.cpp
   ddl_task/ob_index_build_task.cpp
+  ddl_task/ob_build_mview_task.cpp
   ddl_task/ob_modify_autoinc_task.cpp
   ddl_task/ob_table_redefinition_task.cpp
   ddl_task/ob_recover_restore_table_task.cpp
@@ -128,6 +130,7 @@ ob_set_subtarget(ob_rootserver parallel_ddl
   parallel_ddl/ob_create_table_helper.cpp
   parallel_ddl/ob_create_view_helper.cpp
   parallel_ddl/ob_index_name_checker.cpp
+  parallel_ddl/ob_tablet_balance_allocator.cpp
 )
 
 ob_set_subtarget(ob_rootserver freeze
@@ -135,17 +138,18 @@ ob_set_subtarget(ob_rootserver freeze
   freeze/ob_major_merge_scheduler.cpp
   freeze/ob_major_merge_progress_checker.cpp
   freeze/ob_freeze_info_detector.cpp
-  freeze/ob_freeze_info_manager.cpp
   freeze/ob_freeze_reentrant_thread.cpp
   freeze/ob_tenant_all_zone_merge_strategy.cpp
   freeze/ob_tenant_major_merge_strategy.cpp
   freeze/ob_zone_merge_manager.cpp
+  freeze/ob_major_merge_info_manager.cpp
   freeze/ob_daily_major_freeze_launcher.cpp
   freeze/ob_checksum_validator.cpp
   freeze/ob_major_freeze_service.cpp
   freeze/ob_major_freeze_rpc_define.cpp
   freeze/ob_major_freeze_helper.cpp
   freeze/ob_major_freeze_util.cpp
+  freeze/ob_major_merge_progress_util.cpp
 )
 
 ob_set_subtarget(ob_rootserver restore
@@ -156,6 +160,9 @@ ob_set_subtarget(ob_rootserver restore
   restore/ob_restore_service.cpp
   restore/ob_restore_scheduler.cpp
   restore/ob_restore_util.cpp
+  restore/ob_tenant_clone_util.cpp
+  restore/ob_clone_scheduler.cpp
+  restore/ob_restore_common_util.cpp
 )
 
 ob_set_subtarget(ob_rootserver virtual_table
@@ -163,6 +170,11 @@ ob_set_subtarget(ob_rootserver virtual_table
   virtual_table/ob_virtual_core_inner_table.cpp
   virtual_table/ob_all_virtual_backup_task_scheduler_stat.cpp
   virtual_table/ob_all_virtual_ls_replica_task_plan.cpp
+)
+
+ob_set_subtarget(ob_rootserver tenant_snapshot
+  tenant_snapshot/ob_tenant_snapshot_scheduler.cpp
+  tenant_snapshot/ob_tenant_snapshot_util.cpp
 )
 
 ob_server_add_target(ob_rootserver)

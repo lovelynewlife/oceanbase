@@ -1,6 +1,19 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include "mds_factory.h"
 #include "lib/ob_errno.h"
 #include "share/rc/ob_tenant_base.h"
+#include "share/allocator/ob_shared_memory_allocator_mgr.h"
 #include "storage/multi_data_source/buffer_ctx.h"
 #include "storage/tx/ob_trans_define.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
@@ -18,7 +31,7 @@ namespace mds
 
 void *MdsAllocator::alloc(const int64_t size)
 {
-  void *ptr = MTL(ObTenantMdsService*)->get_allocator().alloc(size);
+  void *ptr = MTL(share::ObSharedMemAllocMgr *)->mds_allocator().alloc(size);
   if (OB_NOT_NULL(ptr)) {
     ATOMIC_INC(&alloc_times_);
   }
@@ -27,13 +40,13 @@ void *MdsAllocator::alloc(const int64_t size)
 
 void *MdsAllocator::alloc(const int64_t size, const ObMemAttr &attr)
 {
-  return MTL(ObTenantMdsService*)->get_allocator().alloc(size, attr);
+  return MTL(share::ObSharedMemAllocMgr *)->mds_allocator().alloc(size, attr);
 }
 
 void MdsAllocator::free(void *ptr) {
   if (OB_NOT_NULL(ptr)) {
     ATOMIC_INC(&free_times_);
-    MTL(ObTenantMdsService*)->get_allocator().free(ptr);
+    MTL(share::ObSharedMemAllocMgr *)->mds_allocator().free(ptr);
   }
 }
 
@@ -119,12 +132,16 @@ int MdsFactory::deep_copy_buffer_ctx(const transaction::ObTransID &trans_id,
   return ret;
 }
 
-template <typename T, typename std::enable_if<std::is_same<T, MdsCtx>::value, bool>::type = true>
+template <typename T, typename std::enable_if<std::is_base_of<MdsCtx, T>::value ||
+                                              std::is_same<T, ObTransferDestPrepareTxCtx>::value ||
+                                              std::is_same<T, ObTransferMoveTxCtx>::value, bool>::type = true>
 void try_set_writer(T &ctx, const transaction::ObTransID &trans_id) {
   ctx.set_writer(MdsWriter(trans_id));
 }
 
-template <typename T, typename std::enable_if<!std::is_same<T, MdsCtx>::value, bool>::type = true>
+template <typename T, typename std::enable_if<!(std::is_base_of<MdsCtx, T>::value ||
+                                                std::is_same<T, ObTransferDestPrepareTxCtx>::value ||
+                                                std::is_same<T, ObTransferMoveTxCtx>::value), bool>::type = true>
 void try_set_writer(T &ctx, const transaction::ObTransID &trans_id) {
   // do nothing
 }

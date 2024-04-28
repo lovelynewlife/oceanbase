@@ -57,16 +57,20 @@ public:
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
                       ObExpr &rt_expr) const override;
   virtual common::ObCastMode get_cast_mode() const { return CM_ERROR_ON_SCALE_OVER;}
+  DECLARE_SET_LOCAL_SESSION_VARS;
+
 private:
   /* code for cast accuracy check */
   template<typename Obj>
   static int check_default_val_accuracy(const ObAccuracy &accuracy,
                                         const ObObjType &type,
                                         const Obj *obj);
-  static int get_accuracy_internal(common::ObAccuracy &accuracy,
-                                  ObObjType &dest_type,
-                                  const int64_t value,
-                                  const ObLengthSemantics &length_semantics);
+  static int get_accuracy_internal(
+      ObEvalCtx& ctx,
+      common::ObAccuracy &accuracy,
+      ObObjType &dest_type,
+      const int64_t value,
+      const ObLengthSemantics &length_semantics);
   static int get_accuracy(const ObExpr &expr,
                           ObEvalCtx& ctx,
                           common::ObAccuracy &accuracy,
@@ -88,6 +92,8 @@ private:
   static int cast_to_datetime(ObIJsonBase *j_base,
                               common::ObIAllocator *allocator,
                               const ObBasicSessionInfo *session,
+                              ObEvalCtx &ctx,
+                              const ObExpr *expr,
                               common::ObAccuracy &accuracy,
                               int64_t &val,
                               uint8_t &is_type_cast);
@@ -97,6 +103,8 @@ private:
                                   ObAccuracy &accuracy);
   static int cast_to_otimstamp(ObIJsonBase *j_base,
                                const ObBasicSessionInfo *session,
+                               ObEvalCtx &ctx,
+                               const ObExpr *expr,
                                common::ObAccuracy &accuracy,
                                ObObjType dst_type,
                                ObOTimestampData &out_val,
@@ -173,6 +181,7 @@ private:
   const static uint8_t OB_JSON_TYPE_EXTRA_DATA      = 5;
   const static uint8_t OB_JSON_TYPE_TYPE_ERROR      = 6;
   const static uint8_t OB_JSON_TYPE_IMPLICIT        = 7;
+  const static uint8_t OB_JSON_TYPE_DOT             = 8;
 
   const static uint8_t json_doc_id      = 0;
   const static uint8_t json_path_id     = 1;
@@ -211,7 +220,9 @@ private:
                              ObVector<uint8_t> &type);
   /* code from ob_expr_cast for cal_result_type */
   const static int32_t OB_LITERAL_MAX_INT_LEN = 21;
-  int get_cast_type(const ObExprResType param_type2, ObExprResType &dst_type) const;
+  int get_cast_type(const ObExprResType param_type2,
+                    ObExprResType &dst_type,
+                    ObExprTypeCtx &type_ctx) const;
   int set_dest_type(ObExprResType &type1, ObExprResType &type, ObExprResType &dst_type, ObExprTypeCtx &type_ctx) const;
   int get_cast_string_len(ObExprResType &type1,
                           ObExprResType &type2,

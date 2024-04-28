@@ -285,6 +285,10 @@ public:
   virtual int deep_copy(char *buf, const int64_t buf_len, ObIKVCacheValue *&value) const override;
   int deep_copy(const ObOptColumnStat &src, char *buf, const int64_t size, int64_t &pos);
   int deep_copy(const ObOptColumnStat &value);
+  int deep_copy_llc_bitmap(const char *bitmap, const int64_t size);
+  int deep_copy_histogram(const ObHistogram &hist);
+
+  int assign(const ObOptColumnStat &other);
 
   int64_t get_last_analyzed() const { return last_analyzed_; }
   void set_last_analyzed(int64_t last) { last_analyzed_ = last; }
@@ -300,6 +304,8 @@ public:
   void set_llc_bitmap(char *bitmap, const int64_t size) {
     llc_bitmap_ = bitmap; llc_bitmap_size_ = size; }
 
+  void set_version(const int64_t version) { version_ = version; }
+  int64_t get_version() const { return version_; }
   bool is_valid() const
   {
     return common::OB_INVALID_ID != table_id_
@@ -310,12 +316,24 @@ public:
   }
 
   void add_col_len(int64_t len) { total_col_len_ += len; }
+  void set_total_col_len(int64_t len) { total_col_len_ = len; }
   int64_t get_total_col_len() const { return total_col_len_; }
 
   int merge_column_stat(const ObOptColumnStat &other);
 
   common::ObCollationType get_collation_type() const { return cs_type_; }
   void set_collation_type(common::ObCollationType cs_type) { cs_type_ = cs_type; }
+
+  static ObOptColumnStat *malloc_new_column_stat(common::ObIAllocator &allocator);
+
+  int64_t get_cg_macro_blk_cnt() const { return cg_macro_blk_cnt_; }
+  void set_cg_macro_blk_cnt(int64_t num) { cg_macro_blk_cnt_ = num; }
+
+  int64_t get_cg_micro_blk_cnt() const { return cg_micro_blk_cnt_; }
+  void set_cg_micro_blk_cnt(int64_t num) { cg_micro_blk_cnt_ = num; }
+
+  double get_cg_skip_rate() const { return cg_skip_rate_; }
+  void set_cg_skip_rate(double cg_skip_rate) { cg_skip_rate_ = cg_skip_rate; }
 
   TO_STRING_KV(K_(table_id),
                K_(partition_id),
@@ -332,7 +350,10 @@ public:
                K_(total_col_len),
                K_(llc_bitmap_size),
                K_(llc_bitmap),
-               K_(histogram));
+               K_(histogram),
+               K_(cg_macro_blk_cnt),
+               K_(cg_micro_blk_cnt),
+               K_(cg_skip_rate));
 private:
   DISALLOW_COPY_AND_ASSIGN(ObOptColumnStat);
   int merge_min_max(ObObj &cur, const ObObj &other, bool is_cmp_min);
@@ -358,6 +379,9 @@ protected:
   int64_t total_col_len_;
   common::ObArenaAllocator inner_allocator_;
   common::ObIAllocator &allocator_;
+  int64_t cg_macro_blk_cnt_;
+  int64_t cg_micro_blk_cnt_;
+  double cg_skip_rate_;
 };
 
 }

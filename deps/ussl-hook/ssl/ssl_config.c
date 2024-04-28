@@ -228,6 +228,7 @@ static int ob_ssl_set_verify_mode_and_load_CA(SSL_CTX *ctx, const ssl_config_ite
     } else {
       SSL_CTX_set_cert_store(ctx, x509_store);
     }
+
     if (NULL != bio) {
       BIO_free(bio);
     }
@@ -475,7 +476,10 @@ static SSL_CTX *ob_ssl_create_ssl_ctx(const ssl_config_item_t *ssl_config, int t
     SSL_CTX_set_options(ctx, SSL_OP_TLS_BLOCK_PADDING_BUG);
     SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
     SSL_CTX_set_options(ctx, SSL_OP_SINGLE_DH_USE);
-    SSL_CTX_set_read_ahead(ctx, 1);
+    /*set_read_ahead may cause the first application data that been sent after
+    * SSL handshake being unprocessed, forbid it.
+    */
+    SSL_CTX_set_read_ahead(ctx, 0);
   }
   if (0 != ret) {
     SSL_CTX_free(ctx);
@@ -550,7 +554,7 @@ int ssl_load_config(int ctx_id, const ssl_config_item_t *ssl_config)
   return ret;
 }
 
-int fd_enable_ssl_for_server(int fd, int ctx_id, int type)
+int fd_enable_ssl_for_server(int fd, int ctx_id, int type, int has_method_none)
 {
   int ret = 0;
   SSL_CTX *ctx = NULL;
@@ -571,6 +575,10 @@ int fd_enable_ssl_for_server(int fd, int ctx_id, int type)
       ret = EINVAL;
       ussl_log_warn("SSL_set_fd failed, ret:%d, fd:%d, ctx_id:%d", ret, fd, ctx_id);
     } else {
+      //if server has auth method none, server does not verify client identity
+      if (has_method_none) {
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+      }
       SSL_set_accept_state(ssl);
       ATOMIC_STORE(&(gs_fd_ssl_array[fd].ssl), ssl);
       ATOMIC_STORE(&(gs_fd_ssl_array[fd].type), type);
@@ -847,4 +855,13 @@ ssize_t writev_regard_ssl(int fildes, const struct iovec *iov, int iovcnt)
     }
   }
   return wbytes;
+}
+
+SSL_CTX* ussl_get_server_ctx(int ctx_id)
+{
+  SSL_CTX *ctx = NULL;
+  pthread_rwlock_rdlock(&g_ssl_ctx_rwlock);
+  ctx = gs_ssl_ctx_array[ctx_id][SSL_ROLE_SERVER];
+  pthread_rwlock_unlock(&g_ssl_ctx_rwlock);
+  return ctx;
 }

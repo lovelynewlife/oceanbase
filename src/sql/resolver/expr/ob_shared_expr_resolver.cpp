@@ -1,9 +1,15 @@
-// (C) Copyright 2021 Alibaba Inc. All Rights Reserved.
-//  Authors:
-//    link.zt <>
-//  Normalizer:
-//
-//
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #define USING_LOG_PREFIX SQL_RESV
 #include "common/ob_smart_call.h"
 #include "sql/resolver/expr/ob_shared_expr_resolver.h"
@@ -146,7 +152,8 @@ int ObSharedExprResolver::get_shared_instance(ObRawExpr *expr,
   if (OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("expr is null", K(ret), K(expr));
-  } else if (!expr->is_aggr_expr() && !expr->is_win_func_expr()) {
+  } else if (!expr->is_aggr_expr() && !expr->is_win_func_expr() &&
+             T_OP_CASE != expr->get_expr_type()) {
     for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
       ObRawExpr *old_param_expr = expr->get_param_expr(i);
       ObRawExpr *new_param_expr = NULL;

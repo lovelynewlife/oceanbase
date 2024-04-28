@@ -14,9 +14,9 @@
 #define OCEANBASE_STORAGE_OB_COMPLEMENT_DATA_TASK_H
 
 #include "storage/access/ob_table_access_context.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "storage/blocksstable/ob_index_block_builder.h"
+#include "storage/blocksstable/index_block/ob_index_block_builder.h"
 #include "storage/compaction/ob_column_checksum_calculator.h"
 #include "storage/ddl/ob_ddl_redo_log_writer.h"
 #include "storage/ob_store_row_comparer.h"
@@ -43,7 +43,7 @@ public:
     is_inited_(false), orig_tenant_id_(common::OB_INVALID_TENANT_ID), dest_tenant_id_(common::OB_INVALID_TENANT_ID),
     orig_ls_id_(share::ObLSID::INVALID_LS_ID), dest_ls_id_(share::ObLSID::INVALID_LS_ID), orig_table_id_(common::OB_INVALID_ID),
     dest_table_id_(common::OB_INVALID_ID), orig_tablet_id_(ObTabletID::INVALID_TABLET_ID), dest_tablet_id_(ObTabletID::INVALID_TABLET_ID),
-    allocator_("CompleteDataPar"), row_store_type_(common::ENCODING_ROW_STORE), orig_schema_version_(0), dest_schema_version_(0),
+    allocator_("CompleteDataPar", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()), row_store_type_(common::ENCODING_ROW_STORE), orig_schema_version_(0), dest_schema_version_(0),
     snapshot_version_(0), concurrent_cnt_(0), task_id_(0), execution_id_(-1), tablet_task_id_(0), compat_mode_(lib::Worker::CompatMode::INVALID), data_format_version_(0)
   {}
   ~ObComplementDataParam() { destroy(); }
@@ -60,6 +60,7 @@ public:
   }
 
   int get_hidden_table_key(ObITable::TableKey &table_key) const;
+  bool use_new_checksum() const { return data_format_version_ >= DATA_VERSION_4_2_1_1; }
   void destroy()
   {
     is_inited_ = false;
@@ -112,18 +113,22 @@ public:
   ObSEArray<common::ObStoreRange, 32> ranges_;
 };
 
+void add_ddl_event(const ObComplementDataParam *param, const ObString &stmt);
+
 struct ObComplementDataContext final
 {
 public:
   ObComplementDataContext():
     is_inited_(false), is_major_sstable_exist_(false), complement_data_ret_(common::OB_SUCCESS),
-    allocator_("CompleteDataCtx"), lock_(ObLatchIds::COMPLEMENT_DATA_CONTEXT_LOCK), concurrent_cnt_(0),
+    allocator_("CompleteDataCtx", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()), lock_(ObLatchIds::COMPLEMENT_DATA_CONTEXT_LOCK), concurrent_cnt_(0),
     data_sstable_redo_writer_(), index_builder_(nullptr), ddl_kv_mgr_handle_(), row_scanned_(0), row_inserted_(0)
   {}
   ~ObComplementDataContext() { destroy(); }
   int init(const ObComplementDataParam &param, const ObDataStoreDesc &desc);
   void destroy();
   int write_start_log(const ObComplementDataParam &param);
+  int add_column_checksum(const ObIArray<int64_t> &report_col_checksums, const ObIArray<int64_t> &report_col_ids);
+  int get_column_checksum(ObIArray<int64_t> &report_col_checksums, ObIArray<int64_t> &report_col_ids);
   TO_STRING_KV(K_(is_inited), K_(complement_data_ret), K_(concurrent_cnt), KP_(index_builder), K_(ddl_kv_mgr_handle), K_(row_scanned), K_(row_inserted));
 public:
   bool is_inited_;
@@ -137,6 +142,8 @@ public:
   ObDDLKvMgrHandle ddl_kv_mgr_handle_; // for keeping ddl kv mgr alive
   int64_t row_scanned_;
   int64_t row_inserted_;
+  ObArray<int64_t> report_col_checksums_;
+  ObArray<int64_t> report_col_ids_;
 };
 
 class ObComplementPrepareTask;

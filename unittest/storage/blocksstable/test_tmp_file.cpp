@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #define protected public
 #define private public
+#include "lib/allocator/ob_fifo_allocator.h"
 #include "storage/blocksstable/ob_tmp_file.h"
 #include "storage/blocksstable/ob_tmp_file_store.h"
 #include "storage/blocksstable/ob_tmp_file_cache.h"
@@ -267,13 +268,14 @@ void TestTmpFileStress::write_data(const int64_t macro_block_size)
   io_info.size_ = macro_block_size;
   io_info.tenant_id_ = 1;
   io_info.io_desc_.set_wait_event(2);
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   char *buf = new char[BUF_COUNT * macro_block_size];
   const int64_t timeout_ms = 5000;
   prepare_data(buf, macro_block_size);
   for (int64_t i = 0; i < BUF_COUNT; ++i) {
     io_info.buf_ = buf + i * macro_block_size;
     check_data(io_info.buf_, macro_block_size);
-    ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+    ret = ObTmpFileManager::get_instance().write(io_info);
     ASSERT_EQ(OB_SUCCESS, ret);
   }
 }
@@ -287,6 +289,7 @@ void TestTmpFileStress::write_plain_data(char *&buf, const int64_t macro_block_s
   io_info.fd_ = fd_;
   io_info.tenant_id_ = 1;
   io_info.io_desc_.set_wait_event(2);
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   buf = new char[BUF_COUNT * macro_block_size];
   const int64_t timeout_ms = 5000;
   int64_t sum_size = 0;
@@ -294,7 +297,7 @@ void TestTmpFileStress::write_plain_data(char *&buf, const int64_t macro_block_s
   for (int64_t i = 0; i < size_array.count(); ++i) {
     io_info.buf_ = buf + sum_size;
     io_info.size_ = size_array.at(i);
-    ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+    ret = ObTmpFileManager::get_instance().write(io_info);
     ASSERT_EQ(OB_SUCCESS, ret);
     sum_size += size_array.at(i);
   }
@@ -305,17 +308,17 @@ void TestTmpFileStress::write_plain_data(char *&buf, const int64_t macro_block_s
 void TestTmpFileStress::read_data(const int64_t macro_block_size)
 {
   int ret = OB_SUCCESS;
-  const int64_t timeout_ms = 5000;
   ObTmpFileIOInfo io_info;
   ObTmpFileIOHandle handle;
   io_info.fd_ = fd_;
   io_info.size_ = macro_block_size;
   io_info.tenant_id_ = 1;
   io_info.io_desc_.set_wait_event(2);
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   char *buf = new char[macro_block_size];
   for (int64_t i = 0; i < BUF_COUNT; ++i) {
     io_info.buf_ = buf;
-    ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+    ret = ObTmpFileManager::get_instance().read(io_info, handle);
     ASSERT_EQ(OB_SUCCESS, ret);
     ASSERT_EQ(macro_block_size, handle.get_data_size());
     check_data(handle.get_buffer(), handle.get_data_size());
@@ -327,23 +330,23 @@ void TestTmpFileStress::read_data(const int64_t macro_block_size)
 void TestTmpFileStress::read_plain_data(const char *read_buf, const int64_t macro_block_size)
 {
   int ret = OB_SUCCESS;
-  const int64_t timeout_ms = 5000;
   ObTmpFileIOInfo io_info;
   ObTmpFileIOHandle handle;
   io_info.fd_ = fd_;
   io_info.size_ = macro_block_size;
   io_info.tenant_id_ = 1;
   io_info.io_desc_.set_wait_event(2);
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   char *buf = new char[BUF_COUNT * macro_block_size];
   int64_t offset = 0;
   for (int64_t i = 0; i < BUF_COUNT; ++i) {
     io_info.buf_ = buf + i * macro_block_size;
     offset = i * macro_block_size;
-    ret = ObTmpFileManager::get_instance().pread(io_info, offset, timeout_ms, handle);
+    ret = ObTmpFileManager::get_instance().pread(io_info, offset, handle);
     ASSERT_EQ(OB_SUCCESS, ret);
   }
   offset += macro_block_size;
-  ret = ObTmpFileManager::get_instance().pread(io_info, offset, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, offset, handle);
   ASSERT_EQ(OB_ITER_END, ret);
   check_plain_data(read_buf, buf, BUF_COUNT * macro_block_size);
   handle.reset();
@@ -607,9 +610,9 @@ TEST_F(TestTmpFile, test_big_file)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = write_size;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   ASSERT_EQ(OB_SUCCESS, ret);
   write_time = ObTimeUtility::current_time() - write_time;
   io_info.buf_ = read_buf;
@@ -618,13 +621,13 @@ TEST_F(TestTmpFile, test_big_file)
   ret = ObTmpFileManager::get_instance().aio_read(io_info, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_TRUE(handle.size_ < handle.expect_read_size_);
-  ASSERT_EQ(OB_SUCCESS, handle.wait(timeout_ms));
+  ASSERT_EQ(OB_SUCCESS, handle.wait());
   ASSERT_EQ(write_size, handle.get_data_size());
   int cmp = memcmp(handle.get_buffer(), write_buf, handle.get_data_size());
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = macro_block_size;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 100, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 100, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 100, handle.get_data_size());
@@ -632,7 +635,7 @@ TEST_F(TestTmpFile, test_big_file)
 
   io_info.size_ = write_size;
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info, 0, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 0, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(write_size, handle.get_data_size());
@@ -640,7 +643,7 @@ TEST_F(TestTmpFile, test_big_file)
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = 200;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 200, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 200, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(200, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 200, 200);
@@ -742,16 +745,16 @@ TEST_F(TestTmpFile, test_inner_read_offset_and_seek)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = macro_block_size + 256;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.buf_ = read_buf;
 
 
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().read(io_info, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size + 256, handle.get_data_size());
@@ -760,7 +763,7 @@ TEST_F(TestTmpFile, test_inner_read_offset_and_seek)
 
 
   io_info.size_ = 200;
-  ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().read(io_info, handle);
   ASSERT_EQ(OB_ITER_END, ret);
 
 
@@ -768,7 +771,7 @@ TEST_F(TestTmpFile, test_inner_read_offset_and_seek)
   ASSERT_EQ(OB_SUCCESS, ret);
 
   io_info.size_ = 201;
-  ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().read(io_info, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(201, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf, 201);
@@ -779,7 +782,7 @@ TEST_F(TestTmpFile, test_inner_read_offset_and_seek)
   ASSERT_EQ(OB_SUCCESS, ret);
 
   io_info.size_ = 199;
-  ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().read(io_info, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(199, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 400, 199);
@@ -853,11 +856,11 @@ TEST_F(TestTmpFile, test_aio_read_and_write)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = macro_block_size + 256;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
   ret = ObTmpFileManager::get_instance().aio_write(io_info, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ret = handle.wait(timeout_ms);
+  ret = handle.wait();
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   handle.reset();
@@ -865,7 +868,7 @@ TEST_F(TestTmpFile, test_aio_read_and_write)
   io_info.buf_ = read_buf;
 
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().read(io_info, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size + 256, handle.get_data_size());
@@ -880,7 +883,7 @@ TEST_F(TestTmpFile, test_aio_read_and_write)
   io_info.size_ = macro_block_size;
   ret = ObTmpFileManager::get_instance().aio_read(io_info, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ret = handle.wait(timeout_ms);
+  ret = handle.wait();
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 100, macro_block_size);
@@ -891,7 +894,7 @@ TEST_F(TestTmpFile, test_aio_read_and_write)
   io_info.size_ = macro_block_size;
   ret = ObTmpFileManager::get_instance().aio_pread(io_info, 0, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ret = handle.wait(timeout_ms);
+  ret = handle.wait();
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf, macro_block_size);
@@ -1095,16 +1098,16 @@ TEST_F(TestTmpFile, test_write_less_than_macro_block_size)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = 256;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.buf_ = read_buf;
 
 
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info, 0, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 0, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(256, handle.get_data_size());
@@ -1113,14 +1116,14 @@ TEST_F(TestTmpFile, test_write_less_than_macro_block_size)
 
 
   io_info.size_ = 255;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 0, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 0, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(255, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf, 255);
   ASSERT_EQ(0, cmp);
 
 
-  ret = ObTmpFileManager::get_instance().pread(io_info, 20, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 20, handle);
   ASSERT_EQ(OB_ITER_END, ret);
   ASSERT_EQ(256 - 20, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 20, 256 - 20);
@@ -1128,7 +1131,7 @@ TEST_F(TestTmpFile, test_write_less_than_macro_block_size)
 
 
   io_info.size_ = 20;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 40, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 40, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(20, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 40, handle.get_data_size());
@@ -1136,14 +1139,14 @@ TEST_F(TestTmpFile, test_write_less_than_macro_block_size)
 
 
   io_info.size_ = 100;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 156, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 156, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(100, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 156, handle.get_data_size());
   ASSERT_EQ(0, cmp);
 
 
-  ret = ObTmpFileManager::get_instance().pread(io_info, 256, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 256, handle);
   ASSERT_EQ(OB_ITER_END, ret);
 
 
@@ -1182,15 +1185,15 @@ TEST_F(TestTmpFile, test_write_more_than_one_macro_block)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = macro_block_size + 256;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.buf_ = read_buf;
 
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info, 0, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 0, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size + 256, handle.get_data_size());
@@ -1198,35 +1201,35 @@ TEST_F(TestTmpFile, test_write_more_than_one_macro_block)
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = 200;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 200, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 200, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(200, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 200, 200);
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = macro_block_size;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 200, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 200, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 200, macro_block_size);
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = macro_block_size;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 400, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 400, handle);
   ASSERT_EQ(OB_ITER_END, ret);
   ASSERT_EQ(macro_block_size + 256 - 400, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 400, macro_block_size + 256 - 400);
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = 100;
-  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(100, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + macro_block_size, handle.get_data_size());
   ASSERT_EQ(0, cmp);
 
   io_info.size_ = 100;
-  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 10, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 10, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(100, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + macro_block_size + 10, handle.get_data_size());
@@ -1234,13 +1237,13 @@ TEST_F(TestTmpFile, test_write_more_than_one_macro_block)
 
 
   io_info.size_ = 200;
-  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 100, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 100, handle);
   ASSERT_EQ(OB_ITER_END, ret);
   ASSERT_EQ(156, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + macro_block_size + 100, handle.get_data_size());
   ASSERT_EQ(0, cmp);
 
-  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 256, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, macro_block_size + 256, handle);
   ASSERT_EQ(OB_ITER_END, ret);
 
 
@@ -1284,6 +1287,8 @@ TEST_F(TestTmpFile, test_single_dir_two_file)
   io_info1.io_desc_.set_wait_event(2);
   io_info1.buf_ = write_buf;
   io_info1.size_ = macro_block_size + 256;
+  io_info1.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
+
 
   ret = ObTmpFileManager::get_instance().open(fd_2, dir);
   ASSERT_EQ(OB_SUCCESS, ret);
@@ -1292,22 +1297,23 @@ TEST_F(TestTmpFile, test_single_dir_two_file)
   io_info2.io_desc_.set_wait_event(2);
   io_info2.buf_ = write_buf;
   io_info2.size_ = macro_block_size + 256;
+  io_info2.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
 
   const int64_t timeout_ms = 5000;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info1, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info1);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
 
   write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info2, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info2);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
 
 
   io_info1.buf_ = read_buf;
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info1, 0, timeout_ms, handle1);
+  ret = ObTmpFileManager::get_instance().pread(io_info1, 0, handle1);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size + 256, handle1.get_data_size());
@@ -1317,7 +1323,7 @@ TEST_F(TestTmpFile, test_single_dir_two_file)
 
   io_info2.buf_ = read_buf;
   read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info2, 0, timeout_ms, handle2);
+  ret = ObTmpFileManager::get_instance().pread(io_info2, 0, handle2);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size + 256, handle2.get_data_size());
@@ -1510,23 +1516,23 @@ TEST_F(TestTmpFile, test_handle_double_wait)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = 256;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.buf_ = read_buf;
 
 
   int64_t read_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().pread(io_info, 0, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 0, handle);
   read_time = ObTimeUtility::current_time() - read_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(256, handle.get_data_size());
   int cmp = memcmp(handle.get_buffer(), write_buf, 256);
   ASSERT_EQ(0, cmp);
 
-  ASSERT_EQ(OB_SUCCESS, handle.wait(timeout_ms));
+  ASSERT_EQ(OB_SUCCESS, handle.wait());
 
   STORAGE_LOG(INFO, "test_handle_double_wait");
   STORAGE_LOG(INFO, "io time", K(write_time), K(read_time));
@@ -1567,7 +1573,7 @@ TEST_F(TestTmpFile, test_sql_workload)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = write_size;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
 
   const int cnt = 1;
@@ -1578,7 +1584,7 @@ TEST_F(TestTmpFile, test_sql_workload)
     for (int64_t j = 0; j < sql_cnt; j++) {
       io_info.size_ = sql_read_size;
       io_info.buf_ = write_buf + j * sql_read_size;
-      ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+      ret = ObTmpFileManager::get_instance().write(io_info);
       ASSERT_EQ(OB_SUCCESS, ret);
     }
   }
@@ -1588,7 +1594,7 @@ TEST_F(TestTmpFile, test_sql_workload)
   io_info.buf_ = read_buf;
 
   io_info.size_ = macro_block_size;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 100, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 100, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(macro_block_size, handle.get_data_size());
   int cmp = memcmp(handle.get_buffer(), write_buf + 100, handle.get_data_size());
@@ -1605,7 +1611,7 @@ TEST_F(TestTmpFile, test_sql_workload)
     for (int64_t j = 0; j < sql_cnt; j++) {
       io_info.size_ = sql_read_size;
       io_info.buf_ = read_buf + j * sql_read_size;
-      ret = ObTmpFileManager::get_instance().read(io_info, timeout_ms, handle);
+      ret = ObTmpFileManager::get_instance().read(io_info, handle);
       ASSERT_EQ(OB_SUCCESS, ret);
       ASSERT_EQ(sql_read_size, handle.get_data_size());
       cmp = memcmp(handle.get_buffer(), write_buf + j * sql_read_size, sql_read_size);
@@ -1615,7 +1621,7 @@ TEST_F(TestTmpFile, test_sql_workload)
   read_time = ObTimeUtility::current_time() - read_time;
 
   io_info.size_ = 200;
-  ret = ObTmpFileManager::get_instance().pread(io_info, 200, timeout_ms, handle);
+  ret = ObTmpFileManager::get_instance().pread(io_info, 200, handle);
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_EQ(200, handle.get_data_size());
   cmp = memcmp(handle.get_buffer(), write_buf + 200, 200);
@@ -1715,6 +1721,74 @@ TEST_F(TestTmpFile, test_page_buddy)
   ASSERT_EQ(false, page_buddy_4.is_empty());
 }
 
+TEST_F(TestTmpFile, test_page_io_info_unrelease)
+{
+  int ret = OB_SUCCESS;
+
+  ObTmpTenantFileStoreHandle store_handle;
+  OB_TMP_FILE_STORE.get_store(1, store_handle);
+  common::ObFIFOAllocator *fifo_allocator = &(store_handle.get_tenant_store()->io_allocator_);
+
+  // case 1: construct callback
+  {
+    int64_t begin_used = fifo_allocator->used();
+    {
+      ObTmpPageCache::ObTmpMultiPageIOCallback callback;
+      callback.allocator_ = fifo_allocator;
+      callback.cache_ = &(ObTmpPageCache::get_instance());
+      callback.page_io_infos_.assign(common::ObSEArray<ObTmpPageIOInfo, ObTmpFilePageBuddy::MAX_PAGE_NUMS>());
+
+      int64_t final_used = fifo_allocator->used();
+      ASSERT_EQ(final_used, begin_used);
+    }
+    ASSERT_EQ(begin_used, fifo_allocator->used());
+  }
+
+  // case 2: never call alloc_data_buf
+  {
+    int64_t begin_used = fifo_allocator->used();
+    {
+      ObTmpPageCache::ObTmpMultiPageIOCallback callback;
+      callback.allocator_ = fifo_allocator;
+      callback.cache_ = &(ObTmpPageCache::get_instance());
+      callback.page_io_infos_.assign(common::ObSEArray<ObTmpPageIOInfo, ObTmpFilePageBuddy::MAX_PAGE_NUMS>());
+
+      int64_t tmp_buf_size = 4096;
+      char *tmp_buf = static_cast<char*>(fifo_allocator->alloc(tmp_buf_size));
+      ASSERT_EQ(callback.alloc_data_buf(tmp_buf, tmp_buf_size), OB_SUCCESS);
+      fifo_allocator->free(tmp_buf);
+      int64_t after_alloc_io_buf_used = fifo_allocator->used();
+      ASSERT_EQ(after_alloc_io_buf_used, begin_used + tmp_buf_size);
+
+      int64_t after_process_pos = fifo_allocator->used();
+      ASSERT_EQ(after_process_pos, begin_used + tmp_buf_size);
+      ASSERT_EQ(after_alloc_io_buf_used, after_process_pos);
+    }
+    ASSERT_EQ(begin_used, fifo_allocator->used());
+  }
+
+  // case 3: call inner_process
+  {
+    int64_t begin_used = fifo_allocator->used();
+    {
+      ObTmpPageCache::ObTmpMultiPageIOCallback callback;
+      callback.allocator_ = fifo_allocator;
+      callback.cache_ = &(ObTmpPageCache::get_instance());
+      callback.page_io_infos_.assign(common::ObSEArray<ObTmpPageIOInfo, ObTmpFilePageBuddy::MAX_PAGE_NUMS>());
+
+      int64_t tmp_buf_size = 4096;
+      char *tmp_buf = static_cast<char*>(fifo_allocator->alloc(tmp_buf_size));
+      ASSERT_EQ(callback.inner_process(tmp_buf, tmp_buf_size), OB_SUCCESS);
+      int64_t after_process_used = fifo_allocator->used();
+      ASSERT_EQ(after_process_used, begin_used + tmp_buf_size * 2);
+      fifo_allocator->free(tmp_buf);
+      int64_t final_used = fifo_allocator->used();
+      ASSERT_EQ(final_used, begin_used + tmp_buf_size);
+    }
+    ASSERT_EQ(begin_used, fifo_allocator->used());
+  }
+}
+
 TEST_F(TestTmpFile, test_tmp_file_sync)
 {
   int ret = OB_SUCCESS;
@@ -1737,9 +1811,9 @@ TEST_F(TestTmpFile, test_tmp_file_sync)
   io_info.io_desc_.set_wait_event(2);
   io_info.buf_ = write_buf;
   io_info.size_ = write_size;
-  const int64_t timeout_ms = 5000;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
   free(write_buf);
@@ -1779,6 +1853,7 @@ TEST_F(TestTmpFile, test_tmp_file_sync_same_block)
   }
   io_info.buf_ = write_buf;
   io_info.size_ = write_size;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
 
   ret = ObTmpFileManager::get_instance().alloc_dir(dir);
   ASSERT_EQ(OB_SUCCESS, ret);
@@ -1787,7 +1862,7 @@ TEST_F(TestTmpFile, test_tmp_file_sync_same_block)
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.fd_ = fd1;
   int64_t write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1795,7 +1870,7 @@ TEST_F(TestTmpFile, test_tmp_file_sync_same_block)
   ASSERT_EQ(OB_SUCCESS, ret);
   io_info.fd_ = fd2;
   write_time = ObTimeUtility::current_time();
-  ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+  ret = ObTmpFileManager::get_instance().write(io_info);
   write_time = ObTimeUtility::current_time() - write_time;
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1840,6 +1915,7 @@ TEST_F(TestTmpFile, test_tmp_file_wash)
   }
   io_info.buf_ = write_buf;
   io_info.size_ = write_size;
+  io_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
 
   io_info_2 = io_info;
 
@@ -1850,6 +1926,7 @@ TEST_F(TestTmpFile, test_tmp_file_wash)
   }
   io_info_2.buf_ = write_buf_2;
   io_info_2.size_ = write_size_2;
+  io_info_2.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
 
   STORAGE_LOG(INFO, "test_tmp_file_wash");
   ObTmpTenantFileStoreHandle store_handle;
@@ -1863,11 +1940,11 @@ TEST_F(TestTmpFile, test_tmp_file_wash)
     if (i == count/2) {
       // This macro block will be freed immediately because its memory has been exhausted.
       io_info_2.fd_ = fd;
-      ret = ObTmpFileManager::get_instance().write(io_info_2, timeout_ms);
+      ret = ObTmpFileManager::get_instance().write(io_info_2);
       ASSERT_EQ(OB_SUCCESS, ret);
     } else {
       io_info.fd_ = fd;
-      ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+      ret = ObTmpFileManager::get_instance().write(io_info);
       ASSERT_EQ(OB_SUCCESS, ret);
     }
   }
@@ -1905,7 +1982,7 @@ TEST_F(TestTmpFile, test_tmp_file_wash)
     ret = ObTmpFileManager::get_instance().open(fd, dir);
     ASSERT_EQ(OB_SUCCESS, ret);
     io_info.fd_ = fd;
-    ret = ObTmpFileManager::get_instance().write(io_info, timeout_ms);
+    ret = ObTmpFileManager::get_instance().write(io_info);
     ASSERT_EQ(OB_SUCCESS, ret);
   }
 

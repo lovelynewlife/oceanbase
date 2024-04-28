@@ -1128,7 +1128,7 @@ int ObArchiveStore::is_archive_log_file_exist(const int64_t dest_id, const int64
     LOG_WARN("ObArchiveStore not init", K(ret));
   } else if (OB_FAIL(ObArchivePathUtil::get_ls_archive_file_path(dest, dest_id, round_id, piece_id, ls_id, file_id, full_path))) {
     LOG_WARN("failed to get archive log file path", K(ret), K(dest), K(dest_id), K(round_id), K(piece_id), K(ls_id), K(file_id));
-  } else if (OB_FAIL(util.is_exist(full_path.get_ptr(), storage_info, is_exist))) {
+  } else if (OB_FAIL(util.adaptively_is_exist(full_path.get_ptr(), storage_info, is_exist))) {
     LOG_WARN("failed to check archive log file exist.", K(ret), K(full_path), K(storage_info));
   }
 
@@ -1439,7 +1439,7 @@ int ObArchiveStore::get_file_list_in_piece(const int64_t dest_id, const int64_t 
     LOG_WARN("get piece ls dir path failed", K(ret), K(dest), K(dest_id), K(round_id), K(piece_id), K(ls_id));
   } else if (OB_FAIL(op.init(this, &filelist))) {
     LOG_WARN("ObLSFileListOp init failed", K(ret));
-  } else if (OB_FAIL(util.list_files(piece_path.get_ptr(), storage_info, op))) {
+  } else if (OB_FAIL(util.adaptively_list_files(piece_path.get_ptr(), storage_info, op))) {
     LOG_WARN("list files failed", K(ret), K(piece_path), K(dest));
   }
   return ret;
@@ -1625,7 +1625,7 @@ int ObArchiveStore::ObPieceRangeFilter::func(const dirent *entry)
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObPieceRangeFilter not init", K(ret));
-  } else if (pieces_.count() >= OB_MAX_BACKUP_PIECE_NUM) { // list upper limit //TODO(chongrong.th) add new error code
+  } else if (pieces_.count() >= OB_MAX_BACKUP_PIECE_NUM) { // list upper limit //TODO(zeyong) add new error code
   } else if (OB_FAIL(is_piece_start_file_name_(file_name, is_piece_start))) {
     LOG_WARN("failed to check piece start file name", K(ret), K(file_name));
   } else if (! is_piece_start) {

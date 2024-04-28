@@ -22,7 +22,9 @@ extern "C" {
 };
 #include "rpc/obrpc/ob_rpc_endec.h"
 #define cfgi(k, v) atoi(getenv(k)?:v)
-
+extern "C" {
+int ussl_check_pcode_mismatch_connection(int fd, uint32_t pcode);
+};
 namespace oceanbase
 {
 namespace obrpc
@@ -30,7 +32,8 @@ namespace obrpc
 extern const int easy_head_size;
 ObPocRpcServer global_poc_server;
 ObListener* global_ob_listener;
-bool __attribute__((weak)) enable_pkt_nio() {
+bool __attribute__((weak)) enable_pkt_nio(bool start_as_client) {
+  UNUSED(start_as_client);
   return false;
 }
 int64_t  __attribute__((weak)) get_max_rpc_packet_size() {
@@ -56,59 +59,64 @@ int ObPocServerHandleContext::create(int64_t resp_id, const char* buf, int64_t s
   } else {
     ObCurTraceId::set(tmp_pkt.get_trace_id());
     obrpc::ObRpcPacketCode pcode = tmp_pkt.get_pcode();
-    auto &set = obrpc::ObRpcPacketSet::instance();
-    const char* pcode_label = set.label_of_idx(set.idx_of_pcode(pcode));
-    const int64_t pool_size = sizeof(ObPocServerHandleContext) + sizeof(ObRequest) + sizeof(ObRpcPacket) + alloc_payload_sz;
-    int64_t tenant_id = tmp_pkt.get_tenant_id();
-    if (OB_UNLIKELY(tmp_pkt.get_group_id() == OBCG_ELECTION)) {
-      tenant_id = OB_SERVER_TENANT_ID;
-    }
-    timeguard.click();
-    ObRpcMemPool* pool = ObRpcMemPool::create(tenant_id, pcode_label, pool_size);
-    void *temp = NULL;
-
-#ifdef ERRSIM
-    THIS_WORKER.set_module_type(tmp_pkt.get_module_type());
-#endif
-
-    if (OB_ISNULL(pool)) {
-      ret = common::OB_ALLOCATE_MEMORY_FAILED;
-      RPC_LOG(WARN, "create memory pool failed", K(tenant_id), K(pcode_label));
-    } else if (OB_ISNULL(temp = pool->alloc(sizeof(ObPocServerHandleContext) + sizeof(ObRequest)))){
-      ret = common::OB_ALLOCATE_MEMORY_FAILED;
-      RPC_LOG(WARN, "pool allocate memory failed", K(tenant_id), K(pcode_label));
+    if (OB_UNLIKELY(ussl_check_pcode_mismatch_connection(pn_get_fd(resp_id), pcode))) {
+      ret = OB_UNKNOWN_CONNECTION;
+      RPC_LOG(WARN, "rpc bypass connection received none bypass pcode", K(pcode), K(ret));
     } else {
-      int64_t resp_expired_abs_us = ObTimeUtility::current_time() + tmp_pkt.get_timeout();
-      ctx = new(temp)ObPocServerHandleContext(*pool, resp_id, resp_expired_abs_us);
-      ctx->set_peer_unsafe();
-      req = new(ctx + 1)ObRequest(ObRequest::OB_RPC, ObRequest::TRANSPORT_PROTO_POC);
+      auto &set = obrpc::ObRpcPacketSet::instance();
+      const char* pcode_label = set.label_of_idx(set.idx_of_pcode(pcode));
+      const int64_t pool_size = sizeof(ObPocServerHandleContext) + sizeof(ObRequest) + sizeof(ObRpcPacket) + alloc_payload_sz;
+      int64_t tenant_id = tmp_pkt.get_tenant_id();
+      if (OB_UNLIKELY(tmp_pkt.get_group_id() == OBCG_ELECTION)) {
+        tenant_id = OB_SERVER_TENANT_ID;
+      }
       timeguard.click();
-      ObRpcPacket* pkt = (ObRpcPacket*)pool->alloc(sizeof(ObRpcPacket) + alloc_payload_sz);
-      if (NULL == pkt) {
-        RPC_LOG(WARN, "pool allocate rpc packet memory failed", K(tenant_id), K(pcode_label));
-        ret = common::OB_ALLOCATE_MEMORY_FAILED;
-      } else {
-        MEMCPY(reinterpret_cast<void *>(pkt), reinterpret_cast<void *>(&tmp_pkt), sizeof(ObRpcPacket));
-        const char* packet_data = NULL;
-        if (alloc_payload_sz > 0) {
-          packet_data = reinterpret_cast<char *>(pkt + 1);
-          MEMCPY(const_cast<char*>(packet_data), tmp_pkt.get_cdata(), tmp_pkt.get_clen());
-        } else {
-          packet_data = tmp_pkt.get_cdata();
-        }
-        int64_t receive_ts = ObTimeUtility::current_time();
-        pkt->set_receive_ts(receive_ts);
-        pkt->set_content(packet_data, tmp_pkt.get_clen());
-        req->set_server_handle_context(ctx);
-        req->set_packet(pkt);
-        req->set_receive_timestamp(pkt->get_receive_ts());
-        req->set_request_arrival_time(pkt->get_receive_ts());
-        req->set_arrival_push_diff(common::ObTimeUtility::current_time());
+      ObRpcMemPool* pool = ObRpcMemPool::create(tenant_id, pcode_label, pool_size);
+      void *temp = NULL;
 
-        const int64_t fly_ts = receive_ts - pkt->get_timestamp();
-        if (fly_ts > oceanbase::common::OB_MAX_PACKET_FLY_TS && TC_REACH_TIME_INTERVAL(100 * 1000)) {
-          RPC_LOG(WARN, "PNIO packet wait too much time between proxy and server_cb", "pcode", pkt->get_pcode(),
-                  "fly_ts", fly_ts, "send_timestamp", pkt->get_timestamp());
+  #ifdef ERRSIM
+      THIS_WORKER.set_module_type(tmp_pkt.get_module_type());
+  #endif
+
+      if (OB_ISNULL(pool)) {
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        RPC_LOG(WARN, "create memory pool failed", K(tenant_id), K(pcode_label));
+      } else if (OB_ISNULL(temp = pool->alloc(sizeof(ObPocServerHandleContext) + sizeof(ObRequest)))){
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        RPC_LOG(WARN, "pool allocate memory failed", K(tenant_id), K(pcode_label));
+      } else {
+        int64_t resp_expired_abs_us = ObTimeUtility::current_time() + tmp_pkt.get_timeout();
+        ctx = new(temp)ObPocServerHandleContext(*pool, resp_id, resp_expired_abs_us);
+        ctx->set_peer_unsafe();
+        req = new(ctx + 1)ObRequest(ObRequest::OB_RPC, ObRequest::TRANSPORT_PROTO_POC);
+        timeguard.click();
+        ObRpcPacket* pkt = (ObRpcPacket*)pool->alloc(sizeof(ObRpcPacket) + alloc_payload_sz);
+        if (NULL == pkt) {
+          RPC_LOG(WARN, "pool allocate rpc packet memory failed", K(tenant_id), K(pcode_label));
+          ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          MEMCPY(reinterpret_cast<void *>(pkt), reinterpret_cast<void *>(&tmp_pkt), sizeof(ObRpcPacket));
+          const char* packet_data = NULL;
+          if (alloc_payload_sz > 0) {
+            packet_data = reinterpret_cast<char *>(pkt + 1);
+            MEMCPY(const_cast<char*>(packet_data), tmp_pkt.get_cdata(), tmp_pkt.get_clen());
+          } else {
+            packet_data = tmp_pkt.get_cdata();
+          }
+          int64_t receive_ts = ObTimeUtility::current_time();
+          pkt->set_receive_ts(receive_ts);
+          pkt->set_content(packet_data, tmp_pkt.get_clen());
+          req->set_server_handle_context(ctx);
+          req->set_packet(pkt);
+          req->set_receive_timestamp(pkt->get_receive_ts());
+          req->set_request_arrival_time(pkt->get_receive_ts());
+          req->set_arrival_push_diff(common::ObTimeUtility::current_time());
+
+          const int64_t fly_ts = receive_ts - pkt->get_timestamp();
+          if (fly_ts > oceanbase::common::OB_MAX_PACKET_FLY_TS && TC_REACH_TIME_INTERVAL(100 * 1000)) {
+            RPC_LOG(WARN, "PNIO packet wait too much time between proxy and server_cb", "pcode", pkt->get_pcode(),
+                    "fly_ts", fly_ts, "send_timestamp", pkt->get_timestamp());
+          }
         }
       }
     }
@@ -270,6 +278,7 @@ int ObPocRpcServer::start_net_client(int net_thread_count)
       RPC_LOG(WARN, "pn_provision for RATELIMIT_PNIO_GROUP error", K(count), K(net_thread_count));
     } else {
       has_start_ = true;
+      start_as_client_ = true;
     }
   }
   return ret;
@@ -316,7 +325,7 @@ uint64_t ObPocRpcServer::get_ratelimit_rxbytes() {
   return pn_get_rxbytes(RATELIMIT_PNIO_GROUP);
 }
 bool ObPocRpcServer::client_use_pkt_nio() {
-  return has_start() && enable_pkt_nio();
+  return has_start() && enable_pkt_nio(start_as_client_);
 }
 
 extern "C" {

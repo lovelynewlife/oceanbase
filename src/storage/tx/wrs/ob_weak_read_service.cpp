@@ -96,8 +96,8 @@ int ObWeakReadService::get_server_version(const uint64_t tenant_id, SCN &version
 
   if (OB_SUCC(ret) && !version.is_valid()) {
     int old_ret = ret;
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("get server version succ, but version is not valid snapshot version", K(ret), K(old_ret),
+    ret = OB_REPLICA_NOT_READABLE;
+    LOG_WARN("get server version succ, but version is not valid snapshot version", K(ret), K(old_ret),
         K(tenant_id), K(version));
   }
   LOG_DEBUG("[WRS] get_server_version", K(ret), K(tenant_id), K(version));
@@ -162,6 +162,8 @@ int ObWeakReadService::check_tenant_can_start_service(const uint64_t tenant_id,
       // success
     }
   } else {
+    // tenant not exist
+    can_start_service = true;
     FLOG_WARN("change tenant context fail when get weak read service cluster version",
         KR(ret), K(tenant_id));
   }
@@ -169,9 +171,9 @@ int ObWeakReadService::check_tenant_can_start_service(const uint64_t tenant_id,
   if (can_start_service) {
     FLOG_INFO("[WRS] [OBSERVER_NOTICE] current tenant start service successfully",
         K(tenant_id),
-        "target_ts", gts_scn.convert_to_ts(),
+        "target_ts", (gts_scn.is_valid() ? gts_scn.convert_to_ts() : 0),
         "min_ts", (min_version.is_valid() ? min_version.convert_to_ts() : 0),
-        "delta_us", (min_version.is_valid() ? (gts_scn.convert_to_ts() - min_version.convert_to_ts()) : 0));
+        "delta_us", ((min_version.is_valid() && gts_scn.is_valid()) ? (gts_scn.convert_to_ts() - min_version.convert_to_ts()) : 0));
   } else {
     if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
       int64_t tmp_version = min_version.is_valid() ? min_version.convert_to_ts() : 0;

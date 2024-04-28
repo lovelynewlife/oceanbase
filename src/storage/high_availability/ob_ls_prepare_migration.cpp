@@ -20,6 +20,7 @@
 #include "ob_transfer_service.h"
 #include "storage/tablet/ob_tablet.h"
 #include "ob_rebuild_service.h"
+#include "ob_storage_ha_utils.h"
 
 using namespace oceanbase;
 using namespace common;
@@ -182,11 +183,10 @@ int ObLSPrepareMigrationDagNet::start_running_for_migration_()
   }
 
   if (OB_NOT_NULL(initial_dag) && OB_NOT_NULL(scheduler)) {
-    initial_dag->reset_children();
     if (OB_SUCCESS != (tmp_ret = erase_dag_from_dag_net(*initial_dag))) {
       LOG_WARN("failed to erase dag from dag net", K(tmp_ret), KPC(initial_dag));
     }
-    scheduler->free_dag(*initial_dag);
+    scheduler->free_dag(*initial_dag); // contain reset_children
   }
 
   return ret;
@@ -576,7 +576,7 @@ int ObInitialPrepareMigrationTask::generate_migration_dags_()
         LOG_WARN("Fail to add task", K(ret));
         ret = OB_EAGAIN;
       }
-      if (OB_SUCCESS != (tmp_ret = scheduler->cancel_dag(finish_prepare_dag, start_prepare_dag))) {
+      if (OB_SUCCESS != (tmp_ret = scheduler->cancel_dag(finish_prepare_dag))) {
         LOG_WARN("failed to cancel ha dag", K(tmp_ret), KPC(initial_prepare_migration_dag));
       } else {
         finish_prepare_dag = nullptr;
@@ -589,12 +589,12 @@ int ObInitialPrepareMigrationTask::generate_migration_dags_()
 
     if (OB_FAIL(ret)) {
       if (OB_NOT_NULL(scheduler) && OB_NOT_NULL(finish_prepare_dag)) {
-        scheduler->free_dag(*finish_prepare_dag, start_prepare_dag);
+        scheduler->free_dag(*finish_prepare_dag);
         finish_prepare_dag = nullptr;
       }
 
       if (OB_NOT_NULL(scheduler) && OB_NOT_NULL(start_prepare_dag)) {
-        scheduler->free_dag(*start_prepare_dag, initial_prepare_migration_dag);
+        scheduler->free_dag(*start_prepare_dag);
         start_prepare_dag = nullptr;
       }
 
@@ -757,8 +757,7 @@ int ObStartPrepareMigrationTask::deal_with_local_ls_()
   int ret = OB_SUCCESS;
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
-  ObRole role;
-  int64_t proposal_id = 0;
+  bool is_leader = false;
   ObLSSavedInfo saved_info;
 
   if (!is_inited_) {
@@ -769,18 +768,19 @@ int ObStartPrepareMigrationTask::deal_with_local_ls_()
   } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_SYS;
     LOG_ERROR("log stream should not be NULL", K(ret), K(*ctx_));
-  } else if (OB_FAIL(ls->get_log_handler()->get_role(role, proposal_id))) {
-    LOG_WARN("failed to get role", K(ret), "arg", ctx_->arg_);
-  } else if (is_strong_leader(role)) {
+  } else if (OB_FAIL(ObStorageHAUtils::check_ls_is_leader(
+        ctx_->tenant_id_, ctx_->arg_.ls_id_, is_leader))) {
+    LOG_WARN("failed to check ls leader", K(ret), KPC(ctx_));
+  } else if (is_leader) {
     if (ObMigrationOpType::REBUILD_LS_OP == ctx_->arg_.type_) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("leader can not as rebuild dst", K(ret), K(role), "myaddr", MYADDR, "arg", ctx_->arg_);
+      LOG_ERROR("leader can not as rebuild dst", K(ret), K(is_leader), "myaddr", MYADDR, "arg", ctx_->arg_);
     } else if (ObMigrationOpType::ADD_LS_OP == ctx_->arg_.type_
         || ObMigrationOpType::MIGRATE_LS_OP == ctx_->arg_.type_
         || ObMigrationOpType::CHANGE_LS_OP == ctx_->arg_.type_) {
       ret = OB_ERR_SYS;
       LOG_WARN("leader cannot as add, migrate, change dst",
-          K(ret), K(role), "myaddr", MYADDR, "arg", ctx_->arg_);
+          K(ret), K(is_leader), "myaddr", MYADDR, "arg", ctx_->arg_);
     }
   }
 
@@ -1039,7 +1039,7 @@ int ObStartPrepareMigrationTask::generate_prepare_migration_dags_()
       }
 
       if (OB_NOT_NULL(tablet_backfill_tx_dag)) {
-        if (OB_SUCCESS != (tmp_ret = scheduler->cancel_dag(tablet_backfill_tx_dag, start_prepare_migration_dag))) {
+        if (OB_SUCCESS != (tmp_ret = scheduler->cancel_dag(tablet_backfill_tx_dag))) {
           LOG_WARN("failed to cancel ha dag", K(tmp_ret), KPC(start_prepare_migration_dag));
         } else {
           tablet_backfill_tx_dag = nullptr;
@@ -1054,12 +1054,12 @@ int ObStartPrepareMigrationTask::generate_prepare_migration_dags_()
 
     if (OB_FAIL(ret)) {
       if (OB_NOT_NULL(finish_backfill_tx_dag)) {
-        scheduler->free_dag(*finish_backfill_tx_dag, tablet_backfill_tx_dag);
+        scheduler->free_dag(*finish_backfill_tx_dag);
         finish_backfill_tx_dag = nullptr;
       }
 
       if (OB_NOT_NULL(tablet_backfill_tx_dag)) {
-        scheduler->free_dag(*tablet_backfill_tx_dag, start_prepare_migration_dag);
+        scheduler->free_dag(*tablet_backfill_tx_dag);
         tablet_backfill_tx_dag = nullptr;
       }
     }
@@ -1554,7 +1554,7 @@ int ObFinishPrepareMigrationTask::generate_prepare_initial_dag_()
     }
 
     if (OB_NOT_NULL(initial_prepare_dag) && OB_NOT_NULL(scheduler)) {
-      scheduler->free_dag(*initial_prepare_dag, finish_prepare_migration_dag);
+      scheduler->free_dag(*initial_prepare_dag);
       initial_prepare_dag = nullptr;
     }
   }

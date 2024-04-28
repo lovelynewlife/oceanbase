@@ -51,6 +51,7 @@
 #include "logservice/leader_coordinator/table_accessor.h"
 #include "rootserver/freeze/ob_major_freeze_helper.h"
 #include "share/ob_cluster_event_history_table_operator.h"//CLUSTER_EVENT_INSTANCE
+#include "observer/ob_service.h"
 namespace oceanbase
 {
 using namespace common;
@@ -713,14 +714,15 @@ int ObAdminRefreshSchema::call_server(const ObAddr &server)
     if (OB_FAIL(proxy.call(server, timeout_ts, arg))) {
       LOG_WARN("notify switch schema failed", KR(ret), K(server), K_(schema_version), K_(schema_info));
     }
-
     if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
       ret = OB_SUCC(ret) ? tmp_ret : ret;
       LOG_WARN("fail to wait all", KR(ret), KR(tmp_ret), K(server));
     } else if (OB_FAIL(ret)) {
-    } else if (OB_UNLIKELY(return_code_array.empty())) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("fail to check return cnt", KR(ret), K(server), "return_cnt", return_code_array.count());
+    } else if (OB_UNLIKELY(1 != return_code_array.count())) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("return_code_array is empty", KR(ret), K(server));
+      LOG_WARN("return_code_array count shoud be 1", KR(ret), K(server), "return_cnt", return_code_array.count());
     } else {
       ret = return_code_array.at(0);
     }
@@ -1054,13 +1056,15 @@ int ObAdminSetConfig::update_config(obrpc::ObAdminSetConfigArg &arg, int64_t new
               LOG_WARN("tenant not exist", KR(ret), K(tenant_id));
             } else if (!tenant_schema->is_normal()) {
               //tenant not normal, maybe tenant not ready, cannot add tenant config
-            } else if (OB_FAIL(dml.add_pk_column("tenant_id", tenant_id))
-                || OB_FAIL(dml.add_pk_column("zone", item->zone_.ptr()))
+            } else if (0 == ObString(table_name).case_compare(OB_TENANT_PARAMETER_TNAME) &&
+                OB_FAIL(dml.add_pk_column("tenant_id", tenant_id))) {
+              // __all_seed_parameter does not have column 'tenant_id'
+              LOG_WARN("add column failed", KR(ret));
+            } else if (OB_FAIL(dml.add_pk_column("zone", item->zone_.ptr()))
                 || OB_FAIL(dml.add_pk_column("svr_type", print_server_role(OB_SERVER)))
                 || OB_FAIL(dml.add_pk_column(K(svr_ip)))
                 || OB_FAIL(dml.add_pk_column(K(svr_port)))
                 || OB_FAIL(dml.add_pk_column("name", item->name_.ptr()))
-                || OB_FAIL(dml.add_column("data_type", "varchar"))
                 || OB_FAIL(dml.add_column("value", item->value_.ptr()))
                 || OB_FAIL(dml.add_column("info", item->comment_.ptr()))
                 || OB_FAIL(dml.add_column("config_version", new_version))) {
@@ -1088,7 +1092,8 @@ int ObAdminSetConfig::update_config(obrpc::ObAdminSetConfigArg &arg, int64_t new
                 if (OB_FAIL(dml.add_column("section", ci->section()))
                             || OB_FAIL(dml.add_column("scope", ci->scope()))
                             || OB_FAIL(dml.add_column("source", ci->source()))
-                            || OB_FAIL(dml.add_column("edit_level", ci->edit_level()))) {
+                            || OB_FAIL(dml.add_column("edit_level", ci->edit_level()))
+                            || OB_FAIL(dml.add_column("data_type", ci->data_type()))) {
                   LOG_WARN("add column failed", KR(ret));
                 } else if (OB_FAIL(exec.exec_insert_update(table_name,
                                                           dml, affected_rows))) {
@@ -1117,7 +1122,6 @@ int ObAdminSetConfig::update_config(obrpc::ObAdminSetConfigArg &arg, int64_t new
                   || OB_FAIL(dml.add_pk_column(K(svr_ip)))
                   || OB_FAIL(dml.add_pk_column(K(svr_port)))
                   || OB_FAIL(dml.add_pk_column("name", item->name_.ptr()))
-                  || OB_FAIL(dml.add_column("data_type", "varchar"))
                   || OB_FAIL(dml.add_column("value", item->value_.ptr()))
                   || OB_FAIL(dml.add_column("info", item->comment_.ptr()))
                   || OB_FAIL(dml.add_column("config_version", new_version))) {
@@ -1140,7 +1144,8 @@ int ObAdminSetConfig::update_config(obrpc::ObAdminSetConfigArg &arg, int64_t new
             if (OB_FAIL(dml.add_column("section", ci->section()))
                         || OB_FAIL(dml.add_column("scope", ci->scope()))
                         || OB_FAIL(dml.add_column("source", ci->source()))
-                        || OB_FAIL(dml.add_column("edit_level", ci->edit_level()))) {
+                        || OB_FAIL(dml.add_column("edit_level", ci->edit_level()))
+                        || OB_FAIL(dml.add_column("data_type", ci->data_type()))) {
               LOG_WARN("add column failed", KR(ret));
             } else if (OB_FAIL(exec.exec_insert_update(OB_ALL_SYS_PARAMETER_TNAME,
                                                        dml, affected_rows))) {
@@ -1528,12 +1533,16 @@ int ObAdminUpgradeCmd::execute(const Bool &upgrade)
         LOG_WARN("add _upgrade_stage config item failed", KR(ret), K(stage), K(upgrade));
       }
     }
+    share::ObServerInfoInTable::ObBuildVersion build_version;
     if (FAILEDx(admin_set_config.execute(set_config_arg))) {
       LOG_WARN("execute set config failed", KR(ret));
+    } else if (OB_FAIL(observer::ObService::get_build_version(build_version))) {
+      LOG_WARN("fail to get build version", KR(ret));
     } else {
       CLUSTER_EVENT_SYNC_ADD("UPGRADE",
                              upgrade ? "BEGIN_UPGRADE" : "END_UPGRADE",
-                             "cluster_version", min_server_version);
+                             "cluster_version", min_server_version,
+                             "build_version", build_version.ptr());
       LOG_INFO("change upgrade parameters",
                "enable_upgrade_mode", upgrade,
                "in_major_version_upgrade_mode", GCONF.in_major_version_upgrade_mode());
@@ -1586,13 +1595,18 @@ int ObAdminRollingUpgradeCmd::execute(const obrpc::ObAdminRollingUpgradeArg &arg
     if (FAILEDx(admin_set_config.execute(set_config_arg))) {
       LOG_WARN("execute set config failed", KR(ret));
     } else {
-      if (obrpc::OB_UPGRADE_STAGE_POSTUPGRADE != arg.stage_) {
+      share::ObServerInfoInTable::ObBuildVersion build_version;
+      if (OB_FAIL(observer::ObService::get_build_version(build_version))) {
+        LOG_WARN("fail to get build version", KR(ret));
+      } else if (obrpc::OB_UPGRADE_STAGE_POSTUPGRADE != arg.stage_) {
         CLUSTER_EVENT_SYNC_ADD("UPGRADE", "BEGIN_ROLLING_UPGRADE",
-                               "cluster_version", ori_min_server_version);
+                               "cluster_version", ori_min_server_version,
+                               "build_version", build_version.ptr());
       } else {
         CLUSTER_EVENT_SYNC_ADD("UPGRADE", "END_ROLLING_UPGRADE",
                                "cluster_version", min_server_version,
-                               "ori_cluster_version", ori_min_server_version);
+                               "ori_cluster_version", ori_min_server_version,
+                               "build_version", build_version.ptr());
       }
       LOG_INFO("change upgrade parameters", KR(ret), "_upgrade_stage", arg.stage_);
     }

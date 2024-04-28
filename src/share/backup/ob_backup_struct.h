@@ -107,6 +107,7 @@ static constexpr const int64_t FAKE_MAX_FILE_ID = MAX_FAKE_PROVIDE_ITEM_COUNT / 
 static constexpr const int64_t OB_COMMENT_LENGTH = 1024;
 
 static constexpr const int64_t DEFAULT_ARCHIVE_FILE_SIZE = 64 << 20; // 64MB
+static constexpr const int64_t DEFAULT_BACKUP_DATA_FILE_SIZE = 4 * 1024LL * 1024LL * 1024LL; // 4GB
 
 //add by physical backup and restore
 const char *const OB_STR_INCARNATION = "incarnation";
@@ -888,7 +889,7 @@ public:
 private:
 #ifdef OB_BUILD_TDE_SECURITY
   virtual int get_access_key_(char *key_buf, const int64_t key_buf_len) const override;
-  virtual int parse_storage_info_(const char *storage_info, bool &has_appid) override;
+  virtual int parse_storage_info_(const char *storage_info, bool &has_needed_extension) override;
   int encrypt_access_key_(char *encrypt_key, const int64_t length) const;
   int decrypt_access_key_(const char *buf);
 #endif
@@ -909,6 +910,7 @@ public:
       const char *extension);
   int set(const char *root_path, const char *storage_info);
   int set(const char *root_path, const ObBackupStorageInfo *storage_info);
+  int set_without_decryption(const common::ObString &backup_dest);
   void reset();
   bool is_valid() const;
   bool is_root_path_equal(const ObBackupDest &backup_dest) const;
@@ -1288,7 +1290,7 @@ public:
   ObBackupStats();
   ~ObBackupStats() {}
   bool is_valid() const;
-  void assign(const ObBackupStats &other);
+  int assign(const ObBackupStats &other);
   void cum_with(const ObBackupStats &other);
   void reset();
   TO_STRING_KV(K_(input_bytes), K_(output_bytes), K_(tablet_count), K_(finish_tablet_count),

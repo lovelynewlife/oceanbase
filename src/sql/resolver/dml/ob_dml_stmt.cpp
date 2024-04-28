@@ -1700,13 +1700,14 @@ int ObDMLStmt::formalize_relation_exprs(ObSQLSessionInfo *session_info)
   return ret;
 }
 
-int ObDMLStmt::formalize_stmt_expr_reference()
+int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
+                                             ObSQLSessionInfo *session_info)
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr*, 32> stmt_exprs;
   if (OB_FAIL(clear_sharable_expr_reference())) {
     LOG_WARN("failed to clear sharable expr reference", K(ret));
-  } else if (OB_FAIL(formalize_child_stmt_expr_reference())) {
+  } else if (OB_FAIL(formalize_child_stmt_expr_reference(expr_factory, session_info))) {
     LOG_WARN("failed to formalize child stmt expr reference", K(ret));
   } else if (OB_FAIL(get_relation_exprs(stmt_exprs))) {
     LOG_WARN("get relation exprs failed", K(ret));
@@ -1737,7 +1738,7 @@ int ObDMLStmt::formalize_stmt_expr_reference()
       } else { /*do nothing*/ }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(remove_useless_sharable_expr())) {
+      if (OB_FAIL(remove_useless_sharable_expr(expr_factory, session_info))) {
         LOG_WARN("failed to remove useless sharable expr", K(ret));
       } else if (OB_FAIL(check_pseudo_column_valid())) {
         LOG_WARN("failed to check pseudo column", K(ret));
@@ -1747,7 +1748,10 @@ int ObDMLStmt::formalize_stmt_expr_reference()
   return ret;
 }
 
-int ObDMLStmt::formalize_child_stmt_expr_reference()
+
+
+int ObDMLStmt::formalize_child_stmt_expr_reference(ObRawExprFactory *expr_factory,
+                                                   ObSQLSessionInfo *session_info)
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObSelectStmt*, 32> child_stmts;
@@ -1759,7 +1763,7 @@ int ObDMLStmt::formalize_child_stmt_expr_reference()
     if (OB_ISNULL(stmt)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("stmt is null", K(ret));
-    } else if (OB_FAIL(SMART_CALL(stmt->formalize_stmt_expr_reference()))) {
+    } else if (OB_FAIL(SMART_CALL(stmt->formalize_stmt_expr_reference(expr_factory, session_info)))) {
       LOG_WARN("failed to formalize stmt reference", K(ret));
     } else { /*do nothing*/ }
   }
@@ -1922,9 +1926,12 @@ int ObDMLStmt::generated_column_depend_column_is_referred(ObRawExpr *expr, bool 
   return ret;
 }
 
-int ObDMLStmt::remove_useless_sharable_expr()
+int ObDMLStmt::remove_useless_sharable_expr(ObRawExprFactory *expr_factory,
+                                            ObSQLSessionInfo *session_info)
 {
   int ret = OB_SUCCESS;
+  UNUSED(expr_factory);
+  UNUSED(session_info);
   for (int64_t i = column_items_.count() - 1; OB_SUCC(ret) && i >= 0; i--) {
     ObColumnRefRawExpr *expr = NULL;
     if (OB_ISNULL(expr = column_items_.at(i).expr_)) {
@@ -4447,6 +4454,48 @@ int ObDMLStmt::disable_writing_external_table(bool basic_stmt_is_dml /* defualt 
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
         OZ( child_stmts.at(i)->disable_writing_external_table() );
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLStmt::disable_writing_materialized_view()
+{
+  int ret = OB_SUCCESS;
+  bool disable_write_table = false;
+  const TableItem *table_item = NULL;
+  if (is_dml_write_stmt()) {
+    ObSEArray<ObDmlTableInfo*, 4> dml_table_infos;
+    if (OB_FAIL(static_cast<ObDelUpdStmt*>(this)->get_dml_table_infos(dml_table_infos))) {
+      LOG_WARN("failed to get dml table infos");
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !disable_write_table && i < dml_table_infos.count(); ++i) {
+      if (OB_ISNULL(dml_table_infos.at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected NULL ptr", K(ret));
+      } else if (OB_ISNULL(table_item = get_table_item_by_id(dml_table_infos.at(i)->table_id_))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected NULL ptr", K(ret));
+      } else if (schema::MATERIALIZED_VIEW == table_item->table_type_
+                || schema::MATERIALIZED_VIEW_LOG == table_item->table_type_) {
+        disable_write_table = true;
+      } else if (table_item->is_view_table_ && NULL != table_item->ref_query_) {
+        OZ( table_item->ref_query_->disable_writing_materialized_view() );
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObSEArray<ObSelectStmt*, 4> child_stmts;
+    if (disable_write_table) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("DML operation on materialized view (log) is not supported", KR(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "DML operation on materialized view (log) is");
+    } else if (OB_FAIL(get_child_stmts(child_stmts))) {
+      LOG_WARN("failed to get stmt's child_stmts", K(ret));
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
+        OZ( child_stmts.at(i)->disable_writing_materialized_view() );
       }
     }
   }

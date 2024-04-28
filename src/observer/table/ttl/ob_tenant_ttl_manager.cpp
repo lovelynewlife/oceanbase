@@ -150,7 +150,7 @@ int ObTTLTaskScheduler::reload_tenant_task()
                                                    *sql_proxy_, filters, ttl_task_arr))) {
         LOG_WARN("fail to read ttl tasks status", KR(ret));
       } else if (ttl_task_arr.empty()) {
-        // do nothing
+        tenant_task_.reset();
       } else if (ttl_task_arr.size() == 1) {
         ObTTLStatus &task = ttl_task_arr.at(0);
         tenant_task_.ttl_status_ = task;
@@ -409,7 +409,7 @@ int ObTTLTaskScheduler::try_add_periodic_task()
       if (tenant_task_.is_finished_ && OB_FAIL(add_ttl_task_internal(TRIGGER_TYPE::PERIODIC_TRIGGER))) {
         LOG_WARN("fail to add ttl task", KR(ret), K_(tenant_id));
       } else {
-        periodic_launched_ = false;
+        periodic_launched_ = true;
       }
     }
   } else {
@@ -422,12 +422,15 @@ int ObTTLTaskScheduler::check_all_tablet_task()
 {
   int ret = OB_SUCCESS;
   bool need_move = true;
+  bool is_cancel_task = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ttl tenant task mgr not init", KR(ret));
   } else if (tenant_task_.ttl_status_.status_ == OB_TTL_TASK_INVALID) {
     // do nothing
   } else if (!ObTTLUtil::check_can_process_tenant_tasks(tenant_id_)) {
+    // do nothing
+  } else if (FALSE_IT(is_cancel_task = (tenant_task_.ttl_status_.status_ == ObTTLTaskStatus::OB_RS_TTL_TASK_CANCEL)? true : false)) {
     // do nothing
   } else if (OB_FAIL(check_task_need_move(need_move))) {
     LOG_WARN("fail to check task need move", KR(ret), K_(tenant_id));
@@ -453,7 +456,7 @@ int ObTTLTaskScheduler::check_all_tablet_task()
     }
 
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(move_all_task_to_history_table())) {
+      if (OB_FAIL(move_all_task_to_history_table(is_cancel_task))) {
         LOG_WARN("fail to move all tasks to history table", KR(ret), K_(tenant_id), K(tenant_task_.ttl_status_.table_id_));
       } else {
         tenant_task_.reset();
@@ -643,7 +646,7 @@ int ObTenantTTLManager::handle_user_ttl(const obrpc::ObTTLRequestArg& arg)
   return ret;
 }
 
-int ObTTLTaskScheduler::move_all_task_to_history_table()
+int ObTTLTaskScheduler::move_all_task_to_history_table(bool need_cancel)
 {
   int ret = OB_SUCCESS;
   int64_t one_move_rows = TBALET_CHECK_BATCH_SIZE;
@@ -652,7 +655,8 @@ int ObTTLTaskScheduler::move_all_task_to_history_table()
     if (OB_FAIL(trans.start(sql_proxy_, gen_meta_tenant_id(tenant_id_)))) {
       LOG_WARN("fail start transaction", KR(ret), K_(tenant_id));
     } else if (OB_FAIL(ObTTLUtil::move_task_to_history_table(tenant_id_, tenant_task_.ttl_status_.task_id_,
-                                                             trans, TBALET_CHECK_BATCH_SIZE, one_move_rows))) {
+                                                             trans, TBALET_CHECK_BATCH_SIZE, one_move_rows,
+                                                             need_cancel))) {
       LOG_WARN("fail to move task to history table", KR(ret), K_(tenant_id));
     }
 
@@ -703,15 +707,16 @@ int ObTTLTaskScheduler::check_task_need_move(bool &need_move)
 {
   int ret = OB_SUCCESS;
   need_move = false;
-  if (OB_RS_TTL_TASK_MOVE == tenant_task_.ttl_status_.status_) {
+  if (OB_RS_TTL_TASK_MOVE == tenant_task_.ttl_status_.status_ || OB_RS_TTL_TASK_CANCEL == tenant_task_.ttl_status_.status_) {
+    // cancel will also need move all tasks into history table now
     need_move = true;
-  } else if (OB_FAIL(check_all_tabelt_finished(need_move))) {
+  } else if (OB_FAIL(check_all_tablet_finished(need_move))) {
     LOG_WARN("fail to check all tablet task finished", KR(ret));
   }
   return ret;
 }
 
-int ObTTLTaskScheduler::check_all_tabelt_finished(bool &all_finished)
+int ObTTLTaskScheduler::check_all_tablet_finished(bool &all_finished)
 {
   int ret = OB_SUCCESS;
   all_finished = true;
@@ -739,7 +744,10 @@ int ObTTLTaskScheduler::check_all_tabelt_finished(bool &all_finished)
         const int64_t table_id = table_id_array.at(idx);
         const ObTableSchema *table_schema = nullptr;
         if (OB_FAIL(schema_guard.get_table_schema(tenant_id_, table_id, table_schema))) {
-          LOG_WARN("failed to get simple schema", KR(ret), K(table_id));
+          LOG_WARN("fail to get simple schema", KR(ret), K(table_id));
+        } else if (OB_ISNULL(table_schema)) {
+          ret = OB_TABLE_NOT_EXIST;
+          LOG_WARN("table schema is null", KR(ret), K(table_id));
         } else if (OB_FAIL(ObTTLUtil::check_is_ttl_table(*table_schema, is_ttl_table))) {
           LOG_WARN("fail to check is ttl table", KR(ret));
         } else if (is_ttl_table) {

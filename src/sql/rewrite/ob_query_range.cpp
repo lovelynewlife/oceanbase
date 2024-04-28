@@ -276,6 +276,7 @@ int ObQueryRange::preliminary_extract_query_range(const ColumnIArray &range_colu
     LOG_WARN("query_range_ctx_ is not inited.", K(ret));
   } else {
     query_range_ctx_->need_final_extract_ = false;
+    query_range_ctx_->only_one_expr_ = true;
     ObKeyPart *root = NULL;
     if (OB_UNLIKELY(NULL == expr_root)) {
       //(MIN, MAX), whole range
@@ -760,6 +761,7 @@ int ObQueryRange::preliminary_extract_query_range(const ColumnIArray &range_colu
       LOG_WARN("add key part range failed", K(ret));
     }
   } else {
+    query_range_ctx_->only_one_expr_ = candi_exprs.count() == 1;
     for (int64_t i = 0; OB_SUCC(ret) && i < candi_exprs.count(); ++i) {
       const ObRawExpr *cur_expr = candi_exprs.at(i);
       if (OB_ISNULL(cur_expr)) {
@@ -871,7 +873,7 @@ int ObQueryRange::remove_useless_range_graph(ObKeyPart *key_part, ObSqlBitSet<> 
   } else {
     ObKeyPart *cur = key_part;
     while (cur != NULL && OB_SUCC(ret)) {
-      if (OB_FAIL(set_valid_offsets(cur, valid_offsets))) {
+      if (OB_FAIL(set_valid_offsets(cur, &valid_offsets))) {
         LOG_WARN("failed to set valid offsets", K(ret));
       }
       int64_t max_valid_offset = get_max_valid_offset(valid_offsets);
@@ -1079,7 +1081,7 @@ int ObQueryRange::is_get(int64_t column_count,
   } else if (OB_UNLIKELY(NULL == key_head) ||
              key_head->is_always_true() || key_head->is_always_false()) {
     is_range_get = false;
-  } else if (OB_FAIL(set_valid_offsets(key_head, valid_offsets))) {
+  } else if (OB_FAIL(set_valid_offsets(key_head, &valid_offsets))) {
     LOG_WARN("failed to set valid offsets", K(ret));
   } else if (OB_FAIL(check_is_get(*key_head,
                                   column_count, is_range_get,
@@ -1097,7 +1099,7 @@ int ObQueryRange::check_is_get(ObKeyPart &key_part,
   int ret = OB_SUCCESS;
   if (bret == true) {
     for (ObKeyPart *cur_part = &key_part; OB_SUCC(ret) && bret && cur_part != NULL; cur_part = cur_part->or_next_) {
-      if (cur_part != &key_part && OB_FAIL(set_valid_offsets(cur_part, valid_offsets))) {
+      if (cur_part != &key_part && OB_FAIL(set_valid_offsets(cur_part, &valid_offsets))) {
         LOG_WARN("failed to set valid offsets", K(ret));
       } else if (valid_offsets.num_members() != column_count) {
         bret = false;
@@ -1559,66 +1561,70 @@ int ObQueryRange::get_rowid_key_part(const ObRawExpr *l_expr,
           LOG_WARN("failed to get final expr idx", K(ret));
         }
       }
-      for (int64_t i = 0; OB_SUCC(ret) && i < pk_column_items.count(); ++i) {
-        const ObColumnRefRawExpr *column_item = pk_column_items.at(i);
-        ObKeyPartId key_part_id(column_item->get_table_id(), column_item->get_column_id());
-        ObKeyPartPos *key_part_pos = nullptr;
-        bool b_is_key_part = false;
-        tmp_key_part = NULL;
-        if (OB_FAIL(is_key_part(key_part_id, key_part_pos, b_is_key_part))) {
-          LOG_WARN("is_key_part failed", K(ret));
-        } else if (!b_is_key_part) {
-          if (is_physical_rowid &&
-              query_range_ctx_->phy_rowid_for_table_loc_ &&
-              table_id != common::OB_INVALID_ID &&
-              part_column_id != common::OB_INVALID_ID) {
-            key_part_id.table_id_ = table_id;
-            key_part_id.column_id_ = part_column_id;
-          }
+      if (is_physical_rowid && column_count_ != 1 && !query_range_ctx_->phy_rowid_for_table_loc_) {
+        GET_ALWAYS_TRUE_OR_FALSE(true, out_key_part);
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < pk_column_items.count(); ++i) {
+          const ObColumnRefRawExpr *column_item = pk_column_items.at(i);
+          ObKeyPartId key_part_id(column_item->get_table_id(), column_item->get_column_id());
+          ObKeyPartPos *key_part_pos = nullptr;
+          bool b_is_key_part = false;
+          tmp_key_part = NULL;
           if (OB_FAIL(is_key_part(key_part_id, key_part_pos, b_is_key_part))) {
             LOG_WARN("is_key_part failed", K(ret));
+          } else if (!b_is_key_part) {
+            if (is_physical_rowid &&
+                query_range_ctx_->phy_rowid_for_table_loc_ &&
+                table_id != common::OB_INVALID_ID &&
+                part_column_id != common::OB_INVALID_ID) {
+              key_part_id.table_id_ = table_id;
+              key_part_id.column_id_ = part_column_id;
+            }
+            if (OB_FAIL(is_key_part(key_part_id, key_part_pos, b_is_key_part))) {
+              LOG_WARN("is_key_part failed", K(ret));
+            }
           }
-        }
-        if (OB_FAIL(ret) || !b_is_key_part) {
-          GET_ALWAYS_TRUE_OR_FALSE(true, tmp_key_part);
-        } else if (OB_ISNULL(key_part_pos)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get null key part pos");
-        } else if (OB_ISNULL((tmp_key_part = create_new_key_part()))) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_ERROR("alloc memory failed", K(ret));
-        } else {
-          ObObj tmp_val = val;
-          tmp_key_part->rowid_column_idx_ = i;
-          tmp_key_part->is_phy_rowid_key_part_ = is_physical_rowid;
-          tmp_key_part->id_ = key_part_id;
-          tmp_key_part->pos_ = *key_part_pos;
-          tmp_key_part->null_safe_ = false;
-          //if current expr can be extracted to range, just store the expr
-          if (c_type != T_OP_LIKE) {
-            bool is_inconsistent_rowid = false;
-            if (tmp_val.is_urowid()) {
-              if (OB_FAIL(get_result_value_with_rowid(*tmp_key_part,
-                                                      tmp_val,
-                                                      *query_range_ctx_->exec_ctx_,
-                                                      is_inconsistent_rowid))) {
-                LOG_WARN("failed to get result value", K(ret));
-              } else if (is_inconsistent_rowid) {
-                GET_ALWAYS_TRUE_OR_FALSE(false, tmp_key_part);
+          if (OB_FAIL(ret) || !b_is_key_part) {
+            GET_ALWAYS_TRUE_OR_FALSE(true, tmp_key_part);
+          } else if (OB_ISNULL(key_part_pos)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("get null key part pos");
+          } else if (OB_ISNULL((tmp_key_part = create_new_key_part()))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_ERROR("alloc memory failed", K(ret));
+          } else {
+            ObObj tmp_val = val;
+            tmp_key_part->rowid_column_idx_ = i;
+            tmp_key_part->is_phy_rowid_key_part_ = is_physical_rowid;
+            tmp_key_part->id_ = key_part_id;
+            tmp_key_part->pos_ = *key_part_pos;
+            tmp_key_part->null_safe_ = false;
+            //if current expr can be extracted to range, just store the expr
+            if (c_type != T_OP_LIKE) {
+              bool is_inconsistent_rowid = false;
+              if (tmp_val.is_urowid()) {
+                if (OB_FAIL(get_result_value_with_rowid(*tmp_key_part,
+                                                        tmp_val,
+                                                        *query_range_ctx_->exec_ctx_,
+                                                        is_inconsistent_rowid))) {
+                  LOG_WARN("failed to get result value", K(ret));
+                } else if (is_inconsistent_rowid) {
+                  GET_ALWAYS_TRUE_OR_FALSE(false, tmp_key_part);
+                }
+              }
+              if (OB_FAIL(ret) || is_inconsistent_rowid) {
+              } else if (OB_FAIL(get_normal_cmp_keypart(c_type, tmp_val, *tmp_key_part))) {
+                LOG_WARN("get normal cmp keypart failed", K(ret));
               }
             }
-            if (OB_FAIL(ret) || is_inconsistent_rowid) {
-            } else if (OB_FAIL(get_normal_cmp_keypart(c_type, tmp_val, *tmp_key_part))) {
-              LOG_WARN("get normal cmp keypart failed", K(ret));
-            }
           }
-        }
-        if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(add_and_item(key_part_list, tmp_key_part))) {
-          LOG_WARN("Add basic query key part failed", K(ret));
-        } else if (pk_column_items.count() - 1 == i &&
-                   OB_FAIL(and_range_graph(key_part_list, out_key_part))) {
-          LOG_WARN("and basic query key part failed", K(ret));
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(add_and_item(key_part_list, tmp_key_part))) {
+            LOG_WARN("Add basic query key part failed", K(ret));
+          } else if (pk_column_items.count() - 1 == i &&
+                    OB_FAIL(and_range_graph(key_part_list, out_key_part))) {
+            LOG_WARN("and basic query key part failed", K(ret));
+          }
         }
       }
     }
@@ -2691,11 +2697,19 @@ int ObQueryRange::pre_extract_single_in_op(const ObOpRawExpr *b_expr,
         out_key_part = find_false;
       }
       query_range_ctx_->cur_expr_is_precise_ = cur_in_is_precise;
-      ObKeyPartList key_part_list;
-      if (OB_FAIL(split_or(out_key_part, key_part_list))) {
-        LOG_WARN("split temp_result to or_list failed", K(ret));
-      } else if (OB_FAIL(or_range_graph(key_part_list, NULL, out_key_part, dtc_params))) {
-        LOG_WARN("or range graph failed", K(ret));
+      int64_t max_pos = -1;
+      int64_t cur_pos = out_key_part->pos_.offset_;
+      bool is_strict_equal = false;
+      if (query_range_ctx_->only_one_expr_ &&
+          OB_FAIL(is_strict_equal_graph(out_key_part, cur_pos, max_pos, is_strict_equal))) {
+        LOG_WARN("is trict equal graph failed", K(ret));
+      } else if (NULL != out_key_part && !is_strict_equal) {
+        ObKeyPartList key_part_list;
+        if (OB_FAIL(split_or(out_key_part, key_part_list))) {
+          LOG_WARN("split temp_result to or_list failed", K(ret));
+        } else if (OB_FAIL(or_range_graph(key_part_list, NULL, out_key_part, dtc_params))) {
+          LOG_WARN("or range graph failed", K(ret));
+        }
       }
     }
   }
@@ -3332,12 +3346,15 @@ int ObQueryRange::check_rowid_val(const ObIArray<const ObColumnRefRawExpr *> &pk
                                                         K(pk_cnt), K(pk_column_items.count()));
     } else {
       for (int i = 0; OB_SUCC(ret) && i < pk_cnt; ++i) {
+        ObObjMeta meta1 = pk_vals.at(i).meta_;
+        ObObjMeta meta2 = pk_column_items.at(i)->get_result_type();
+        meta2.set_scale(pk_column_items.at(i)->get_scale());
         if (!pk_vals.at(i).is_null() &&
-            !ObSQLUtils::is_same_type_for_compare(pk_vals.at(i).meta_,
-                                                  pk_column_items.at(i)->get_result_type())) {
+            !ObSQLUtils::is_same_type_for_compare(meta1, meta2)) {
           ret = OB_INVALID_ROWID;
           LOG_WARN("invalid rowid, table rowkey type and encoded type mismatch", K(ret),
-                      K(pk_vals.at(i).meta_), K(pk_column_items.at(i)->get_result_type()));
+                   K(pk_vals.at(i).meta_), K(pk_vals.at(i).meta_.get_scale()),
+                   K(pk_column_items.at(i)->get_result_type()));
         }
       }
     }
@@ -3390,9 +3407,12 @@ int ObQueryRange::pre_extract_not_in_op(const ObOpRawExpr *b_expr,
   int ret = OB_SUCCESS;
   const ObRawExpr *l_expr = NULL;
   const ObOpRawExpr *r_expr = NULL;
-  if (OB_ISNULL(b_expr) || OB_ISNULL(query_range_ctx_)) {
+  ObSQLSessionInfo *session = NULL;
+  bool enable_not_in_range = false;
+  if (OB_ISNULL(b_expr) || OB_ISNULL(query_range_ctx_) || OB_ISNULL(query_range_ctx_->exec_ctx_)
+      || OB_ISNULL(session = query_range_ctx_->exec_ctx_->get_my_session())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("expr is null.", K(b_expr), K_(query_range_ctx));
+    LOG_WARN("unexpected null", K(b_expr), K_(query_range_ctx), K(session));
   } else if (2 != b_expr->get_param_count()) {//binary op expr
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("b_expr must has 2 arguments", K(ret));
@@ -3400,8 +3420,11 @@ int ObQueryRange::pre_extract_not_in_op(const ObOpRawExpr *b_expr,
              OB_ISNULL(r_expr = static_cast<const ObOpRawExpr *>(b_expr->get_param_expr(1)))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("r_expr is null.", K(ret));
-  } else if (r_expr->get_param_count() > MAX_NOT_IN_SIZE || l_expr->get_expr_type() == T_OP_ROW) {
-    // do not extract range over MAX_NOT_IN_SIZE
+  } else if (OB_FAIL(session->is_enable_range_extraction_for_not_in(enable_not_in_range))) {
+    LOG_WARN("failed to check not in range enabled", K(ret));
+  } else if (!enable_not_in_range || r_expr->get_param_count() > MAX_NOT_IN_SIZE
+             || l_expr->get_expr_type() == T_OP_ROW) {
+    // do not extract range: 1. not in range is disabled; 2. not in size over MAX_NOT_IN_SIZE
     GET_ALWAYS_TRUE_OR_FALSE(true, out_key_part);
     query_range_ctx_->cur_expr_is_precise_ = false;
   } else {
@@ -5168,6 +5191,10 @@ int ObQueryRange::definite_key_part(ObKeyPart *key_part, ObExecContext &exec_ctx
       if (OB_FAIL(replace_unknown_value(cur, exec_ctx, dtc_params, is_bound_modified))) {
         LOG_WARN("Replace unknown value failed", K(ret));
       } else if (cur->is_always_false()) { // set key_part false
+        if (key_part->is_in_key()) {
+          key_part->id_ = cur->id_;
+          key_part->pos_ = cur->pos_;
+        }
         key_part->normal_keypart_ = cur->normal_keypart_;
         key_part->key_type_ = T_NORMAL_KEY;
         // key_part = cur; cause bug ->
@@ -6013,8 +6040,9 @@ OB_INLINE int ObQueryRange::gen_simple_get_range(const ObKeyPart &root,
       } else if (OB_UNLIKELY(cur_val->is_unknown())) {
         //下推的？
         always_true = true;
-      } else if (OB_LIKELY(ObSQLUtils::is_same_type_for_compare(cur_val->get_meta(),
-                                                      cur->pos_.column_type_.get_obj_meta()))) {
+      } else if (OB_LIKELY(ObSQLUtils::is_same_type_for_compare(
+                             cur_val->get_meta(), cur->pos_.column_type_.get_obj_meta())
+                           && !cur_val->get_meta().is_decimal_int())) {
         cur_val->set_collation_type(cur->pos_.column_type_.get_collation_type());
         //copy end
         new(end + i) ObObj(*cur_val);
@@ -6091,6 +6119,11 @@ OB_NOINLINE int ObQueryRange::cold_cast_cur_node(const ObKeyPart *cur,
     expect_type.set_type(cur->pos_.column_type_.get_type());
     expect_type.set_collation_type(cur->pos_.column_type_.get_collation_type());
     expect_type.set_type_infos(&cur->pos_.get_enum_set_values());
+    ObAccuracy res_acc;
+    if (cur->pos_.column_type_.is_decimal_int()) {
+      res_acc = cur->pos_.column_type_.get_accuracy();
+      cast_ctx.res_accuracy_ = &res_acc;
+    }
     EXPR_CAST_OBJ_V2(expect_type, cur_val, dest_val);
     if (OB_FAIL(ret)) {
       // do nothing
@@ -6415,7 +6448,10 @@ int ObQueryRange::and_first_search(ObSearchState &search_state,
   if (OB_SUCC(ret) && cur->or_next_ != NULL) {
     // 4. has or item
     if (contain_in_) {
-      if (OB_FAIL(remove_and_next_offset(cur, search_state.valid_offsets_))) {
+      if (OB_ISNULL(search_state.valid_offsets_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid null offsets", K(ret));
+      } else if (OB_FAIL(remove_and_next_offset(cur, *search_state.valid_offsets_))) {
         LOG_WARN("failed to revert offsets", K(ret));
       } else if (OB_FAIL(set_valid_offsets(cur->or_next_, search_state.valid_offsets_))) {
         LOG_WARN("failed to get valid offsets", K(ret));
@@ -6437,8 +6473,11 @@ int ObQueryRange::and_first_in_key(ObSearchState &search_state,
                                    const ObDataTypeCastParams &dtc_params)
 {
   int ret = OB_SUCCESS;
-  int64_t max_valid_off = get_max_valid_offset(search_state.valid_offsets_);
-  if (OB_ISNULL(cur) || OB_UNLIKELY(!cur->is_in_key() || max_valid_off == -1)) {
+  int64_t max_valid_off = -1;
+  if (OB_ISNULL(cur)
+      || OB_UNLIKELY(!cur->is_in_key() || OB_ISNULL(search_state.valid_offsets_)
+                     || (max_valid_off = get_max_valid_offset(*search_state.valid_offsets_))
+                          == -1)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(cur), K(max_valid_off));
   } else {
@@ -6635,12 +6674,23 @@ int ObQueryRange::ObSearchState::tailor_final_range(int64_t column_count)
 
 int ObQueryRange::ObSearchState::init_search_state(int64_t column_count,
                                                    bool init_as_full_range,
-                                                   uint64_t table_id)
+                                                   uint64_t table_id,
+                                                   bool contain_in_expr)
 {
   int ret = OB_SUCCESS;
   void *start_ptr = NULL;
   void *end_ptr = NULL;
-  if (OB_UNLIKELY(column_count <= 0)) {
+  if (contain_in_expr) {
+    void *buf = allocator_.alloc(sizeof(ObSqlBitSet<>));
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory", K(ret));
+    } else {
+      valid_offsets_ = new(buf) ObSqlBitSet<>();
+    }
+  }
+  if (OB_FAIL(ret)) { // do nothing
+  } else if (OB_UNLIKELY(column_count <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected column count when init search state", K(ret), K(column_count));
   } else if (OB_ISNULL(start_ptr = allocator_.alloc(sizeof(ObObj) * column_count))) {
@@ -6749,7 +6799,8 @@ OB_NOINLINE int ObQueryRange::gen_skip_scan_range(ObIAllocator &allocator,
   if (OB_ISNULL(ss_root) || OB_UNLIKELY(1 > post_column_count)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected skip scan range", K(ret), K(ss_root), K(post_column_count));
-  } else if (OB_FAIL(search_state.init_search_state(post_column_count, true, table_graph_.key_part_head_->id_.table_id_))) {
+  } else if (OB_FAIL(search_state.init_search_state(
+               post_column_count, true, table_graph_.key_part_head_->id_.table_id_, contain_in_))) {
     LOG_WARN("failed to init postfix search state", K(ret));
   }
   for (const ObKeyPart *cur = ss_root; OB_SUCC(ret) && NULL != cur && !search_state.is_empty_range_;
@@ -6780,7 +6831,8 @@ OB_NOINLINE int ObQueryRange::gen_simple_scan_range(ObIAllocator &allocator,
 {
   int ret = OB_SUCCESS;
   ObSearchState search_state(allocator);
-  if (OB_FAIL(search_state.init_search_state(column_count_, true, table_graph_.key_part_head_->id_.table_id_))) {
+  if (OB_FAIL(search_state.init_search_state(
+        column_count_, true, table_graph_.key_part_head_->id_.table_id_, contain_in_))) {
     LOG_WARN("failed to init search state", K(ret));
   }
   for (ObKeyPart *cur = table_graph_.key_part_head_;
@@ -6807,13 +6859,16 @@ OB_NOINLINE int ObQueryRange::gen_simple_scan_range(ObIAllocator &allocator,
   return ret;
 }
 
-#define CAST_VALUE_TYPE(expect_type, column_type, start, include_start, end, include_end) \
+#define CAST_VALUE_TYPE(expect_type, column_type, start, include_start, end, include_end, acc) \
 if (OB_SUCC(ret) ) { \
   ObObj cast_obj; \
   const ObObj *dest_val = NULL; \
   if (!start.is_min_value() && !start.is_max_value() && !start.is_unknown() \
-    && !ObSQLUtils::is_same_type_for_compare(start.get_meta(), column_type.get_obj_meta())) { \
+    && (!ObSQLUtils::is_same_type_for_compare(start.get_meta(), column_type.get_obj_meta()) || start.is_decimal_int())) { \
     ObCastCtx cast_ctx(&allocator, &dtc_params, CM_WARN_ON_FAIL, expect_type.get_collation_type()); \
+    if (ObDecimalIntType == expect_type.get_type()) {\
+      cast_ctx.res_accuracy_ = &acc;\
+    }\
     ObObj &tmp_start = start; \
     EXPR_CAST_OBJ_V2(expect_type, tmp_start, dest_val); \
     if (OB_FAIL(ret)) { \
@@ -6849,10 +6904,13 @@ if (OB_SUCC(ret) ) { \
   } \
   if (OB_SUCC(ret)) { \
     if (!end.is_min_value() && !end.is_max_value() && !end.is_unknown() \
-      && !ObSQLUtils::is_same_type_for_compare(end.get_meta(), column_type.get_obj_meta())) { \
+      && (!ObSQLUtils::is_same_type_for_compare(end.get_meta(), column_type.get_obj_meta()) || end.is_decimal_int())) { \
       ObCastCtx cast_ctx(&allocator, &dtc_params, CM_WARN_ON_FAIL, expect_type.get_collation_type()); \
-        ObObj &tmp_end = end; \
-        EXPR_CAST_OBJ_V2(expect_type, tmp_end, dest_val); \
+      if (ObDecimalIntType == expect_type.get_type()) {\
+        cast_ctx.res_accuracy_ = &acc;\
+      }\
+      ObObj &tmp_end = end; \
+      EXPR_CAST_OBJ_V2(expect_type, tmp_end, dest_val); \
       if (OB_FAIL(ret)) { \
         LOG_WARN("cast obj to dest type failed", K(ret), K(end), K(expect_type)); \
       } else if (ob_is_double_tc(expect_type.get_type())) { \
@@ -6968,7 +7026,8 @@ inline int ObQueryRange::get_single_key_value(const ObKeyPart *key,
     if (OB_SUCC(ret) && cur->is_phy_rowid_key_part()) {
       //physical rowid range no need cast, it's will be transformed in table scan phase.
     } else {
-      CAST_VALUE_TYPE(expect_type, cur->pos_.column_type_, start, include_start, end, include_end);
+      ObAccuracy acc(cur->pos_.column_type_.get_accuracy());
+      CAST_VALUE_TYPE(expect_type, cur->pos_.column_type_, start, include_start, end, include_end, acc);
     }
     if (OB_SUCC(ret)) {
       search_state.depth_ = static_cast<int>(cur->pos_.offset_ - skip_offset);
@@ -7023,8 +7082,10 @@ OB_NOINLINE int ObQueryRange::get_tablet_ranges(ObQueryRangeArray &ranges,
       } else if (!is_get_range) {
         all_single_value_ranges = false;
       }
-    } else if (OB_FAIL(search_state.init_search_state(column_count_, false,
-            head_key->is_in_key() ? head_key->in_keypart_->table_id_ : head_key->id_.table_id_))) {
+    } else if (OB_FAIL(search_state.init_search_state(
+                 column_count_, false,
+                 head_key->is_in_key() ? head_key->in_keypart_->table_id_ : head_key->id_.table_id_,
+                 contain_in_))) {
       LOG_WARN("failed to init search state", K(ret));
     } else {
       search_state.depth_ = 0;
@@ -7055,21 +7116,21 @@ OB_NOINLINE int ObQueryRange::get_tablet_ranges(ObQueryRangeArray &ranges,
   return ret;
 }
 
-int ObQueryRange::set_valid_offsets(const ObKeyPart *cur, ObSqlBitSet<> &offsets) const
+int ObQueryRange::set_valid_offsets(const ObKeyPart *cur, ObSqlBitSet<> *offsets) const
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(cur)) {
+  if (OB_ISNULL(cur) || OB_ISNULL(offsets)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get unexpected null", K(ret));
+    LOG_WARN("get unexpected null", K(ret), K(cur), K(offsets));
   } else {
     for (const ObKeyPart *cur_and = cur; OB_SUCC(ret) && cur_and != NULL; cur_and = cur_and->and_next_) {
       if (cur_and->is_always_true() || cur_and->is_always_false()) {
         // do nothing
       } else if (cur_and->is_in_key()) {
         for (int64_t i = 0; OB_SUCC(ret) && i < cur_and->in_keypart_->offsets_.count(); ++i) {
-          ret = offsets.add_member(cur_and->in_keypart_->offsets_.at(i));
+          ret = offsets->add_member(cur_and->in_keypart_->offsets_.at(i));
         }
-      } else if (OB_FAIL(offsets.add_member(cur_and->pos_.offset_))) {
+      } else if (OB_FAIL(offsets->add_member(cur_and->pos_.offset_))) {
         LOG_WARN("failed to add offsets", K(ret));
       }
     }
@@ -8524,6 +8585,11 @@ int ObQueryRange::cast_like_obj_if_needed(const ObObj &string_obj,
     expect_type.set_type(col_res_type.get_type());
     expect_type.set_collation_type(col_res_type.get_collation_type());
     expect_type.set_type_infos(&out_key_part.pos_.get_enum_set_values());
+    ObAccuracy res_acc;
+    if (col_res_type.get_type() == ObDecimalIntType) {
+      res_acc = col_res_type.get_accuracy();
+      cast_ctx.res_accuracy_ = &res_acc;
+    }
     if (OB_FAIL(ObObjCaster::to_type(expect_type, cast_ctx, string_obj, buf_obj, obj_ptr))) {
       LOG_WARN("cast obj to dest type failed", K(ret), K(string_obj), K(col_res_type));
     } else if (ob_is_double_tc(expect_type.get_type())) {
@@ -8753,7 +8819,7 @@ int ObQueryRange::get_geo_intersects_keypart(uint32_t input_srid,
                                              ObKeyPart *out_key_part)
 {
   INIT_SUCC(ret);
-  common::ObArenaAllocator tmp_alloc;
+  common::ObArenaAllocator tmp_alloc(lib::ObLabel("GisIndex"));
   ObS2Cellids cells;
   ObS2Cellids cells_with_ancestors;
   ObSpatialMBR mbr_filter(op_type);
@@ -8889,6 +8955,9 @@ int ObQueryRange::get_geo_intersects_keypart(uint32_t input_srid,
         }
       }
     }
+  }
+  if (OB_NOT_NULL(s2object)) {
+    s2object->~ObS2Adapter();
   }
 
   return ret;
@@ -9066,6 +9135,9 @@ int ObQueryRange::get_geo_coveredby_keypart(uint32_t input_srid,
         }
       }
     }
+  }
+  if (OB_NOT_NULL(s2object)) {
+    s2object->~ObS2Adapter();
   }
 
   return ret;

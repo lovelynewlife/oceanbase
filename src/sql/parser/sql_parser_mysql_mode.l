@@ -95,10 +95,8 @@ mysql_compatible_comment_with_version \/\*\![0-9]{5}
 mysql_compatible_comment_without_version \/\*\!
 mysql_compatible_comment_end \*\/
 
-rowidPattern  (WITH{whitespace}ROWID)
 
 %%
-{rowidPattern}                { REPUT_TOKEN_NEG_SIGN(WITH_ROWID); }
 INTERVAL { 
   ParseResult *p = (ParseResult *)yyextra;
   REPUT_NEG_SIGN(p); 
@@ -979,6 +977,8 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>MONITOR  { return MONITOR; }
 <hint>AUTO { return AUTO; }
 <hint>FORCE { return FORCE; }
+<hint>USE_COLUMN_TABLE { return USE_COLUMN_STORE_HINT; }
+<hint>NO_USE_COLUMN_TABLE { return NO_USE_COLUMN_STORE_HINT; }
 <hint>[(),.@]  {
   ParseResult *p = (ParseResult *)yyextra;
   if (!p->is_ignore_token_) {

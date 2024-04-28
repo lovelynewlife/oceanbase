@@ -898,6 +898,37 @@ public:
                                       ObIArray<ObRawExpr*> &equal_conds);
 
   static int extract_udt_exprs(ObRawExpr *expr, ObIArray<ObRawExpr *> &udt_exprs);
+  // json object with star : json_object(*)
+  static int check_is_json_constraint(ObTransformerCtx *ctx,
+                                      ObDMLStmt *stmt,
+                                      ColumnItem& col_item,
+                                      bool &is_json);
+  static int extract_json_object_exprs(ObRawExpr *expr, ObIArray<ObRawExpr *> &json_exprs);
+  static int expand_wild_star_to_columns(ObTransformerCtx *ctx,
+                                         ObDMLStmt *stmt,
+                                         ObSysFunRawExpr *json_object_expr);
+  static int get_columnitem_from_json_table(ObDMLStmt *stmt,
+                                            const TableItem *tmp_table_item,
+                                            ObSEArray<ColumnItem, 4>& column_list);
+  static int get_column_node_from_table(ObTransformerCtx *ctx,
+                                        ObDMLStmt *stmt,
+                                        ObString& tab_name,
+                                        ObSEArray<ColumnItem, 4>& column_list,
+                                        bool all_tab,
+                                        bool &tab_has_alias,
+                                        TableItem *&tab_item,
+                                        bool &is_empty_table);
+  static int add_column_expr_for_json_object_node(ObTransformerCtx *ctx,
+                                                  ObDMLStmt *stmt,
+                                                  ColumnItem& col_item,
+                                                  ObSEArray<ObRawExpr *, 1>& param_array);
+  static int get_expand_node_from_star(ObTransformerCtx *ctx,
+                                       ObDMLStmt *stmt,
+                                       ObRawExpr *param_expr,
+                                       ObSEArray<ObRawExpr *, 1>& param_array);
+  static int add_dummy_expr_for_json_object_node(ObTransformerCtx *ctx,
+                                                 ObSEArray<ObRawExpr *, 1>& param_array);
+  // end json object with star
   static int add_cast_for_replace(ObRawExprFactory &expr_factory,
                                   const ObRawExpr *from_expr,
                                   ObRawExpr *&to_expr,
@@ -1791,6 +1822,13 @@ public:
                                   ObIArray<ObRawExpr *> &common_exprs);
   static int check_is_index_part_key(ObTransformerCtx &ctx, ObDMLStmt &stmt, ObRawExpr *check_expr, bool &is_valid);
 
+  static int check_stmt_is_only_full_group_by(const ObSelectStmt *stmt,
+                                              bool &is_only_full_group_by);
+
+  static int check_group_by_subset(ObRawExpr *expr,
+                                   const ObIArray<ObRawExpr *> &group_exprs,
+                                   bool &bret);
+
   static int expand_temp_table(ObTransformerCtx *ctx, ObDMLStmt::TempTableInfo& table_info);
 
   static int get_stmt_map_after_copy(ObDMLStmt *origin_stmt,
@@ -1817,17 +1855,22 @@ public:
                                bool used_in_compare,
                                bool &can_replace);
 
-  static int check_pushdown_into_set_valid(ObRawExpr *expr,
+  static int check_pushdown_into_set_valid(const ObSelectStmt* child_stmt,
+                                           ObRawExpr *expr,
                                            const ObIArray<ObRawExpr *> &set_op_exprs,
                                            bool &is_valid);
 
-  static int recursive_check_pushdown_into_set_valid(ObRawExpr *expr,
+  static int recursive_check_pushdown_into_set_valid(const ObSelectStmt* child_stmt,
+                                                     ObRawExpr *expr,
                                                      const ObIArray<ObRawExpr *> &set_op_exprs,
                                                      ObIArray<ObRawExpr *> &parent_exprs,
                                                      bool &is_valid);
   static int get_explicated_ref_columns(const uint64_t table_id,
                                         ObDMLStmt *stmt,
                                         ObIArray<ObRawExpr*> &table_cols);
+  static int check_child_projection_validity(const ObSelectStmt *child_stmt,
+                                             ObRawExpr *expr,
+                                             bool &is_valid);
 private:
   static int inner_get_lazy_left_join(ObDMLStmt *stmt,
                                       TableItem *table,

@@ -166,6 +166,8 @@ int ObMPStmtPrexecute::before_process()
           if (OB_UNLIKELY(!session->is_valid())) {
             ret = OB_ERR_UNEXPECTED;
             LOG_ERROR("invalid session", K_(sql), K(ret));
+          } else if (OB_FAIL(process_kill_client_session(*session))) {
+            LOG_WARN("client session has been killed", K(ret));
           } else if (OB_UNLIKELY(session->is_zombie())) {
             ret = OB_ERR_SESSION_INTERRUPTED;
             LOG_WARN("session has been killed", K(session->get_session_state()), K_(sql),
@@ -196,6 +198,7 @@ int ObMPStmtPrexecute::before_process()
                                                         session->get_effective_tenant_id()))) {
               LOG_WARN("failed to check_and_refresh_schema", K(ret));
             } else {
+              oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
               do {
                 share::schema::ObSchemaGetterGuard schema_guard;
                 const uint64_t tenant_id = session->get_effective_tenant_id();
@@ -252,9 +255,6 @@ int ObMPStmtPrexecute::before_process()
                     }
                     session->set_session_in_retry(retry_ctrl_.need_retry());
                   }
-                }
-                if (RETRY_TYPE_LOCAL == retry_ctrl_.get_retry_type()) {
-                  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
                 }
               } while (RETRY_TYPE_LOCAL == retry_ctrl_.get_retry_type());
               if (OB_SUCC(ret) && retry_ctrl_.get_retry_times() > 0) {
@@ -512,7 +512,7 @@ int ObMPStmtPrexecute::execute_response(ObSQLSessionInfo &session,
           ++cur;
           cursor->set_current_position(cur);
           is_fetched = true;
-          if (OB_FAIL(response_row(session, row, &cursor->get_field_columns()))) {
+          if (OB_FAIL(response_row(session, row, &cursor->get_field_columns(), cursor->is_packed()))) {
             LOG_WARN("response row fail at line: ", K(ret), K(row_num));
           } else {
             ++row_num;
@@ -575,9 +575,9 @@ int ObMPStmtPrexecute::execute_response(ObSQLSessionInfo &session,
       if (OB_NOT_NULL(cursor) && OB_FAIL(session.close_cursor(cursor->get_id()))) {
         LOG_WARN("close cursor failed.", K(ret), K(stmt_id_));
       }
-      // first time the stmt_id do not response to the client
-      // Whether the cursor close is successful or not, it is required
-      if (first_time_ && OB_FAIL(session.close_ps_stmt(stmt_id_))) {
+      if (OB_FAIL(clean_ps_stmt(session,
+                                RETRY_TYPE_LOCAL == retry_ctrl.get_retry_type(),
+                                ctx.multi_stmt_item_.is_batched_multi_stmt()))) {
         LOG_WARN("close cursor failed.", K(ret), K(stmt_id_));
       }
       ret = tmp_ret;
@@ -967,7 +967,7 @@ int ObMPStmtPrexecute::response_arraybinding_rows(sql::ObSQLSessionInfo &session
     arraybinding_row_->get_cell(0).set_int(is_pl ? curr_sql_idx_ : affect_rows);
     arraybinding_row_->get_cell(1).set_int(0);
     arraybinding_row_->get_cell(2).set_null();
-    if (OB_FAIL(response_row(session, *arraybinding_row_, arraybinding_columns_))) {
+    if (OB_FAIL(response_row(session, *arraybinding_row_, arraybinding_columns_, false))) {
       LOG_WARN("fail to response fail row to client", K(ret));
     }
   }
@@ -984,7 +984,7 @@ int ObMPStmtPrexecute::response_fail_result(sql::ObSQLSessionInfo &session, int 
     arraybinding_row_->get_cell(i).set_null();
   }
   arraybinding_row_->get_cell(arraybinding_row_->get_count() - 1).set_varchar(ob_oracle_strerror(err_ret));
-  if (OB_FAIL(response_row(session, *arraybinding_row_, arraybinding_columns_))) {
+  if (OB_FAIL(response_row(session, *arraybinding_row_, arraybinding_columns_, false))) {
     LOG_WARN("fail to response fail row to client", K(ret));
   }
   return ret;
@@ -998,6 +998,7 @@ int ObMPStmtPrexecute::response_returning_rows(ObSQLSessionInfo &session,
   MYSQL_PROTOCOL_TYPE protocol_type = BINARY;
   const ObNewRow *result_row = NULL;
   const common::ColumnsFieldIArray *fields = result.get_field_columns();
+  bool is_packed = result.get_physical_plan() ? result.get_physical_plan()->is_packed() : false;
   if (OB_ISNULL(fields) || NULL == arraybinding_row_ || arraybinding_row_->get_count() < 3) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("fields is null", K(ret), KP(fields));
@@ -1014,7 +1015,7 @@ int ObMPStmtPrexecute::response_returning_rows(ObSQLSessionInfo &session,
         arraybinding_row_->get_cell(i+2) = value;
       }
       arraybinding_row_->get_cell(arraybinding_row_->get_count() - 1).set_null();
-      if (OB_SUCCESS != (response_ret = response_row(session, *arraybinding_row_, arraybinding_columns_))) {
+      if (OB_SUCCESS != (response_ret = response_row(session, *arraybinding_row_, arraybinding_columns_, is_packed))) {
         LOG_WARN("fail to response row to client", K(response_ret));
       }
     }
@@ -1033,7 +1034,7 @@ int ObMPStmtPrexecute::response_returning_rows(ObSQLSessionInfo &session,
       }
       arraybinding_row_->get_cell(arraybinding_row_->get_count() - 1).set_varchar(ob_oracle_strerror(ret));
       LOG_DEBUG("error occured before send arraybinding_row_", KPC(arraybinding_row_));
-      if (OB_SUCCESS != (response_ret = response_row(session, *arraybinding_row_, arraybinding_columns_))) {
+      if (OB_SUCCESS != (response_ret = response_row(session, *arraybinding_row_, arraybinding_columns_, false))) {
         LOG_WARN("fail to response row to client", K(response_ret));
       }
       if (is_save_exception_) {

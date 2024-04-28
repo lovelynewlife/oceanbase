@@ -126,7 +126,8 @@ public:
       orign_session_value_(NULL),
       cursor_session_value_(NULL),
       nested_session_value_(NULL),
-      out_params_() {
+      out_params_(),
+      exec_params_str_() {
       }
   ~ObSPIResultSet() { reset(); }
   int init(sql::ObSQLSessionInfo &session_info);
@@ -157,8 +158,8 @@ public:
     cursor_session_value_ = NULL;
     nested_session_value_ = NULL;
     out_params_.reset();
+    exec_params_str_.reset();
     allocator_.reset();
-
     is_inited_ = false;
   }
   void reset_member_for_retry(sql::ObSQLSessionInfo &session_info)
@@ -167,6 +168,7 @@ public:
       result_set_->~ObResultSet();
     }
     sql_ctx_.reset();
+    exec_params_str_.reset();
     //allocator_.reset();
     mem_context_->get_arena_allocator().reset();
     result_set_ = new (buf_) ObResultSet(session_info, mem_context_->get_arena_allocator());
@@ -212,6 +214,7 @@ public:
   void end_cursor_stmt(pl::ObPLExecCtx *pl_ctx, int &result);
   int start_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, const ObString &sql, stmt::StmtType stmt_type, bool for_update);
   void end_nested_stmt_if_need(pl::ObPLExecCtx *pl_ctx, int &result);
+  ObString *get_exec_params_str_ptr() { return &exec_params_str_; }
 private:
   bool is_inited_;
   EndStmtType need_end_nested_stmt_;
@@ -232,6 +235,7 @@ private:
   sql::ObSQLSessionInfo::StmtSavedValue *cursor_session_value_;
   sql::ObSQLSessionInfo::StmtSavedValue *nested_session_value_;
   ObSPIOutParams out_params_; // 用于记录function的返回值
+  ObString exec_params_str_;
 };
 
 class ObSPIService
@@ -494,7 +498,8 @@ public:
                               uint64_t routine_id,
                               int64_t cursor_index);
   static int dbms_dynamic_open(pl::ObPLExecCtx *ctx,
-                               pl::ObDbmsCursorInfo &cursor);
+                               pl::ObDbmsCursorInfo &cursor,
+                               bool is_dbms_sql = false);
   static int dbms_cursor_fetch(pl::ObPLExecCtx *ctx,
                               pl::ObDbmsCursorInfo &cursor,
                               bool is_server_cursor = false);
@@ -803,7 +808,8 @@ private:
   static int dbms_cursor_execute(pl::ObPLExecCtx *ctx,
                                  const ObString ps_sql,
                                  stmt::StmtType stmt_type,
-                                 pl::ObDbmsCursorInfo &cursor);
+                                 pl::ObDbmsCursorInfo &cursor,
+                                 bool is_dbms_sql);
 
   static int adjust_out_params(ObResultSet &result_set,
                                ObSPIOutParams &out_params);

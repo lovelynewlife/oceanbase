@@ -73,7 +73,6 @@ int ObExprCase::calc_result_typeN(ObExprResType &type,
                   type_ctx.get_coll_type(),
                   lib::is_oracle_mode(),
                   default_length_semantics,
-                  type_ctx.get_session(),
                   true, false,
                   is_called_in_sql_))) {
       LOG_WARN("failed to aggregate result type");
@@ -85,8 +84,9 @@ int ObExprCase::calc_result_typeN(ObExprResType &type,
       for (int64_t i = 0; i < cond_type_count; ++i) {
         const ObObjType cond_type = types_stack[i].get_type();
         const ObObjTypeClass cond_tc = ob_obj_type_class(cond_type);
-        if (ObIntTC == cond_tc || ObUIntTC == cond_tc || ObNumberTC == cond_tc ||
-            ObNullTC == cond_tc) {
+        if (ObIntTC == cond_tc || ObUIntTC == cond_tc
+            || ObNumberTC == cond_tc || ObDecimalIntTC == cond_tc
+            || ObNullTC == cond_tc) {
           types_stack[i].set_calc_type(cond_type);
           types_stack[i].set_calc_collation(types_stack[i]);
         } else {
@@ -107,6 +107,9 @@ int ObExprCase::calc_result_typeN(ObExprResType &type,
           types_stack[i].set_calc_meta(types_stack[i].get_obj_meta());
         } else {
           types_stack[i].set_calc_meta(type.get_obj_meta());
+          if (ObDecimalIntType == type.get_obj_meta().get_type()) {
+            types_stack[i].set_calc_accuracy(type.get_accuracy());
+          }
         }
       }
     }
@@ -345,6 +348,13 @@ int ObExprCase::eval_case_batch(const ObExpr &expr,
       }
     }
   }
+  return ret;
+}
+
+DEF_SET_LOCAL_SESSION_VARS(ObExprCase, raw_expr) {
+  int ret = OB_SUCCESS;
+  SET_LOCAL_SYSVAR_CAPACITY(1);
+  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
   return ret;
 }
 

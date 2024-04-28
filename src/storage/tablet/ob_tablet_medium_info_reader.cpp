@@ -54,7 +54,7 @@ int ObTabletMediumInfoReader::init(common::ObArenaAllocator &allocator)
     LOG_WARN("init twice", K(ret), K(ls_id), K(tablet_id), K_(is_inited));
   } else {
     mds::MdsTableHandle mds_table;
-    const ObTabletDumpedMediumInfo *dumped_medium_info = nullptr;
+    ObTabletDumpedMediumInfo *dumped_medium_info = nullptr;
     if (OB_FAIL(tablet_.inner_get_mds_table(mds_table, false/*not_exist_create*/))) {
       if (OB_ENTRY_NOT_EXIST != ret) {
         LOG_WARN("failed to get mds table", K(ret), K(ls_id), K(tablet_id));
@@ -76,7 +76,7 @@ int ObTabletMediumInfoReader::init(common::ObArenaAllocator &allocator)
       allocator_ = &allocator;
     }
 
-    ObTabletMdsData::free_medium_info_list(allocator, dumped_medium_info);
+    ObTabletObjLoadHelper::free(allocator, dumped_medium_info);
   }
 
   if (OB_SUCC(ret)) {
@@ -106,7 +106,7 @@ int ObTabletMediumInfoReader::get_next_medium_info(
     compaction::ObMediumCompactionInfo &medium_info)
 {
   int ret = OB_SUCCESS;
-
+  medium_info.reset();
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret), K_(is_inited));
@@ -204,13 +204,14 @@ int ObTabletMediumInfoReader::get_specified_medium_info(
         break;
       }
     }
-    tmp_medium_info.reset();
   } // end of while
   return ret;
 }
 
 // temp solution, TODO(@xianzhi)
-int ObTabletMediumInfoReader::get_min_medium_snapshot(int64_t &min_medium_snapshot)
+int ObTabletMediumInfoReader::get_min_medium_snapshot(
+  const int64_t last_major_snapshot_version,
+  int64_t &min_medium_snapshot)
 {
   int ret = OB_SUCCESS;
   ObArenaAllocator tmp_allocator;
@@ -225,7 +226,7 @@ int ObTabletMediumInfoReader::get_min_medium_snapshot(int64_t &min_medium_snapsh
       } else {
         LOG_WARN("failed to get medium info", K(ret));
       }
-    } else {
+    } else if (tmp_key.get_medium_snapshot() > last_major_snapshot_version) {
       min_medium_snapshot = tmp_key.get_medium_snapshot();
       break;
     }
@@ -252,7 +253,6 @@ int ObTabletMediumInfoReader::get_max_medium_snapshot(int64_t &max_medium_snapsh
     } else {
       max_medium_snapshot = tmp_key.get_medium_snapshot();
     }
-    tmp_medium_info.reset();
   } // end of while
   return ret;
 }

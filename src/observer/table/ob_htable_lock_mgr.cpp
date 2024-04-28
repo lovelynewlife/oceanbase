@@ -21,12 +21,12 @@ namespace table
 
 const char *OB_HTABLE_LOCK_MANAGER = "hTableLockMgr";
 
-int ObHTableLockMgr::mtl_init(ObHTableLockMgr *&htable_lock_mgr) {
+int ObHTableLockMgr::mtl_init(ObHTableLockMgr *&htable_lock_mgr)
+{
   int ret = OB_SUCCESS;
-  htable_lock_mgr = OB_NEW(ObHTableLockMgr, ObMemAttr(MTL_ID(), OB_HTABLE_LOCK_MANAGER));
   if (OB_ISNULL(htable_lock_mgr)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to alloc memory for ObHTableLockMgr", K(ret));
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("htable_lock_mgr is null", K(ret));
   } else if (OB_FAIL(htable_lock_mgr->init())) {
     LOG_WARN("failed to init htable lock manager", K(ret));
   }
@@ -43,7 +43,7 @@ int ObHTableLockMgr::init()
     LOG_WARN("init twice", K(ret));
   } else if (OB_FAIL(lock_map_.create(DEFAULT_BUCKET_NUM, ObModIds::TABLE_PROC, ObModIds::TABLE_PROC, MTL_ID()))) {
     LOG_WARN("fail to create htable lock map", K(ret));
-  } else if (allocator_.init(ObMallocAllocator::get_instance(), OB_MALLOC_MIDDLE_BLOCK_SIZE, attr)) {
+  } else if (OB_FAIL(allocator_.init(ObMallocAllocator::get_instance(), OB_MALLOC_MIDDLE_BLOCK_SIZE, attr))) {
     LOG_WARN("fail to init allocator", K(ret));
   } else {
     is_inited_ = true;
@@ -126,7 +126,7 @@ int ObHTableLockMgr::lock_row(const uint64_t table_id, const common::ObString& k
   if (key.empty()) {
     ret = OB_ERR_NULL_VALUE;
     LOG_WARN("null lock row key", K(ret));
-  } else if (handle.find_lock_node(table_id, key, lock_node)) {
+  } else if (OB_FAIL(handle.find_lock_node(table_id, key, lock_node))) {
     LOG_WARN("fail to find lock node", K(ret), K(table_id), K(key));
   } else if (OB_ISNULL(lock_node)) {
     if (OB_FAIL(internal_lock_row(table_id, key, mode, handle))) {

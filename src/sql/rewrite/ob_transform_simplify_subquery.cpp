@@ -255,7 +255,8 @@ int ObTransformSimplifySubquery::is_subquery_to_expr_valid(const ObSelectStmt *s
              && 0 == stmt->get_having_expr_size()
              && !stmt->has_limit()
              && !stmt->is_hierarchical_query()
-             && !stmt->is_set_stmt()) {
+             && !stmt->is_set_stmt()
+             && !stmt->has_sequence()) {
     is_valid = true;
   }
   if (OB_SUCC(ret) && is_valid) {
@@ -1268,7 +1269,7 @@ int ObTransformSimplifySubquery::eliminate_subquery(ObDMLStmt *stmt,
       } else if (OB_ISNULL(subquery = subq_expr->get_ref_stmt())) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("Subquery stmt is NULL", K(ret));
-      } else if (subquery->is_contains_assignment()) {
+      } else if (subquery->is_contains_assignment() || subquery->is_values_table_query()) {
         // do nothing
       } else if (OB_FAIL(subquery_can_be_eliminated_in_exists(expr->get_expr_type(),
                                                               subquery,
@@ -1457,7 +1458,8 @@ int ObTransformSimplifySubquery::groupby_can_be_eliminated_in_any_all(const ObSe
   } else if (stmt->has_group_by()
              && !stmt->has_having()
              && !stmt->has_limit()
-             && 0 == stmt->get_aggr_item_size()) {
+             && 0 == stmt->get_aggr_item_size()
+             && !stmt->is_values_table_query()) {
     // Check if select list is involved in group exprs
     ObRawExpr *s_expr = NULL;
     bool all_in_group_exprs = true;
@@ -1498,7 +1500,8 @@ int ObTransformSimplifySubquery::eliminate_subquery_in_exists(ObDMLStmt *stmt,
     } else if (OB_ISNULL(subquery = subq_expr->get_ref_stmt())) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("Subquery stmt is NULL", K(ret));
-    //Just in case different parameters hit same plan, firstly we need add const param constraint
+    } else if (subquery->is_values_table_query()) { /* do nothing */
+      //Just in case different parameters hit same plan, firstly we need add const param constraint
     } else if (OB_FAIL(need_add_limit_constraint(expr->get_expr_type(), subquery, add_limit_constraint))){
       LOG_WARN("failed to check limit constraints", K(ret));
     } else if (add_limit_constraint &&
@@ -1550,6 +1553,17 @@ int ObTransformSimplifySubquery::simplify_select_items(ObDMLStmt *stmt,
           ObSelectStmt *child = child_stmts.at(i);
           if (OB_FAIL(SMART_CALL(simplify_select_items(stmt, op_type, child, true, trans_happened)))) {
             LOG_WARN("Simplify select list in EXISTS fails", K(ret));
+          }
+        }
+        ObExprResType res_type;
+        res_type.set_type(ObIntType);
+        for(int64_t i = 0; OB_SUCC(ret) && i < subquery->get_select_item_size(); i++) {
+          SelectItem &select_item = subquery->get_select_item(i);
+          if(OB_ISNULL(select_item.expr_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected null select expr", K(ret), K(select_item));
+          } else {
+            select_item.expr_->set_result_type(res_type);
           }
         }
         bool has_limit = false;
@@ -1974,14 +1988,11 @@ int ObTransformSimplifySubquery::try_trans_any_all_as_exists(ObDMLStmt *stmt,
     }
   } else {
     //check children
-    bool child_is_bool_expr = expr->get_expr_type() == T_OP_OR ||
-                              expr->get_expr_type() == T_OP_AND ||
-                              expr->get_expr_type() == T_OP_XOR;
     for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
       if (OB_FAIL(SMART_CALL(try_trans_any_all_as_exists(stmt,
                                                          expr->get_param_expr(i),
                                                          not_null_ctx,
-                                                         child_is_bool_expr,
+                                                         false,
                                                          is_happened)))) {
         LOG_WARN("failed to try_transform_any_all for param", K(ret));
       } else {
@@ -2250,10 +2261,11 @@ int ObTransformSimplifySubquery::check_stmt_can_trans_as_exists(ObSelectStmt *st
   } else if (stmt->is_contains_assignment() ||
              stmt->is_hierarchical_query() ||
              stmt->has_window_function() ||
-             stmt->has_rollup()) {
+             stmt->has_rollup() ||
+             stmt->is_values_table_query()) {
     LOG_TRACE("stmt not support trans in as exists", K(stmt->is_contains_assignment()),
               K(stmt->is_hierarchical_query()), K(stmt->has_window_function()),
-              K(stmt->has_rollup()));
+              K(stmt->has_rollup()), K(stmt->is_values_table_query()));
   } else if (is_correlated) {
     is_valid = true;
   } else if (stmt->has_group_by() ||

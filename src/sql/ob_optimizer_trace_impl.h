@@ -1,9 +1,13 @@
 /**
- * ob_optimizer_trace_impl.h
- *
- * Authors:
- *   zhenling.zzg <>
- *
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OB_OPTIMIZER_TRACE_IMPL_H
@@ -22,6 +26,7 @@ namespace oceanbase
 {
 namespace common {
 class ObObj;
+class ObDSResultItem;
 }
 using namespace common;
 namespace sql
@@ -38,6 +43,7 @@ class OptTableMetas;
 class TableItem;
 class ObSQLSessionInfo;
 struct CandidatePlan;
+class OptSystemStat;
 
 class ObOptimizerTraceImpl;
 
@@ -159,7 +165,6 @@ inline ObOptimizerTraceImpl** get_local_tracer()
 #define OPT_TRACE_STATIS(stmt, table_metas)       \
   do {                                            \
     CHECK_TRACE_ENABLED {                         \
-      tracer->append_title("BASIC TABLE STATIS"); \
       tracer->trace_static(stmt, table_metas);    \
     }                                             \
   } while (0);                                    \
@@ -249,6 +254,7 @@ public:
   int append(const OpParallelRule& rule);
   int append(const ObTableLocationType& type);
   int append(const ObPhyPlanType& type);
+  int append(const OptSystemStat& stat);
 /***********************************************/
 ////print plan info
 /***********************************************/
@@ -260,6 +266,7 @@ public:
   int append(const TableItem *table);
   int append(const ObShardingInfo *info);
   int append(const CandidatePlan &plan);
+  int append(const ObDSResultItem &ds_result);
 /***********************************************/
 ////print template type
 /***********************************************/
@@ -286,6 +293,11 @@ public:
   //for ObIArray<int64_t>
   template <typename T>
   typename std::enable_if<std::is_base_of<ObIArray<int64_t>, T>::value, int>::type
+  append(const T& value);
+
+  //for ObIArray<ObDSResultItem>
+  template <typename T>
+  typename std::enable_if<std::is_base_of<ObIArray<ObDSResultItem>, T>::value, int>::type
   append(const T& value);
 
   //template for function append
@@ -416,6 +428,20 @@ ObOptimizerTraceImpl::append(const T& value)
     ret = append(value.at(i));
   }
   append("]");
+  return ret;
+}
+
+//for ObIArray<ObDSResultItem>
+template <typename T>
+typename std::enable_if<std::is_base_of<ObIArray<ObDSResultItem>, T>::value, int>::type
+ObOptimizerTraceImpl::append(const T& value)
+{
+  int ret = OB_SUCCESS;
+  for (int i = 0; OB_SUCC(ret) && i < value.count(); ++i) {
+    if (OB_FAIL(append(value.at(i)))) {
+    } else if (OB_FAIL(new_line())) {
+    }
+  }
   return ret;
 }
 

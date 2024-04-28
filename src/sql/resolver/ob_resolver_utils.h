@@ -347,6 +347,7 @@ public:
                            const common::ObCollationType server_collation,
                            ObExprInfo *parents_expr_info,
                            const ObSQLMode mode,
+                           bool enable_decimal_int_type,
                            bool is_from_pl = false);
 
   static int set_string_val_charset(ObIAllocator &allocator,
@@ -363,6 +364,7 @@ public:
                                const bool is_for_pl_type,
                                const ObSessionNLSParams &nls_session_param,
                                uint64_t tenant_id,
+                               const bool enable_decimal_int_type,
                                const bool convert_real_type_to_decimal = false);
 
   static int resolve_str_charset_info(const ParseNode &type_node,
@@ -470,7 +472,8 @@ public:
                                            share::schema::ObColumnSchemaV2 &generated_column,
                                            ObRawExpr *&expr,
                                            const PureFunctionCheckStatus
-                                             check_status = DISABLE_CHECK);
+                                             check_status = DISABLE_CHECK,
+                                           bool coltype_not_defined = false);
   static int resolve_generated_column_expr(ObResolverParams &params,
                                            const ParseNode *node,
                                            share::schema::ObTableSchema &tbl_schema,
@@ -478,7 +481,8 @@ public:
                                            share::schema::ObColumnSchemaV2 &generated_column,
                                            ObRawExpr *&expr,
                                            const PureFunctionCheckStatus
-                                             check_status = DISABLE_CHECK);
+                                             check_status = DISABLE_CHECK,
+                                           bool coltype_not_defined = false);
   static int resolve_generated_column_info(const common::ObString &expr_str,
                                            ObIAllocator &allocator,
                                            ObItemType &root_expr_type,
@@ -583,9 +587,16 @@ public:
                                                    ObSchemaChecker &schema_checker,
                                                    const common::ObIArray<common::ObString> &parent_columns,
                                                    const common::ObSArray<obrpc::ObCreateIndexArg> &index_arg_list,
+                                                   const bool is_oracle_mode,
                                                    share::schema::ObConstraintType &ref_cst_type,
                                                    uint64_t &ref_cst_id,
                                                    bool &is_match);
+  static int check_self_reference_fk_columns_satisfy(
+        const obrpc::ObCreateForeignKeyArg &arg);
+  static int check_foreign_key_set_null_satisfy(
+        const obrpc::ObCreateForeignKeyArg &arg,
+        const share::schema::ObTableSchema &child_table_schema,
+        const bool is_mysql_compat_mode);
   static int check_match_columns(const common::ObIArray<ObString> &parent_columns,
                                  const common::ObIArray<ObString> &key_columns,
                                  bool &is_match);
@@ -603,10 +614,11 @@ public:
                                     const ObIArray<ObString> &input_index_columns_name,
                                     bool &is_match);
   static int check_foreign_key_columns_type(
+      const bool is_mysql_compat_mode,
       const share::schema::ObTableSchema &child_table_schema,
       const share::schema::ObTableSchema &parent_table_schema,
-      common::ObIArray<common::ObString> &child_columns,
-      common::ObIArray<common::ObString> &parent_columns,
+      const common::ObIArray<common::ObString> &child_columns,
+      const common::ObIArray<common::ObString> &parent_columns,
       const share::schema::ObColumnSchemaV2 *column = NULL);
   static int get_columns_name_from_index_table_schema(const share::schema::ObTableSchema &index_table_schema,
                                                       ObIArray<ObString> &index_columns_name);
@@ -765,10 +777,15 @@ public:
                             const ObPCParam *pc_param,
                             const int64_t param_idx,
                             ObObjParam &obj_param,
-                            bool &is_param);
+                            bool &is_param,
+                            const bool enable_decimal_int);
   static int check_keystore_status(const uint64_t tenant_id, ObSchemaChecker &schema_checker);
   static int check_encryption_name(common::ObString &encryption_name, bool &need_encrypt);
   static int check_not_supported_tenant_name(const common::ObString &tenant_name);
+  static int check_allowed_alter_operations_for_mlog(
+      const uint64_t tenant_id,
+      const obrpc::ObAlterTableArg &arg,
+      const share::schema::ObTableSchema &table_schema);
 private:
   static int try_convert_to_unsiged(const ObExprResType restype,
                                     ObRawExpr& src_expr,
@@ -800,6 +817,8 @@ private:
   static int handle_varchar_charset(ObCharsetType charset_type,
                                     ObIAllocator &allocator,
                                     ParseNode *&node);
+
+  static int is_negative_ora_nmb(const common::ObObjParam &obj_param, bool &is_neg, bool &is_zero);
   static const common::ObString stmt_type_string[];
 
   // disallow construct

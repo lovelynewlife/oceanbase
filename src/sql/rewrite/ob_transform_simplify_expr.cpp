@@ -733,8 +733,11 @@ int ObTransformSimplifyExpr::do_check_like_condition(ObRawExpr *&expr,
                                                           *ctx_->allocator_))) {
         LOG_WARN("failed to calc const or calculable expr", K(ret));
       } else if (got_result) {
+        //can't replace if pattern have wildcard or default escape character
         ObString val = result.get_string();
-        can_replace = OB_ISNULL(val.find('_')) && OB_ISNULL(val.find('%'));
+        can_replace = OB_ISNULL(val.find('_'))
+                      && OB_ISNULL(val.find('%'))
+                      && OB_ISNULL(val.find('\\'));
       } else {}
     }
     if (OB_SUCC(ret) && can_replace) {
@@ -2304,6 +2307,7 @@ int ObTransformSimplifyExpr::remove_false_true(ObRawExpr *expr,
 int ObTransformSimplifyExpr::remove_ora_decode(ObDMLStmt *stmt, bool &trans_happened)
 {
   int ret = OB_SUCCESS;
+  trans_happened = false;
   ObSEArray<ObRawExpr *, 2> old_exprs;
   ObSEArray<ObRawExpr *, 2> new_exprs;
   ObSEArray<ObRawExpr *, 16> relation_exprs;

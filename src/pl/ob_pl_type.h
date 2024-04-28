@@ -47,6 +47,7 @@ class ObExecContext;
 struct ObSPICursor;
 class ObSPIResultSet;
 class ObSQLSessionInfo;
+class ObSynonymChecker;
 }
 namespace common
 {
@@ -242,7 +243,10 @@ public:
       user_type_id_(common::OB_INVALID_ID),
       not_null_(false),
       pls_type_(ObPLIntegerType::PL_INTEGER_INVALID),
-      type_info_() {}
+      type_info_()
+  {
+    type_info_.set_tenant_id(MTL_ID());
+  }
   ObPLDataType(ObPLType type)
     : type_(type),
       type_from_(PL_TYPE_LOCAL),
@@ -251,7 +255,10 @@ public:
       user_type_id_(common::OB_INVALID_ID),
       not_null_(false),
       pls_type_(ObPLIntegerType::PL_INTEGER_INVALID),
-      type_info_() {}
+      type_info_()
+  {
+    type_info_.set_tenant_id(MTL_ID());
+  }
   ObPLDataType(common::ObObjType type)
     : type_(PL_OBJ_TYPE),
       type_from_(PL_TYPE_LOCAL),
@@ -265,6 +272,7 @@ public:
     common::ObDataType data_type;
     data_type.set_obj_type(type);
     set_data_type(data_type);
+    type_info_.set_tenant_id(MTL_ID());
   }
   ObPLDataType(const ObPLDataType &other)
     : type_(other.type_),
@@ -275,6 +283,7 @@ public:
       not_null_(other.not_null_),
       pls_type_(other.pls_type_)
   {
+    type_info_.set_tenant_id(MTL_ID());
     type_info_ = other.type_info_;
   }
 
@@ -528,12 +537,24 @@ public:
 
   int convert(ObPLResolveCtx &ctx, ObObj *&src, ObObj *&dst) const;
 
+  static int collect_synonym_deps(uint64_t tenant_id,
+                                  sql::ObSynonymChecker &synonym_checker,
+                                  share::schema::ObSchemaGetterGuard &schema_guard,
+                                  ObIArray<share::schema::ObSchemaObjVersion> *deps);
+  static int get_synonym_object(uint64_t tenant_id,
+                                uint64_t &owner_id,
+                                ObString &object_name,
+                                bool &exist,
+                                sql::ObSQLSessionInfo &session_info,
+                                share::schema::ObSchemaGetterGuard &schema_guard,
+                                ObIArray<share::schema::ObSchemaObjVersion> *deps);
   static int get_udt_type_by_name(uint64_t tenant_id,
                                   uint64_t owner_id,
                                   const common::ObString &udt,
+                                  sql::ObSQLSessionInfo &session_info,
                                   share::schema::ObSchemaGetterGuard &schema_guard,
                                   ObPLDataType &pl_type,
-                                  share::schema::ObSchemaObjVersion *obj_version);
+                                  ObIArray<share::schema::ObSchemaObjVersion> *deps);
 #ifdef OB_BUILD_ORACLE_PL
   static int get_pkg_type_by_name(uint64_t tenant_id,
                                   uint64_t owner_id,
@@ -545,7 +566,7 @@ public:
                                   common::ObMySQLProxy &sql_proxy,
                                   bool is_pkg_var, // pkg var or pkg type
                                   ObPLDataType &pl_type,
-                                  share::schema::ObSchemaObjVersion *obj_version);
+                                  ObIArray<share::schema::ObSchemaObjVersion> *deps);
 #endif
   static int get_table_type_by_name(uint64_t tenant_id,
                                   uint64_t owner_id,
@@ -556,14 +577,14 @@ public:
                                   share::schema::ObSchemaGetterGuard &schema_guard,
                                   bool is_rowtype,
                                   ObPLDataType &pl_type,
-                                  share::schema::ObSchemaObjVersion *obj_version);
+                                  ObIArray<share::schema::ObSchemaObjVersion> *deps);
   static int transform_from_iparam(const share::schema::ObRoutineParam *iparam,
                                   share::schema::ObSchemaGetterGuard &schema_guard,
                                   sql::ObSQLSessionInfo &session_info,
                                   common::ObIAllocator &allocator,
                                   common::ObMySQLProxy &sql_proxy,
                                   pl::ObPLDataType &pl_type,
-                                  share::schema::ObSchemaObjVersion *obj_version = NULL,
+                                  ObIArray<share::schema::ObSchemaObjVersion> *deps = NULL,
                                   pl::ObPLDbLinkGuard *dblink_guard = NULL);
   static int transform_and_add_routine_param(const pl::ObPLRoutineParam *param,
                                   int64_t position,
@@ -737,6 +758,7 @@ public:
   static int64_t get_local_variable_idx(const common::ObIArray<ObObjAccessIdx> &access_idxs);
   static int64_t get_subprogram_idx(const common::ObIArray<ObObjAccessIdx> &access_idxs);
   static bool is_contain_object_type(const common::ObIArray<ObObjAccessIdx> &access_idxs);
+  static bool is_expr_type(const common::ObIArray<ObObjAccessIdx> &access_idxs);
 
 public:
   ObPLDataType elem_type_; //通过本变量访问得到的struct结构类型
@@ -849,6 +871,7 @@ public:
     first_row_.reset();
     last_row_.reset();
     is_need_check_snapshot_ = false;
+    is_packed_ = false;
   }
 
   void reset()
@@ -994,6 +1017,9 @@ public:
                           uint64_t mem_limit,
                           bool is_local_for_update = false);
 
+  inline void set_packed(bool is_packed) { is_packed_ = is_packed; }
+  inline bool is_packed() { return is_packed_; }
+
   TO_STRING_KV(K_(id),
                K_(is_explicit),
                K_(for_update),
@@ -1018,7 +1044,8 @@ public:
                K_(is_scrollable),
                K_(snapshot),
                K_(is_need_check_snapshot),
-               K_(last_execute_time));
+               K_(last_execute_time),
+               K_(is_packed));
 
 protected:
   int64_t id_;            // Cursor ID
@@ -1050,6 +1077,7 @@ protected:
   bool is_need_check_snapshot_;
   int64_t last_execute_time_; // 记录上一次cursor操作的时间点
   bool last_stream_cursor_; // cursor复用场景下，记录上一次是否是流式cursor
+  bool is_packed_;
 };
 
 class ObPLGetCursorAttrInfo

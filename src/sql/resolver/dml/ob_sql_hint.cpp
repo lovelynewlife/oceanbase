@@ -663,7 +663,7 @@ int ObQueryHint::print_stmt_hint(PlanText &plan_text, const ObDMLStmt &stmt,
   const int64_t stmt_id = stmt.get_stmt_id();
   if (OB_FAIL(print_qb_name_hint(plan_text, stmt_id))) {
     LOG_WARN("failed to print qb_name hint", K(ret));
-  } else if (stmt_id == outline_stmt_id_) {
+  } else if (OB_INVALID_STMT_ID != stmt_id && stmt_id == outline_stmt_id_) {
     // Outline data resolved from this stmt, print outline data here.
     if (OB_FAIL(print_outline_data(plan_text))) {
       LOG_WARN("failed to print outline data", K(ret));
@@ -737,7 +737,9 @@ int ObQueryHint::print_outline_data(PlanText &plan_text) const
 int ObQueryHint::print_qb_name_hint(PlanText &plan_text, int64_t stmt_id) const
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(stmt_id < 0 || stmt_id >= stmt_id_map_.count())) {
+  if (OB_INVALID_STMT_ID == stmt_id) {
+    /* do nothing, this stmt is create for print stmt for mv */
+  } else if (OB_UNLIKELY(stmt_id < 0 || stmt_id >= stmt_id_map_.count())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected stmt id", K(ret), K(stmt_id), K(stmt_id_map_.count()));
   } else if (stmt_id_map_.at(stmt_id).is_from_hint_) {
@@ -1551,6 +1553,10 @@ int ObLogPlanHint::add_index_hint(const ObDMLStmt &stmt,
     if (NULL == log_table_hint->use_das_hint_ || index_hint.is_enable_hint()) {
       log_table_hint->use_das_hint_ = &index_hint;
     }
+  } else if (T_USE_COLUMN_STORE_HINT == index_hint.get_hint_type()) {
+    if (NULL == log_table_hint->use_column_store_hint_ || index_hint.is_enable_hint()) {
+      log_table_hint->use_column_store_hint_ = &index_hint;
+    }
   } else if (OB_FAIL(log_table_hint->index_hints_.push_back(&index_hint))) {
     LOG_WARN("failed to push back", K(ret));
   }
@@ -1792,6 +1798,22 @@ int ObLogPlanHint::check_use_das(uint64_t table_id, bool &force_das, bool &force
     force_no_das = hint->is_disable_hint();
   } else if (is_outline_data_) {
     force_no_das = true;
+  }
+  return ret;
+}
+
+int ObLogPlanHint::check_use_column_store(uint64_t table_id, bool &force_column_store, bool &force_no_column_store) const
+{
+  int ret = OB_SUCCESS;
+  force_column_store = false;
+  force_no_column_store = false;
+  const LogTableHint *log_table_hint = get_log_table_hint(table_id);
+  const ObHint *hint = NULL == log_table_hint ? NULL : log_table_hint->use_column_store_hint_;
+  if (NULL != hint) {
+    force_column_store = hint->is_enable_hint();
+    force_no_column_store = hint->is_disable_hint();
+  } else if (is_outline_data_) {
+    force_no_column_store = true;
   }
   return ret;
 }
@@ -2245,6 +2267,7 @@ int LogTableHint::assign(const LogTableHint &other)
   table_ = other.table_;
   parallel_hint_ = other.parallel_hint_;
   use_das_hint_ = other.use_das_hint_;
+  use_column_store_hint_ = other.use_column_store_hint_;
   if (OB_FAIL(index_list_.assign(other.index_list_))) {
     LOG_WARN("failed to assign index list", K(ret));
   } else if (OB_FAIL(index_hints_.assign(other.index_hints_))) {

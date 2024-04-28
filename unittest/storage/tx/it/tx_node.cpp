@@ -22,9 +22,9 @@
 } while(0);
 
 namespace oceanbase {
-namespace common
+namespace share
 {
-void* ObGMemstoreAllocator::alloc(AllocHandle& handle, int64_t size)
+void* ObMemstoreAllocator::alloc(AllocHandle& handle, int64_t size, const int64_t expire_ts)
 {
   int ret = OB_SUCCESS;
   int64_t align_size = upper_align(size, sizeof(int64_t));
@@ -294,6 +294,7 @@ int ObTxNode::create_ls_(const ObLSID ls_id) {
   if (Leader == role_) {
     OZ(get_location_adapter_().fill(ls_id, addr_));
   }
+  mock_ls_.get_tx_svr()->online();
   return ret;
 }
 
@@ -532,8 +533,11 @@ int ObTxNode::read(const ObTxReadSnapshot &snapshot,
   OZ(txs_.revert_store_ctx(read_store_ctx));
   if (OB_SUCC(ret)) {
     if (row.row_flag_.is_exist()) {
+      ObArenaAllocator allocator;
+      blocksstable::ObNewRowBuilder new_row_builder;
       storage::ObStoreRow store_row;
-      OZ(row.to_store_row(columns_, store_row));
+      OZ(new_row_builder.init(columns_, allocator));
+      OZ(new_row_builder.build_store_row(row, store_row));
       OX(value = store_row.row_val_.cells_[1].get_int());
     } else if (row.row_flag_.is_not_exist()) {
       ret = OB_ENTRY_NOT_EXIST;

@@ -186,6 +186,8 @@ void AlterColumnSchema::reset()
   next_column_name_.reset();
   prev_column_name_.reset();
   is_first_ = false;
+  column_group_name_.reset();
+  is_set_comment_ = false;
 }
 
 
@@ -202,7 +204,9 @@ OB_SERIALIZE_MEMBER((AlterColumnSchema, ObColumnSchemaV2),
                     is_no_zero_date_,
                     next_column_name_,
                     prev_column_name_,
-                    is_first_);
+                    is_first_,
+                    column_group_name_,
+                    is_set_comment_);
 
 DEFINE_SERIALIZE(AlterTableSchema)
 {
@@ -309,7 +313,9 @@ int64_t AlterColumnSchema::to_string(char* buf, const int64_t buf_len) const
        K_(origin_column_name),
        K_(next_column_name),
        K_(prev_column_name),
-       K_(is_unique_key));
+       K_(is_unique_key),
+       K_(column_group_name),
+       K_(is_set_comment));
   J_COMMA();
   J_NAME(N_ALTER_COLUMN_SCHEMA);
   J_COLON();
@@ -346,8 +352,11 @@ AlterColumnSchema &AlterColumnSchema::operator=(const AlterColumnSchema &src_sch
       SHARE_LOG(WARN, "failed to deep copy next_column_name", K(ret));
     } else if (OB_FAIL(deep_copy_str(src_schema.get_prev_column_name(), prev_column_name_))) {
       SHARE_LOG(WARN, "failed to deep copy prev_column_name", K(ret));
+    } else if (OB_FAIL(deep_copy_str(src_schema.get_column_group_name(), column_group_name_))) {
+      SHARE_LOG(WARN, "failed to deep copy column_group_name", K(ret));
     } else {
       is_first_ = src_schema.is_first_;
+      is_set_comment_ = src_schema.is_set_comment_;
     }
   }
   if (OB_FAIL(ret)) {
@@ -393,6 +402,9 @@ int AlterTableSchema::assign(const ObTableSchema &src_schema)
       index_attributes_set_ = src_schema.index_attributes_set_;
       session_id_ = src_schema.session_id_;
       compressor_type_ = src_schema.compressor_type_;
+      lob_inrow_threshold_ = src_schema.lob_inrow_threshold_;
+      is_column_store_supported_ = src_schema.is_column_store_supported_;
+      max_used_column_group_id_ = src_schema.max_used_column_group_id_;
       if (OB_FAIL(deep_copy_str(src_schema.tablegroup_name_, tablegroup_name_))) {
         LOG_WARN("Fail to deep copy tablegroup_name", K(ret));
       } else if (OB_FAIL(deep_copy_str(src_schema.comment_, comment_))) {
@@ -414,9 +426,6 @@ int AlterTableSchema::assign(const ObTableSchema &src_schema)
       //view schema
       view_schema_ = src_schema.view_schema_;
 
-      mv_cnt_ = src_schema.mv_cnt_;
-      MEMCPY(mv_tid_array_, src_schema.mv_tid_array_, sizeof(uint64_t) * src_schema.mv_cnt_);
-
       aux_vp_tid_array_ = src_schema.aux_vp_tid_array_;
 
       base_table_ids_ = src_schema.base_table_ids_;
@@ -428,6 +437,7 @@ int AlterTableSchema::assign(const ObTableSchema &src_schema)
 
       aux_lob_meta_tid_ = src_schema.aux_lob_meta_tid_;
       aux_lob_piece_tid_ = src_schema.aux_lob_piece_tid_;
+      mlog_tid_ = src_schema.mlog_tid_;
     }
 
     if (OB_SUCC(ret)) {
@@ -513,6 +523,12 @@ int AlterTableSchema::assign(const ObTableSchema &src_schema)
         LOG_WARN("Fail to add column", K(ret));
       } else {
         LOG_DEBUG("add column success", K(column));
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(assign_column_group(src_schema))) {
+        LOG_WARN("fail to assign column_group", KR(ret), K(src_schema));
       }
     }
   }

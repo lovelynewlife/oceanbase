@@ -18,6 +18,7 @@
 #include "storage/blocksstable/ob_block_manager.h"
 #include "lib/task/ob_timer.h"
 #include "storage/compaction/ob_compaction_util.h"
+#include "storage/meta_mem/ob_tablet_pointer.h"
 
 namespace oceanbase
 {
@@ -30,9 +31,9 @@ namespace blocksstable
 struct ObMacroBlocksWriteCtx;
 class ObSSTableIndexBuilder;
 class ObIndexBlockRebuilder;
-class ObSSTableSecMetaIterator;
 class ObSSTableMergeRes;
 struct ObSSTableBasicMeta;
+struct ObWholeDataStoreDesc;
 struct ObBlockInfo
 {
 public:
@@ -73,6 +74,7 @@ public:
   static int mtl_init(ObSharedMacroBlockMgr* &shared_block_mgr);
 
 private:
+  bool is_recyclable(const MacroBlockId &macro_id, const int64_t &used_size) const ;
   class ObBlockDefragmentationTask : public common::ObTimerTask
   {
   public:
@@ -91,8 +93,8 @@ private:
   struct GetSmallBlockOp
   {
   public:
-    GetSmallBlockOp(ObIArray<MacroBlockId> &block_ids, ObIArray<MacroBlockId> &unused_block_ids)
-        : block_ids(block_ids), unused_block_ids(unused_block_ids), execution_ret_(OB_SUCCESS) {}
+    GetSmallBlockOp(ObSharedMacroBlockMgr &shared_mgr, ObIArray<MacroBlockId> &block_ids, ObIArray<MacroBlockId> &unused_block_ids)
+        : shared_mgr_(shared_mgr), block_ids(block_ids), unused_block_ids(unused_block_ids), execution_ret_(OB_SUCCESS) {}
     bool operator()(const MacroBlockId &id, const int32_t used_size)
     {
       int ret = OB_SUCCESS;
@@ -109,7 +111,7 @@ private:
         } else {
           bool_ret = true;
         }
-      } else if (used_size > 0 && used_size < RECYCLABLE_BLOCK_SIZE) {
+      } else if (shared_mgr_.is_recyclable(id, used_size)) {
         if (OB_FAIL(block_ids.push_back(id))) {
           STORAGE_LOG(WARN, "fail to get small block", K(ret), K(id));
         } else {
@@ -123,6 +125,7 @@ private:
     }
     int64_t get_execution_ret() { return execution_ret_; }
   private:
+    ObSharedMacroBlockMgr &shared_mgr_;
     ObIArray<MacroBlockId> &block_ids;
     ObIArray<MacroBlockId> &unused_block_ids;
     int64_t execution_ret_; // if the number of recyclable blocks reaches 1000, set it to OB_ITER_END
@@ -148,24 +151,26 @@ private:
   int prepare_data_desc(
       const ObTablet &tablet,
       const ObSSTableBasicMeta &basic_meta,
-      const ObMergeType &merge_type,
+      const compaction::ObMergeType &merge_type,
       const int64_t snapshot_version,
       const int64_t cluster_version,
-      ObDataStoreDesc &data_desc) const;
+      const share::SCN &end_scn,
+      ObWholeDataStoreDesc &data_desc) const;
   int alloc_for_tools(
       common::ObIAllocator &allocator,
       ObSSTableIndexBuilder *&sstable_index_builder,
       ObIndexBlockRebuilder *&index_block_rebuilder);
   int read_sstable_block(
       const ObSSTable &sstable,
-      ObMacroBlockHandle &block_handle);
+      ObMacroBlockHandle &block_handle,
+      common::ObIAllocator &allocator);
   int create_new_sstable(
       common::ObArenaAllocator &allocator,
       const ObSSTableMergeRes &res,
       const ObSSTable &old_table,
       const ObBlockInfo &block_info,
       ObSSTable &new_sstable) const;
-  int parse_merge_type(const ObSSTable &sstable, ObMergeType &merge_type) const;
+  int parse_merge_type(const ObSSTable &sstable, compaction::ObMergeType &merge_type) const;
   int try_switch_macro_block();
   int check_write_complete(const MacroBlockId &macro_id, const int64_t macro_size);
   int do_write_block(const ObMacroBlockWriteInfo &write_info, ObBlockInfo &block_info);
@@ -187,8 +192,18 @@ private:
   lib::ObMutex blocks_mutex_; // protect block_used_size_
   ObLinearHashMap<MacroBlockId, int32_t> block_used_size_;
   ObBlockDefragmentationTask defragmentation_task_;
+  common::ObArenaAllocator io_allocator_;
   int tg_id_;
   bool is_inited_;
+};
+
+class ObHasNestedTableFilterOp final : public ObITabletFilterOp
+{
+public:
+	int do_filter(const ObTabletResidentInfo &info, bool &is_skipped) override {
+    is_skipped = !info.has_nested_table();
+    return OB_SUCCESS;
+  }
 };
 
 } // namespace blocksstable

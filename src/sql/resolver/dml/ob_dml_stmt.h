@@ -807,12 +807,14 @@ public:
   int pull_all_expr_relation_id();
   int formalize_stmt(ObSQLSessionInfo *session_info);
   int formalize_relation_exprs(ObSQLSessionInfo *session_info);
-  int formalize_stmt_expr_reference();
-  int formalize_child_stmt_expr_reference();
+  int formalize_stmt_expr_reference(ObRawExprFactory *expr_factory, ObSQLSessionInfo *session_info);
+  int formalize_child_stmt_expr_reference(ObRawExprFactory *expr_factory,
+                                          ObSQLSessionInfo *session_info);
   int set_sharable_expr_reference(ObRawExpr &expr, ExplicitedRefType ref_type);
   int check_pseudo_column_valid();
   int get_ora_rowscn_column(const uint64_t table_id, ObPseudoColumnRawExpr *&ora_rowscn);
-  virtual int remove_useless_sharable_expr();
+  virtual int remove_useless_sharable_expr(ObRawExprFactory *expr_factory,
+                                           ObSQLSessionInfo *session_info);
   virtual int clear_sharable_expr_reference();
   virtual int get_from_subquery_stmts(common::ObIArray<ObSelectStmt*> &child_stmts) const;
   virtual int get_subquery_stmts(common::ObIArray<ObSelectStmt*> &child_stmts) const;
@@ -1147,6 +1149,7 @@ public:
   int check_has_subquery_in_function_table(bool &has_subquery_in_function_table) const;
 
   int disable_writing_external_table(bool basic_stmt_is_dml = false);
+  int disable_writing_materialized_view();
   int formalize_query_ref_exprs();
 
   int formalize_query_ref_exec_params(ObStmtExecParamFormatter &formatter,

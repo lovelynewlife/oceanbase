@@ -13,6 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 #include "storage/compaction/ob_medium_compaction_info.h"
 #include "storage/compaction/ob_partition_merge_policy.h"
+#include "storage/compaction/ob_tenant_tablet_scheduler.h"
 
 namespace oceanbase
 {
@@ -116,17 +117,17 @@ int ObParallelMergeInfo::deserialize(
         for (int i = 0; OB_SUCC(ret) && i < list_size_; ++i) {
           // need to deserialize StoreRowkey
           if (OB_FAIL(parallel_store_rowkey_list_[i].deserialize(allocator, buf, data_len, pos))) {
-            LOG_WARN("failed to encode concurrent cnt", K(ret), K(i), K(list_size_), K(data_len), K(pos));
+            LOG_WARN("failed to decode concurrent cnt", K(ret), K(i), K(list_size_), K(data_len), K(pos));
           }
         } // end of for
       } else if (PARALLEL_INFO_VERSION_V1 == compat_) {
         ALLOC_ROWKEY_ARRAY(parallel_datum_rowkey_list_, ObDatumRowkey);
+        ObStorageDatum tmp_storage_datum[OB_INNER_MAX_ROWKEY_COLUMN_NUMBER];
         ObDatumRowkey tmp_datum_rowkey;
-        ObStorageDatum datums[OB_INNER_MAX_ROWKEY_COLUMN_NUMBER];
-        tmp_datum_rowkey.assign(datums, OB_INNER_MAX_ROWKEY_COLUMN_NUMBER);
+        tmp_datum_rowkey.assign(tmp_storage_datum, OB_INNER_MAX_ROWKEY_COLUMN_NUMBER);
         for (int i = 0; OB_SUCC(ret) && i < list_size_; ++i) {
           if (OB_FAIL(tmp_datum_rowkey.deserialize(buf, data_len, pos))) {
-            LOG_WARN("failed to decode datum rowkey", K(ret), K(i), K(list_size_), K(data_len), K(pos));
+            LOG_WARN("failed to decode concurrent cnt", K(ret), K(i), K(list_size_), K(data_len), K(pos));
           } else if (OB_FAIL(tmp_datum_rowkey.deep_copy(parallel_datum_rowkey_list_[i] /*dst*/, allocator))) {
             LOG_WARN("failed to deep copy datum rowkey", KR(ret), K(i), K(tmp_datum_rowkey));
           }
@@ -183,8 +184,8 @@ int ObParallelMergeInfo::generate_from_range_array(
       list_size_ = sum_range_cnt - 1;
       allocator_ = &allocator;
       uint64_t compat_version = 0;
-      if (OB_FAIL(GET_MIN_DATA_VERSION(MTL_ID(), compat_version))) {
-        LOG_WARN("fail to get data version", K(ret));
+      if (OB_FAIL(MTL(ObTenantTabletScheduler*)->get_min_data_version(compat_version))) {
+        LOG_WARN("failed to get min data version", KR(ret));
       } else if (compat_version < DATA_VERSION_4_2_0_0) { // sync store_rowkey_list
         ret = generate_store_rowkey_list(allocator, paral_range);
       } else { // sync datum_rowkey_list
@@ -350,16 +351,16 @@ const char *ObMediumCompactionInfo::ObCompactionTypeStr[] = {
 const char *ObMediumCompactionInfo::get_compaction_type_str(enum ObCompactionType type)
 {
   const char *str = "";
-  if (type >= COMPACTION_TYPE_MAX || type < MEDIUM_COMPACTION) {
-    str = "invalid_type";
-  } else {
+  if (is_valid_compaction_type(type)) {
     str = ObCompactionTypeStr[type];
+  } else {
+    str = "invalid_type";
   }
   return str;
 }
 
 ObMediumCompactionInfo::ObMediumCompactionInfo()
-  : medium_compat_version_(MEDIUM_COMPAT_VERSION_V3),
+  : medium_compat_version_(MEDIUM_COMPAT_VERSION_V4),
     compaction_type_(COMPACTION_TYPE_MAX),
     contain_parallel_range_(false),
     medium_merge_reason_(ObAdaptiveMergePolicy::NONE),
@@ -409,12 +410,12 @@ int ObMediumCompactionInfo::init(
   return ret;
 }
 
-int ObMediumCompactionInfo::init_data_version()
+int ObMediumCompactionInfo::init_data_version(const uint64_t compat_version)
 {
   int ret = OB_SUCCESS;
-  uint64_t compat_version = 0;
-  if (OB_FAIL(GET_MIN_DATA_VERSION(MTL_ID(), compat_version))) {
-    LOG_WARN("fail to get data version", K(ret));
+  if (OB_UNLIKELY(compat_version <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid input compat version", K(ret), K(compat_version));
   } else if (OB_UNLIKELY(compat_version < DATA_VERSION_4_1_0_0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid data version to schedule medium compaction", K(ret), K(compat_version));
@@ -424,8 +425,10 @@ int ObMediumCompactionInfo::init_data_version()
       medium_compat_version_ = ObMediumCompactionInfo::MEDIUM_COMPAT_VERSION;
     } else if (compat_version < DATA_VERSION_4_2_1_0) {
       medium_compat_version_ = ObMediumCompactionInfo::MEDIUM_COMPAT_VERSION_V2;
-    } else {
+    } else if (compat_version < DATA_VERSION_4_2_1_2) {
       medium_compat_version_ = ObMediumCompactionInfo::MEDIUM_COMPAT_VERSION_V3;
+    } else {
+      medium_compat_version_ = ObMediumCompactionInfo::MEDIUM_COMPAT_VERSION_V4;
     }
   }
   return ret;

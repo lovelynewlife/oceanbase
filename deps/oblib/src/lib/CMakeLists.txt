@@ -10,16 +10,21 @@ ob_set_subtarget(oblib_lib ALONE
 )
 
 ob_set_subtarget(oblib_lib charset
-  charset/ob_ctype_bin_os.cc
-  charset/ob_ctype_gb18030_os.cc
-  charset/ob_ctype_gbk_os.cc
-  charset/ob_ctype_latin1_os.cc
-  charset/ob_ctype_mb_os.cc
-  charset/ob_ctype_simple_os.cc
-  charset/ob_ctype_os.cc
-  charset/ob_ctype_utf16_os.cc
-  charset/ob_ctype_utf8_os.cc
-  charset/ob_dtoa_os.cc
+  charset/ob_ctype_bin.cc
+  charset/ob_ctype.cc
+  charset/ob_ctype_gb18030.cc
+  charset/ob_ctype_gbk.cc
+  charset/ob_ctype_latin1.cc
+  charset/ob_ctype_mb.cc
+  charset/ob_ctype_simple.cc
+  charset/ob_ctype_uca.cc
+  charset/ob_ctype_utf8.cc
+  charset/ob_ctype_utf16.cc
+  charset/ob_dtoa.cc
+  charset/uca900_ja_tbls.cc
+  charset/uca900_zh_tbls.cc
+  charset/uca900_zh2_tbls.cc
+  charset/uca900_zh3_tbls.cc
   charset/ob_charset.cpp
 )
 
@@ -76,11 +81,34 @@ ob_set_subtarget(oblib_lib geo
   geo/ob_geometry_cast.cpp
 )
 
+ob_set_subtarget(oblib_lib encode
+  encode/ob_base64_encode.cpp
+  encode/ob_quoted_printable_encode.cpp
+  encode/ob_uuencode.cpp
+)
+
+ob_set_subtarget(oblib_lib codec
+  codec/ob_fast_bp_func.cpp
+  codec/ob_generated_scalar_bp_func.cpp
+)
+
+ob_set_subtarget(oblib_lib_simd codec_simd
+  codec/ob_fast_delta.cpp
+  codec/ob_generated_unalign_simd_bp_func.cpp
+)
+
+ob_lib_add_target(oblib_lib_simd)
+
+if (${ARCHITECTURE} STREQUAL "x86_64")
+  target_compile_options(oblib_lib_simd
+    PRIVATE -mavx2 -mssse3
+    )
+endif()
+
 ob_set_subtarget(oblib_lib common_mixed
   atomic/ob_atomic_reference.cpp
   checksum/ob_crc64.cpp
   checksum/ob_parity_check.cpp
-  container/ob_bitmap.cpp
   container/ob_vector.ipp
   cpu/ob_cpu_topology.cpp
   encode/ob_base64_encode.cpp
@@ -148,6 +176,10 @@ ob_set_subtarget(oblib_lib common_mixed
   trace/ob_trace_event.cpp
   wait_event/ob_wait_class.cpp
   wait_event/ob_wait_event.cpp
+  wide_integer/ob_wide_integer.cpp
+  wide_integer/ob_wide_integer_cmp_funcs.cpp
+  wide_integer/ob_wide_integer_str_funcs.cpp
+  udt/ob_udt_type.cpp
 )
 
 ob_set_subtarget(oblib_lib lock
@@ -217,6 +249,7 @@ ob_set_subtarget(oblib_lib thread
   thread/thread.cpp
   thread/threads.cpp
   thread/ob_tenant_hook.cpp
+  thread/ob_pthread.cpp
 )
 
 ob_set_subtarget(oblib_lib utility
@@ -229,6 +262,8 @@ ob_set_subtarget(oblib_lib utility
   utility/utility.cpp
   utility/ob_backtrace.cpp
   utility/ob_proto_trans_util.cpp
+  utility/ob_unify_serialize.cpp
+  utility/ob_rpc_authentication_utility.cpp
 )
 
 ob_set_subtarget(oblib_lib ash
@@ -244,6 +279,18 @@ ob_set_subtarget(oblib_lib vtoa
 )
 
 ob_lib_add_target(oblib_lib)
+
+ob_set_subtarget(oblib_lib_bitmap common
+  container/ob_bitmap.cpp
+)
+
+ob_lib_add_target(oblib_lib_bitmap)
+if (${ARCHITECTURE} STREQUAL "x86_64")
+  target_compile_options(oblib_lib_bitmap
+    PRIVATE
+    -mbmi2
+  )
+endif()
 
 ob_set_subtarget(ob_malloc_object_list common_alloc
   alloc/abit_set.cpp
@@ -268,7 +315,7 @@ ob_set_subtarget(ob_malloc_object_list common_alloc
   allocator/ob_allocator_v2.cpp
   allocator/ob_block_alloc_mgr.cpp
   allocator/ob_concurrent_fifo_allocator.cpp
-  allocator/ob_ctx_parallel_define.cpp
+  allocator/ob_ctx_define.cpp
   allocator/ob_delay_free_allocator.cpp
   allocator/ob_fifo_allocator.cpp
   allocator/ob_hazard_ref.cpp

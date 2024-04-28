@@ -1352,9 +1352,9 @@ int ObTableLocation::get_is_weak_read(const ObDMLStmt &dml_stmt,
              dml_stmt.get_query_ctx()->is_contain_select_for_update_ ||
              dml_stmt.get_query_ctx()->is_contain_inner_table_) {
     is_weak_read = false;
-  } else if (share::ObTenantEnv::get_tenant() == nullptr) { //table api can't invoke MTL_IS_PRIMARY_TENANT
+  } else if (share::ObTenantEnv::get_tenant() == nullptr) { //table api can't invoke MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID
     is_weak_read = false;
-  } else if (!MTL_IS_PRIMARY_TENANT()) {
+  } else if (!MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID()) {
     is_weak_read = true;
   } else {
     ObConsistencyLevel consistency_level = INVALID_CONSISTENCY;
@@ -2150,7 +2150,11 @@ int ObTableLocation::record_in_dml_partition_info(const ObDMLStmt &stmt,
       }
 
       ObOpRawExpr *value_expr = static_cast<ObOpRawExpr *>(tmp);
-      if (op_left_expr->get_param_count() != value_expr->get_param_count()) {
+      if (op_left_expr->get_param_count() != value_expr->get_param_count() ||
+          OB_ISNULL(value_expr->get_param_expr(pos1)) ||
+          OB_ISNULL(value_expr->get_param_expr(pos2)) ||
+          OB_UNLIKELY(!value_expr->get_param_expr(pos1)->is_const_expr() ||
+                      !value_expr->get_param_expr(pos2)->is_const_expr())) {
         hit = false;
         break;
       }
@@ -2158,16 +2162,18 @@ int ObTableLocation::record_in_dml_partition_info(const ObDMLStmt &stmt,
       RowDesc value_row_desc;
       OZ(add_se_value_expr(value_expr->get_param_expr(pos1),
                            value_row_desc, 0, exec_ctx, vies_));
-      for (int64_t i = 0; OB_SUCC(ret) && i < vies_.count(); i++) {
-        vies_.at(i).dst_type_ = op_left_expr->get_param_expr(0)->get_result_type().get_type();
-        vies_.at(i).dst_cs_type_ = op_left_expr->get_param_expr(0)
-                                               ->get_result_type().get_collation_type();
-      }
       OZ(add_se_value_expr(value_expr->get_param_expr(pos2),
                            value_row_desc, 0, exec_ctx, sub_vies_));
+    }
+    if (OB_SUCC(ret) && hit) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < vies_.count(); i++) {
+        vies_.at(i).dst_type_ = op_left_expr->get_param_expr(pos1)->get_result_type().get_type();
+        vies_.at(i).dst_cs_type_ = op_left_expr->get_param_expr(pos1)
+                                               ->get_result_type().get_collation_type();
+      }
       for (int64_t i = 0; OB_SUCC(ret) && i < sub_vies_.count(); i++) {
-        sub_vies_.at(i).dst_type_ = op_left_expr->get_param_expr(1)->get_result_type().get_type();
-        sub_vies_.at(i).dst_cs_type_ = op_left_expr->get_param_expr(1)
+        sub_vies_.at(i).dst_type_ = op_left_expr->get_param_expr(pos2)->get_result_type().get_type();
+        sub_vies_.at(i).dst_cs_type_ = op_left_expr->get_param_expr(pos2)
                                                    ->get_result_type().get_collation_type();
       }
     }

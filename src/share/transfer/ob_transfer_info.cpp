@@ -161,6 +161,115 @@ int ObTransferStatusHelper::check_can_change_status(
   return ret;
 }
 
+/////////////// ObTransferRefreshStatus///////////////
+ObTransferRefreshStatus &ObTransferRefreshStatus::operator=(const ObTransferRefreshStatus &other)
+{
+  status_ = other.status_;
+  return *this;
+}
+
+ObTransferRefreshStatus &ObTransferRefreshStatus::operator=(const ObTransferRefreshStatus::STATUS &status)
+{
+  status_ = status;
+  return *this;
+}
+
+const char *ObTransferRefreshStatus::str() const
+{
+  const char *str = "INVALID";
+  switch (status_) {
+    case UNKNOWN: {
+      str = "UNKNOWN";
+      break;
+    }
+    case DOING: {
+      str = "DOING";
+      break;
+    }
+    case DONE: {
+      str = "DONE";
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+  return str;
+}
+
+// change ObTransferStatus to ObTransferRefreshStatus
+void ObTransferRefreshStatus::convert_from(const ObTransferStatus &status)
+{
+  if (status.is_init_status()
+      || status.is_start_status()) {
+    status_ = UNKNOWN;
+  } else if (status.is_doing_status()
+             || status.is_completed_status()) {
+    status_ = DOING;
+  } else if (status.is_aborted_status()
+             || status.is_canceled_status()
+             || status.is_failed_status()) {
+    status_ = DONE;
+  } else {
+    status_ = INVALID;
+  }
+}
+
+// update status according to state machine
+void ObTransferRefreshStatus::update(
+     const ObTransferRefreshStatus &other,
+     bool &changed)
+{
+  changed = false;
+  const ObTransferRefreshStatus::STATUS &new_status = other.status_;
+  switch (status_) {
+    case INVALID : {
+      if (INVALID != new_status) {
+        changed = true;
+        status_ = new_status;
+      }
+      break;
+    }
+    case UNKNOWN: {
+      if (DOING == new_status
+          || DONE == new_status) {
+        changed = true;
+        status_ = other.status_;
+      }
+      break;
+    }
+    case DOING: {
+      if (DONE == new_status) {
+        changed = true;
+        status_ = new_status;
+      }
+      break;
+    }
+    case DONE: {
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+}
+
+int ObTransferRefreshInfo::init(
+    const ObTransferTaskID &task_id,
+    const ObTransferRefreshStatus &status)
+{
+  int ret = OB_SUCCESS;
+  task_id_ = task_id;
+  status_ = status;
+  return ret;
+}
+
+void ObTransferRefreshInfo::reset()
+{
+  task_id_.reset();
+  status_.reset();
+}
+
 ObTransferTabletInfo::ObTransferTabletInfo()
   : tablet_id_(),
     transfer_seq_(OB_INVALID_TRANSFER_SEQ)
@@ -639,6 +748,28 @@ int ObTransferTaskInfo::assign(const ObTransferTaskInfo &task_info)
     start_scn_ = task_info.start_scn_;
     finish_scn_ = task_info.finish_scn_;
     result_ = task_info.result_;
+  }
+  return ret;
+}
+
+int ObTransferTaskInfo::fill_tablet_ids(ObIArray<ObTabletID> &tablet_ids) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!tablet_ids.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument, tablet_ids should be empty", K(ret));
+  } else if (OB_FAIL(tablet_ids.reserve(tablet_list_.count()))) {
+    LOG_WARN("failed to reserve tablet_ids", K(ret));
+  } else {
+    FOREACH_X(it, tablet_list_, OB_SUCC(ret)) {
+      const ObTabletID &tablet_id = it->tablet_id();
+      if (OB_UNLIKELY(!tablet_id.is_valid())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid tablet id", K(ret), K(tablet_id));
+      } else if (OB_FAIL(tablet_ids.push_back(tablet_id))) {
+        LOG_WARN("failed to push back tablet_id", K(ret), K(tablet_id));
+      }
+    }
   }
   return ret;
 }

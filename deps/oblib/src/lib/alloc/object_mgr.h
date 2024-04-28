@@ -13,7 +13,7 @@
 #ifndef _OCEABASE_LIB_ALLOC_OBJECT_MGR_H_
 #define _OCEABASE_LIB_ALLOC_OBJECT_MGR_H_
 
-#include "lib/allocator/ob_ctx_parallel_define.h"
+#include "lib/allocator/ob_ctx_define.h"
 #include "lib/thread_local/ob_tsi_utils.h"
 #include "lib/random/ob_random.h"
 #include "lib/ob_abort.h"
@@ -36,13 +36,12 @@ class SubObjectMgr : public IBlockMgr
 {
   friend class ObTenantCtxAllocator;
 public:
-  SubObjectMgr(const bool for_logger, const int64_t tenant_id, const int64_t ctx_id,
-               const uint32_t ablock_size, IBlockMgr *blk_mgr);
+  SubObjectMgr(ObTenantCtxAllocator &ta,
+               const bool enable_no_log,
+               const uint32_t ablock_size,
+               const bool enable_dirty_list,
+               IBlockMgr *blk_mgr);
   virtual ~SubObjectMgr() {}
-  OB_INLINE void set_tenant_ctx_allocator(ObTenantCtxAllocator &allocator)
-  {
-    bs_.set_tenant_ctx_allocator(allocator);
-  }
   OB_INLINE void lock() { locker_.lock(); }
   OB_INLINE void unlock() { locker_.unlock(); }
   OB_INLINE bool trylock() { return locker_.trylock(); }
@@ -69,13 +68,14 @@ public:
     return os_.check_has_unfree(first_label);
   }
 private:
+  ObTenantCtxAllocator &ta_;
 #ifndef ENABLE_SANITY
   lib::ObMutex mutex_;
 #else
   lib::ObMutexV2 mutex_;
 #endif
   SetLocker<decltype(mutex_)> normal_locker_;
-  SetLockerForLogger<decltype(mutex_)> logger_locker_;
+  SetLockerNoLog<decltype(mutex_)> no_log_locker_;
   ISetLocker &locker_;
   BlockSet bs_;
   ObjectSet os_;
@@ -84,6 +84,7 @@ private:
 class ObjectMgr final : public IBlockMgr
 {
   static const int N = 32;
+  friend class SubObjectMgr;
 public:
   struct Stat
   {
@@ -94,8 +95,12 @@ public:
     int64_t last_wash_ts_;
   };
 public:
-  ObjectMgr(ObTenantCtxAllocator &allocator, uint64_t tenant_id, uint64_t ctx_id,
-            uint32_t ablock_size, int parallel, IBlockMgr *blk_mgr);
+  ObjectMgr(ObTenantCtxAllocator &ta,
+            bool enable_no_log,
+            uint32_t ablock_size,
+            int parallel,
+            bool enable_dirty_list,
+            IBlockMgr *blk_mgr);
   ~ObjectMgr();
   void reset();
 
@@ -118,8 +123,10 @@ private:
 
 public:
   ObTenantCtxAllocator &ta_;
+  bool enable_no_log_;
   uint32_t ablock_size_;
   int parallel_;
+  bool enable_dirty_list_;
   IBlockMgr *blk_mgr_;
   int sub_cnt_;
   SubObjectMgr root_mgr_;

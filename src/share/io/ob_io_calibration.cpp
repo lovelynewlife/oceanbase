@@ -159,6 +159,12 @@ bool ObIOAbility::operator==(const ObIOAbility &other) const
 
 int ObIOAbility::add_measure_item(const ObIOBenchResult &item)
 {
+  struct {
+    bool operator()(const ObIOBenchResult &left, const ObIOBenchResult &right) const
+    {
+      return left.size_ < right.size_;
+    }
+  } sort_fn;
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!item.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -167,9 +173,7 @@ int ObIOAbility::add_measure_item(const ObIOBenchResult &item)
     LOG_WARN("push back measure_items failed", K(ret), K(item));
   } else {
     std::sort(measure_items_[static_cast<int>(item.mode_)].begin(), measure_items_[static_cast<int>(item.mode_)].end(),
-        [](const ObIOBenchResult &left, const ObIOBenchResult &right) {
-        return left.size_ < right.size_;
-        });
+              sort_fn);
   }
   return ret;
 }
@@ -242,6 +246,12 @@ int ObIOAbility::get_rt(const ObIOMode mode, const int64_t size, double &rt_us) 
 
 int ObIOAbility::find_item(const ObIOMode mode, const int64_t size, int64_t &item_idx) const
 {
+  struct {
+    bool operator()(const ObIOBenchResult &left, const int64_t size) const
+    {
+      return left.size_ < size;
+    }
+  } bound_fn;
   int ret = OB_SUCCESS;
   const MeasureItemArray &item_array = measure_items_[static_cast<int>(mode)];
   if (OB_UNLIKELY(item_array.count() <= 0)) {
@@ -249,9 +259,7 @@ int ObIOAbility::find_item(const ObIOMode mode, const int64_t size, int64_t &ite
     LOG_WARN("invalid measure_items", K(ret), K(mode), K(item_array.count()));
   } else {
     MeasureItemArray::const_iterator found_it = std::lower_bound(item_array.begin(), item_array.end(), size,
-        [](const ObIOBenchResult &left, const int64_t size) {
-          return left.size_ < size;
-        });
+                                                                 bound_fn);
     if (found_it != item_array.end()) {
       item_idx = found_it - item_array.begin();
     } else {
@@ -270,7 +278,8 @@ ObIOBenchRunner::ObIOBenchRunner()
     tg_id_(-1),
     io_count_(0),
     rt_us_(0),
-    write_buf_(nullptr)
+    write_buf_(nullptr),
+    read_buf_(nullptr)
 {
 
 }
@@ -289,9 +298,12 @@ int ObIOBenchRunner::init(const int64_t block_count)
   } else if (OB_UNLIKELY(block_count <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(block_count));
-  } else if (OB_ISNULL(write_buf_ = static_cast<char *>(ob_malloc(OB_DEFAULT_MACRO_BLOCK_SIZE, "io_calibration")))) {
+  } else if (OB_ISNULL(write_buf_ = static_cast<char *>(ob_malloc(OB_DEFAULT_MACRO_BLOCK_SIZE, "io_bench_write")))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("allocate memory failed", K(ret));
+    LOG_WARN("allocate write memory failed", K(ret));
+  } else if (OB_ISNULL(read_buf_ = static_cast<char *>(ob_malloc(OB_DEFAULT_MACRO_BLOCK_SIZE, "io_bench_read")))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate read memory failed", K(ret));
   } else {
     // prepare macro blocks
     for (int64_t i = 0; OB_SUCC(ret) && i < block_count; ++i) {
@@ -366,6 +378,10 @@ void ObIOBenchRunner::destroy()
     ob_free(write_buf_);
     write_buf_ = nullptr;
   }
+  if (nullptr != read_buf_) {
+    ob_free(read_buf_);
+    read_buf_ = nullptr;
+  }
   is_inited_ = false;
   block_handles_.reset();
   load_.reset();
@@ -387,6 +403,7 @@ void ObIOBenchRunner::run1()
     io_info.tenant_id_ = OB_SERVER_TENANT_ID;
     io_info.size_ = load_.size_;
     io_info.buf_ = ObIOMode::READ == load_.mode_ ? nullptr : write_buf_;
+    io_info.user_data_buf_ = ObIOMode::READ == load_.mode_ ? read_buf_ : nullptr;
     io_info.flag_.set_mode(load_.mode_);
     io_info.flag_.set_group_id(ObIOModule::CALIBRATION_IO);
     io_info.flag_.set_wait_event(ObIOMode::READ == load_.mode_ ?
@@ -398,6 +415,7 @@ void ObIOBenchRunner::run1()
       io_info.fd_.first_id_ = block_handles_[block_idx].get_macro_id().first_id();
       io_info.fd_.second_id_ = block_handles_[block_idx].get_macro_id().second_id();
       io_info.offset_ = ObRandom::rand(0, OB_DEFAULT_MACRO_BLOCK_SIZE - load_.size_);
+      io_info.timeout_us_ = MAX_IO_WAIT_TIME_MS;
       if (ObIOMode::WRITE == load_.mode_) {
         io_info.offset_ = lower_align(io_info.offset_, DIO_READ_ALIGN_SIZE);
       }
@@ -691,10 +709,6 @@ int ObIOCalibration::read_from_table()
   } else if (tmp_ability.is_valid()) {
     if (OB_FAIL(update_io_ability(tmp_ability))) {
       LOG_WARN("update io ability failed", K(ret), K(tmp_ability));
-    }
-  } else {
-    if (OB_FAIL(reset_io_ability())) {
-      LOG_WARN("reset io ability failed", K(ret));
     }
   }
   return ret;

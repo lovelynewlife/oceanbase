@@ -11,8 +11,10 @@
  */
 
 #include "storage/tx_table/ob_tx_data_table.h"
+
 #include "lib/lock/ob_tc_rwlock.h"
 #include "lib/time/ob_time_utility.h"
+#include "share/allocator/ob_shared_memory_allocator_mgr.h"
 #include "share/rc/ob_tenant_base.h"
 #include "storage/ls/ob_ls.h"
 #include "storage/ls/ob_ls_tablet_service.h"
@@ -37,12 +39,6 @@ using namespace oceanbase::share;
 namespace storage
 {
 
-#ifdef OB_ENABLE_SLICE_ALLOC_LEAK_DEBUG
-#define TX_DATA_MEM_LEAK_DEBUG_CODE slice_allocator_.enable_leak_debug();
-#else
-#define TX_DATA_MEM_LEAK_DEBUG_CODE
-#endif
-
 int64_t ObTxDataTable::UPDATE_CALC_UPPER_INFO_INTERVAL = 30 * 1000 * 1000; // 30 seconds
 
 int ObTxDataTable::init(ObLS *ls, ObTxCtxTable *tx_ctx_table)
@@ -56,8 +52,9 @@ int ObTxDataTable::init(ObLS *ls, ObTxCtxTable *tx_ctx_table)
   if (OB_ISNULL(ls) || OB_ISNULL(tx_ctx_table)) {
     ret = OB_ERR_NULL_VALUE;
     STORAGE_LOG(WARN, "ls tablet service or tx ctx table is nullptr", KR(ret));
-  } else if (OB_FAIL(init_slice_allocator_())) {
-    STORAGE_LOG(ERROR, "slice_allocator_ init fail");
+  } else if (OB_ISNULL(tx_data_allocator_ = &MTL(ObSharedMemAllocMgr*)->tx_data_allocator())) {
+    ret = OB_ERR_UNEXPECTED;;
+    STORAGE_LOG(WARN, "unexpected nullptr of mtl object", KR(ret), KP(tx_data_allocator_));
   } else if (FALSE_IT(ls_tablet_svr_ = ls->get_tablet_svr())) {
   } else if (OB_FAIL(ls_tablet_svr_->get_tx_data_memtable_mgr(memtable_mgr_handle))) {
     STORAGE_LOG(WARN, "get tx data memtable mgr fail.", KR(ret), K(tablet_id_));
@@ -68,30 +65,16 @@ int ObTxDataTable::init(ObLS *ls, ObTxCtxTable *tx_ctx_table)
   } else {
     calc_upper_trans_version_cache_.commit_versions_.array_.set_attr(
       ObMemAttr(ls->get_tenant_id(), "CommitVersions"));
-    slice_allocator_.set_nway(ObTxDataTable::TX_DATA_MAX_CONCURRENCY);
-    TX_DATA_MEM_LEAK_DEBUG_CODE
 
     ls_ = ls;
     ls_id_ = ls->get_ls_id();
     memtable_mgr_ = static_cast<ObTxDataMemtableMgr *>(memtable_mgr_handle.get_memtable_mgr());
-    memtable_mgr_->set_slice_allocator(&slice_allocator_);
     tx_ctx_table_ = tx_ctx_table;
     tablet_id_ = LS_TX_DATA_TABLET;
 
     is_inited_ = true;
     FLOG_INFO("tx data table init success", K(sizeof(ObTxData)), K(sizeof(ObTxDataLinkNode)), KPC(this));
   }
-  return ret;
-}
-
-int ObTxDataTable::init_slice_allocator_()
-{
-  int ret = OB_SUCCESS;
-  ObMemAttr mem_attr;
-  mem_attr.label_ = "TX_DATA_SLICE";
-  mem_attr.tenant_id_ = MTL_ID();
-  mem_attr.ctx_id_ = ObCtxIds::TX_DATA_TABLE;
-  ret = slice_allocator_.init(TX_DATA_SLICE_SIZE, OB_MALLOC_NORMAL_BLOCK_SIZE, common::default_blk_alloc, mem_attr);
   return ret;
 }
 
@@ -109,9 +92,9 @@ int ObTxDataTable::init_tx_data_read_schema_()
 {
   int ret = OB_SUCCESS;
 
-  auto &iter_param = read_schema_.iter_param_;
-  auto &read_info = read_schema_.read_info_;
-  auto &full_read_info = read_schema_.full_read_info_;
+  ObTableIterParam &iter_param = read_schema_.iter_param_;
+  ObTableReadInfo &read_info = read_schema_.read_info_;
+  ObRowkeyReadInfo &full_read_info = read_schema_.full_read_info_;
   common::ObSEArray<share::schema::ObColDesc, 5> columns;
 
   share::schema::ObColDesc key;
@@ -199,7 +182,6 @@ void ObTxDataTable::reset()
   calc_upper_info_.reset();
   calc_upper_trans_version_cache_.reset();
   memtables_cache_.reuse();
-  slice_allocator_.purge_extra_cached_block(0);
   is_started_ = false;
   is_inited_ = false;
 }
@@ -222,9 +204,34 @@ int ObTxDataTable::offline()
   } else if (OB_FAIL(clean_memtables_cache_())) {
     STORAGE_LOG(WARN, "clean memtables cache failed", KR(ret), KPC(this));
   } else {
+    is_started_ = false;
     calc_upper_info_.reset();
     calc_upper_trans_version_cache_.reset();
   }
+  return ret;
+}
+
+int ObTxDataTable::online()
+{
+  int ret = OB_SUCCESS;
+  ObTabletHandle handle;
+  ObTablet *tablet;
+  ObLSTabletService *ls_tablet_svr = ls_->get_tablet_svr();
+
+  if (OB_ISNULL(ls_tablet_svr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("get ls tablet svr failed", K(ret));
+  } else if (OB_FAIL(ls_tablet_svr->get_tablet(LS_TX_DATA_TABLET,
+                                               handle))) {
+    LOG_WARN("get tablet failed", K(ret));
+  } else if (FALSE_IT(tablet = handle.get_obj())) {
+  } else if (OB_FAIL(ls_tablet_svr->create_memtable(LS_TX_DATA_TABLET, 0 /* schema_version */))) {
+    LOG_WARN("failed to create memtable", K(ret));
+  } else {
+    // load tx data table succeed
+    is_started_ = true;
+  }
+
   return ret;
 }
 
@@ -238,17 +245,19 @@ int ObTxDataTable::clean_memtables_cache_()
 
 void ObTxDataTable::destroy() { reset(); }
 
-int ObTxDataTable::alloc_tx_data(ObTxDataGuard &tx_data_guard)
+int ObTxDataTable::alloc_tx_data(ObTxDataGuard &tx_data_guard,
+                                 const bool enable_throttle,
+                                 const int64_t abs_expire_time)
 {
   int ret = OB_SUCCESS;
   void *slice_ptr = nullptr;
-  if (OB_ISNULL(slice_ptr = slice_allocator_.alloc())) {
+
+  if (OB_ISNULL(slice_ptr = tx_data_allocator_->alloc(enable_throttle, abs_expire_time))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-    STORAGE_LOG(WARN, "allocate memory from slice_allocator fail.", KR(ret), KP(this),
-                K(tablet_id_));
+    STORAGE_LOG(WARN, "allocate memory from slice_allocator fail.", KR(ret), KP(this), K(tablet_id_));
   } else {
     ObTxData *tx_data = new (slice_ptr) ObTxData();
-    tx_data->slice_allocator_ = &slice_allocator_;
+    tx_data->tx_data_allocator_ = tx_data_allocator_;
     tx_data_guard.init(tx_data);
   }
   return ret;
@@ -258,19 +267,21 @@ int ObTxDataTable::deep_copy_tx_data(const ObTxDataGuard &in_tx_data_guard, ObTx
 {
   int ret = OB_SUCCESS;
   void *slice_ptr = nullptr;
+  const int64_t abs_expire_time = THIS_WORKER.get_timeout_ts();
   const ObTxData *in_tx_data = in_tx_data_guard.tx_data();
   ObTxData *out_tx_data = nullptr;
-  if (OB_ISNULL(slice_ptr = slice_allocator_.alloc())) {
+
+  if (OB_ISNULL(slice_ptr = tx_data_allocator_->alloc(true, abs_expire_time))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     STORAGE_LOG(WARN, "allocate memory from slice_allocator fail.", KR(ret), KP(this),
-                K(tablet_id_));
+                K(tablet_id_), K(abs_expire_time));
   } else if (OB_ISNULL(in_tx_data)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(ERROR, "invalid nullptr of tx data", K(in_tx_data_guard), KPC(this));
   } else {
     out_tx_data = new (slice_ptr) ObTxData();
     *out_tx_data = *in_tx_data;
-    out_tx_data->slice_allocator_ = &slice_allocator_;
+    out_tx_data->tx_data_allocator_ = tx_data_allocator_;
     out_tx_data->undo_status_list_.head_ = nullptr;
     out_tx_data->ref_cnt_ = 0;
     out_tx_data_guard.init(out_tx_data);
@@ -317,13 +328,11 @@ int ObTxDataTable::alloc_undo_status_node(ObUndoStatusNode *&undo_status_node)
 {
   int ret = OB_SUCCESS;
   void *slice_ptr = nullptr;
-#ifdef OB_ENABLE_SLICE_ALLOC_LEAK_DEBUG
-  if (OB_ISNULL(slice_ptr = slice_allocator_.alloc(true /*record_alloc_lbt*/))) {
-#else
-  if (OB_ISNULL(slice_ptr = slice_allocator_.alloc())) {
-#endif
+  const int64_t abs_expire_time = THIS_WORKER.get_timeout_ts();
+
+  if (OB_ISNULL(slice_ptr = tx_data_allocator_->alloc(true, abs_expire_time))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-    STORAGE_LOG(WARN, "allocate memory fail.", KR(ret), KP(this), K(tablet_id_));
+    STORAGE_LOG(WARN, "allocate memory fail.", KR(ret), KP(this), K(tablet_id_), K(abs_expire_time));
   } else {
     undo_status_node = new (slice_ptr) ObUndoStatusNode();
   }
@@ -337,7 +346,7 @@ int ObTxDataTable::free_undo_status_node(ObUndoStatusNode *&undo_status_node)
     ret = OB_ERR_NULL_VALUE;
     STORAGE_LOG(WARN, "trying to free nullptr", KR(ret), K(tablet_id_));
   } else {
-    slice_allocator_.free(undo_status_node);
+    tx_data_allocator_->free(undo_status_node);
   }
   return ret;
 }
@@ -348,7 +357,7 @@ void ObTxDataTable::free_undo_status_list_(ObUndoStatusNode *node_ptr)
   while (nullptr != node_ptr) {
     node_to_free = node_ptr;
     node_ptr = node_ptr->next_;
-    slice_allocator_.free(reinterpret_cast<void *>(node_to_free));
+    tx_data_allocator_->free(reinterpret_cast<void *>(node_to_free));
   }
 }
 
@@ -662,7 +671,7 @@ int ObTxDataTable::check_tx_data_in_sstable_(const ObTransID tx_id,
   int ret = OB_SUCCESS;
   tx_data_guard.reset();
 
-  if (OB_FAIL(alloc_tx_data(tx_data_guard))) {
+  if (OB_FAIL(alloc_tx_data(tx_data_guard, false/* enable_throttle */))) {
     STORAGE_LOG(WARN, "allocate tx data to read from sstable failed", KR(ret), K(tx_data_guard));
   } else if (OB_ISNULL(tx_data_guard.tx_data())) {
     ret = OB_ERR_UNEXPECTED;
@@ -686,7 +695,7 @@ int ObTxDataTable::check_tx_data_in_sstable_(const ObTransID tx_id,
 int ObTxDataTable::get_tx_data_in_sstable_(const transaction::ObTransID tx_id, ObTxData &tx_data, share::SCN &recycled_scn)
 {
   int ret = OB_SUCCESS;
-  ObTableIterParam iter_param = read_schema_.iter_param_;
+  const ObTableIterParam &iter_param = read_schema_.iter_param_;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
   ObTabletHandle tablet_handle;
 
@@ -700,7 +709,7 @@ int ObTxDataTable::get_tx_data_in_sstable_(const transaction::ObTransID tx_id, O
     LOG_WARN("fail to fetch table store", K(ret));
   } else {
     const ObSSTableArray &sstables = table_store_wrapper.get_member()->get_minor_sstables();
-    ObTxDataSingleRowGetter getter(iter_param, sstables, slice_allocator_, recycled_scn);
+    ObTxDataSingleRowGetter getter(iter_param, sstables, *tx_data_allocator_, recycled_scn);
     if (OB_FAIL(getter.init(tx_id))) {
       STORAGE_LOG(WARN, "init ObTxDataSingleRowGetter fail.", KR(ret), KP(this), K(tablet_id_));
     } else if (OB_FAIL(getter.get_next_row(tx_data))) {
@@ -740,7 +749,7 @@ int ObTxDataTable::get_recycle_scn(SCN &recycle_scn)
     STORAGE_LOG(INFO, "logstream is in migration state. skip recycle tx data", "ls_id", ls_->get_ls_id());
   } else if (OB_FAIL(ls_->get_restore_status(restore_status))) {
     STORAGE_LOG(WARN, "get restore status failed", KR(ret), "ls_id", ls_->get_ls_id());
-  } else if (ObLSRestoreStatus::RESTORE_NONE != restore_status) {
+  } else if (ObLSRestoreStatus::NONE != restore_status) {
     recycle_scn.set_min();
     STORAGE_LOG(INFO, "logstream is in restore state. skip recycle tx data", "ls_id", ls_->get_ls_id());
   } else if (FALSE_IT(tg.click("iterate tablets start"))) {
@@ -752,14 +761,18 @@ int ObTxDataTable::get_recycle_scn(SCN &recycle_scn)
     min_end_scn = std::min(min_end_scn_from_old_tablets, min_end_scn_from_latest_tablets);
     if (!min_end_scn.is_max()) {
       recycle_scn = min_end_scn;
-      if (!MTL_IS_PRIMARY_TENANT()) {
-        SCN snapshot_version;
-        MonotonicTs unused_ts(0);
-        if (OB_FAIL(OB_TS_MGR.get_gts(MTL_ID(), MonotonicTs(1), NULL, snapshot_version, unused_ts))) {
-          LOG_WARN("failed to get snapshot version", K(ret), K(MTL_ID()));
-        } else {
-          recycle_scn = std::min(recycle_scn, snapshot_version);
-        }
+      //Regardless of whether the primary or standby tenant is unified, refer to GTS.
+      //If the tenant role in memory is deferred,
+      //it may cause the standby tenant to commit and recycle when the primary is switched to standby.
+      SCN snapshot_version;
+      MonotonicTs unused_ts(0);
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(OB_TS_MGR.get_gts(MTL_ID(), MonotonicTs(1), NULL, snapshot_version, unused_ts))) {
+        LOG_WARN("failed to get snapshot version", K(tmp_ret), K(MTL_ID()));
+        // recycle nothing this time
+        recycle_scn.set_min();
+      } else {
+        recycle_scn = std::min(recycle_scn, snapshot_version);
       }
     }
   }
@@ -880,7 +893,7 @@ int ObTxDataTable::DEBUG_calc_with_all_sstables_(ObTableAccessContext &access_co
 {
   int ret = OB_SUCCESS;
 
-  ObTableIterParam iter_param = read_schema_.iter_param_;
+  const ObTableIterParam &iter_param = read_schema_.iter_param_;
   ObTabletHandle tablet_handle;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
   ObStoreRowIterator *row_iter = nullptr;
@@ -939,7 +952,7 @@ int ObTxDataTable::DEBUG_calc_with_row_iter_(ObStoreRowIterator *row_iter,
       int64_t pos = 0;
       const ObString &str = row->storage_datums_[TX_DATA_VAL_COLUMN].get_string();
 
-      if (OB_FAIL(tx_data.deserialize(str.ptr(), str.length(), pos, slice_allocator_))) {
+      if (OB_FAIL(tx_data.deserialize(str.ptr(), str.length(), pos, *tx_data_allocator_))) {
         STORAGE_LOG(WARN, "deserialize tx data from store row fail.", KR(ret), K(*row), KPHEX(str.ptr(), str.length()));
       } else if (tx_data.start_scn_ <= sstable_end_scn
                  && tx_data.commit_version_ > tmp_upper_trans_version) {
@@ -1142,7 +1155,7 @@ int ObTxDataTable::update_calc_upper_trans_version_cache_(ObITable *table)
 {
   int ret = OB_SUCCESS;
   STORAGE_LOG(DEBUG, "update calc upper trans version cache once.");
-  ObTableIterParam iter_param = read_schema_.iter_param_;
+  const ObTableIterParam &iter_param = read_schema_.iter_param_;
   ObTabletHandle tablet_handle;
 
   if (OB_FAIL(ls_tablet_svr_->get_tablet(tablet_id_, tablet_handle))) {
@@ -1154,7 +1167,7 @@ int ObTxDataTable::update_calc_upper_trans_version_cache_(ObITable *table)
     ObStorageMetaHandle sstable_handle;
     ObSSTable *sstable = static_cast<ObSSTable *>(table);
     if (sstable->is_loaded()) {
-    } else if (OB_FAIL(ObTabletTableStore::load_sstable(sstable->get_addr(), sstable_handle))) {
+    } else if (OB_FAIL(ObTabletTableStore::load_sstable(sstable->get_addr(), sstable->is_co_sstable(), sstable_handle))) {
       STORAGE_LOG(WARN, "fail to load sstable", K(ret), KPC(sstable));
     } else if (OB_FAIL(sstable_handle.get_sstable(sstable))) {
       STORAGE_LOG(WARN, "fail to get sstable", K(ret), K(sstable_handle));
@@ -1177,7 +1190,7 @@ int ObTxDataTable::calc_upper_trans_scn_(const SCN sstable_end_scn, SCN &upper_t
 {
   int ret = OB_SUCCESS;
 
-  const auto &array = calc_upper_trans_version_cache_.commit_versions_.array_;
+  const ObIArray<ObCommitVersionsArray::Node> &array = calc_upper_trans_version_cache_.commit_versions_.array_;
   int l = 0;
   int r = array.count() - 1;
 

@@ -24,6 +24,10 @@
 
 namespace oceanbase
 {
+namespace transaction
+{
+enum class NotifyType : int64_t;
+}
 namespace share
 {
 class SCN;
@@ -33,6 +37,7 @@ namespace storage
 class ObTabletPointer;
 namespace mds
 {
+extern TLOCAL(transaction::NotifyType, TLOCAL_MDS_TRANS_NOTIFY_TYPE);
 template <typename K, typename V>
 class MdsRow;
 template <typename K, typename V>
@@ -160,7 +165,7 @@ public:
   int64_t get_node_cnt() const;
   virtual share::SCN get_rec_scn();
   virtual int operate(const ObFunction<int(MdsTableBase &)> &operation) = 0;
-  virtual int flush(share::SCN need_advanced_rec_scn_lower_limit) = 0;
+  virtual int flush(share::SCN need_advanced_rec_scn_lower_limit, share::SCN max_decided_scn) = 0;
   virtual ObTabletID get_tablet_id() const;
   virtual bool is_flushing() const;
   virtual int fill_virtual_info(ObIArray<MdsNodeInfoForVirtualTable> &mds_node_info_array) const = 0;

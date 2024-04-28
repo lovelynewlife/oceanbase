@@ -38,7 +38,8 @@ public:
       opt_server_list_(),
       opt_tenant_ids_(),
       opt_tablet_id_(),
-      opt_ls_id_(share::ObLSID::INVALID_LS_ID) {}
+      opt_ls_id_(share::ObLSID::INVALID_LS_ID),
+      rebuild_column_group_(false) {}
   ObFreezeStmt(common::ObIAllocator *name_pool)
     : ObSystemCmdStmt(name_pool, stmt::T_FREEZE),
       major_freeze_(false),
@@ -46,7 +47,8 @@ public:
       opt_server_list_(),
       opt_tenant_ids_(),
       opt_tablet_id_(),
-      opt_ls_id_(share::ObLSID::INVALID_LS_ID) {}
+      opt_ls_id_(share::ObLSID::INVALID_LS_ID),
+      rebuild_column_group_(false) {}
   virtual ~ObFreezeStmt() {}
 
   bool is_major_freeze() const { return major_freeze_; }
@@ -57,6 +59,8 @@ public:
   void set_freeze_all_user() { freeze_all_flag_ |= FREEZE_ALL_USER; }
   bool is_freeze_all_meta() const { return 0 != (freeze_all_flag_ & FREEZE_ALL_META); }
   void set_freeze_all_meta() { freeze_all_flag_ |= FREEZE_ALL_META; }
+  bool is_rebuild_column_group() const { return rebuild_column_group_; }
+  void set_rebuild_column_group(bool rebuild_column_group) { rebuild_column_group_ = rebuild_column_group; }
   inline obrpc::ObServerList &get_ignore_server_list() { return opt_server_list_; }
   inline obrpc::ObServerList &get_server_list() { return opt_server_list_; }
   inline common::ObSArray<uint64_t> &get_tenant_ids() { return opt_tenant_ids_; }
@@ -84,6 +88,8 @@ private:
   // for minor_freeze only
   common::ObTabletID opt_tablet_id_;
   int64_t opt_ls_id_;
+  // for major_freeze only
+  bool rebuild_column_group_;
 };
 
 class ObFlushCacheStmt : public ObSystemCmdStmt
@@ -1334,6 +1340,30 @@ private:
   obrpc::ObRecoverTableArg rpc_arg_;
 };
 
+class ObResetConfigStmt : public ObSystemCmdStmt
+{
+public:
+  ObResetConfigStmt() : ObSystemCmdStmt(stmt::T_ALTER_SYSTEM_RESET_PARAMETER) {}
+  virtual ~ObResetConfigStmt() {}
+  obrpc::ObAdminSetConfigArg &get_rpc_arg() { return rpc_arg_; }
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
+private:
+  obrpc::ObAdminSetConfigArg rpc_arg_;
+};
+
+class ObCancelCloneStmt : public ObSystemCmdStmt
+{
+public:
+  ObCancelCloneStmt()
+    : ObSystemCmdStmt(stmt::T_CANCEL_CLONE),
+      clone_tenant_name_() {}
+  virtual ~ObCancelCloneStmt() {}
+  int set_clone_tenant_name(const ObString &tenant_name) { return clone_tenant_name_.assign(tenant_name); }
+  const ObString get_clone_tenant_name() { return clone_tenant_name_.str(); }
+	TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(clone_tenant_name));
+private:
+  common::ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1> clone_tenant_name_;
+};
 
 } // end namespace sql
 } // end namespace oceanbase

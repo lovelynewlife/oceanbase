@@ -17,10 +17,12 @@
 #include "lib/hash/ob_hashset.h"
 #include "lib/hash/ob_placement_hashset.h"
 #include "lib/net/ob_addr.h"
+#include "lib/compress/ob_compress_util.h"
 #include "common/ob_range.h"
 #include "common/ob_tablet_id.h"
 #include "common/row/ob_row_util.h"
 #include "share/ob_arbitration_service_status.h" // for ObArbitrationServieStatus
+#include "common/ob_store_format.h"
 #include "share/ob_replica_info.h"
 #include "share/ob_duplicate_scope_define.h"
 #include "share/sequence/ob_sequence_option.h"
@@ -123,6 +125,7 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define USER_SPECIFIED_STORING_COLUMN_FLAG (INT64_C(1) << 17) // whether the storing column in index table is specified by user.
 #define PAD_WHEN_CALC_GENERATED_COLUMN_FLAG (INT64_C(1) << 19)
 #define GENERATED_COLUMN_UDF_EXPR (INT64_C(1) << 20)
+#define UNUSED_COLUMN_FLAG (INT64_C(1) << 21) // check if the column is unused.
 
 //the high 32-bit flag isn't stored in __all_column
 #define GENERATED_DEPS_CASCADE_FLAG (INT64_C(1) << 32)
@@ -262,6 +265,7 @@ enum ObTableType
   AUX_LOB_PIECE  = 12,
   AUX_LOB_META   = 13,
   EXTERNAL_TABLE = 14,
+  MATERIALIZED_VIEW_LOG = 15,
   MAX_TABLE_TYPE
 };
 
@@ -277,6 +281,7 @@ bool is_index_table(const ObTableType table_type);
 bool is_aux_lob_meta_table(const ObTableType table_type);
 bool is_aux_lob_piece_table(const ObTableType table_type);
 bool is_aux_lob_table(const ObTableType table_type);
+bool is_mlog_table(const ObTableType table_type);
 
 enum ObIndexType
 {
@@ -300,8 +305,22 @@ enum ObIndexType
   INDEX_TYPE_SPATIAL_LOCAL = 10,
   INDEX_TYPE_SPATIAL_GLOBAL = 11,
   INDEX_TYPE_SPATIAL_GLOBAL_LOCAL_STORAGE = 12,
-
-  INDEX_TYPE_MAX = 13,
+  // new index types for fts
+  INDEX_TYPE_FTS_ROWKEY_DOC_LOCAL = 13,
+  INDEX_TYPE_FTS_DOC_ROWKEY_LOCAL = 14,
+  INDEX_TYPE_FTS_INDEX_LOCAL = 15,
+  INDEX_TYPE_FTS_DOC_WORD_LOCAL = 16,
+  INDEX_TYPE_FTS_DOC_ROWKEY_GLOBAL = 17,
+  INDEX_TYPE_FTS_INDEX_GLOBAL = 18,
+  INDEX_TYPE_FTS_DOC_WORD_GLOBAL = 19,
+  INDEX_TYPE_FTS_DOC_ROWKEY_GLOBAL_LOCAL_STORAGE = 20,
+  INDEX_TYPE_FTS_INDEX_GLOBAL_LOCAL_STORAGE = 21,
+  INDEX_TYPE_FTS_DOC_WORD_GLOBAL_LOCAL_STORAGE = 22,
+  /*
+  * Attention!!! when add new index type,
+  * need update func ObSimpleTableSchemaV2::should_not_validate_data_index_ckm()
+  */
+  INDEX_TYPE_MAX = 23,
 };
 
 // using type for index
@@ -583,7 +602,8 @@ inline bool is_related_table(
     const ObIndexType &index_type)
 {
   return is_index_local_storage(index_type)
-      || is_aux_lob_table(table_type);
+      || is_aux_lob_table(table_type)
+      || is_mlog_table(table_type);
 }
 
 inline bool index_has_tablet(const ObIndexType &index_type)
@@ -753,6 +773,8 @@ typedef enum {
   RLS_CONTEXT_SCHEMA = 38,
   CONSTRAINT_SCHEMA = 39,   // not dependent schema
   FOREIGN_KEY_SCHEMA = 40,  // not dependent schema
+  ROUTINE_PRIV = 41,
+  COLUMN_PRIV = 42,
   ///<<< add schema type before this line
   OB_MAX_SCHEMA
 } ObSchemaType;
@@ -3242,6 +3264,97 @@ int ObPartitionUtils::get_end_(
   return ret;
 }
 
+enum class ObMLogPurgeMode : int64_t
+{
+  IMMEDIATE_SYNC = 0,
+  IMMEDIATE_ASYNC = 1,
+  DEFERRED = 2,
+  MAX
+};
+
+enum class ObMViewBuildMode : int64_t
+{
+  IMMEDIATE = 0,
+  DEFERRED = 1,
+  PERBUILT = 2,
+  MAX
+};
+
+
+enum struct ObMVRefreshMethod : int64_t
+{
+  NEVER = 0,
+  COMPLETE = 1,
+  FAST = 2,
+  FORCE = 3,
+  MAX
+};
+
+enum struct ObMVRefreshMode : int64_t
+{
+  NEVER = 0,
+  DEMAND = 1,
+  COMMIT = 2,
+  STATEMENT = 3,
+  MAX
+};
+
+enum struct ObMVRefreshType : int64_t
+{
+  COMPLETE = 0,
+  FAST = 1,
+  MAX
+};
+
+enum class ObMVRefreshStatsCollectionLevel : int64_t
+{
+  NONE = 0,
+  TYPICAL = 1,
+  ADVANCED = 2,
+  MAX
+};
+
+struct ObMVRefreshInfo
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObMVRefreshMethod refresh_method_;
+  ObMVRefreshMode refresh_mode_;
+  common::ObObj start_time_;
+  ObString next_time_expr_;
+  ObString exec_env_;
+
+  ObMVRefreshInfo() :
+  refresh_method_(ObMVRefreshMethod::NEVER),
+  refresh_mode_(ObMVRefreshMode::DEMAND),
+  start_time_(),
+  next_time_expr_(),
+  exec_env_() {}
+
+  void reset() {
+    refresh_method_ = ObMVRefreshMethod::NEVER;
+    refresh_mode_ = ObMVRefreshMode::DEMAND;
+    start_time_.reset();
+    next_time_expr_.reset();
+    exec_env_.reset();
+  }
+
+  bool operator == (const ObMVRefreshInfo &other) const {
+    return refresh_method_ == other.refresh_method_
+      && refresh_mode_ == other.refresh_mode_
+      && start_time_ == other.start_time_
+      && next_time_expr_ == other.next_time_expr_
+      && exec_env_ == other.exec_env_;
+  }
+
+
+  TO_STRING_KV(K_(refresh_mode),
+      K_(refresh_method),
+      K_(start_time),
+      K_(next_time_expr),
+      K_(exec_env));
+};
+
 class ObViewSchema : public ObSchema
 {
   OB_UNIS_VERSION(1);
@@ -3276,6 +3389,10 @@ public:
   inline bool get_materialized() const { return materialized_; }
   inline common::ObCharsetType get_character_set_client() const { return character_set_client_; }
   inline common::ObCollationType get_collation_connection() const { return collation_connection_; }
+  inline const ObMVRefreshInfo *get_mv_refresh_info() const { return mv_refresh_info_; }
+  inline void set_mv_refresh_info(const ObMVRefreshInfo *mv_refresh_info) { mv_refresh_info_ = mv_refresh_info; }
+  inline void set_container_table_id(uint64_t container_table_id) { container_table_id_ = container_table_id; }
+  inline uint64_t get_container_table_id() const { return container_table_id_; }
 
   int64_t get_convert_size() const;
   virtual bool is_valid() const;
@@ -3293,6 +3410,8 @@ private:
   bool materialized_;
   common::ObCharsetType character_set_client_;
   common::ObCollationType collation_connection_;
+  uint64_t container_table_id_;
+  const ObMVRefreshInfo *mv_refresh_info_; //only for pass write param, don't need serialize and memory is hold by caller
 };
 
 class ObColumnSchemaHashWrapper
@@ -4630,6 +4749,7 @@ enum ObPrivLevel
   OB_PRIV_DB_ACCESS_LEVEL,
   OB_PRIV_SYS_ORACLE_LEVEL,   /* oracle-mode system privilege */
   OB_PRIV_OBJ_ORACLE_LEVEL,   /* oracle-mode object privilege */
+  OB_PRIV_ROUTINE_LEVEL,
   OB_PRIV_MAX_LEVEL,
 };
 
@@ -4924,23 +5044,6 @@ private:
   uint64_t grantee_id_;
 };
 
-int get_int_value(const common::ObString &str, int64_t &value);
-
-class ObHostnameStuct
-{
-public:
-  ObHostnameStuct() {}
-  ~ObHostnameStuct() {}
-  static const uint32_t FAKE_PORT = 0;
-  static const int MAX_IP_BITS = 128;
-  static int get_int_value(const common::ObString &str, int64_t &value);
-  static bool calc_ip(const common::ObString &host_ip, common::ObAddr &addr);
-  static bool calc_ip_mask(const common::ObString &host_ip_mask, common::ObAddr &mask);
-  static bool is_ip_match(const common::ObString &client_ip, common::ObString host_name);
-  static bool is_wild_match(const common::ObString &client_ip, const common::ObString &host_name);
-  static bool is_in_white_list(const common::ObString &client_ip, common::ObString &ip_white_list);
-};
-
 enum ObHintFormat
 {
   HINT_NORMAL,
@@ -5105,6 +5208,8 @@ public:
   int get_hex_str_from_outline_params(common::ObString &hex_str, common::ObIAllocator &allocator) const;
   const ObOutlineParamsWrapper &get_outline_params_wrapper() const { return outline_params_wrapper_; }
   ObOutlineParamsWrapper &get_outline_params_wrapper() { return outline_params_wrapper_; }
+  bool is_format() { return format_outline_; }
+  bool is_format() const { return format_outline_; }
   bool has_outline_params() const { return outline_params_wrapper_.get_outline_params().count() > 0; }
   int has_concurrent_limit_param(bool &has) const;
   int gen_valid_allocator();
@@ -5117,7 +5222,8 @@ public:
   VIRTUAL_TO_STRING_KV(K_(tenant_id), K_(database_id), K_(outline_id), K_(schema_version),
                        K_(name), K_(signature), K_(sql_id), K_(outline_content), K_(sql_text),
                        K_(owner_id), K_(owner), K_(used), K_(compatible),
-                       K_(enabled), K_(format), K_(outline_params_wrapper), K_(outline_target));
+                       K_(enabled), K_(format), K_(outline_params_wrapper), K_(outline_target),
+                       K_(format_sql_text), K_(format_sql_id), K_(format_outline));
   static bool is_sql_id_valid(const common::ObString &sql_id);
 private:
   static int replace_question_mark(const common::ObString &not_param_sql,
@@ -5151,6 +5257,9 @@ protected:
   ObHintFormat format_;
   uint64_t owner_id_;
   ObOutlineParamsWrapper outline_params_wrapper_;
+  common::ObString format_sql_text_;
+  common::ObString format_sql_id_;
+  bool format_outline_;
 };
 
 class ObDbLinkBaseInfo : public ObSchema
@@ -5236,8 +5345,7 @@ public:
                        K_(cluster_name), K_(tenant_name), K_(database_name), K_(user_name),
                        K_(host_addr),
                        K_(driver_proto), K_(flag), K_(service_name), K_(conn_string),
-                       K_(authusr), K_(authpwd), K_(passwordx), K_(authpwdx),
-                       K_(password), K_(encrypted_password), K_(plain_password),
+                       K_(authusr), K_(encrypted_password),
                        K_(reverse_cluster_name),
                        K_(reverse_tenant_name), K_(reverse_user_name),
                        K_(reverse_password), K_(plain_reverse_password),
@@ -6112,7 +6220,7 @@ inline bool ObRecycleObject::is_valid() const
   return INVALID != type_ && !object_name_.empty() && !original_name_.empty();
 }
 
-typedef common::hash::ObPlacementHashSet<uint64_t, common::OB_MAX_TABLE_NUM_PER_STMT> DropTableIdHashSet;
+typedef common::hash::ObHashSet<uint64_t> DropTableIdHashSet;
 // Used to count vertical partition columns
 typedef common::hash::ObPlacementHashSet<common::ObString, common::OB_MAX_USER_DEFINED_COLUMNS_COUNT> VPColumnNameHashSet;
 
@@ -6633,7 +6741,6 @@ public:
                        K_(tenant_id),
                        K_(keystore_id),
                        K_(schema_version),
-                       K_(password),
                        K_(status),
                        K_(master_key_id),
                        K_(master_key),
@@ -8229,6 +8336,167 @@ private:
   common::ObString attribute_;
 };
 
+enum ObColumnGroupType : uint8_t
+{
+  DEFAULT_COLUMN_GROUP = 0,
+  ALL_COLUMN_GROUP,
+  ROWKEY_COLUMN_GROUP,
+  SINGLE_COLUMN_GROUP,
+  NORMAL_COLUMN_GROUP,
+  MAX_COLUMN_GROUP
+};
+
+const char *const OB_COLUMN_GROUP_NAME_PREFIX = "__cg";
+const char *const OB_ROWKEY_COLUMN_GROUP_NAME = "__co_rowkey";
+const char *const OB_DEFAULT_COLUMN_GROUP_NAME = "__co_default";
+const char *const OB_ALL_COLUMN_GROUP_NAME = "__co_all";
+
+class ObColumnGroupSchemaHashWrapper
+{
+public:
+  ObColumnGroupSchemaHashWrapper() {}
+  explicit ObColumnGroupSchemaHashWrapper(const common::ObString &str)
+    : column_group_name_(str) {}
+  ~ObColumnGroupSchemaHashWrapper(){}
+  void set_name(const common::ObString &str) { column_group_name_ = str; }
+  inline bool operator==(const ObColumnGroupSchemaHashWrapper &other) const
+  {
+    ObCompareNameWithTenantID name_cmp;
+    return (0 == name_cmp.compare(column_group_name_, other.column_group_name_));
+  }
+  inline uint64_t hash() const;
+  common::ObString column_group_name_;
+};
+
+inline uint64_t ObColumnGroupSchemaHashWrapper::hash() const
+{
+  uint64_t hash_ret = 0;
+  //case insensitive
+  hash_ret = common::ObCharset::hash(common::CS_TYPE_UTF8MB4_GENERAL_CI, column_group_name_, hash_ret);
+  return hash_ret;
+}
+
+class ObColumnGroupSchema : public ObSchema
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObColumnGroupSchema();
+  explicit ObColumnGroupSchema(common::ObIAllocator *allocator);
+  ObColumnGroupSchema(const ObColumnGroupSchema &src_schema);
+  virtual ~ObColumnGroupSchema();
+
+  ObColumnGroupSchema &operator=(const ObColumnGroupSchema &src_schema);
+  int assign(const ObColumnGroupSchema &src_schema);
+  int64_t get_convert_size() const;
+  void reset();
+  bool is_valid() const;
+
+  inline void set_column_group_id(const uint64_t id) { column_group_id_ = id; }
+  inline void set_column_group_type(const ObColumnGroupType &type) { column_group_type_ = type; }
+  inline void set_schema_version(const int64_t version) { schema_version_ = version; }
+  inline void set_block_size(const uint64_t size) { block_size_ = size; }
+  inline int set_column_group_name(const common::ObString &name) { return deep_copy_str(name, column_group_name_); }
+  inline void set_compressor_type(const ObCompressorType &type) { compressor_type_ = type; }
+  inline void set_row_store_type(const ObRowStoreType &type) { row_store_type_ = type; }
+
+  inline uint64_t get_column_group_id() const { return column_group_id_; }
+  inline const common::ObString &get_column_group_name() const { return column_group_name_; }
+  inline ObColumnGroupType get_column_group_type() const { return column_group_type_; }
+  inline int64_t get_schema_version() const { return schema_version_; }
+  inline uint64_t get_block_size() const { return block_size_; }
+  inline ObCompressorType get_compressor_type() const { return compressor_type_; }
+  inline ObRowStoreType get_row_store_type() const { return row_store_type_; }
+  inline bool is_normal_column_group() const
+  {
+    return column_group_type_ == ObColumnGroupType::SINGLE_COLUMN_GROUP || column_group_type_ == ObColumnGroupType::NORMAL_COLUMN_GROUP;
+  }
+
+  inline int64_t get_column_id_count() const { return column_id_cnt_; }
+  inline uint64_t *get_column_ids() const { return column_id_arr_; }
+  int add_column_id(const uint64_t column_id);
+  int get_column_id(const int64_t idx, uint64_t &column_id) const;
+  int remove_column_id(const uint64_t column_id);
+
+  VIRTUAL_TO_STRING_KV(K_(column_group_id),
+                       K_(column_group_name),
+                       K_(column_group_type),
+                       K_(schema_version),
+                       K_(block_size),
+                       K_(compressor_type),
+                       K_(row_store_type),
+                       K_(column_id_cnt),
+                       K_(column_id_arr_capacity));
+
+public:
+  static const int64_t DEFAULT_COLUMN_ID_ARRAY_CAPACITY = 16;
+
+private:
+  uint64_t column_group_id_;
+  common::ObString column_group_name_;
+  ObColumnGroupType column_group_type_;
+  int64_t schema_version_;
+  uint64_t block_size_;
+  ObCompressorType compressor_type_;
+  ObRowStoreType row_store_type_;
+
+  int64_t column_id_cnt_;
+  int64_t column_id_arr_capacity_;
+  uint64_t *column_id_arr_;
+};
+
+struct ObSkipIndexColumnAttr
+{
+  OB_UNIS_VERSION(1);
+public:
+  static const uint64_t OB_DEFAULT_SKIP_INDEX_COLUMN_ATTR = 0;
+  ObSkipIndexColumnAttr() : pack_(OB_DEFAULT_SKIP_INDEX_COLUMN_ATTR) {}
+  ~ObSkipIndexColumnAttr() {};
+  inline void reset() { pack_ = OB_DEFAULT_SKIP_INDEX_COLUMN_ATTR; }
+  inline bool is_valid() const { return 0 == reserved_; }
+
+  inline uint64_t get_packed_value() const { return pack_; }
+  inline void set_column_attr(uint64_t column_attr) { pack_ = column_attr; }
+  inline void set_min_max() { min_max_ = 1; }
+  inline void set_sum() { sum_ = 1; }
+  inline bool has_skip_index() const { return OB_DEFAULT_SKIP_INDEX_COLUMN_ATTR != pack_; }
+  inline bool has_min_max() const { return 1 == min_max_; }
+  inline bool has_sum() const { return 1 == sum_; }
+  inline bool operator==(const ObSkipIndexColumnAttr &other) const { return pack_ == other.pack_; }
+  TO_STRING_KV(K_(pack), K_(min_max), K_(sum));
+
+  union
+  {
+    struct
+    {
+      uint64_t min_max_       :1;
+      uint64_t sum_           :1;
+      uint64_t reserved_      :62;
+    };
+    uint64_t pack_;
+  };
+};
+
+struct ObSkipIndexAttrWithId
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObSkipIndexAttrWithId() : col_idx_(0), skip_idx_attr_() {}
+  ~ObSkipIndexAttrWithId() {};
+  inline void reset()
+  {
+    col_idx_ = 0;
+    skip_idx_attr_.reset();
+  }
+  inline bool is_valid() const
+  {
+    return col_idx_ >= 0 && skip_idx_attr_.is_valid();
+  }
+  TO_STRING_KV(K_(col_idx), K_(skip_idx_attr));
+
+  int64_t col_idx_;
+  ObSkipIndexColumnAttr skip_idx_attr_;
+};
+
 class ObTableLatestSchemaVersion
 {
 public:
@@ -8294,6 +8562,55 @@ struct GetIndexNameKey<ObIndexSchemaHashWrapper, ObIndexNameInfo*>
 };
 
 typedef common::hash::ObPointerHashMap<ObIndexSchemaHashWrapper, ObIndexNameInfo*, GetIndexNameKey, 1024> ObIndexNameMap;
+
+struct ObSessionSysVar {
+  OB_UNIS_VERSION(1);
+public:
+  TO_STRING_KV(K_(type), K_(val));
+  bool is_equal(const ObObj &other_val) const;
+  int64_t get_deep_copy_size() const;
+  ObSysVarClassType type_;
+  ObObj val_;
+};
+
+class ObLocalSessionVar {
+  OB_UNIS_VERSION(1);
+public:
+  ObLocalSessionVar(ObIAllocator *alloc)
+    :alloc_(alloc),
+    local_session_vars_(alloc) {
+    }
+  ObLocalSessionVar ()
+    :alloc_(NULL) {
+    }
+  ~ObLocalSessionVar() { reset(); }
+  void set_allocator(ObIAllocator *allocator) {
+    alloc_ = allocator;
+    local_session_vars_.set_allocator(allocator);
+  }
+  void reset();
+  int set_local_var_capacity(int64_t sz);
+  template<class T>
+  int set_local_vars(T &var_array);
+  int add_local_var(ObSysVarClassType var_type, const ObObj &value);
+  int add_local_var(const ObSessionSysVar *var);
+  int get_local_var(ObSysVarClassType var_type, ObSessionSysVar *&sys_var) const;
+  int get_local_vars(ObIArray<const ObSessionSysVar *> &var_array) const;
+  int load_session_vars(const sql::ObBasicSessionInfo *session);
+  int update_session_vars_with_local(sql::ObBasicSessionInfo &session) const;
+  int remove_vars_same_with_session(const sql::ObBasicSessionInfo *session);
+  int deep_copy(const ObLocalSessionVar &other);
+  int deep_copy_self();
+  int assign(const ObLocalSessionVar &other);
+  bool operator == (const ObLocalSessionVar& other) const;
+  int64_t get_deep_copy_size() const ;
+  int64_t get_var_count() const { return local_session_vars_.count(); }
+  DECLARE_TO_STRING;
+private:
+  const static ObSysVarClassType ALL_LOCAL_VARS[];
+  common::ObIAllocator *alloc_;
+  ObFixedArray<ObSessionSysVar *, common::ObIAllocator> local_session_vars_;
+};
 
 }//namespace schema
 }//namespace share

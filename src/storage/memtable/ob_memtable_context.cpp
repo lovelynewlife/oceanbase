@@ -49,7 +49,6 @@ ObMemtableCtx::ObMemtableCtx()
       ref_(0),
       query_allocator_(),
       ctx_cb_allocator_(),
-      log_conflict_interval_(LOG_CONFLICT_INTERVAL),
       ctx_(NULL),
       truncate_cnt_(0),
       lock_for_read_retry_count_(0),
@@ -141,9 +140,7 @@ void ObMemtableCtx::reset()
     unsynced_cnt_ = 0;
     unsubmitted_cnt_ = 0;
     lock_mem_ctx_.reset();
-    //FIXME: ctx_ is not reset
-    log_conflict_interval_.reset();
-    mtstat_.reset();
+    retry_info_.reset();
     trans_mgr_.reset();
     log_gen_.reset();
     ref_ = 0;
@@ -229,6 +226,11 @@ void ObMemtableCtx::wait_pending_write()
   WRLockGuard wrguard(rwlock_);
 }
 
+void ObMemtableCtx::wait_write_end()
+{
+  WRLockGuard wrguard(rwlock_);
+}
+
 SCN ObMemtableCtx::get_tx_end_scn() const
 {
   return ctx_->get_tx_end_log_ts();
@@ -301,10 +303,12 @@ int ObMemtableCtx::write_lock_yield()
 
 void ObMemtableCtx::on_wlock_retry(const ObMemtableKey& key, const transaction::ObTransID &conflict_tx_id)
 {
-  mtstat_.on_wlock_retry();
   #define USING_LOG_PREFIX TRANS
-  FLOG_INFO("mvcc_write conflict", K(key), "tx_id", get_tx_id(), K(conflict_tx_id), KPC(this));
+  if (retry_info_.need_print()) {
+    FLOG_INFO("mvcc_write conflict", K(key), "tx_id", get_tx_id(), K(conflict_tx_id), KPC(this));
+  }
   #undef USING_LOG_PREFIX
+  retry_info_.on_conflict();
 }
 
 void ObMemtableCtx::on_tsc_retry(const ObMemtableKey& key,
@@ -312,10 +316,10 @@ void ObMemtableCtx::on_tsc_retry(const ObMemtableKey& key,
                                  const SCN max_trans_version,
                                  const transaction::ObTransID &conflict_tx_id)
 {
-  mtstat_.on_tsc_retry();
-  if (log_conflict_interval_.reach()) {
+  if (retry_info_.need_print()) {
     TRANS_LOG_RET(WARN, OB_SUCCESS, "transaction_set_consistency conflict", K(key), K(snapshot_version), K(max_trans_version), K(conflict_tx_id), KPC(this));
   }
+  retry_info_.on_conflict();
 }
 
 void *ObMemtableCtx::old_row_alloc(const int64_t size)
@@ -636,7 +640,7 @@ int ObMemtableCtx::fill_redo_log(char *buf,
   if (OB_SUCCESS != ret && OB_EAGAIN != ret && OB_ENTRY_NOT_EXIST != ret) {
     TRANS_LOG(WARN, "fill_redo_log fail", "ret", ret, "trans_id",
               NULL == ctx_ ? "" : S(ctx_->get_trans_id()),
-              "buf", buf,
+              KP(buf),
               "buf_len", buf_len,
               "buf_pos", buf_pos,
               "pending_log_size", trans_mgr_.get_pending_log_size(),
@@ -985,6 +989,15 @@ int ObMemtableCtx::get_table_lock_store_info(ObTableLockInfo &table_lock_info)
   int ret = OB_SUCCESS;
   if (OB_FAIL(lock_mem_ctx_.get_table_lock_store_info(table_lock_info))) {
     TRANS_LOG(WARN, "get_table_lock_store_info failed", K(ret));
+  }
+  return ret;
+}
+
+int ObMemtableCtx::get_table_lock_for_transfer(ObTableLockInfo &table_lock_info, const ObIArray<ObTabletID> &tablet_list)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(lock_mem_ctx_.get_table_lock_for_transfer(table_lock_info, tablet_list))) {
+    TRANS_LOG(WARN, "get tablet lock for transfer failed", K(ret));
   }
   return ret;
 }

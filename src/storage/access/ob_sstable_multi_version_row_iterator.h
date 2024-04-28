@@ -74,7 +74,7 @@ private:
 };
 
 
-class ObSSTableMultiVersionRowMultiGetter : public ObSSTableRowMultiScanner
+class ObSSTableMultiVersionRowMultiGetter : public ObSSTableRowMultiScanner<>
 {
 public:
   ObSSTableMultiVersionRowMultiGetter()
@@ -82,7 +82,9 @@ public:
       range_idx_(0),
       pending_row_(nullptr),
       base_rowkeys_(nullptr)
-  {}
+  {
+    multi_version_ranges_.set_attr(ObMemAttr(MTL_ID(), "MVersionRanges"));
+  }
   virtual ~ObSSTableMultiVersionRowMultiGetter() {}
   virtual void reset() override;
   virtual void reuse() override;
@@ -101,12 +103,14 @@ private:
   const common::ObIArray<blocksstable::ObDatumRowkey> *base_rowkeys_;
 };
 
-class ObSSTableMultiVersionRowMultiScanner : public ObSSTableRowMultiScanner
+class ObSSTableMultiVersionRowMultiScanner : public ObSSTableRowMultiScanner<>
 {
 public:
   ObSSTableMultiVersionRowMultiScanner()
       : multi_version_ranges_()
-  {}
+  {
+    multi_version_ranges_.set_attr(ObMemAttr(MTL_ID(), "MVersionRanges"));
+  }
   virtual ~ObSSTableMultiVersionRowMultiScanner() {}
   virtual void reset() override;
   virtual void reuse() override;

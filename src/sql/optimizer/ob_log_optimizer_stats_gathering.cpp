@@ -1,13 +1,13 @@
 /**
- * (C) 2016-2022 Alibaba Group Holding Limited.
- *
- *  ob_log_optimizer_stats_gathering.cpp
- *
- *  Author:
- *
- *
- *  Created Time: Fri 12 Aug 2022 10:01:10 AM CST
- *
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -113,7 +113,7 @@ int ObLogOptimizerStatsGathering::est_cost()
     if (osg_type_ != OSG_TYPE::MERGE_OSG) {
       //for normal_osg and merge_osg calc the calc_stats cost;
       //TODO: use a more accurate model.
-      op_cost_ += ObOptEstCost::cost_get_rows(child->get_card() / parallel, opt_ctx.get_cost_model_type());
+      op_cost_ += ObOptEstCost::cost_get_rows(child->get_card() / parallel, opt_ctx);
     }
     set_cost(op_cost_ + child->get_cost());
     set_card(child->get_card());

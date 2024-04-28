@@ -127,9 +127,11 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "_clear_last_archive_timestamp",
   "_create_audit_purge_job",
   "_drop_audit_purge_job",
+  "_enable_mysql_pl_priv_check",
   "_enable_parallel_ddl",
   "_enable_parallel_dml",
   "_enable_parallel_query",
+  "_enable_storage_cardinality_estimation",
   "_force_order_preserve_set",
   "_force_parallel_ddl_dop",
   "_force_parallel_dml_dop",
@@ -143,6 +145,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "_ob_px_slave_mapping_threshold",
   "_optimizer_gather_stats_on_load",
   "_optimizer_null_aware_antijoin",
+  "_priv_control",
   "_px_broadcast_fudge_factor",
   "_px_dist_agg_partial_rollup_pushdown",
   "_px_min_granules_per_slave",
@@ -155,10 +158,12 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "_set_reverse_dblink_infos",
   "_show_ddl_in_compat_mode",
   "_windowfunc_optimization_settings",
+  "activate_all_roles_on_login",
   "auto_increment_cache_size",
   "auto_increment_increment",
   "auto_increment_offset",
   "autocommit",
+  "automatic_sp_privileges",
   "binlog_checksum",
   "binlog_format",
   "binlog_row_image",
@@ -203,6 +208,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "is_result_accurate",
   "last_insert_id",
   "lc_messages",
+  "lc_time_names",
   "license",
   "local_infile",
   "lock_wait_timeout",
@@ -215,6 +221,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "max_execution_time",
   "max_sp_recursion_depth",
   "max_user_connections",
+  "ncharacter_set_connection",
   "net_buffer_length",
   "net_read_timeout",
   "net_write_timeout",
@@ -239,10 +246,12 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "ob_capability_flag",
   "ob_check_sys_variable",
   "ob_compatibility_mode",
+  "ob_default_lob_inrow_threshold",
   "ob_early_lock_release",
   "ob_enable_aggregation_pushdown",
   "ob_enable_index_direct_select",
   "ob_enable_jit",
+  "ob_enable_pl_cache",
   "ob_enable_plan_cache",
   "ob_enable_rich_error_msg",
   "ob_enable_show_trace",
@@ -290,6 +299,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "plsql_ccflags",
   "plsql_warnings",
   "plugin_dir",
+  "privilege_features_enable",
   "protocol_version",
   "query_cache_limit",
   "query_cache_min_res_unit",
@@ -364,9 +374,11 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR__CLEAR_LAST_ARCHIVE_TIMESTAMP,
   SYS_VAR__CREATE_AUDIT_PURGE_JOB,
   SYS_VAR__DROP_AUDIT_PURGE_JOB,
+  SYS_VAR__ENABLE_MYSQL_PL_PRIV_CHECK,
   SYS_VAR__ENABLE_PARALLEL_DDL,
   SYS_VAR__ENABLE_PARALLEL_DML,
   SYS_VAR__ENABLE_PARALLEL_QUERY,
+  SYS_VAR__ENABLE_STORAGE_CARDINALITY_ESTIMATION,
   SYS_VAR__FORCE_ORDER_PRESERVE_SET,
   SYS_VAR__FORCE_PARALLEL_DDL_DOP,
   SYS_VAR__FORCE_PARALLEL_DML_DOP,
@@ -380,6 +392,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR__OB_PX_SLAVE_MAPPING_THRESHOLD,
   SYS_VAR__OPTIMIZER_GATHER_STATS_ON_LOAD,
   SYS_VAR__OPTIMIZER_NULL_AWARE_ANTIJOIN,
+  SYS_VAR__PRIV_CONTROL,
   SYS_VAR__PX_BROADCAST_FUDGE_FACTOR,
   SYS_VAR__PX_DIST_AGG_PARTIAL_ROLLUP_PUSHDOWN,
   SYS_VAR__PX_MIN_GRANULES_PER_SLAVE,
@@ -392,10 +405,12 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR__SET_REVERSE_DBLINK_INFOS,
   SYS_VAR__SHOW_DDL_IN_COMPAT_MODE,
   SYS_VAR__WINDOWFUNC_OPTIMIZATION_SETTINGS,
+  SYS_VAR_ACTIVATE_ALL_ROLES_ON_LOGIN,
   SYS_VAR_AUTO_INCREMENT_CACHE_SIZE,
   SYS_VAR_AUTO_INCREMENT_INCREMENT,
   SYS_VAR_AUTO_INCREMENT_OFFSET,
   SYS_VAR_AUTOCOMMIT,
+  SYS_VAR_AUTOMATIC_SP_PRIVILEGES,
   SYS_VAR_BINLOG_CHECKSUM,
   SYS_VAR_BINLOG_FORMAT,
   SYS_VAR_BINLOG_ROW_IMAGE,
@@ -440,6 +455,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_IS_RESULT_ACCURATE,
   SYS_VAR_LAST_INSERT_ID,
   SYS_VAR_LC_MESSAGES,
+  SYS_VAR_LC_TIME_NAMES,
   SYS_VAR_LICENSE,
   SYS_VAR_LOCAL_INFILE,
   SYS_VAR_LOCK_WAIT_TIMEOUT,
@@ -452,6 +468,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_MAX_EXECUTION_TIME,
   SYS_VAR_MAX_SP_RECURSION_DEPTH,
   SYS_VAR_MAX_USER_CONNECTIONS,
+  SYS_VAR_NCHARACTER_SET_CONNECTION,
   SYS_VAR_NET_BUFFER_LENGTH,
   SYS_VAR_NET_READ_TIMEOUT,
   SYS_VAR_NET_WRITE_TIMEOUT,
@@ -476,10 +493,12 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_OB_CAPABILITY_FLAG,
   SYS_VAR_OB_CHECK_SYS_VARIABLE,
   SYS_VAR_OB_COMPATIBILITY_MODE,
+  SYS_VAR_OB_DEFAULT_LOB_INROW_THRESHOLD,
   SYS_VAR_OB_EARLY_LOCK_RELEASE,
   SYS_VAR_OB_ENABLE_AGGREGATION_PUSHDOWN,
   SYS_VAR_OB_ENABLE_INDEX_DIRECT_SELECT,
   SYS_VAR_OB_ENABLE_JIT,
+  SYS_VAR_OB_ENABLE_PL_CACHE,
   SYS_VAR_OB_ENABLE_PLAN_CACHE,
   SYS_VAR_OB_ENABLE_RICH_ERROR_MSG,
   SYS_VAR_OB_ENABLE_SHOW_TRACE,
@@ -527,6 +546,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_PLSQL_CCFLAGS,
   SYS_VAR_PLSQL_WARNINGS,
   SYS_VAR_PLUGIN_DIR,
+  SYS_VAR_PRIVILEGE_FEATURES_ENABLE,
   SYS_VAR_PROTOCOL_VERSION,
   SYS_VAR_QUERY_CACHE_LIMIT,
   SYS_VAR_QUERY_CACHE_MIN_RES_UNIT,
@@ -830,7 +850,17 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_ID[] = {
   "runtime_filter_max_in_num",
   "runtime_bloom_filter_max_size",
   "optimizer_features_enable",
-  "_ob_proxy_weakread_feedback"
+  "_ob_proxy_weakread_feedback",
+  "ncharacter_set_connection",
+  "automatic_sp_privileges",
+  "privilege_features_enable",
+  "_priv_control",
+  "_enable_mysql_pl_priv_check",
+  "ob_enable_pl_cache",
+  "ob_default_lob_inrow_threshold",
+  "_enable_storage_cardinality_estimation",
+  "lc_time_names",
+  "activate_all_roles_on_login"
 };
 
 bool ObSysVarFactory::sys_var_name_case_cmp(const char *name1, const ObString &name2)
@@ -1233,6 +1263,16 @@ int ObSysVarFactory::create_all_sys_vars()
         + sizeof(ObSysVarRuntimeBloomFilterMaxSize)
         + sizeof(ObSysVarOptimizerFeaturesEnable)
         + sizeof(ObSysVarObProxyWeakreadFeedback)
+        + sizeof(ObSysVarNcharacterSetConnection)
+        + sizeof(ObSysVarAutomaticSpPrivileges)
+        + sizeof(ObSysVarPrivilegeFeaturesEnable)
+        + sizeof(ObSysVarPrivControl)
+        + sizeof(ObSysVarEnableMysqlPlPrivCheck)
+        + sizeof(ObSysVarObEnablePlCache)
+        + sizeof(ObSysVarObDefaultLobInrowThreshold)
+        + sizeof(ObSysVarEnableStorageCardinalityEstimation)
+        + sizeof(ObSysVarLcTimeNames)
+        + sizeof(ObSysVarActivateAllRolesOnLogin)
         ;
     void *ptr = NULL;
     if (OB_ISNULL(ptr = allocator_.alloc(total_mem_size))) {
@@ -3345,6 +3385,96 @@ int ObSysVarFactory::create_all_sys_vars()
       } else {
         store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR__OB_PROXY_WEAKREAD_FEEDBACK))] = sys_var_ptr;
         ptr = (void *)((char *)ptr + sizeof(ObSysVarObProxyWeakreadFeedback));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarNcharacterSetConnection())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarNcharacterSetConnection", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_NCHARACTER_SET_CONNECTION))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarNcharacterSetConnection));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarAutomaticSpPrivileges())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarAutomaticSpPrivileges", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_AUTOMATIC_SP_PRIVILEGES))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarAutomaticSpPrivileges));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarPrivilegeFeaturesEnable())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarPrivilegeFeaturesEnable", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_PRIVILEGE_FEATURES_ENABLE))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarPrivilegeFeaturesEnable));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarPrivControl())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarPrivControl", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR__PRIV_CONTROL))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarPrivControl));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableMysqlPlPrivCheck())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarEnableMysqlPlPrivCheck", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR__ENABLE_MYSQL_PL_PRIV_CHECK))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarEnableMysqlPlPrivCheck));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarObEnablePlCache())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarObEnablePlCache", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_OB_ENABLE_PL_CACHE))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarObEnablePlCache));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarObDefaultLobInrowThreshold())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarObDefaultLobInrowThreshold", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_OB_DEFAULT_LOB_INROW_THRESHOLD))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarObDefaultLobInrowThreshold));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableStorageCardinalityEstimation())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarEnableStorageCardinalityEstimation", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR__ENABLE_STORAGE_CARDINALITY_ESTIMATION))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarEnableStorageCardinalityEstimation));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarLcTimeNames())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarLcTimeNames", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_LC_TIME_NAMES))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarLcTimeNames));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarActivateAllRolesOnLogin())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarActivateAllRolesOnLogin", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_ACTIVATE_ALL_ROLES_ON_LOGIN))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarActivateAllRolesOnLogin));
       }
     }
 
@@ -5928,6 +6058,116 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
       } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarObProxyWeakreadFeedback())) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_ERROR("fail to new ObSysVarObProxyWeakreadFeedback", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_NCHARACTER_SET_CONNECTION: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarNcharacterSetConnection)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarNcharacterSetConnection)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarNcharacterSetConnection())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarNcharacterSetConnection", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_AUTOMATIC_SP_PRIVILEGES: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarAutomaticSpPrivileges)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarAutomaticSpPrivileges)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarAutomaticSpPrivileges())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarAutomaticSpPrivileges", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_PRIVILEGE_FEATURES_ENABLE: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarPrivilegeFeaturesEnable)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarPrivilegeFeaturesEnable)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarPrivilegeFeaturesEnable())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarPrivilegeFeaturesEnable", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR__PRIV_CONTROL: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarPrivControl)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarPrivControl)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarPrivControl())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarPrivControl", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR__ENABLE_MYSQL_PL_PRIV_CHECK: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarEnableMysqlPlPrivCheck)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarEnableMysqlPlPrivCheck)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableMysqlPlPrivCheck())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarEnableMysqlPlPrivCheck", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_OB_ENABLE_PL_CACHE: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarObEnablePlCache)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarObEnablePlCache)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarObEnablePlCache())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarObEnablePlCache", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_OB_DEFAULT_LOB_INROW_THRESHOLD: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarObDefaultLobInrowThreshold)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarObDefaultLobInrowThreshold)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarObDefaultLobInrowThreshold())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarObDefaultLobInrowThreshold", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR__ENABLE_STORAGE_CARDINALITY_ESTIMATION: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarEnableStorageCardinalityEstimation)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarEnableStorageCardinalityEstimation)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarEnableStorageCardinalityEstimation())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarEnableStorageCardinalityEstimation", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_LC_TIME_NAMES: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarLcTimeNames)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarLcTimeNames)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarLcTimeNames())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarLcTimeNames", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_ACTIVATE_ALL_ROLES_ON_LOGIN: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarActivateAllRolesOnLogin)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarActivateAllRolesOnLogin)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarActivateAllRolesOnLogin())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarActivateAllRolesOnLogin", K(ret));
       }
       break;
     }

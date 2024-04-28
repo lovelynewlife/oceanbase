@@ -935,6 +935,12 @@ int ObCreateTableHelper::check_and_set_parent_table_id_()
                        K(parent_database_id), K(parent_table_name));
             }
           }
+        } else {
+          if (foreign_key_arg.is_parent_table_mock_) {
+            ret = OB_ERR_PARALLEL_DDL_CONFLICT;
+            LOG_WARN("parenet table already exist, should retry",
+                     KR(ret), K_(tenant_id), K(parent_table_id), K(foreign_key_arg));
+          }
         }
         // parent_table_id will be OB_INVALID_ID in the following cases:
         // 1. foreign key is self reference.
@@ -1742,8 +1748,11 @@ int ObCreateTableHelper::check_fk_columns_type_for_replacing_mock_fk_parent_tabl
     const ObMockFKParentTableSchema &mock_parent_table_schema)
 {
   int ret = OB_SUCCESS;
+  bool is_oracle_mode = false;
   if (OB_FAIL(check_inner_stat_())) {
     LOG_WARN("fail to check inner stat", KR(ret));
+  } else if (OB_FAIL(parent_table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("check if oracle compat mode failed", K(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < mock_parent_table_schema.get_foreign_key_infos().count(); ++i) {
     const ObTableSchema *child_table_schema = NULL;
@@ -1780,6 +1789,7 @@ int ObCreateTableHelper::check_fk_columns_type_for_replacing_mock_fk_parent_tabl
         }
       } // end for
       if (FAILEDx(sql::ObResolverUtils::check_foreign_key_columns_type(
+          !is_oracle_mode/*is_mysql_compat_mode*/,
           *child_table_schema,
           parent_table_schema,
           child_columns,
@@ -2331,7 +2341,8 @@ int ObCreateTableHelper::create_tablets_()
     ObNewTableTabletAllocator new_table_tablet_allocator(
                               tenant_id_,
                               schema_guard,
-                              sql_proxy_);
+                              sql_proxy_,
+                              true /*use parallel ddl*/);
     int64_t last_schema_version = OB_INVALID_VERSION;
     auto *tsi_generator = GET_TSI(TSISchemaVersionGenerator);
     if (OB_FAIL(table_creator.init(true/*need_tablet_cnt_check*/))) {

@@ -28,7 +28,7 @@
 #include "observer/ob_server.h"
 #include "lib/stat/ob_session_stat.h"
 #include "sql/ob_sql.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/tx/ob_trans_service.h"
 
 namespace oceanbase
@@ -842,7 +842,7 @@ int ObRpcRemoteExecuteP::init()
                         mtl_id);
 
     result_.set_tenant_id(mtl_id);
-    if (OB_FAIL(result_.init())) {
+    if (OB_FAIL(result_.init(DEFAULT_MAX_REMOTE_EXEC_PACKET_LENGTH))) {
       LOG_WARN("fail to init result", K(ret));
     } else {
       arg_.set_deserialize_param(exec_ctx_, phy_plan_);
@@ -1038,7 +1038,7 @@ int ObRpcRemoteSyncExecuteP::init()
   }
   if (OB_SUCC(ret)) {
     result_.set_tenant_id(MTL_ID());
-    if (OB_FAIL(result_.init())) {
+    if (OB_FAIL(result_.init(DEFAULT_MAX_REMOTE_EXEC_PACKET_LENGTH))) {
       LOG_WARN("fail to init result", K(ret));
     } else if (OB_FAIL(exec_ctx_.create_physical_plan_ctx())) {
       LOG_WARN("create physical plan ctx failed", K(ret));

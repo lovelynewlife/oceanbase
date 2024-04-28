@@ -29,7 +29,8 @@ using namespace storage;
 ObTXStartTransferOutInfo::ObTXStartTransferOutInfo()
   : src_ls_id_(),
     dest_ls_id_(),
-    tablet_list_()
+    tablet_list_(),
+    data_end_scn_()
 {
 }
 
@@ -38,13 +39,17 @@ void ObTXStartTransferOutInfo::reset()
   src_ls_id_.reset();
   dest_ls_id_.reset();
   tablet_list_.reset();
+  data_end_scn_.reset();
+  transfer_epoch_ = 0;
 }
 
 bool ObTXStartTransferOutInfo::is_valid() const
 {
   return src_ls_id_.is_valid()
       && dest_ls_id_.is_valid()
-      && !tablet_list_.empty();
+      && !tablet_list_.empty()
+      && data_end_scn_.is_valid()
+      && transfer_epoch_ > 0;
 }
 
 int ObTXStartTransferOutInfo::assign(const ObTXStartTransferOutInfo &start_transfer_out_info)
@@ -58,12 +63,13 @@ int ObTXStartTransferOutInfo::assign(const ObTXStartTransferOutInfo &start_trans
   } else {
     src_ls_id_ = start_transfer_out_info.src_ls_id_;
     dest_ls_id_ = start_transfer_out_info.dest_ls_id_;
+    data_end_scn_ = start_transfer_out_info.data_end_scn_;
+    transfer_epoch_ = start_transfer_out_info.transfer_epoch_;
   }
   return ret;
 }
 
-OB_SERIALIZE_MEMBER(ObTXStartTransferOutInfo, src_ls_id_, dest_ls_id_, tablet_list_);
-
+OB_SERIALIZE_MEMBER(ObTXStartTransferOutInfo, src_ls_id_, dest_ls_id_, tablet_list_, data_end_scn_, transfer_epoch_);
 
 ObTXStartTransferInInfo::ObTXStartTransferInInfo()
   : src_ls_id_(),
@@ -331,7 +337,6 @@ int ObTXTransferUtils::set_tablet_freeze_flag(storage::ObLS &ls, ObTablet *table
 {
   MDS_TG(10_ms);
   int ret = OB_SUCCESS;
-  ObIMemtableMgr *memtable_mgr = nullptr;
   ObArray<ObTableHandleV2> memtables;
   ObTabletID tablet_id = tablet->get_tablet_meta().tablet_id_;
   SCN weak_read_scn;
@@ -348,11 +353,8 @@ int ObTXTransferUtils::set_tablet_freeze_flag(storage::ObLS &ls, ObTablet *table
   } else if (ObScnRange::MIN_SCN == weak_read_scn) {
     ret = OB_EAGAIN;
     LOG_WARN("weak read service not inited, need to wait for weak read scn to advance", K(ret), K(ls_id), K(weak_read_scn));
-  } else if (OB_ISNULL(memtable_mgr = tablet->get_memtable_mgr())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("memtable mgr should not be NULL", K(ret), KP(memtable_mgr));
-  } else if (CLICK_FAIL(memtable_mgr->get_all_memtables(memtables))) {
-    LOG_WARN("failed to get all memtables", K(ret), K(tablet_id));
+  } else if (OB_FAIL(tablet->get_all_memtables(memtables))) {
+    LOG_WARN("failed to get_memtable_mgr for get all memtable", K(ret), KPC(tablet));
   } else {
     CLICK();
     for (int64_t i = 0; OB_SUCC(ret) && i < memtables.count(); ++i) {
@@ -392,7 +394,7 @@ int ObTXTransferUtils::create_empty_minor_sstable(
   } else if (OB_FAIL(build_empty_minor_sstable_param_(start_scn, end_scn, table_schema,
       tablet_id, create_sstable_param))) {
     LOG_WARN("failed to build empty minor sstable param", K(ret), K(tablet_id), K(start_scn), K(end_scn));
-  } else if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable_for_migrate(create_sstable_param, allocator, table_handle))) {
+  } else if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable<ObSSTable>(create_sstable_param, allocator, table_handle))) {
     LOG_WARN("failed to create minor sstable", K(ret), K(create_sstable_param), K(tablet_id));
   } else {
     LOG_INFO("succeed to create empty minor sstable", K(tablet_id), K(table_handle), K(start_scn), K(end_scn));

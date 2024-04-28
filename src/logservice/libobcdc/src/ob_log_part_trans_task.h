@@ -39,6 +39,7 @@
 #include "ob_log_callback.h"                        // ObILogCallback
 #include "ob_cdc_lob_ctx.h"                         // ObLobDataOutRowCtxList
 #include "ob_cdc_lob_aux_table_schema_info.h"       // ObCDCLobAuxTableSchemaInfo
+#include "lib/allocator/ob_lf_fifo_allocator.h"     // ObConcurrentFIFOAllocator
 #include "ob_log_safe_arena.h"
 
 namespace oceanbase
@@ -436,11 +437,7 @@ public:
       const ObTimeZoneInfoWrap *tz_info_wrap = nullptr,
       const bool enable_output_hidden_primary_key = false);
 
-  int parse_aux_meta_table_cols(
-      const ObCDCLobAuxTableSchemaInfo &lob_aux_table_schema_info)
-  {
-    return row_.parse_cols(lob_aux_table_schema_info);
-  }
+  int parse_aux_meta_table_cols(const ObCDCLobAuxTableSchemaInfo &lob_aux_table_schema_info);
 
   // For the JSON or GIS(outrow storage)
   // The JSON/GIS data column size is over 4K and is outrow storage, reusing the basic capabilities of LOB.
@@ -635,7 +632,7 @@ typedef LightyList<IStmtTask> StmtList;
 class ObLogEntryTask
 {
 public:
-  ObLogEntryTask();
+  ObLogEntryTask(PartTransTask &host);
   virtual ~ObLogEntryTask();
   void reset();
   bool is_valid() const;
@@ -772,6 +769,8 @@ public:
 
 public:
   void reset();
+
+  int init_log_entry_task_allocator();
 
   /// The initialisation process of a transaction task is divided into four stages.
   /// where: the DML transaction task processing process, where the maintenance of the completion status is completed, and the disassembly, maintenance and distribution of the task.
@@ -1140,6 +1139,8 @@ public:
   int check_for_ddl_trans(
       bool &is_not_barrier,
       ObSchemaOperationType &op_type) const;
+  ObIAllocator &get_log_entry_task_base_allocator() { return log_entry_task_base_allocator_; };
+  void set_unserved() { set_unserved_(); }
 
   TO_STRING_KV(
       "state", serve_state_,
@@ -1321,6 +1322,7 @@ private:
   // trace_id/trace_info/part_trans_info_str_/participant_
   // MutatorRow(DDL)/DdlStmtTask
   ObSmallArena            allocator_;
+  ObLfFIFOAllocator       log_entry_task_base_allocator_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(PartTransTask);

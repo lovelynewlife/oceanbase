@@ -22,6 +22,13 @@
 
 namespace oceanbase
 {
+
+namespace blocksstable
+{
+struct ObDatumRowkey;
+struct ObDatumRange;
+}
+
 namespace storage
 {
 class ObLSTabletService;
@@ -154,12 +161,12 @@ public:  // ObTxDataMemtable
       deleted_cnt_(0),
       write_ref_(0),
       occupied_size_(),
+      total_undo_node_cnt_(),
       last_insert_ts_(0),
       state_(ObTxDataMemtable::State::INVALID),
       arena_allocator_(),
       sort_list_head_(),
       tx_data_map_(nullptr),
-      slice_allocator_(nullptr),
       memtable_mgr_(nullptr),
       freezer_(nullptr),
       buf_(arena_allocator_),
@@ -167,7 +174,6 @@ public:  // ObTxDataMemtable
   ~ObTxDataMemtable() { reset(); }
   void reset();
   int init(const ObITable::TableKey &table_key,
-           SliceAllocator *slice_allocator,
            ObTxDataMemtableMgr *memtable_mgr,
            storage::ObFreezer *freezer,
            const int64_t buckets_cnt);
@@ -214,6 +220,7 @@ public:  // ObTxDataMemtable
   int get_iter_start_and_count(const transaction::ObTransID &tx_id, ObTxDataLinkNode *&start_node, int64_t &iterate_row_cnt);
 
   share::ObLSID get_ls_id() const;
+  int64_t get_total_undo_node_cnt() const;
 
   /**
    * @brief dump tx data memtable to file
@@ -235,7 +242,8 @@ public:  // ObTxDataMemtable
                        K_(inserted_cnt),
                        K_(deleted_cnt),
                        K_(write_ref),
-                       K_(occupied_size),
+                       "occupy_size", get_occupied_size(),
+                       "total_undo_node_cnt", get_total_undo_node_cnt(),
                        K_(state),
                        K_(stat_change_ts),
                        KP_(tx_data_map),
@@ -322,7 +330,7 @@ public:  // getter && setter
   int64_t inc_write_ref() { return ATOMIC_AAF(&write_ref_, 1); }
   int64_t dec_write_ref() { return ATOMIC_AAF(&write_ref_, -1); }
   int64_t get_write_ref() const override { return ATOMIC_LOAD(&write_ref_); }
-  int64_t get_buckets_cnt() const { return tx_data_map_->get_buckets_cnt(); }
+  int64_t get_buckets_cnt() const { return OB_NOT_NULL(tx_data_map_) ? tx_data_map_->get_buckets_cnt() : 0; }
   ObTxDataMemtable::State get_state() { return state_; }
   ObTxDataLinkNode *get_sorted_list_head() { return &sort_list_head_; }
   const char* get_state_string();
@@ -448,6 +456,7 @@ private:  // ObTxDataMemtable
   int64_t write_ref_;
 
   int64_t occupied_size_[MAX_TX_DATA_TABLE_CONCURRENCY];
+  int64_t total_undo_node_cnt_[MAX_TX_DATA_TABLE_CONCURRENCY];
 
   int64_t last_insert_ts_;
   StateChangeTime stat_change_ts_;
@@ -463,10 +472,6 @@ private:  // ObTxDataMemtable
 
   // the hash map sotres tx data
   TxDataMap *tx_data_map_;
-
-  // the link hash map of tx data need the slice allocator of tx data table to construct because the
-  // destruct of link hash map will free all tx data
-  SliceAllocator *slice_allocator_;
 
   // used for freeze
   ObTxDataMemtableMgr *memtable_mgr_;

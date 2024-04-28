@@ -33,6 +33,8 @@ public:
                  const common::ObCollationType &cs_type,
                  common::ObIAllocator *allocator,
                  common::ObString &res_str);
+  DECLARE_SET_LOCAL_SESSION_VARS;
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprReverse);
 };
@@ -72,6 +74,7 @@ inline int ObExprReverse::calc_result_type1(ObExprResType &type,
       type.set_collation_type(type1.get_collation_type());
       type.set_collation_level(type1.get_collation_level());
       type.set_length(type1.get_length());
+      type.set_length_semantics(type1.get_length_semantics());
     } else {
       ret = OB_ERR_INVALID_TYPE_FOR_OP;
       LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP,

@@ -515,6 +515,11 @@ int ObTableColumns::fill_row_cells(const ObTableSchema &table_schema,
             ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       }
+    case IS_HIDDEN: {
+          // is_hidden is used for SHOW EXTENDED in 4.2.2
+          cur_row_.cells_[cell_idx].set_int(0);
+          break;
+        }
     default: {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid column id", K(ret), K(cell_idx),
@@ -625,6 +630,11 @@ int ObTableColumns::fill_row_cells(
           cur_row_.cells_[cell_idx].set_varchar(ObString(""));
           cur_row_.cells_[cell_idx].set_collation_type(
               ObCharset::get_default_collation(ObCharset::get_default_charset()));
+          break;
+        }
+      case IS_HIDDEN: {
+          // is_hidden is used for SHOW EXTENDED in 4.2.2
+          cur_row_.cells_[cell_idx].set_int(0);
           break;
         }
       default: {
@@ -902,7 +912,7 @@ int ObTableColumns::resolve_view_definition(
     } else {
       ParseResult parse_result;
       ObParser parser(*allocator, session->get_sql_mode(),
-                      session->get_local_collation_connection());
+                      session->get_charsets4parser());
       if (OB_FAIL(parser.parse(select_sql.string(), parse_result))) {
         LOG_WARN("parse view definition failed", K(select_sql), K(ret));
       } else {

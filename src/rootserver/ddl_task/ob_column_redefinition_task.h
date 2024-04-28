@@ -37,6 +37,7 @@ public:
       const int64_t schema_version,
       const int64_t parallelism,
       const int64_t consumer_group_id,
+      const int32_t sub_task_trace_id,
       const obrpc::ObAlterTableArg &alter_table_arg,
       const int64_t task_status = share::ObDDLTaskStatus::PREPARE,
       const int64_t snapshot_version = 0);
@@ -55,7 +56,6 @@ public:
   INHERIT_TO_STRING_KV("ObDDLRedefinitionTask", ObDDLRedefinitionTask,
       K(has_rebuild_index_), K(has_rebuild_constraint_), K(has_rebuild_foreign_key_), K(is_sstable_complete_task_submitted_));
 private:
-  int wait_data_complement(const share::ObDDLTaskStatus next_task_status);
   int copy_table_dependent_objects(const share::ObDDLTaskStatus next_task_status);
   int take_effect(const share::ObDDLTaskStatus next_task_status);
   int copy_table_indexes();

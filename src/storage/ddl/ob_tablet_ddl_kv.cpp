@@ -17,7 +17,6 @@
 #include "share/scn.h"
 #include "storage/blocksstable/ob_block_manager.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "storage/blocksstable/ob_index_block_builder.h"
 #include "storage/blocksstable/ob_macro_block_struct.h"
 #include "share/ob_force_print_log.h"
 #include "share/schema/ob_multi_version_schema_service.h"
@@ -39,9 +38,9 @@ using namespace oceanbase::share::schema;
 
 
 ObBlockMetaTree::ObBlockMetaTree()
-  : is_inited_(false), arena_(), tree_allocator_(arena_), block_tree_(tree_allocator_)
+  : is_inited_(false), macro_blocks_(), arena_("DDL_Btree", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()), tree_allocator_(arena_), block_tree_(tree_allocator_)
 {
-
+  macro_blocks_.set_attr(ObMemAttr(MTL_ID(), "DDL_Btree"));
 }
 
 ObBlockMetaTree::~ObBlockMetaTree()
@@ -56,6 +55,8 @@ int ObBlockMetaTree::init(ObTablet &tablet,
 {
   int ret = OB_SUCCESS;
   const ObMemAttr mem_attr(MTL_ID(), "BlockMetaTree");
+  ObTableStoreIterator ddl_table_iter;
+  ObITable *first_ddl_sstable = nullptr; // get compressor_type of macro block for query
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret));
@@ -65,12 +66,16 @@ int ObBlockMetaTree::init(ObTablet &tablet,
   } else if (FALSE_IT(arena_.set_attr(mem_attr))) {
   } else if (OB_FAIL(block_tree_.init())) {
     LOG_WARN("init block tree failed", K(ret));
+  } else if (OB_FAIL(tablet.get_ddl_sstables(ddl_table_iter))) {
+    LOG_WARN("get ddl sstable handles failed", K(ret));
+  } else if (ddl_table_iter.count() > 0 && OB_FAIL(ddl_table_iter.get_boundary_table(false/*is_last*/, first_ddl_sstable))) {
+    LOG_WARN("failed to get boundary table", K(ret));
   } else if (OB_FAIL(ObTabletDDLUtil::prepare_index_data_desc(tablet,
                                                               table_key.get_snapshot_version(),
                                                               data_format_version,
-                                                              nullptr, // first ddl sstable
+                                                              static_cast<ObSSTable *>(first_ddl_sstable),
                                                               data_desc_))) {
-      LOG_WARN("prepare data store desc failed", K(ret), K(table_key), K(data_format_version));
+    LOG_WARN("prepare data store desc failed", K(ret), K(table_key), K(data_format_version));
   } else {
     is_inited_ = true;
   }
@@ -83,8 +88,8 @@ int ObDDLKV::init_sstable_param(ObTablet &tablet,
                                 ObTabletCreateSSTableParam &sstable_param)
 {
   int ret = OB_SUCCESS;
-  const ObStorageSchema *storage_schema_ptr = nullptr;
-  ObArenaAllocator allocator;
+  ObStorageSchema *storage_schema_ptr = nullptr;
+  ObArenaAllocator allocator("DDLKV", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   if (OB_UNLIKELY(!table_key.is_valid() || !ddl_start_scn.is_valid_and_not_min())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(table_key), K(ddl_start_scn));
@@ -109,14 +114,14 @@ int ObDDLKV::init_sstable_param(ObTablet &tablet,
       sstable_param.create_snapshot_version_ = table_key.get_snapshot_version();
       sstable_param.max_merged_trans_version_ = table_key.get_snapshot_version();
       sstable_param.ddl_scn_ = ddl_start_scn;
-      sstable_param.root_row_store_type_ = data_desc.row_store_type_;
+      sstable_param.root_row_store_type_ = data_desc.get_row_store_type();
       sstable_param.data_index_tree_height_ = 2; // fixed tree height, because there is only one root block
       sstable_param.column_cnt_ = column_count;
       sstable_param.contain_uncommitted_row_ = false; // ddl build major sstable with committed rows only
-      sstable_param.compressor_type_ = data_desc.compressor_type_;
-      sstable_param.encrypt_id_ = data_desc.encrypt_id_;
-      sstable_param.master_key_id_ = data_desc.master_key_id_;
-      MEMCPY(sstable_param.encrypt_key_, data_desc.encrypt_key_, share::OB_MAX_TABLESPACE_ENCRYPT_KEY_LENGTH);
+      sstable_param.compressor_type_ = data_desc.get_compressor_type();
+      sstable_param.encrypt_id_ = data_desc.get_encrypt_id();
+      sstable_param.master_key_id_ = data_desc.get_master_key_id();
+      MEMCPY(sstable_param.encrypt_key_, data_desc.get_encrypt_key(), share::OB_MAX_TABLESPACE_ENCRYPT_KEY_LENGTH);
       sstable_param.use_old_macro_block_count_ = 0; // all new, no reuse
       sstable_param.index_blocks_cnt_ = 0; // index macro block count, the index is in memory, so be 0.
       sstable_param.other_block_ids_.reset(); // other blocks contains only index macro blocks now, so empty.
@@ -144,7 +149,7 @@ int ObDDLKV::init_sstable_param(ObTablet &tablet,
       }
     }
   }
-  ObTablet::free_storage_schema(allocator, storage_schema_ptr);
+  ObTabletObjLoadHelper::free(allocator, storage_schema_ptr);
   return ret;
 }
 
@@ -179,7 +184,7 @@ int ObBlockMetaTree::insert_macro_block(const ObDDLMacroHandle &macro_handle,
     LOG_WARN("invalid argument", K(ret), K(macro_handle), K(rowkey), KP(meta));
   } else if (OB_FAIL(macro_blocks_.push_back(macro_handle))) {
     LOG_WARN("push back macro handle failed", K(ret), K(macro_handle));
-  } else if (OB_FAIL(block_tree_.insert(ObDatumRowkeyWrapper(rowkey, &data_desc_.datum_utils_), insert_meta))) {
+  } else if (OB_FAIL(block_tree_.insert(ObDatumRowkeyWrapper(rowkey, &data_desc_.get_desc().get_datum_utils()), insert_meta))) {
     LOG_WARN("insert block tree failed", K(ret), K(rowkey), KPC(meta));
   }
   return ret;
@@ -197,9 +202,9 @@ int ObBlockMetaTree::build_sorted_rowkeys()
   } else if (sorted_rowkeys_.count() > 0) {
     // already sorted, do nothing
   } else if (OB_FAIL(block_tree_.set_key_range(iter,
-                                               ObDatumRowkeyWrapper(&ObDatumRowkey::MIN_ROWKEY, &data_desc_.datum_utils_),
+                                               ObDatumRowkeyWrapper(&ObDatumRowkey::MIN_ROWKEY, &data_desc_.get_desc().get_datum_utils()),
                                                false,
-                                               ObDatumRowkeyWrapper(&ObDatumRowkey::MAX_ROWKEY, &data_desc_.datum_utils_),
+                                               ObDatumRowkeyWrapper(&ObDatumRowkey::MAX_ROWKEY, &data_desc_.get_desc().get_datum_utils()),
                                                false,
                                                version))) {
     LOG_WARN("locate range failed", K(ret));
@@ -225,8 +230,8 @@ int ObBlockMetaTree::build_sorted_rowkeys()
       } else {
         IndexItem cur_item(rowkey_wrapper.rowkey_, block_meta);
         cur_item.header_.version_ = ObIndexBlockRowHeader::INDEX_BLOCK_HEADER_V1;
-        cur_item.header_.row_store_type_ = static_cast<uint8_t>(data_desc_.row_store_type_);
-        cur_item.header_.compressor_type_ = static_cast<uint8_t>(data_desc_.compressor_type_);
+        cur_item.header_.row_store_type_ = static_cast<uint8_t>(data_desc_.get_desc().get_row_store_type());
+        cur_item.header_.compressor_type_ = static_cast<uint8_t>(data_desc_.get_desc().get_compressor_type());
         cur_item.header_.is_data_index_ = true;
         cur_item.header_.is_data_block_ = false;
         cur_item.header_.is_leaf_block_ = true;
@@ -239,10 +244,10 @@ int ObBlockMetaTree::build_sorted_rowkeys()
         cur_item.header_.block_size_ = block_meta->val_.block_size_;
         cur_item.header_.macro_block_count_ = 1;
         cur_item.header_.micro_block_count_ = block_meta->val_.micro_block_count_;
-        cur_item.header_.master_key_id_ = data_desc_.master_key_id_;
-        cur_item.header_.encrypt_id_ = data_desc_.encrypt_id_;
-        MEMCPY(cur_item.header_.encrypt_key_, data_desc_.encrypt_key_, sizeof(cur_item.header_.encrypt_key_));
-        cur_item.header_.schema_version_ = data_desc_.schema_version_;
+        cur_item.header_.master_key_id_ = data_desc_.get_desc().get_master_key_id();
+        cur_item.header_.encrypt_id_ = data_desc_.get_desc().get_encrypt_id();
+        MEMCPY(cur_item.header_.encrypt_key_, data_desc_.get_desc().get_encrypt_key(), sizeof(cur_item.header_.encrypt_key_));
+        cur_item.header_.schema_version_ = data_desc_.get_desc().get_schema_version();
         cur_item.header_.row_count_ = block_meta->val_.row_count_;
         if (OB_UNLIKELY(!cur_item.header_.is_valid())) {
           ret = OB_ERR_UNEXPECTED;
@@ -289,7 +294,7 @@ int ObBlockMetaTree::exist(const blocksstable::ObDatumRowkey *rowkey, bool &is_e
   } else if (OB_ISNULL(rowkey)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), KP(rowkey));
-  } else if (OB_FAIL(block_tree_.get(ObDatumRowkeyWrapper(rowkey, &data_desc_.datum_utils_), dummp_meta))) {
+  } else if (OB_FAIL(block_tree_.get(ObDatumRowkeyWrapper(rowkey, &data_desc_.get_desc().get_datum_utils()), dummp_meta))) {
     if (OB_ENTRY_NOT_EXIST != ret) {
       LOG_WARN("get value from block meta tree failed", K(ret), KPC(rowkey));
     } else {
@@ -306,7 +311,7 @@ bool ObBlockMetaTree::CompareFunctor::operator ()(const IndexItem &item,
                                                   const blocksstable::ObDatumRowkey &rowkey)
 {
   int cmp_ret = 0;
-  item.rowkey_->compare(rowkey, datum_utils_, cmp_ret);
+  item.rowkey_->compare(rowkey, datum_utils_, cmp_ret, need_compare_datum_cnt_);
   return cmp_ret < 0;
 }
 
@@ -314,7 +319,7 @@ bool ObBlockMetaTree::CompareFunctor::operator ()(const blocksstable::ObDatumRow
                                                   const IndexItem &item)
 {
   int cmp_ret = 0;
-  item.rowkey_->compare(rowkey, datum_utils_, cmp_ret);
+  item.rowkey_->compare(rowkey, datum_utils_, cmp_ret, need_compare_datum_cnt_);
   return cmp_ret > 0;
 }
 
@@ -361,6 +366,21 @@ int ObBlockMetaTree::locate_range(const blocksstable::ObDatumRange &range,
   if (OB_FAIL(ret)) {
     begin_idx = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
     end_idx = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
+  }
+  return ret;
+}
+
+int ObBlockMetaTree::skip_to_next_valid_position(const ObDatumRowkey &rowkey,
+                                                 const blocksstable::ObStorageDatumUtils &datum_utils,
+                                                 int64_t &current_pos)
+{
+  int ret = OB_SUCCESS;
+  CompareFunctor cmp(datum_utils, false);
+  const int64_t found_idx = std::lower_bound(sorted_rowkeys_.begin() + current_pos, sorted_rowkeys_.end(), rowkey, cmp) - sorted_rowkeys_.begin();
+  if (found_idx == sorted_rowkeys_.count()) {
+    ret = OB_ITER_END;
+  } else {
+    current_pos = found_idx;
   }
   return ret;
 }
@@ -419,7 +439,7 @@ int ObBlockMetaTree::get_last_rowkey(const ObDatumRowkey *&last_rowkey)
 
 ObDDLKV::ObDDLKV()
   : is_inited_(false), ls_id_(), tablet_id_(), ddl_start_scn_(SCN::min_scn()), snapshot_version_(0),
-    lock_(), arena_allocator_("DDL_KV"), is_freezed_(false), is_closed_(false), last_freezed_scn_(SCN::min_scn()),
+    lock_(), arena_allocator_("DDL_KV", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()), is_freezed_(false), is_closed_(false), last_freezed_scn_(SCN::min_scn()),
     min_scn_(SCN::max_scn()), max_scn_(SCN::min_scn()), freeze_scn_(SCN::max_scn()), pending_cnt_(0), data_format_version_(0)
 {
 }
@@ -595,14 +615,15 @@ int ObDDLKV::insert_block_meta_tree(const ObDDLMacroHandle &macro_handle, blocks
   } else {
     const ObDataBlockMetaVal &meta_val = data_macro_meta->get_meta_val();
     meta_->get_basic_meta().data_macro_block_count_ += 1;
-    data_macro_block_count_ =  meta_->get_basic_meta().data_macro_block_count_;
     meta_->get_basic_meta().data_micro_block_count_ += meta_val.micro_block_count_;
     meta_->get_basic_meta().max_merged_trans_version_ = max(meta_->get_basic_meta().max_merged_trans_version_, meta_val.max_merged_trans_version_);
-    max_merged_trans_version_ = meta_->get_basic_meta().max_merged_trans_version_ ;
     meta_->get_basic_meta().row_count_ += meta_val.row_count_;
     meta_->get_basic_meta().data_checksum_ = ob_crc64_sse42(meta_->get_basic_meta().data_checksum_, &meta_val.data_checksum_, sizeof(meta_val.data_checksum_));
     meta_->get_basic_meta().occupy_size_ += meta_val.occupy_size_;
     meta_->get_basic_meta().original_size_ += meta_val.original_size_;
+    if (OB_FAIL(meta_cache_.init(meta_))) {
+      LOG_WARN("failed to init meta cache", K(ret), KPC(meta_));
+    }
   }
   return ret;
 }
@@ -676,7 +697,7 @@ int ObDDLKV::close(ObTablet &tablet)
   } else if (OB_FAIL(block_meta_tree_.get_sorted_meta_array(meta_array))) {
     LOG_WARN("get sorted meta array failed", K(ret));
   } else {
-    ObArenaAllocator allocator("DDLUpTabStore");
+    ObArenaAllocator allocator("DDLUpTabStore", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
     ObSSTable sstable;
     ObTabletDDLParam ddl_param;
     ddl_param.tenant_id_ = MTL_ID();
@@ -688,8 +709,9 @@ int ObDDLKV::close(ObTablet &tablet)
     ddl_param.start_scn_ = ddl_start_scn_;
     ddl_param.snapshot_version_ = snapshot_version_;
     ddl_param.data_format_version_ = data_format_version_;
+    ObTableStoreIterator ddl_table_iter; // need to hold first_sstable until finish
     ObSSTable *first_sstable = nullptr;
-    if (OB_FAIL(ObTabletDDLUtil::try_get_first_ddl_sstable(tablet, first_sstable))) {
+    if (OB_FAIL(ObTabletDDLUtil::try_get_first_ddl_sstable(tablet, ddl_table_iter, first_sstable))) {
       LOG_WARN("fail to get first sstable", K(ret), K(tablet));
     } else if (OB_FAIL(ObTabletDDLUtil::create_ddl_sstable(tablet, ddl_param, meta_array, first_sstable, allocator, sstable))) {
       LOG_WARN("create ddl sstable failed", K(ret), K(ddl_param), KP(first_sstable));

@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #ifndef OCEANBASE_SQL_ENGINE_LINK_OP_H_
 #define OCEANBASE_SQL_ENGINE_LINK_OP_H_
 
@@ -78,7 +90,7 @@ protected:
   int64_t next_sql_req_level_;
   static const int64_t STMT_BUF_BLOCK;
   common::sqlclient::DblinkDriverProto link_type_;
-  bool in_xa_trascaction_; // is dblink write/read remote database in xa trasaction
+  bool in_xa_trascaction_; // is dblink write/read remote database in xa transaction
   static const char * head_comment_fmt_;
   static const int64_t head_comment_length_;
   static const char *proxy_route_info_fmt_;

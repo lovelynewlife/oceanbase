@@ -16,6 +16,7 @@
 #include "sql/engine/expr/ob_expr.h"
 #include "sql/engine/expr/ob_expr_frame_info.h"
 #include "share/ob_cluster_version.h"
+#include "lib/container/ob_fixed_array.h"
 
 namespace oceanbase
 {
@@ -103,7 +104,8 @@ public:
       batch_size_(0),
       rt_question_mark_eval_(false),
       need_flatten_gen_col_(true),
-      cur_cluster_version_(cur_cluster_version)
+      cur_cluster_version_(cur_cluster_version),
+      gen_questionmarks_(allocator, param_cnt)
   {
   }
   virtual ~ObStaticEngineExprCG() {}
@@ -298,12 +300,12 @@ private:
   }
 
   // called after res_buf_len_ assigned to get the buffer size with dynamic reserved buffer.
-  int64_t reserve_data_consume(const common::ObObjType &type)
+  int64_t reserve_data_consume(const common::ObObjType &type, const int16_t prec)
   {
     const bool need_dyn_buf = ObDynReserveBuf::supported(type);
     // ObObjDatumMapType datum_map_type = ObDatum::get_obj_datum_map_type(type);
     auto res_buf_len =
-        ObDatum::get_reserved_size(ObDatum::get_obj_datum_map_type(type));
+        ObDatum::get_reserved_size(ObDatum::get_obj_datum_map_type(type), prec);
     return res_buf_len +
            +(need_dyn_buf && res_buf_len > 0 ? sizeof(ObDynReserveBuf) : 0);
   }
@@ -407,6 +409,9 @@ private:
   int divide_probably_local_exprs(common::ObIArray<ObRawExpr *> &exprs);
 
 private:
+  int generate_extra_questionmarks(ObRawExprUniqueSet &flattened_raw_exprs);
+  bool is_dynamic_eval_qm(const ObRawExpr &raw_expr) const;
+private:
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(ObStaticEngineExprCG);
 
@@ -433,6 +438,7 @@ private:
   //is code generate temp expr witch used in table location
   bool need_flatten_gen_col_;
   uint64_t cur_cluster_version_;
+  common::ObFixedArray<ObRawExpr *, common::ObIAllocator> gen_questionmarks_;
 };
 
 } // end namespace sql

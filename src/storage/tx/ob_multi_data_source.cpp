@@ -42,7 +42,7 @@ namespace transaction
 // ObTxBufferNode
 //#####################################################
 
-OB_SERIALIZE_MEMBER(ObTxBufferNode, type_, data_);
+OB_SERIALIZE_MEMBER(ObTxBufferNode, type_, data_, register_no_);
 
 int ObTxBufferNode::init(const ObTxDataSourceType type,
                          const ObString &data,
@@ -60,6 +60,23 @@ int ObTxBufferNode::init(const ObTxDataSourceType type,
     mds_base_scn_ = base_scn;
     buffer_ctx_node_.set_ctx(ctx);
   }
+  return ret;
+}
+
+int ObTxBufferNode::set_mds_register_no(const uint64_t register_no)
+{
+  int ret = OB_SUCCESS;
+  if (register_no <= 0 || !is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid argument", K(ret), K(register_no), KPC(this));
+  } else if (register_no_ > 0) {
+    ret = OB_ERR_UNEXPECTED;
+    TRANS_LOG(WARN, "invalid register no", K(ret), K(register_no), KPC(this));
+  } else {
+    register_no_ = register_no;
+    // TRANS_LOG(INFO, "set register no in mds node", K(ret), KPC(this));
+  }
+
   return ret;
 }
 
@@ -158,8 +175,21 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
       tmp_notify_arg.redo_submitted_ = node.is_submitted();
       tmp_notify_arg.redo_synced_ = node.is_synced();
 
+      if (i > 0) {
+        const ObTxBufferNode &prev_node = array.at(i - 1);
+        if (ObTxBufferNode::is_valid_register_no(prev_node.get_register_no())
+            && ObTxBufferNode::is_valid_register_no(node.get_register_no())
+            && prev_node.get_register_no() >= node.get_register_no()) {
+          ret = OB_ERR_UNEXPECTED;
+          TRANS_LOG(ERROR, "unexpected register no for the mds_node", K(ret), K(i), K(array.count()),
+                    K(arg), K(node), K(prev_node));
+        }
+      }
+
       OB_ASSERT(node.type_ != ObTxDataSourceType::BEFORE_VERSION_4_1);
-      if (node.type_ < ObTxDataSourceType::BEFORE_VERSION_4_1
+      if(OB_FAIL(ret)) {
+        //do nothing
+      } else if (node.type_ < ObTxDataSourceType::BEFORE_VERSION_4_1
           && ObTxDataSourceType::CREATE_TABLET_NEW_MDS != node.type_
           && ObTxDataSourceType::DELETE_TABLET_NEW_MDS != node.type_
           && ObTxDataSourceType::UNBIND_TABLET_NEW_MDS != node.type_) {
@@ -190,6 +220,11 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
         }
         }
       } else {
+        mds::TLOCAL_MDS_TRANS_NOTIFY_TYPE = notify_type;
+        if (arg.is_incomplete_replay_) {
+          // pass incomplete replay arg
+          const_cast<mds::BufferCtx*>(node.get_buffer_ctx_node().get_ctx())->set_incomplete_replay(arg.is_incomplete_replay_);
+        }
         switch (node.type_) {
           #define NEED_GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION
           #define _GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION_(HELPER_CLASS, BUFFER_CTX_TYPE, ID, ENUM_NAME) \
@@ -251,6 +286,7 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
           default:
             ob_abort();
         }
+        mds::TLOCAL_MDS_TRANS_NOTIFY_TYPE = NotifyType::UNKNOWN;
       }
       if (OB_FAIL(ret)) {
         TRANS_LOG(WARN, "notify data source failed", KR(ret), K(node));
@@ -260,7 +296,7 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
         TRANS_LOG(INFO, "notify one data source with too much time", K(ret), K(notify_type), K(i), K(node),
                   K(arg), K(notify_time.get_diff()));
       }
-      
+
       total_time += notify_time.get_diff();
     }
   }

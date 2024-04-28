@@ -402,7 +402,7 @@ int ObDataBackupDestConfigParser::parse_from(const common::ObSqlString &value)
   share::BackupConfigItemPair pair;
   ObBackupPathString path;
   if (value.empty()) { // allow user to set backup_data_dest = "";
-  } else if (OB_FAIL(backup_dest.set(value.ptr()))) {
+  } else if (OB_FAIL(backup_dest.set_without_decryption(value.string()))) {
     LOG_WARN("fail to set backup dest", K(ret));
   } else if (OB_FAIL(backup_dest.get_backup_dest_str(path.ptr(), path.capacity()))) {
     LOG_WARN("fail to get path", K(ret));
@@ -765,7 +765,7 @@ int ObLogArchiveDestConfigParser::do_parse_compression_(const common::ObString &
       LOG_WARN("fail to push back pair", K(ret), K(pair));
     }
   } else {
-  // TODO(chongrong.th): when log archive support compression, remove this in 4.3
+  // TODO(zeyong): when log archive support compression, remove this in 4.3
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("compression not support value", K(ret), K(value));
   }

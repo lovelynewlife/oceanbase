@@ -216,16 +216,20 @@ int ObTableTTLDeleteTask::process_one()
     ret = (OB_SUCCESS == tmp_ret) ? ret : tmp_ret;
   }
 
-  info_.max_version_del_cnt_ += result.get_max_version_del_row();
-  info_.ttl_del_cnt_ += result.get_ttl_del_row();
   info_.scan_cnt_ += result.get_scan_row();
   info_.err_code_ = ret;
   info_.row_key_ = result.get_end_rowkey();
-  if (OB_SUCC(ret) && result.get_del_row() < PER_TASK_DEL_ROWS) {
-    ret = OB_ITER_END; // finsh task
-    info_.err_code_ = ret;
-    LOG_DEBUG("finish delete", KR(ret), K_(info));
+  if (OB_SUCC(ret)) {
+    info_.max_version_del_cnt_ += result.get_max_version_del_row();
+    info_.ttl_del_cnt_ += result.get_ttl_del_row();
+    if (result.get_del_row() < PER_TASK_DEL_ROWS
+        && result.get_end_ts() > ObTimeUtility::current_time()) {
+      ret = OB_ITER_END; // finsh task
+      info_.err_code_ = ret;
+      LOG_DEBUG("finish delete", KR(ret), K_(info));
+    }
   }
+
   int64_t cost = ObTimeUtil::current_time() - start_time;
   LOG_DEBUG("finish process one", KR(ret), K(cost));
   return ret;
@@ -362,12 +366,7 @@ bool ObTableTTLDag::operator==(const ObIDag& other) const
                     !dag.info_.is_valid() || !dag.info_.is_valid())) {
       LOG_ERROR_RET(OB_ERR_SYS, "invalid argument", K_(param), K_(info), K(dag.param_), K(dag.info_));
     } else {
-      is_equal = (info_.tenant_id_ == dag.info_.tenant_id_) &&
-                 (info_.task_id_ == dag.info_.task_id_) &&
-                 (info_.table_id_ == dag.info_.table_id_) &&
-                 (info_.tablet_id_ == dag.info_.tablet_id_) &&
-                 (param_.ttl_ == dag.param_.ttl_) &&
-                 (param_.max_version_ == dag.param_.max_version_);
+      is_equal = ((info_ == dag.info_) && (param_ == dag.param_));
     }
   }
   return is_equal;
@@ -425,7 +424,7 @@ int ObTableTTLDag::fill_info_param(compaction::ObIBasicInfoParam *&out_param, Ob
 }
 
 ObTableTTLDeleteRowIterator::ObTableTTLDeleteRowIterator()
-    : allocator_(ObMemAttr(MTL_ID(), "TTLDelRowIter")),
+    : hbase_kq_allocator_(ObMemAttr(MTL_ID(), "TTLHbaseCQAlloc")),
       is_inited_(false),
       max_version_(0),
       time_to_live_ms_(0),
@@ -440,7 +439,9 @@ ObTableTTLDeleteRowIterator::ObTableTTLDeleteRowIterator()
       is_last_row_ttl_(true),
       is_hbase_table_(false),
       last_row_(nullptr),
-      rowkey_cnt_(0)
+      rowkey_cnt_(0),
+      hbase_new_cq_(false),
+      iter_end_ts_(0)
 {
 }
 
@@ -464,6 +465,8 @@ int ObTableTTLDeleteRowIterator::init(const schema::ObTableSchema &table_schema,
     rowkey_cnt_ = table_schema.get_rowkey_column_num();
     ObSArray<uint64_t> rowkey_column_ids;
     ObSArray<uint64_t> full_column_ids;
+    hbase_new_cq_ = is_hbase_table_ ? false : true;
+    iter_end_ts_ = ObTimeUtility::current_time() + ONE_ITER_EXECUTE_MAX_TIME;
     if (OB_FAIL(table_schema.get_rowkey_column_ids(rowkey_column_ids))) {
       LOG_WARN("fail to get rowkey column ids", KR(ret));
     } else if (OB_FAIL(table_schema.get_column_ids(full_column_ids))) {
@@ -517,50 +520,61 @@ int ObTableTTLDeleteRowIterator::get_next_row(ObNewRow*& row)
     LOG_DEBUG("finish get next row", KR(ret), K(cur_del_rows_), K(limit_del_rows_));
   } else {
     bool is_expired = false;
-    while(OB_SUCC(ret) && !is_expired && OB_SUCC(ObTableApiScanRowIterator::get_next_row(row))) {
-      last_row_ = row;
-      // NOTE: For hbase table, the row expired if and only if
-      // 1. The row's version exceed maxversion
-      // 2. The row's expired time(cell_ts + ttl) exceed current time
-      if (is_hbase_table_) {
-        scan_cnt_++;
-        ObHTableCellEntity cell(row);
-        ObString cell_rowkey = cell.get_rowkey();
-        ObString cell_qualifier = cell.get_qualifier();
-        int64_t cell_ts = -cell.get_timestamp(); // obhtable timestamp is nagative in ms
-        if ((cell_rowkey != cur_rowkey_) || (cell_qualifier != cur_qualifier_)) {
-          cur_version_ = 1;
-          allocator_.reuse();
-          if (OB_FAIL(ob_write_string(allocator_, cell_rowkey, cur_rowkey_))) {
-            LOG_WARN("fail to copy cell rowkey", KR(ret), K(cell_rowkey));
-          } else if (OB_FAIL(ob_write_string(allocator_, cell_qualifier, cur_qualifier_))) {
-            LOG_WARN("fail to copy cell qualifier", KR(ret), K(cell_qualifier));
+    while(OB_SUCC(ret) && !is_expired) {
+      if (OB_FAIL(ObTableApiScanRowIterator::get_next_row(row))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("fail to get next row", K(ret));
+        }
+        last_row_ = nullptr;
+      } else {
+        last_row_ = row;
+        // NOTE: For hbase table, the row expired if and only if
+        // 1. The row's version exceed maxversion
+        // 2. The row's expired time(cell_ts + ttl) exceed current time
+        if (is_hbase_table_) {
+          scan_cnt_++;
+          ObHTableCellEntity cell(row);
+          ObString cell_rowkey = cell.get_rowkey();
+          ObString cell_qualifier = cell.get_qualifier();
+          int64_t cell_ts = -cell.get_timestamp(); // obhtable timestamp is nagative in ms
+          if ((cell_rowkey != cur_rowkey_) || (cell_qualifier != cur_qualifier_)) {
+            hbase_new_cq_ = true;
+            cur_version_ = 1;
+            hbase_kq_allocator_.reuse();
+            if (OB_FAIL(ob_write_string(hbase_kq_allocator_, cell_rowkey, cur_rowkey_))) {
+              LOG_WARN("fail to copy cell rowkey", KR(ret), K(cell_rowkey));
+            } else if (OB_FAIL(ob_write_string(hbase_kq_allocator_, cell_qualifier, cur_qualifier_))) {
+              LOG_WARN("fail to copy cell qualifier", KR(ret), K(cell_qualifier));
+            }
+          } else {
+            cur_version_++;
+          }
+          if (max_version_ > 0 && cur_version_ > max_version_) {
+            max_version_cnt_++;
+            cur_del_rows_++;
+            is_last_row_ttl_ = false;
+            is_expired = true;
+          } else if (time_to_live_ms_ > 0 && (cell_ts + time_to_live_ms_ < ObHTableUtils::current_time_millis())) {
+            ttl_cnt_++;
+            cur_del_rows_++;
+            is_last_row_ttl_ = true;
+            is_expired = true;
           }
         } else {
-          cur_version_++;
+          // NOTE: For relation table, the row expired if and only if
+          // 1. The row's expired time (the result of ttl definition) exceed current time
+          scan_cnt_++;
+          if (OB_FAIL(ttl_checker_.check_row_expired(*row, is_expired))) {
+            LOG_WARN("fail to check row expired", KR(ret));
+          } else if (is_expired) {
+            ttl_cnt_++;
+            cur_del_rows_++;
+            is_last_row_ttl_ = true;
+          }
         }
-        if (max_version_ > 0 && cur_version_ > max_version_) {
-          max_version_cnt_++;
-          cur_del_rows_++;
-          is_last_row_ttl_ = false;
-          is_expired = true;
-        } else if (time_to_live_ms_ > 0 && (cell_ts + time_to_live_ms_ < ObHTableUtils::current_time_millis())) {
-          ttl_cnt_++;
-          cur_del_rows_++;
-          is_last_row_ttl_ = true;
-          is_expired = true;
-        }
-      } else {
-        // NOTE: For relation table, the row expired if and only if
-        // 1. The row's expired time (the result of ttl definition) exceed current time
-        scan_cnt_++;
-        if (OB_FAIL(ttl_checker_.check_row_expired(*row, is_expired))) {
-          LOG_WARN("fail to check row expired", KR(ret));
-        } else if (is_expired) {
-          ttl_cnt_++;
-          cur_del_rows_++;
-          is_last_row_ttl_ = true;
-        }
+      }
+      if (ObTimeUtility::current_time() > iter_end_ts_ && hbase_new_cq_) {
+        ret = OB_ITER_END;
       }
     }
   }
@@ -627,6 +641,7 @@ int ObTableTTLDeleteTask::execute_ttl_delete(ObTableTTLDeleteRowIterator &ttl_ro
       result.ttl_del_rows_ = iter_ttl_cnt;
       result.max_version_del_rows_ = iter_max_version_cnt;
       result.scan_rows_ = ttl_row_iter.scan_cnt_;
+      result.iter_end_ts_ = ttl_row_iter.iter_end_ts_;
     }
   }
 
@@ -663,6 +678,7 @@ int ObTableTTLDeleteTask::execute_ttl_delete(ObTableTTLDeleteRowIterator &ttl_ro
     }
 
     if (OB_SUCC(ret) && rowkey_.is_valid()) {
+      // if ITER_END in ttl_row_iter, rowkey_ will not be assigned by last_row_ in this round
       uint64_t buf_len = rowkey_.get_serialize_size();
       char *buf = static_cast<char *>(allocator_.alloc(buf_len));
       int64_t pos = 0;

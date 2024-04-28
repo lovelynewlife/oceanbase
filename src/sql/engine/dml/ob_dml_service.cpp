@@ -65,6 +65,7 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
           (lib::is_mysql_mode() && !is_single_value && !is_strict_mode(session->get_sql_mode()))) {
         ObObj zero_obj;
         ObDatum &row_datum = row.at(col_idx)->locate_datum_for_write(eval_ctx);
+        bool is_decimal_int = ob_is_decimal_int(row.at(col_idx)->datum_meta_.type_);
         if (is_oracle_mode()) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("dml with ignore not supported in oracle mode");
@@ -79,9 +80,16 @@ int ObDMLService::check_row_null(const ObExprPtrIArray &row,
             eval_ctx.exec_ctx_.get_allocator(),
             zero_obj))) {
           LOG_WARN("get column default zero value failed", K(ret), K(column_infos.at(i)), K(row.at(col_idx)->max_length_));
+        } else if (is_decimal_int) {
+          ObDecimalIntBuilder dec_val;
+          dec_val.set_zero(wide::ObDecimalIntConstValue::get_int_bytes_by_precision(
+            row.at(col_idx)->datum_meta_.precision_));
+          row_datum.set_decimal_int(dec_val.get_decimal_int(), dec_val.get_int_bytes());
+        }
+        if (OB_FAIL(ret)) {
         } else if (OB_FAIL(ObTextStringResult::ob_convert_obj_temporay_lob(zero_obj, eval_ctx.exec_ctx_.get_allocator()))) {
           LOG_WARN("convert lob types zero obj failed", K(ret), K(zero_obj));
-        } else if (OB_FAIL(row_datum.from_obj(zero_obj))) {
+        } else if (OB_FAIL(!is_decimal_int && row_datum.from_obj(zero_obj))) {
           LOG_WARN("assign zero obj to datum failed", K(ret), K(zero_obj));
         } else if (is_lob_storage(zero_obj.get_type()) &&
                    OB_FAIL(ob_adjust_lob_datum(zero_obj, row.at(col_idx)->obj_meta_,
@@ -304,18 +312,21 @@ int ObDMLService::check_lob_column_changed(ObEvalCtx &eval_ctx,
     bool new_set_has_lob_header = new_expr.obj_meta_.has_lob_header() && new_str.length() > 0;
     ObLobLocatorV2 old_lob(old_str, old_set_has_lob_header);
     ObLobLocatorV2 new_lob(new_str, new_set_has_lob_header);
-    ObLobCompareParams cmp_params;
-    // binary compare ignore charset
-    cmp_params.collation_left_ = CS_TYPE_BINARY;
-    cmp_params.collation_right_ = CS_TYPE_BINARY;
-    cmp_params.offset_left_ = 0;
-    cmp_params.offset_right_ = 0;
-    cmp_params.compare_len_ = UINT64_MAX;
-    cmp_params.timeout_ = timeout;
-    cmp_params.tx_desc_ = eval_ctx.exec_ctx_.get_my_session()->get_tx_desc();
-    if(old_set_has_lob_header && new_set_has_lob_header) {
-      if(OB_FAIL(lob_mngr->compare(old_lob, new_lob, cmp_params, result))) {
+    if (old_set_has_lob_header && new_set_has_lob_header) {
+      bool is_equal = false;
+      ObLobCompareParams cmp_params;
+      // binary compare ignore charset
+      cmp_params.collation_left_ = CS_TYPE_BINARY;
+      cmp_params.collation_right_ = CS_TYPE_BINARY;
+      cmp_params.offset_left_ = 0;
+      cmp_params.offset_right_ = 0;
+      cmp_params.compare_len_ = UINT64_MAX;
+      cmp_params.timeout_ = timeout;
+      cmp_params.tx_desc_ = eval_ctx.exec_ctx_.get_my_session()->get_tx_desc();
+      if(OB_FAIL(lob_mngr->equal(old_lob, new_lob, cmp_params, is_equal))) {
         LOG_WARN("fail to compare lob", K(ret), K(old_lob), K(new_lob));
+      } else {
+        result = is_equal ? 0 : 1;
       }
     } else {
       result = ObDatum::binary_equal(old_datum, new_datum) ? 0 : 1;
@@ -1152,6 +1163,9 @@ int ObDMLService::init_dml_param(const ObDASDMLBaseCtDef &base_ctdef,
   if (base_ctdef.is_insert_up_) {
     dml_param.write_flag_.set_is_insert_up();
   }
+  if (base_ctdef.is_table_api_) {
+    dml_param.write_flag_.set_is_table_api();
+  }
   if (dml_param.table_param_->get_data_table().is_storage_index_table()
       && !dml_param.table_param_->get_data_table().can_read_index()) {
     dml_param.write_flag_.set_is_write_only_index();
@@ -1961,7 +1975,8 @@ int ObDMLService::check_local_index_affected_rows(int64_t table_affected_rows,
   int ret = OB_SUCCESS;
   if (GCONF.enable_defensive_check()) {
     if (table_affected_rows != index_affected_rows
-        && !related_ctdef.table_param_.get_data_table().is_spatial_index()) {
+        && !related_ctdef.table_param_.get_data_table().is_spatial_index()
+        && !related_ctdef.table_param_.get_data_table().is_mlog_table()) {
       ret = OB_ERR_DEFENSIVE_CHECK;
       ObString func_name = ObString::make_string("check_local_index_affected_rows");
       LOG_USER_ERROR(OB_ERR_DEFENSIVE_CHECK, func_name.length(), func_name.ptr());

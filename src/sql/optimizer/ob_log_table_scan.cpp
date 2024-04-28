@@ -63,6 +63,14 @@ const char *ObLogTableScan::get_name() const
     } else {
       name = "DISTRIBUTED TABLE FULL SCAN";
     }
+  } else if (use_column_store()) {
+    if (is_get) {
+      name = "COLUMN TABLE GET";
+    } else if (is_range) {
+      name = "COLUMN TABLE RANGE SCAN";
+    } else {
+      name = "COLUMN TABLE FULL SCAN";
+    }
   } else {
     if (is_get) {
       name = "TABLE GET";
@@ -109,7 +117,6 @@ int ObLogTableScan::do_re_est_cost(EstimateCostInfo &param, double &card, double
   double limit_percent = -1.0;
   int64_t limit_count = -1;
   int64_t offset_count = 0;
-  double index_back_cost = 0.0;
   ObOptimizerContext *opt_ctx = NULL;
   if (OB_ISNULL(access_path_)) {  // table scan create from CteTablePath
     card = get_card();
@@ -132,10 +139,12 @@ int ObLogTableScan::do_re_est_cost(EstimateCostInfo &param, double &card, double
     }
     param.need_row_count_ = std::min(param.need_row_count_, card);
     param.need_row_count_ += offset_count_double;
-    if (OB_FAIL(AccessPath::re_estimate_cost(param, *est_cost_info_, sample_info_,
-                                             opt_ctx->get_cost_model_type(),
-                                             phy_query_range_row_count_, query_range_row_count_,
-                                             card, index_back_cost, op_cost))) {
+    if (OB_FAIL(AccessPath::re_estimate_cost(param,
+                                             *est_cost_info_,
+                                             sample_info_,
+                                             *opt_ctx,
+                                             card,
+                                             op_cost))) {
       LOG_WARN("failed to re estimate cost", K(ret));
     } else {
       cost = op_cost;
@@ -506,14 +515,35 @@ int ObLogTableScan::replace_index_back_pushdown_filters(ObRawExprReplacer &repla
   return ret;
 }
 
+int ObLogTableScan::has_nonpushdown_filter(bool &has_npd_filter)
+{
+  int ret = OB_SUCCESS;
+  has_npd_filter = false;
+  ObArray<ObRawExpr*> nonpushdown_filters;
+  ObArray<ObRawExpr*> scan_pushdown_filters;
+  ObArray<ObRawExpr*> lookup_pushdown_filters;
+  if (OB_FAIL(extract_pushdown_filters(nonpushdown_filters,
+                                       scan_pushdown_filters,
+                                       lookup_pushdown_filters,
+                                       true /*ignore pushdown filters*/))) {
+    LOG_WARN("extract pushdnow filters failed", K(ret));
+  } else if (!nonpushdown_filters.empty()) {
+    has_npd_filter = true;
+  }
+  return ret;
+}
+
 int ObLogTableScan::extract_pushdown_filters(ObIArray<ObRawExpr*> &nonpushdown_filters,
                                              ObIArray<ObRawExpr*> &scan_pushdown_filters,
-                                             ObIArray<ObRawExpr*> &lookup_pushdown_filters)
+                                             ObIArray<ObRawExpr*> &lookup_pushdown_filters,
+                                             bool ignore_pd_filter /*= false */)
 {
   int ret = OB_SUCCESS;
   const ObIArray<ObRawExpr*> &filters = get_filter_exprs();
   const auto &flags = get_filter_before_index_flags();
-  if (get_contains_fake_cte() || is_virtual_table(get_ref_table_id()) || EXTERNAL_TABLE == get_table_type()) {
+  if (get_contains_fake_cte() ||
+      is_virtual_table(get_ref_table_id()) ||
+      EXTERNAL_TABLE == get_table_type()) {
     //all filters can not push down to storage
     if (OB_FAIL(nonpushdown_filters.assign(filters))) {
       LOG_WARN("store non-pushdown filters failed", K(ret));
@@ -532,15 +562,19 @@ int ObLogTableScan::extract_pushdown_filters(ObIArray<ObRawExpr*> &nonpushdown_f
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
           LOG_WARN("push dynamic filter to store non-pushdown filter failed", K(ret), K(i));
         }
-      } else if (filters.at(i)->has_flag(CNT_PL_UDF)) {
-        //User Define Function filter do not push down to storage
+      } else if (filters.at(i)->has_flag(CNT_PL_UDF) ||
+                 filters.at(i)->has_flag(CNT_OBJ_ACCESS_EXPR)) {
+        //User Define Function/obj access expr filter do not push down to storage
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
-          LOG_WARN("push UDF filter store non-pushdown filter failed", K(ret), K(i));
+          LOG_WARN("push UDF/obj access filter store non-pushdown filter failed", K(ret), K(i));
         }
-      } else if (filters.at(i)->has_flag(CNT_ASSIGN_EXPR)) {
+      } else if (filters.at(i)->has_flag(CNT_DYNAMIC_USER_VARIABLE)
+              || filters.at(i)->has_flag(CNT_ASSIGN_EXPR)) {
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
           LOG_WARN("push variable assign filter store non-pushdown filter failed", K(ret), K(i));
         }
+      } else if (ignore_pd_filter) {
+        //ignore_pd_filter: only extract non-pushdown filters, ignore others
       } else if (!get_index_back()) {
         if (OB_FAIL(scan_pushdown_filters.push_back(filters.at(i)))) {
           LOG_WARN("store pushdown filter failed", K(ret));
@@ -704,7 +738,8 @@ int ObLogTableScan::generate_ddl_output_column_ids()
   } else {
     ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
     if (opt_ctx.is_online_ddl() &&
-        stmt::T_INSERT == opt_ctx.get_session_info()->get_stmt_type()) {
+        stmt::T_INSERT == opt_ctx.get_session_info()->get_stmt_type() &&
+        !opt_ctx.get_session_info()->get_ddl_info().is_mview_complete_refresh()) {
       for (int64_t i = 0; OB_SUCC(ret) && i < get_output_exprs().count(); ++i) {
         const ObRawExpr *output_expr = get_output_exprs().at(i);
         if (OB_ISNULL(output_expr)) {
@@ -1282,6 +1317,26 @@ int ObLogTableScan::get_plan_item_info(PlanText &plan_text,
     } else if (OB_FAIL(print_range_annotation(buf, buf_len, pos, type))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     }
+
+    if (OB_SUCC(ret) && (!pushdown_groupby_columns_.empty() ||
+                         !pushdown_aggr_exprs_.empty())) {
+      ObIArray<ObAggFunRawExpr*> &pushdown_aggregation = pushdown_aggr_exprs_;
+      ObIArray<ObRawExpr*> &pushdown_groupby = pushdown_groupby_columns_;
+      if (OB_FAIL(BUF_PRINTF(", "))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else if (OB_FAIL(BUF_PRINTF("\n      "))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else if (!pushdown_groupby.empty() &&
+                 OB_FALSE_IT(EXPLAIN_PRINT_EXPRS(pushdown_groupby, type))) {
+      } else if (!pushdown_groupby.empty() &&
+                 !pushdown_aggregation.empty() &&
+                  OB_FAIL(BUF_PRINTF(", "))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else if (!pushdown_aggregation.empty()) {
+        EXPLAIN_PRINT_EXPRS(pushdown_aggregation, type);
+      }
+    }
+
     END_BUF_PRINT(plan_item.special_predicates_,
                   plan_item.special_predicates_len_);
   }
@@ -1426,35 +1481,35 @@ int ObLogTableScan::explain_index_selection_info(char *buf,
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("table_rows:%ld",
-                            static_cast<int64_t>(table_row_count_)))) {
+                            static_cast<int64_t>(get_table_row_count())))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("physical_range_rows:%ld",
-                            static_cast<int64_t>(phy_query_range_row_count_)))) {
+                            static_cast<int64_t>(get_phy_query_range_row_count())))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("logical_range_rows:%ld",
-                            static_cast<int64_t>(query_range_row_count_)))) {
+                            static_cast<int64_t>(get_logical_query_range_row_count())))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("index_back_rows:%ld",
-                            static_cast<int64_t>(index_back_row_count_)))) {
+                            static_cast<int64_t>(get_index_back_row_count())))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF("output_rows:%ld",
-                            static_cast<int64_t>(output_row_count_)))) {
+                            static_cast<int64_t>(get_output_row_count())))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
@@ -1791,6 +1846,14 @@ int ObLogTableScan::print_outline_data(PlanText &plan_text)
         LOG_WARN("failed to print use das hint", K(ret));
       }
     }
+    if (OB_SUCC(ret) && use_column_store()) {
+      ObIndexHint use_column_store_hint(T_USE_COLUMN_STORE_HINT);
+      use_column_store_hint.set_qb_name(qb_name);
+      use_column_store_hint.get_table().set_table(*table_item);
+      if (OB_FAIL(use_column_store_hint.print_hint(plan_text))) {
+        LOG_WARN("failed to print use column store hint", K(ret));
+      }
+    }
   }
 
   return ret;
@@ -1826,6 +1889,10 @@ int ObLogTableScan::print_used_hint(PlanText &plan_text)
                && use_das() == table_hint->use_das_hint_->is_enable_hint()
                && OB_FAIL(table_hint->use_das_hint_->print_hint(plan_text))) {
       LOG_WARN("failed to print use das hint", K(ret));
+    } else if (NULL != table_hint->use_column_store_hint_
+               && use_column_store() == table_hint->use_column_store_hint_->is_enable_hint()
+               && OB_FAIL(table_hint->use_column_store_hint_->print_hint(plan_text))) {
+      LOG_WARN("failed to print use column_store hint", K(ret));
     } else if (table_hint->index_list_.empty()) {
       /*do nothing*/
     } else if (OB_UNLIKELY(table_hint->index_list_.count() != table_hint->index_hints_.count())) {
@@ -1974,13 +2041,15 @@ bool ObLogTableScan::is_need_feedback() const
 {
   bool ret = false;
   const int64_t SELECTION_THRESHOLD = 80;
-  int64_t sel = (is_whole_range_scan() || table_row_count_ == 0) ?
-                  100 : static_cast<int64_t>(query_range_row_count_) * 100 / table_row_count_;
+  double table_row_count = get_table_row_count();
+  double logical_query_range_row_count = get_logical_query_range_row_count();
+  int64_t sel = (is_whole_range_scan() || table_row_count == 0) ?
+                  100 : static_cast<int64_t>(logical_query_range_row_count) * 100 / table_row_count;
 
   ret = sel >= SELECTION_THRESHOLD && !is_multi_part_table_scan_;
 
-  LOG_TRACE("is_need_feedback", K(estimate_method_), K(table_row_count_),
-            K(query_range_row_count_), K(table_row_count_), K(sel), K(ret));
+  LOG_TRACE("is_need_feedback", K(estimate_method_), K(table_row_count),
+            K(logical_query_range_row_count), K(sel), K(ret));
   return ret;
 }
 

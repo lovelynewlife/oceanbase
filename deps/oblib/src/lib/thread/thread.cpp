@@ -36,6 +36,7 @@ thread_local pthread_t Thread::thread_joined_ = 0;
 thread_local int64_t Thread::sleep_us_ = 0;
 thread_local int64_t Thread::blocking_ts_ = 0;
 thread_local ObAddr Thread::rpc_dest_addr_;
+thread_local obrpc::ObRpcPacketCode Thread::pcode_ = obrpc::ObRpcPacketCode::OB_INVALID_RPC_CODE;
 thread_local uint8_t Thread::wait_event_ = 0;
 thread_local Thread* Thread::current_thread_ = nullptr;
 int64_t Thread::total_thread_count_ = 0;
@@ -119,9 +120,13 @@ int Thread::start()
 
 void Thread::stop()
 {
+  bool stack_addr_flag = true;
+#ifndef OB_USE_ASAN
+  stack_addr_flag = (stack_addr_ != NULL);
+#endif
 #ifdef ERRSIM
   if (!stop_
-      && stack_addr_ != NULL
+      && stack_addr_flag
       && 0 != (OB_E(EventTable::EN_THREAD_HANG) 0)) {
     int tid_offset = 720;
     int tid = *(pid_t*)((char*)pth_ + tid_offset);
@@ -207,9 +212,6 @@ void Thread::wait()
 {
   int ret = 0;
   if (pth_ != 0) {
-    if (2 <= ATOMIC_AAF(&join_concurrency_, 1)) {
-      ob_abort();
-    }
     if (0 != (ret = pthread_join(pth_, nullptr))) {
       LOG_ERROR("pthread_join failed", K(ret), K(errno));
 #ifndef OB_USE_ASAN
@@ -218,10 +220,22 @@ void Thread::wait()
 #endif
     }
     destroy_stack();
-    if (1 <= ATOMIC_AAF(&join_concurrency_, -1)) {
-      ob_abort();
+  }
+}
+
+int Thread::try_wait()
+{
+  int ret = OB_SUCCESS;
+  if (pth_ != 0) {
+    int pret = 0;
+    if (0 != (pret = pthread_tryjoin_np(pth_, nullptr))) {
+      ret = OB_EAGAIN;
+      LOG_WARN("pthread_tryjoin_np failed", K(pret), K(errno), K(ret));
+    } else {
+      destroy_stack();
     }
   }
+  return ret;
 }
 
 void Thread::destroy()
@@ -293,9 +307,6 @@ void* Thread::__th_start(void *arg)
     if (OB_FAIL(ret)) {
       LOG_ERROR("set tenant ctx failed", K(ret));
     } else {
-      const int cache_size = !lib::is_mini_mode() ? ObPageManager::DEFAULT_CHUNK_CACHE_SIZE :
-        ObPageManager::MINI_MODE_CHUNK_CACHE_SIZE;
-      pm.set_max_chunk_cache_size(cache_size);
       ObPageManager::set_thread_local_instance(pm);
       MemoryContext *mem_context = GET_TSI0(MemoryContext);
       if (OB_ISNULL(mem_context)) {

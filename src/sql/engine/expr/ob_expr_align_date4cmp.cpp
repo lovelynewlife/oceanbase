@@ -31,7 +31,7 @@ static const int8_t DAYS_OF_MON[2][12 + 1] = {
   {0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 };
 
-#define IS_LEAP_YEAR(y) ((((y) % 4) == 0 && (((y) % 100) != 0 || ((y) % 400) == 0)) ? 1 : 0)
+#define IS_LEAP_YEAR(y) (y == 0 ? 0 : ((((y) % 4) == 0 && (((y) % 100) != 0 || ((y) % 400) == 0)) ? 1 : 0))
 
 ObExprAlignDate4Cmp::ObExprAlignDate4Cmp(common::ObIAllocator &alloc)
   : ObFuncExprOperator(alloc, T_FUN_SYS_ALIGN_DATE4CMP, N_ALIGN_DATE4CMP, 3, VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
@@ -141,39 +141,42 @@ int ObExprAlignDate4Cmp::eval_align_date4cmp(const ObExpr &expr, ObEvalCtx &ctx,
   const bool is_zero_on_warn = CM_IS_ZERO_ON_WARN(expr.extra_);
   const bool is_no_zero_date = CM_IS_NO_ZERO_DATE(expr.extra_);
   const bool is_warn_on_fail = CM_IS_WARN_ON_FAIL(expr.extra_);
+  const bool is_allow_invalid_dates = CM_IS_ALLOW_INVALID_DATES(expr.extra_);
   if (OB_SUCC(ret)) {
     switch(date_arg_type) {
       case VALID_DATE: {
         const bool is_valid_time = true;
         if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
                             is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
-          LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type));
+          LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type),
+                                    K(date_arg_type), K(is_valid_time));
         }
         break;
       }
       case INVALID_DATE: {
         bool is_valid_time = false;
         int cmp_type = cmp_type_datum->get_int();
-        // if cmp_type == T_OP_EQ or T_OP_NSEQ or T_OP_NE,
-        // return null or 0 depending on is_zero_on_warn.
         if (cmp_type == T_OP_EQ || cmp_type == T_OP_NSEQ || cmp_type == T_OP_NE) {
-          if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
-                              is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
-            LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type));
+          // Compatible with previous versions of ob, not with mysql
+          if (is_allow_invalid_dates) {
+            int32_t offset = get_day_over_limit(ob_time);
+            if (offset > 0) {
+              push_back_n_days(ob_time, offset);
+              is_valid_time = true;
+            }
           }
-        } else {
-          if (day_over_limit(ob_time)) {
+        } else {  // cmp_type is: >, >=, <, <=
+          // Compatible with mysql, not with previous versions of ob
+          if (is_day_over_limit(ob_time)) {
             offset = (cmp_type == T_OP_GT || cmp_type == T_OP_LE) ? false : true;
             set_valid_time_floor(ob_time);
             is_valid_time = true;
-            if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
-                                is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
-              LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type));
-            }
-          } else if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
-                                     is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
-            LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type));
           }
+        }
+        if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
+                            is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
+          LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type),
+                                    K(date_arg_type), K(is_valid_time));
         }
         break;
       }
@@ -181,7 +184,8 @@ int ObExprAlignDate4Cmp::eval_align_date4cmp(const ObExpr &expr, ObEvalCtx &ctx,
         const bool is_valid_time = false;
         if (OB_FAIL(set_res(res, ob_time, res_type, is_valid_time, offset,
                             is_zero_on_warn, is_no_zero_date, is_warn_on_fail))) {
-          LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type));
+          LOG_WARN("set_res fail.", K(ret), K(ob_time), K(res_type),
+                                        K(date_arg_type), K(is_valid_time));
         }
         break;
       }
@@ -198,6 +202,17 @@ int ObExprAlignDate4Cmp::eval_align_date4cmp(const ObExpr &expr, ObEvalCtx &ctx,
   }
 
   return ret;
+}
+
+// Because the date greater than 31 will be considered as NON_DATE,
+// the maximum number of days to be pushed back in this case is 31-28=3.
+// For year and month, the maximum pushback is limited to 1.
+void ObExprAlignDate4Cmp::push_back_n_days(ObTime &ob_time, int32_t offset)
+{
+  ob_time.parts_[DT_YEAR] += ob_time.parts_[DT_MON] / MONTHS_PER_YEAR;
+  ob_time.parts_[DT_MON] = (ob_time.parts_[DT_MON] + 1) % MONTHS_PER_YEAR;
+  ob_time.parts_[DT_MDAY] = offset;
+  ob_time.parts_[DT_DATE] = ObTimeConverter::ob_time_to_date(ob_time);
 }
 
 void ObExprAlignDate4Cmp::set_valid_time_floor(ObTime &ob_time)
@@ -217,15 +232,29 @@ void ObExprAlignDate4Cmp::set_valid_time_floor(ObTime &ob_time)
   ob_time.parts_[DT_DATE] = ObTimeConverter::ob_time_to_date(ob_time);
 }
 
-bool ObExprAlignDate4Cmp::day_over_limit(const ObTime &ob_time)
+bool ObExprAlignDate4Cmp::is_day_over_limit(const ObTime &ob_time)
 {
   bool res = true;
-  if(IS_LEAP_YEAR(ob_time.parts_[DT_YEAR])) {
+  if (ob_time.parts_[DT_MON] < 1 || ob_time.parts_[DT_MON] > 12) {
+    res = false;
+  } else if(IS_LEAP_YEAR(ob_time.parts_[DT_YEAR])) {
     res = ob_time.parts_[DT_MDAY] > DAYS_OF_MON[1][ob_time.parts_[DT_MON]];
   } else {
     res = ob_time.parts_[DT_MDAY] > DAYS_OF_MON[0][ob_time.parts_[DT_MON]];
   }
   return res;
+}
+
+int32_t ObExprAlignDate4Cmp::get_day_over_limit(const ObTime &ob_time)
+{
+  int32_t res = 0;
+  if (ob_time.parts_[DT_MON] < 1 || ob_time.parts_[DT_MON] > 12) {
+  } else if(IS_LEAP_YEAR(ob_time.parts_[DT_YEAR])) {
+    res = ob_time.parts_[DT_MDAY] - DAYS_OF_MON[1][ob_time.parts_[DT_MON]];
+  } else {
+    res = ob_time.parts_[DT_MDAY] - DAYS_OF_MON[0][ob_time.parts_[DT_MON]];
+  }
+  return res > 0 ? res : 0;
 }
 
 ObExprAlignDate4Cmp::DateArgType ObExprAlignDate4Cmp::validate_time(ObTime &ob_time)
@@ -266,7 +295,8 @@ int ObExprAlignDate4Cmp::integer_to_ob_time(const int64_t &date,
     // If it fails, it means the value is not convertible to time.
     date_sql_mode.allow_invalid_dates_ = true;
     date_sql_mode.no_zero_date_ = false;
-    if (OB_FAIL(ObTimeConverter::int_to_ob_time_with_date(date, ob_time, true, date_sql_mode))) {
+    date_sql_mode.allow_incomplete_dates_ = true;
+    if (OB_FAIL(ObTimeConverter::int_to_ob_time_with_date(date, ob_time, date_sql_mode))) {
       date_arg_type = NON_DATE;
       ret = OB_SUCCESS;
     } else {
@@ -335,7 +365,8 @@ int ObExprAlignDate4Cmp::str_to_ob_time(const ObString &date, DateArgType &date_
   ObDateSqlMode date_sql_mode;
   date_sql_mode.allow_invalid_dates_ = true;
   date_sql_mode.no_zero_date_ = false;
-  if (OB_FAIL(ObTimeConverter::str_to_ob_time_with_date(date, ob_time, NULL, true, date_sql_mode))) {
+  date_sql_mode.allow_incomplete_dates_ = true;
+  if (OB_FAIL(ObTimeConverter::str_to_ob_time_with_date(date, ob_time, NULL, date_sql_mode))) {
     date_arg_type = NON_DATE;
     ret = OB_SUCCESS;
   } else {
@@ -408,6 +439,17 @@ int ObExprAlignDate4Cmp::datum_to_ob_time(const ObExpr &expr,
       case ObUNumberType: {
         if (OB_FAIL(number_to_ob_time(date_datum->get_number(), date_arg_type, ob_time))) {
           LOG_WARN("number_to_ob_time fail.", K(ret), K(date_datum));
+        }
+        break;
+      }
+      case ObDecimalIntType: {
+        ObNumStackOnceAlloc tmp_alloc;
+        number::ObNumber nmb;
+        if (OB_FAIL(wide::to_number(date_datum->get_decimal_int(), date_datum->get_int_bytes(),
+                                    expr.args_[0]->datum_meta_.scale_, tmp_alloc, nmb))) {
+          LOG_WARN("to_number failed", K(ret), K(date_datum));
+        } else if (OB_FAIL(number_to_ob_time(nmb, date_arg_type, ob_time))) {
+          LOG_WARN("number_to_ob_time fail.", K(ret), K(nmb));
         }
         break;
       }
@@ -519,6 +561,8 @@ bool ObExprAlignDate4Cmp::is_align_date4cmp_support_obj_type(const ObObjType &ob
   if (ObNullType <= obj_type && obj_type <= ObUNumberType) {
     res = true;
   } else if (ob_is_string_type(obj_type)) {
+    res = true;
+  } else if (ob_is_decimal_int_tc(obj_type)) {
     res = true;
   }
   return res;

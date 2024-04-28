@@ -65,7 +65,14 @@ using namespace oceanbase::obrpc;
 
 #define EXPAND_INTERVAL (1 * 1000 * 1000)
 #define SHRINK_INTERVAL (1 * 1000 * 1000)
+#define SLEEP_INTERVAL (60 * 1000 * 1000)
 
+int64_t FASTSTACK_REQ_QUEUE_SIZE_THRESHOLD = INT64_MAX;
+
+extern "C" {
+int ob_pthread_create(void **ptr, void *(*start_routine) (void *), void *arg);
+int ob_pthread_tryjoin_np(void *ptr);
+}
 void MultiLevelReqCnt::atomic_inc(const int32_t level)
 {
   if (level < 0 || level >= MAX_REQUEST_LEVEL) {
@@ -251,7 +258,7 @@ void ObPxPool::run1()
   ObTLTaGuard ta_guard(tenant_id_);
   auto *pm = common::ObPageManager::thread_local_instance();
   if (OB_LIKELY(nullptr != pm)) {
-    pm->set_tenant_ctx(tenant_id_, common::ObCtxIds::WORK_AREA);
+    pm->set_tenant_ctx(tenant_id_, common::ObCtxIds::DEFAULT_CTX_ID);
   }
   //ObTaTLCacheGuard ta_guard(tenant_id_);
   CLEAR_INTERRUPTABLE();
@@ -373,7 +380,6 @@ void ObResourceGroup::check_worker_count()
 {
   int ret = OB_SUCCESS;
   if (OB_SUCC(workers_lock_.trylock())) {
-    int64_t token = 1;
     int64_t now = ObTimeUtility::current_time();
     bool enable_dynamic_worker = true;
     int64_t threshold = 3 * 1000;
@@ -382,6 +388,7 @@ void ObResourceGroup::check_worker_count()
       enable_dynamic_worker = tenant_config.is_valid() ? tenant_config->_ob_enable_dynamic_worker : true;
       threshold = tenant_config.is_valid() ? tenant_config->_stall_threshold_for_dynamic_worker : 3 * 1000;
     }
+    int64_t blocking_cnt = 0;
     DLIST_FOREACH_REMOVESAFE(wnode, workers_) {
       const auto w = static_cast<ObThWorker*>(wnode->get_data());
       if (w->has_set_stop()) {
@@ -391,28 +398,47 @@ void ObResourceGroup::check_worker_count()
                  && 0 != w->blocking_ts()
                  && now - w->blocking_ts() >= threshold
                  && enable_dynamic_worker) {
-        ++token;
+        ++blocking_cnt;
       }
     }
+
+    int64_t target_min = 0;
+    int64_t token = 0;
+    bool is_group_critical = share::ObCgSet::instance().is_group_critical(group_id_);
+    if (is_group_critical) {
+      target_min = min_worker_cnt();
+      token = 1 + blocking_cnt;
+      token = std::min(token, max_worker_cnt());
+      token = std::max(token, target_min);
+    } else {
+      target_min = std::min(req_queue_.size(), min_worker_cnt());
+      if (blocking_cnt == 0 && req_queue_.size() == 0) {
+        token = 0;
+      } else {
+        token = 1 + blocking_cnt;
+        token = std::min(token, max_worker_cnt());
+      }
+    }
+
     int64_t succ_num = 0L;
-    token = std::max(token, min_worker_cnt());
-    token = std::min(token, max_worker_cnt());
-    if (OB_UNLIKELY(workers_.get_size() < min_worker_cnt())) {
-      const auto diff = min_worker_cnt() - workers_.get_size();
+    int64_t shrink_ts =
+        (!is_group_critical && workers_.get_size() == 1 && token == 0) ? SLEEP_INTERVAL : SHRINK_INTERVAL;
+    if (OB_UNLIKELY(workers_.get_size() < target_min)) {
+      const int64_t diff = target_min - workers_.get_size();
       token_change_ts_ = now;
       ATOMIC_STORE(&shrink_, false);
       acquire_more_worker(diff, succ_num, /* force */ true);
       LOG_INFO("worker thread created", K(tenant_->id()), K(group_id_), K(token));
-    } else if (OB_UNLIKELY(token > workers_.get_size())
-               && OB_LIKELY(ObMallocAllocator::get_instance()->get_tenant_remain(tenant_->id()) > ObMallocAllocator::get_instance()->get_tenant_limit(tenant_->id()) * 0.05)) {
+    } else if (OB_UNLIKELY(workers_.get_size() < token) &&
+               OB_LIKELY(ObMallocAllocator::get_instance()->get_tenant_remain(tenant_->id()) >
+                         ObMallocAllocator::get_instance()->get_tenant_limit(tenant_->id()) * 0.05)) {
       ATOMIC_STORE(&shrink_, false);
       if (OB_LIKELY(now - token_change_ts_ >= EXPAND_INTERVAL)) {
         token_change_ts_ = now;
         acquire_more_worker(1, succ_num);
         LOG_INFO("worker thread created", K(tenant_->id()), K(group_id_), K(token));
       }
-    } else if (OB_UNLIKELY(token < workers_.get_size())
-               && OB_LIKELY(now - token_change_ts_ >= SHRINK_INTERVAL)) {
+    } else if (OB_UNLIKELY(workers_.get_size() > token) && OB_LIKELY(now - token_change_ts_ >= shrink_ts)) {
       token_change_ts_ = now;
       ATOMIC_STORE(&shrink_, true);
       LOG_INFO("worker thread began to shrink", K(tenant_->id()), K(group_id_), K(token));
@@ -583,7 +609,8 @@ ObTenant::ObTenant(const int64_t id,
       tenant_meta_(),
       shrink_(0),
       total_worker_cnt_(0),
-      gc_thread_(0),
+      gc_thread_(nullptr),
+      has_created_(false),
       stopped_(0),
       wait_mtl_finished_(false),
       req_queue_(),
@@ -862,14 +889,13 @@ void ObTenant::sleep_and_warn(ObTenant* tenant)
 {
   ob_usleep(10_ms);
   const int64_t ts = ObTimeUtility::current_time() - tenant->stopped_;
-  if (ts >= 3_min && TC_REACH_TIME_INTERVAL(3_min)) {
+  if (ts >= 3L * 60 * 1000 * 1000 && TC_REACH_TIME_INTERVAL(3L * 60 * 1000 * 1000)) {
     LOG_ERROR_RET(OB_SUCCESS, "tenant destructed for too long time.", K_(tenant->id), K(ts));
   }
 }
 
 void* ObTenant::wait(void* t)
 {
-  ObStackHeaderGuard stack_header_guard;
   int ret = OB_SUCCESS;
   ObTenant* tenant = (ObTenant*)t;
   ob_get_tenant_id() = tenant->id_;
@@ -936,34 +962,33 @@ void* ObTenant::wait(void* t)
 int ObTenant::try_wait()
 {
   int ret = OB_SUCCESS;
-  int tmp = 0;
-  if (-1 == gc_thread_) {
-    LOG_WARN("try_wait after wait successfully", K(id_), K(wait_mtl_finished_));
-  } else if (0 == gc_thread_) {
-    // it may takes too much time for killing session after remove_tenant, we should recalculate.
-    ATOMIC_STORE(&stopped_, ObTimeUtility::current_time());
-    if (0 != (tmp = pthread_create(&gc_thread_, nullptr, wait, this))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("tenant gc thread create failed", K(tmp), K(errno), K(id_));
+  if (OB_ISNULL(ATOMIC_LOAD(&gc_thread_))) {
+    if (!ATOMIC_BCAS(&has_created_, false, true)) {
+      // there will be double-try_wait when kill -15 or failure of locking,
+      // so we have to tolerate that and return OB_SUCCESS although it is not correct.
+      // ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("try_wait again after wait successfully, there may be `kill -15` or failure of locking", K(id_), K(wait_mtl_finished_));
     } else {
-      ret = OB_EAGAIN;
-      LOG_INFO("tenant pthread_create gc thread successfully", K(id_), K(gc_thread_));
+      // it may takes too much time for killing session after remove_tenant, we should recalculate.
+      ATOMIC_STORE(&stopped_, ObTimeUtility::current_time()); // update, it is not 0 before here.
+      if (OB_FAIL(ob_pthread_create(&gc_thread_, wait, this))) {
+        ATOMIC_STORE(&has_created_, false);
+        LOG_ERROR("tenant gc thread create failed", K(ret), K(errno), K(id_));
+      } else {
+        ret = OB_EAGAIN;
+        LOG_INFO("tenant pthread_create gc thread successfully", K(id_), K(gc_thread_));
+      }
     }
   } else {
-    tmp = pthread_tryjoin_np(gc_thread_, nullptr);
-    if (EBUSY == tmp) {
-      ret = OB_EAGAIN;
-      LOG_WARN("tenant pthread_tryjoin_np failed", K(id_));
-    } else if (0 == tmp) {
-      gc_thread_ = -1; // avoid try_wait again after wait success
-      LOG_INFO("tenant pthread_tryjoin_np successfully", K(id_));
+    if (OB_FAIL(ob_pthread_tryjoin_np(gc_thread_))) {
+      LOG_WARN("tenant pthread_tryjoin_np failed", K(errno), K(id_));
     } else {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("pthread_tryjoin_np failed", K(tmp), K(errno), K(id_));
+      ATOMIC_STORE(&gc_thread_, nullptr); // avoid try_wait again after wait success
+      LOG_INFO("tenant pthread_tryjoin_np successfully", K(id_));
     }
     const int64_t ts = ObTimeUtility::current_time() - stopped_;
     // only warn for one time in all tenant.
-    if (ts >= 3_min && REACH_TIME_INTERVAL(3_min)) {
+    if (ts >= 3L * 60 * 1000 * 1000 && REACH_TIME_INTERVAL(3L * 60 * 1000 * 1000)) {
       LOG_ERROR_RET(OB_SUCCESS, "tenant destructed for too long time.", K_(id), K(ts));
     }
   }
@@ -1015,12 +1040,36 @@ void ObTenant::set_unit_max_cpu(double cpu)
 {
   int tmp_ret = OB_SUCCESS;
   unit_max_cpu_ = cpu;
-  const double default_cfs_period_us = 100000.0;
-  int32_t cfs_quota_us = static_cast<int32_t>(default_cfs_period_us * cpu);
-  if (cgroup_ctrl_.is_valid()
-      && !is_meta_tenant(id_)
-      && OB_SUCCESS != (tmp_ret = cgroup_ctrl_.set_cpu_cfs_quota(cfs_quota_us, id_))) {
-    LOG_WARN_RET(tmp_ret, "set cpu cfs quota failed", K(tmp_ret), K_(id), K(cfs_quota_us));
+  int32_t cfs_period_us = 0;
+  int32_t cfs_period_us_new = 0;
+  if (!cgroup_ctrl_.is_valid() || is_meta_tenant(id_)) {
+    // do nothing
+  } else if (is_sys_tenant(id_)) {
+    int32_t sys_cfs_quota_us = -1;
+    if (OB_TMP_FAIL(cgroup_ctrl_.set_cpu_cfs_quota(sys_cfs_quota_us, id_))) {
+      LOG_WARN_RET(tmp_ret, "set sys tennat cpu cfs quota failed", K(tmp_ret), K_(id), K(sys_cfs_quota_us));
+    }
+  } else if (OB_TMP_FAIL(cgroup_ctrl_.get_cpu_cfs_period(cfs_period_us_new, id_, INT64_MAX))) {
+    LOG_WARN_RET(tmp_ret, "fail get cpu cfs period", K_(id));
+  } else {
+    uint32_t loop_times = 0;
+    // to avoid kernel scaling cfs_period_us after get cpu_cfs_period,
+    // we should check whether cfs_period_us has been changed after set cpu_cfs_quota.
+    while (OB_SUCCESS == tmp_ret && cfs_period_us_new != cfs_period_us) {
+      cfs_period_us = cfs_period_us_new;
+      int32_t cfs_quota_us = static_cast<int32_t>(cfs_period_us * cpu);
+      if (OB_TMP_FAIL(cgroup_ctrl_.set_cpu_cfs_quota(cfs_quota_us, id_))) {
+        LOG_WARN_RET(tmp_ret, "set cpu cfs quota failed", K_(id), K(cfs_quota_us));
+      } else if (OB_TMP_FAIL(cgroup_ctrl_.get_cpu_cfs_period(cfs_period_us_new, id_, INT64_MAX))) {
+        LOG_ERROR_RET(tmp_ret, "fail get cpu cfs period", K_(id));
+      } else {
+        loop_times++;
+        if (loop_times > 3) {
+          tmp_ret = OB_ERR_UNEXPECTED;
+          LOG_ERROR_RET(tmp_ret, "cpu_cfs_period has been always changing, thread may be hung", K_(id), K(cfs_period_us), K(cfs_period_us_new), K(cfs_quota_us));
+        }
+      }
+    }
   }
 }
 
@@ -1034,6 +1083,12 @@ void ObTenant::set_unit_min_cpu(double cpu)
       && OB_SUCCESS != (tmp_ret = cgroup_ctrl_.set_cpu_shares(cpu_shares, id_))) {
     LOG_WARN_RET(tmp_ret, "set cpu shares failed", K(tmp_ret), K_(id), K(cpu_shares));
   }
+}
+
+int64_t ObTenant::cpu_quota_concurrency() const
+{
+  ObTenantConfigGuard tenant_config(TENANT_CONF(id_));
+  return static_cast<int64_t>((tenant_config.is_valid() ? tenant_config->cpu_quota_concurrency : 4));
 }
 
 int64_t ObTenant::min_worker_cnt() const
@@ -1179,7 +1234,8 @@ inline bool is_warmup(const ObRpcPacket &pkt)
 int ObTenant::recv_group_request(ObRequest &req, int64_t group_id)
 {
   int ret = OB_SUCCESS;
-  req.set_enqueue_timestamp(ObTimeUtility::current_time());
+  int64_t now = ObTimeUtility::current_time();
+  req.set_enqueue_timestamp(now);
   ObResourceGroup* group = nullptr;
   ObResourceGroupNode* node = nullptr;
   ObResourceGroupNode key(group_id);
@@ -1198,6 +1254,21 @@ int ObTenant::recv_group_request(ObRequest &req, int64_t group_id)
     group->atomic_inc_recv_cnt();
     if (OB_FAIL(group->req_queue_.push(&req, 0))) {
       LOG_ERROR("push request to queue fail", K(ret), K(this));
+    }
+    int tmp_ret = OB_SUCCESS;
+    if (!share::ObCgSet::instance().is_group_critical(group_id) && 0 == group->workers_.get_size()) {
+      if (OB_SUCCESS == (tmp_ret = group->workers_lock_.trylock())) {
+        if (0 == group->workers_.get_size()) {
+          int64_t succ_num = 0L;
+          group->token_change_ts_ = now;
+          ATOMIC_STORE(&group->shrink_, false);
+          group->acquire_more_worker(1, succ_num, /* force */ true);
+          LOG_INFO("worker thread created", K(id()), K(group->group_id_));
+        }
+        IGNORE_RETURN group->workers_lock_.unlock();
+      } else {
+        LOG_WARN("failed to lock group workers", K(ret), K(id_), K(group_id));
+      }
     }
   }
   return ret;
@@ -1314,7 +1385,7 @@ int ObTenant::recv_request(ObRequest &req)
   if (OB_SUCC(ret)) {
     ObTenantStatEstGuard guard(id_);
     EVENT_INC(REQUEST_ENQUEUE_COUNT);
-  } else if (OB_SIZE_OVERFLOW == ret) {
+  } else if (OB_SIZE_OVERFLOW == ret || req_queue_.size() >= FASTSTACK_REQ_QUEUE_SIZE_THRESHOLD) {
     IGNORE_RETURN faststack();
   }
 
@@ -1707,6 +1778,7 @@ void ObTenant::check_das()
   if (!is_virtual_tenant_id(id_)) {
     ObTenantSwitchGuard guard(this);
     if (OB_ISNULL(MTL(ObDataAccessService *))) {
+      ret = OB_ERR_UNEXPECTED;
       LOG_WARN("failed to get das ptr", K(MTL_ID()));
     } else {
       double min_cpu = .0;

@@ -257,7 +257,7 @@ int ObLogSubPlanFilter::do_re_est_cost(EstimateCostInfo &param, double &card, do
     cost_info.rows_ = ObJoinOrder::calc_single_parallel_rows(cost_info.rows_, param.need_parallel_);
     ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
     ObSubplanFilterCostInfo info(cost_infos, get_onetime_idxs(), get_initplan_idxs());
-    if (OB_FAIL(ObOptEstCost::cost_subplan_filter(info, op_cost, opt_ctx.get_cost_model_type()))) {
+    if (OB_FAIL(ObOptEstCost::cost_subplan_filter(info, op_cost, opt_ctx))) {
       LOG_WARN("failed to calculate  the cost of subplan filter", K(ret));
     } else {
       cost = op_cost + cost_info.cost_;
@@ -483,7 +483,7 @@ int ObLogSubPlanFilter::check_if_match_das_group_rescan(ObLogicalOperator *root,
         LOG_WARN("failed to check query range contribution", K(ret));
       } else if (!is_valid) {
         group_rescan = false;
-      } else if (tsc->get_scan_direction() != default_asc_direction()) {
+      } else if (tsc->get_scan_direction() != default_asc_direction() && tsc->get_scan_direction() != ObOrderDirection::UNORDERED) {
         group_rescan = false;
       } else if (tsc->has_index_scan_filter() && tsc->get_index_back() && tsc->get_is_index_global()) {
         // For the global index lookup, if there is a pushdown filter when scanning the index,
@@ -537,6 +537,15 @@ int ObLogSubPlanFilter::check_and_set_das_group_rescan()
     LOG_WARN("unexpected null", K(ret));
   } else if (OB_FAIL(session_info->get_nlj_batching_enabled(enable_das_group_rescan_))) {
     LOG_WARN("failed to get enable batch variable", K(ret));
+  } else {
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(session_info->get_effective_tenant_id()));
+    if (tenant_config.is_valid()) {
+      enable_das_group_rescan_ = tenant_config->_enable_spf_batch_rescan;
+      LOG_TRACE("trace disable hash groupby in second stage for three-stage",
+        K(enable_das_group_rescan_));
+    } else {
+      enable_das_group_rescan_ = false;
+    }
   }
   // check use batch
   for (int64_t i = 1; OB_SUCC(ret) && enable_das_group_rescan_ && i < get_num_of_child(); i++) {
@@ -558,6 +567,16 @@ int ObLogSubPlanFilter::check_and_set_das_group_rescan()
       } else if (contains_invalid_startup) {
         enable_das_group_rescan_ = false;
       }
+    }
+  }
+  // check if exec params contain sub_query
+  for (int64_t i = 0; OB_SUCC(ret) && enable_das_group_rescan_ && i < exec_params_.count(); i++) {
+    const ObExecParamRawExpr *exec_param = exec_params_.at(i);
+    if (OB_ISNULL(exec_param)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("exec param is nullptr", K(ret), K(i));
+    } else if (OB_NOT_NULL(exec_param->get_ref_expr()) && exec_param->get_ref_expr()->has_flag(CNT_SUB_QUERY)) {
+      enable_das_group_rescan_ = false;
     }
   }
   // set use batch

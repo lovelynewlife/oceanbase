@@ -49,8 +49,8 @@ struct PartitionInfo
 };
 
 enum NUMCHILD {
-  CREATE_TABLE_NUM_CHILD = 7,
-  CREATE_TABLE_AS_SEL_NUM_CHILD = 8,
+  CREATE_TABLE_NUM_CHILD = 8,
+  CREATE_TABLE_AS_SEL_NUM_CHILD = 9,
   COLUMN_DEFINITION_NUM_CHILD = 4,
   COLUMN_DEF_NUM_CHILD = 3,
   INDEX_NUM_CHILD = 5,
@@ -154,7 +154,7 @@ public:
   };
   static const int NAMENODE = 1;
 
-  static const int64_t MAX_PROGRESSIVE_MERGE_NUM = 64;
+  static const int64_t MAX_PROGRESSIVE_MERGE_NUM = 100;
   static const int64_t MAX_REPLICA_NUM = 6;
   static const int64_t MIN_BLOCK_SIZE = 1024;
   static const int64_t MAX_BLOCK_SIZE = 1048576;
@@ -180,6 +180,8 @@ public:
   int resolve_default_value(
       ParseNode *def_node,
       common::ObObjParam &default_value);
+  int resolve_sign_in_default_value(
+      ObIAllocator *name_pool, ParseNode *def_val, ObObjParam &default_value, const bool is_neg);
   static int check_and_fill_column_charset_info(
       share::schema::ObColumnSchemaV2 &column,
       const common::ObCharsetType table_charset_type,
@@ -209,6 +211,7 @@ public:
                                ObIArray<ObString> &gen_col_expr_arr);
   static int init_empty_session(const common::ObTimeZoneInfoWrap &tz_info_wrap,
                                 const ObString *nls_formats,
+                                const share::schema::ObLocalSessionVar *local_session_var,
                                 common::ObIAllocator &allocator,
                                 share::schema::ObTableSchema &table_schema,
                                 const ObSQLMode sql_mode,
@@ -217,6 +220,7 @@ public:
   static int reformat_generated_column_expr(ObObj &default_value,
                                             const common::ObTimeZoneInfoWrap &tz_info_wrap,
                                             const common::ObString *nls_formats,
+                                            const share::schema::ObLocalSessionVar &local_session_var,
                                             common::ObIAllocator &allocator,
                                             share::schema::ObTableSchema &table_schema,
                                             share::schema::ObColumnSchemaV2 &column,
@@ -231,11 +235,13 @@ public:
       ObSQLSessionInfo *session_info,
       ObSchemaChecker *schema_checker,
       ObRawExpr *&expr,
-      ObRawExprFactory &expr_factory);
+      ObRawExprFactory &expr_factory,
+      bool coltype_not_defined = false);
   static int check_default_value(
       common::ObObj &default_value,
       const common::ObTimeZoneInfoWrap &tz_info_wrap,
       const common::ObString *nls_formats,
+      const ObLocalSessionVar *local_session_var,
       common::ObIAllocator &allocator,
       share::schema::ObTableSchema &table_schema,
       share::schema::ObColumnSchemaV2 &column_schema,
@@ -248,6 +254,7 @@ public:
       common::ObObj &default_value,
       const common::ObTimeZoneInfoWrap &tz_info_wrap,
       const common::ObString *nls_formats,
+      const ObLocalSessionVar *local_session_var,
       common::ObIAllocator &allocator,
       share::schema::ObTableSchema &table_schema,
       ObIArray<share::schema::ObColumnSchemaV2> &resolved_cols,
@@ -256,7 +263,8 @@ public:
       const ObSQLMode sql_mode,
       ObSQLSessionInfo *session_info,
       bool allow_sequence,
-      ObSchemaChecker *schema_checker = NULL);
+      ObSchemaChecker *schema_checker = NULL,
+      bool coltype_not_defined = false);
   static int check_default_value(
       common::ObObj &default_value,
       const common::ObTimeZoneInfoWrap &tz_info_wrap,
@@ -269,7 +277,8 @@ public:
       const ObSQLMode sql_mode,
       ObSQLSessionInfo *session_info,
       bool allow_sequence,
-      ObSchemaChecker *schema_checker);
+      ObSchemaChecker *schema_checker,
+      bool coltype_not_defined = false);
   static int calc_default_value(
       share::schema::ObColumnSchemaV2 &column_schema,
       common::ObObj &default_value,
@@ -297,6 +306,8 @@ public:
   static int adjust_string_column_length_within_max(
       share::schema::ObColumnSchemaV2 &column,
       const bool is_oracle_mode);
+  static int adjust_number_decimal_column_accuracy_within_max(share::schema::ObColumnSchemaV2 &column,
+                                                              const bool is_oracle_mode);
   // { used for enum and set
   int fill_extended_type_info(
       const ParseNode &str_list_node,
@@ -327,6 +338,12 @@ public:
                                                   int64_t table_id,
                                                   const bool is_byte_length = false);
   static int get_enable_split_partition(const int64_t tenant_id, bool &enable_split_partition);
+
+  // this func is for compatibility, the row_store_type of OB_STORE_FORMAT_COMPRESSED_MYSQL
+  // has been changed from ENCODING_ROW_STORE to CS_ENCODING_ROW_STORE and the
+  // OB_STORE_FORMAT_ARCHIVE_HIGH_ORACLE is newly added since 4.2.0.0
+  static int get_row_store_type(const uint64_t tenant_id, const ObStoreFormatType store_format, ObRowStoreType &row_store_type);
+
   typedef common::hash::ObPlacementHashSet<share::schema::ObIndexNameHashWrapper, common::OB_MAX_COLUMN_NUMBER> IndexNameSet;
   int generate_index_name(ObString &index_name, IndexNameSet &current_index_name_set, const common::ObString &first_col_name);
   int resolve_range_partition_elements(ParseNode *node,
@@ -443,6 +460,13 @@ protected:
       share::schema::ObPartitionFuncType part_func_type,
       common::ObString &func_str,
       common::ObSqlString &part_str);
+  int build_column_group(
+      const share::schema::ObTableSchema &table_schema,
+      const share::schema::ObColumnGroupType &cg_type,
+      const common::ObString &cg_name,
+      const common::ObIArray<uint64_t> &column_ids,
+      const uint64_t cg_id,
+      share::schema::ObColumnGroupSchema &column_group);
   int resolve_hints(const ParseNode *parse_node, ObDDLStmt &stmt, const ObTableSchema &table_schema);
   int calc_ddl_parallelism(const uint64_t hint_parallelism, const uint64_t table_dop, uint64_t &parallelism);
   int deep_copy_str(const common::ObString &src, common::ObString &dest);
@@ -517,6 +541,12 @@ protected:
                                         common::ObString &pk_name);
   int resolve_srid_node(share::schema::ObColumnSchemaV2 &column,
                         const ParseNode &srid_node);
+  int resolve_column_skip_index(
+      const ParseNode &skip_index_node,
+      share::schema::ObColumnSchemaV2 &column_schema);
+  int check_skip_index(share::schema::ObTableSchema &table_schema);
+  int resolve_lob_inrow_threshold(const ParseNode *option_node, const bool is_index_option);
+
   /*
   int resolve_generated_column_definition(
       share::schema::ObColumnSchemaV2 &column,
@@ -527,7 +557,8 @@ protected:
   virtual int add_storing_column(
       const common::ObString &column_name,
       bool check_column_exist = true,
-      bool is_hidden = false);
+      bool is_hidden = false,
+      bool *has_invalid_types = NULL);
   virtual int get_table_schema_for_check(share::schema::ObTableSchema &table_schema)
   {
     UNUSED(table_schema);
@@ -855,7 +886,13 @@ protected:
 
   int get_ttl_columns(const ObString &ttl_definition, ObIArray<ObString> &ttl_columns);
 
+  int add_new_indexkey_for_oracle_temp_table();
+
   void reset();
+  int get_mv_container_table(uint64_t tenant_id,
+                             const uint64_t mv_container_table_id,
+                             const share::schema::ObTableSchema *&mv_container_table_schema,
+                             common::ObString &mv_container_table_name);
   int64_t block_size_;
   int64_t consistency_level_;
   INDEX_TYPE index_scope_;
@@ -915,6 +952,8 @@ protected:
   common::ObString ttl_definition_;
   common::ObString kv_attributes_;
   ObNameGeneratedType name_generated_type_;
+  bool is_set_lob_inrow_threshold_;
+  int64_t lob_inrow_threshold_;
 private:
   template <typename STMT>
   DISALLOW_COPY_AND_ASSIGN(ObDDLResolver);

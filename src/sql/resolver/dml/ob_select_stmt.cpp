@@ -800,13 +800,18 @@ int ObSelectStmt::clear_sharable_expr_reference()
   return ret;
 }
 
-int ObSelectStmt::remove_useless_sharable_expr()
+int ObSelectStmt::remove_useless_sharable_expr(ObRawExprFactory *expr_factory,
+                                               ObSQLSessionInfo *session_info)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObDMLStmt::remove_useless_sharable_expr())) {
+  if (OB_ISNULL(expr_factory)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_FAIL(ObDMLStmt::remove_useless_sharable_expr(expr_factory, session_info))) {
     LOG_WARN("failed to remove useless sharable expr", K(ret));
   } else {
     ObRawExpr *expr = NULL;
+    const bool is_scala = is_scala_group_by();
     for (int64_t i = agg_items_.count() - 1; OB_SUCC(ret) && i >= 0; i--) {
       if (OB_ISNULL(expr = agg_items_.at(i))) {
         ret = OB_ERR_UNEXPECTED;
@@ -830,6 +835,17 @@ int ObSelectStmt::remove_useless_sharable_expr()
       } else {
         LOG_TRACE("succeed to remove win func exprs", K(*expr));
       }
+    }
+    if (OB_SUCC(ret) && is_scala && agg_items_.empty()) {
+      ObAggFunRawExpr *aggr_expr = NULL;
+      if (OB_FAIL(ObRawExprUtils::build_dummy_count_expr(*expr_factory, session_info, aggr_expr))) {
+        LOG_WARN("failed to build a dummy expr", K(ret));
+      } else if (OB_FAIL(agg_items_.push_back(aggr_expr))) {
+        LOG_WARN("failed to push back", K(ret));
+      } else if (OB_FAIL(set_sharable_expr_reference(*aggr_expr,
+                                                     ExplicitedRefType::REF_BY_NORMAL))) {
+        LOG_WARN("failed to set sharable exprs reference", K(ret));
+      } else {/* do nothing */}
     }
   }
   return ret;
@@ -978,7 +994,7 @@ int ObSelectStmt::get_set_stmt_size(int64_t &size) const
   return ret;
 }
 
-bool ObSelectStmt::check_is_select_item_expr(const ObRawExpr *expr)
+bool ObSelectStmt::check_is_select_item_expr(const ObRawExpr *expr) const
 {
   bool bret = false;
   for(int64_t i = 0; !bret && i < select_items_.count(); ++i) {

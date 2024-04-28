@@ -248,6 +248,7 @@ public:
   JtColNode* nest_col_node() { return nest_col_def_; }
   JtColNode* reg_col_node(size_t i) { return reg_col_defs_.at(i); }
   ObIArray<int64_t>& child_node_ref() { return child_idx_; }
+  void reset_reg_columns(JtScanCtx* ctx);
 
   TO_STRING_KV(K_(node_type),
               K_(node_idx),
@@ -287,10 +288,14 @@ public:
                               ObIJsonBase *j_base,
                               common::ObIAllocator *allocator,
                               const ObBasicSessionInfo *session,
+                              ObEvalCtx *ctx,
+                              const ObExpr *expr,
                               common::ObAccuracy &accuracy,
                               int64_t &val);
   static int cast_to_otimstamp(ObIJsonBase *j_base,
                                const ObBasicSessionInfo *session,
+                               ObEvalCtx *ctx,
+                               const ObExpr *expr,
                                common::ObAccuracy &accuracy,
                                ObObjType dst_type,
                                ObOTimestampData &out_val);

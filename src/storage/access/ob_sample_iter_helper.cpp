@@ -25,7 +25,8 @@ int ObGetSampleIterHelper::check_scan_range_count(bool &res, ObIArray<ObDatumRan
   need_scan_multiple_range_ = false;
   if (scan_param_.sample_info_.is_block_sample()) {
     bool retire_to_memtable_row_sample = false;
-    if (OB_FAIL(get_table_param_.tablet_iter_.refresh_read_tables_from_tablet(
+    if (!get_table_param_.tablet_iter_.table_iter()->is_valid() &&
+        OB_FAIL(get_table_param_.tablet_iter_.refresh_read_tables_from_tablet(
             main_table_ctx_.store_ctx_->mvcc_acc_ctx_.get_snapshot_version().get_val_for_tx(),
             false /*allow_not_ready*/))) {
       STORAGE_LOG(WARN, "Fail to read tables", K(ret));
@@ -66,6 +67,7 @@ int ObGetSampleIterHelper::can_retire_to_memtable_row_sample_(bool &retire, ObIA
     common::ObSEArray<ObITable *, 4> memtables;
 
     // iter all tables to estimate row count
+    get_table_param_.tablet_iter_.table_iter()->resume();
     while (OB_SUCC(ret)) {
       ObSSTableMetaHandle sst_meta_hdl;
       ObITable *table = nullptr;
@@ -83,11 +85,7 @@ int ObGetSampleIterHelper::can_retire_to_memtable_row_sample_(bool &retire, ObIA
           memtable_row_count += static_cast<memtable::ObMemtable *>(table)->get_physical_row_cnt();
         }
       } else if (table->is_sstable()) {
-        if (OB_FAIL(static_cast<ObSSTable *>(table)->get_meta(sst_meta_hdl))) {
-          STORAGE_LOG(WARN, "fail to get sstable meta handle", K(ret));
-        } else {
-          sstable_row_count += sst_meta_hdl.get_sstable_meta().get_row_count();
-        }
+        sstable_row_count += static_cast<ObSSTable *>(table)->get_row_count();
       }
     }
 

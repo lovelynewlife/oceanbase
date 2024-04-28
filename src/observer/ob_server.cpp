@@ -33,6 +33,8 @@
 #include "lib/string/ob_sql_string.h"
 #include "lib/task/ob_timer_monitor.h"
 #include "lib/thread/thread_mgr.h"
+#include "lib/compress/ob_compressor_pool.h"
+#include "lib/compress/zlib_lite/ob_zlib_lite_compressor.h"
 #include "observer/ob_server_utils.h"
 #include "observer/ob_rpc_extra_payload.h"
 #include "observer/omt/ob_tenant_timezone_mgr.h"
@@ -56,7 +58,7 @@
 #include "share/ob_tenant_mgr.h"
 #include "share/rc/ob_tenant_base.h"
 #include "share/resource_manager/ob_resource_manager.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/sequence/ob_sequence_cache.h"
 #include "share/stat/ob_opt_stat_monitor_manager.h"
@@ -84,7 +86,6 @@
 #include "share/ob_tablet_autoincrement_service.h"
 #include "share/ob_tenant_mem_limit_getter.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_slog_handler.h"
-#include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/tx_storage/ob_tenant_memory_printer.h"
 #include "storage/ddl/ob_direct_insert_sstable_ctx.h"
@@ -93,6 +94,8 @@
 #include "storage/blocksstable/ob_storage_cache_suite.h"
 #include "storage/tablelock/ob_table_lock_rpc_client.h"
 #include "storage/compaction/ob_compaction_diagnose.h"
+#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
+#include "storage/meta_mem/ob_tablet_leak_checker.h"
 #include "share/ash/ob_active_sess_hist_task.h"
 #include "share/ash/ob_active_sess_hist_list.h"
 #include "share/ob_server_blacklist.h"
@@ -100,11 +103,12 @@
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "share/longops_mgr/ob_longops_mgr.h"
 #include "logservice/palf/election/interface/election.h"
+#include "share/ob_ddl_sim_point.h"
 #include "storage/ddl/ob_ddl_redo_log_writer.h"
 #include "observer/ob_server_utils.h"
 #include "observer/table_load/ob_table_load_partition_calc.h"
 #include "observer/virtual_table/ob_mds_event_buffer.h"
-#include "observer/ob_server_startup_task_handler.h"
+#include "observer/ob_startup_accel_task_handler.h"
 #include "share/detect/ob_detect_manager.h"
 #include "observer/table/ttl/ob_table_ttl_task.h"
 #ifdef OB_BUILD_ARBITRATION
@@ -160,7 +164,7 @@ ObServer::ObServer()
     prepare_stop_(true), stop_(true), has_stopped_(true), has_destroy_(false),
     net_frame_(gctx_), sql_conn_pool_(), ddl_conn_pool_(), dblink_conn_pool_(),
     res_inner_conn_pool_(), restore_ctx_(), srv_rpc_proxy_(),
-    rs_rpc_proxy_(), sql_proxy_(),
+    storage_rpc_proxy_(), rs_rpc_proxy_(), sql_proxy_(),
     dblink_proxy_(),
     executor_proxy_(), executor_rpc_(), dbms_job_rpc_proxy_(), dbms_sched_job_rpc_proxy_(), interrupt_proxy_(),
     config_(ObServerConfig::get_instance()),
@@ -293,6 +297,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init tz_info_mgr failed", KR(ret));
     } else if (OB_FAIL(ObSqlTaskFactory::get_instance().init())) {
       LOG_ERROR("init sql task factory failed", KR(ret));
+    } else if (OB_FAIL(ObTabletHandleIndexMap::get_instance()->init())) {
+      LOG_ERROR("init leak checker hash map and qsync lock failed", K(ret));
     }
 
     if (OB_SUCC(ret)) {
@@ -343,6 +349,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init network failed", KR(ret));
     } else if (OB_FAIL(init_interrupt())) {
       LOG_ERROR("init interrupt failed", KR(ret));
+    } else if (OB_FAIL(init_zlib_lite_compressor())) {
+      LOG_ERROR("init zlib lite compressor failed", KR(ret));
     } else if (OB_FAIL(rs_mgr_.init(&srv_rpc_proxy_, &config_, &sql_proxy_))) {
       LOG_ERROR("init rs_mgr_ failed", KR(ret));
     } else if (OB_FAIL(server_tracer_.init(rs_rpc_proxy_, sql_proxy_))) {
@@ -408,7 +416,7 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init ObStorageLoggerManager failed", KR(ret));
     } else if (OB_FAIL(ObVirtualTenantManager::get_instance().init())) {
       LOG_ERROR("init tenant manager failed", KR(ret));
-    } else if (OB_FAIL(SERVER_STARTUP_TASK_HANDLER.init())) {
+    } else if (OB_FAIL(startup_accel_handler_.init(SERVER_ACCEL))) {
       LOG_ERROR("init server startup task handler failed", KR(ret));
     } else if (OB_FAIL(ObServerCheckpointSlogHandler::get_instance().init())) {
       LOG_ERROR("init server checkpoint slog handler failed", KR(ret));
@@ -456,16 +464,12 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init px blomm filter manager failed", KR(ret));
     } else if (OB_FAIL(PX_P2P_DH.init())) {
       LOG_ERROR("init px p2p datahub failed", KR(ret));
-    } else if (OB_FAIL(compaction::ObCompactionSuggestionMgr::get_instance().init())) {
-      LOG_ERROR("init ObCompactionSuggestionMgr failed", KR(ret));
     } else if (OB_FAIL(G_RES_MGR.init())) {
       LOG_ERROR("failed to init resource plan", KR(ret));
 #ifdef ENABLE_IMC
     } else if (OB_FAIL(imc_tasks_.init())) {
       LOG_ERROR("init imc tasks failed", KR(ret));
 #endif
-    } else if (OB_FAIL(unix_domain_listener_.init())) {
-      LOG_ERROR("init unix domain listener failed", KR(ret));
     } else if (OB_FAIL(OB_PRIMARY_STANDBY_SERVICE.init(&sql_proxy_, &schema_service_))) {
       LOG_ERROR("init OB_PRIMARY_STANDBY_SERVICE failed", KR(ret));
     } else if (OB_FAIL(init_px_target_mgr())) {
@@ -478,6 +482,10 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init server blacklist failed", KR(ret));
     } else if (OB_FAIL(ObLongopsMgr::get_instance().init())) {
       LOG_WARN("init longops mgr fail", KR(ret));
+#ifdef ERRSIM
+    } else if (OB_FAIL(ObDDLSimPointMgr::get_instance().init())) {
+      LOG_WARN("init ddl sim point mgr fail", KR(ret));
+#endif
     } else if (OB_FAIL(ObDDLRedoLogWriter::get_instance().init())) {
       LOG_WARN("init DDL redo log writer failed", KR(ret));
     }
@@ -738,7 +746,7 @@ void ObServer::destroy()
     FLOG_INFO("ob server block mgr destroyed");
 
     FLOG_INFO("begin to destroy server startup task handler");
-    SERVER_STARTUP_TASK_HANDLER.destroy();
+    startup_accel_handler_.destroy();
     FLOG_INFO("server startup task handler destroyed");
 
     FLOG_INFO("begin to destroy backup index cache");
@@ -786,6 +794,8 @@ void ObServer::destroy()
     wr_service_.destroy();
     FLOG_INFO("WR service destroyed");
 
+    deinit_zlib_lite_compressor();
+
     has_destroy_ = true;
     FLOG_INFO("[OBSERVER_NOTICE] destroy observer end");
   }
@@ -830,7 +840,7 @@ int ObServer::start()
       LOG_ERROR("fail to start signal worker", KR(ret));
     }
 
-    if (FAILEDx(SERVER_STARTUP_TASK_HANDLER.start())) {
+    if (FAILEDx(startup_accel_handler_.start())) {
       LOG_ERROR("fail to start server startup task handler", KR(ret));
     } else {
       FLOG_INFO("success to start server startup task handler");
@@ -880,10 +890,16 @@ int ObServer::start()
       FLOG_INFO("success to start log pool");
     }
 
-    if (FAILEDx(try_create_hidden_sys())) {
-      LOG_ERROR("fail to create hidden sys tenant", KR(ret));
+    if (FAILEDx(wr_service_.start())) {
+      LOG_ERROR("failed to start wr service", K(ret));
     } else {
-      FLOG_INFO("success to create hidden sys tenant");
+      LOG_INFO("success to start wr service");
+    }
+
+    if (FAILEDx(try_update_hidden_sys())) {
+      LOG_ERROR("fail to update hidden sys tenant", KR(ret));
+    } else {
+      FLOG_INFO("success to update hidden sys tenant");
     }
 
     if (FAILEDx(weak_read_service_.start())) {
@@ -903,12 +919,6 @@ int ObServer::start()
       LOG_ERROR("fail to start root service monitor", KR(ret));
     } else {
       FLOG_INFO("success to start root service monitor");
-    }
-
-    if (FAILEDx(wr_service_.start())) {
-      LOG_ERROR("failed to start wr service", K(ret));
-    } else {
-      LOG_INFO("success to start wr service");
     }
 
     if (FAILEDx(ob_service_.start())) {
@@ -948,7 +958,7 @@ int ObServer::start()
     }
 #endif
 
-    if (FAILEDx(unix_domain_listener_.run())) {
+    if (FAILEDx(unix_domain_listener_.start())) {
       LOG_ERROR("fail to start unix domain listener", KR(ret));
     } else {
       FLOG_INFO("success to start unix domain listener");
@@ -994,7 +1004,7 @@ int ObServer::start()
       has_stopped_ = false;
     }
     // this handler is only used to process tasks during startup. so it can be destroied here.
-    SERVER_STARTUP_TASK_HANDLER.destroy();
+    startup_accel_handler_.destroy();
 
     // refresh server configure
     //
@@ -1049,6 +1059,7 @@ int ObServer::start()
         const int64_t start_ts = ObTimeUtility::current_time();
         int64_t schema_refreshed_ts = 0;
         const int64_t expire_time = start_ts + MAX_CHECK_TIME;
+        tenant_ids.set_max_print_count(512);
 
         if (OB_FAIL(multi_tenant_.get_mtl_tenant_ids(tenant_ids))) {
           FLOG_ERROR("get mtl tenant ids fail", KR(ret));
@@ -1088,12 +1099,24 @@ int ObServer::start()
 }
 
 // try create hidden sys tenant must after ObServerCheckpointSlogHandler start,
-// no need create if real sys has been replayed out from slog.
-int ObServer::try_create_hidden_sys()
+// update hidden sys tenant unit if it exists
+int ObServer::try_update_hidden_sys()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(multi_tenant_.create_hidden_sys_tenant())) {
-    LOG_ERROR("fail to create hidden sys tenant", KR(ret));
+  const uint64_t tenant_id = OB_SYS_TENANT_ID;
+  omt::ObTenant *tenant = nullptr;
+  if (OB_FAIL(multi_tenant_.get_tenant(tenant_id, tenant))) {
+    if (OB_TENANT_NOT_IN_SERVER == ret) { // only when adding a new server
+      ret = OB_SUCCESS;
+      if (OB_FAIL(multi_tenant_.create_hidden_sys_tenant())) {
+        LOG_ERROR("fail to create hidden sys tenant", KR(ret));
+      }
+      LOG_INFO("finish create hidden sys", KR(ret));
+    } else {
+      LOG_ERROR("fail to get tenant", KR(ret));
+    }
+  } else if (OB_FAIL(multi_tenant_.update_hidden_sys_tenant())) {
+    LOG_WARN("fail to update hidden sys tenant unit", KR(ret));
   }
   return ret;
 }
@@ -1342,7 +1365,7 @@ int ObServer::stop()
     FLOG_INFO("server checkpoint slog handler stopped");
 
     FLOG_INFO("begin to stop server startup task handler");
-    SERVER_STARTUP_TASK_HANDLER.stop();
+    startup_accel_handler_.stop();
     FLOG_INFO("server startup task handler stopped");
 
     // It will wait for all requests done.
@@ -1667,7 +1690,7 @@ int ObServer::wait()
     FLOG_INFO("wait server checkpoint slog handler success");
 
     FLOG_INFO("begin to wait server startup task handler");
-    SERVER_STARTUP_TASK_HANDLER.wait();
+    startup_accel_handler_.wait();
     FLOG_INFO("wait server startup task handler success");
 
     FLOG_INFO("begin to wait global election report timer");
@@ -1839,21 +1862,23 @@ int ObServer::init_config()
   } else {
     if (config_.use_ipv6) {
       char ipv6[MAX_IP_ADDR_LENGTH] = { '\0' };
-      if (0 != obsys::ObNetUtil::get_local_addr_ipv6(config_.devname, ipv6, sizeof(ipv6))) {
-        ret = OB_ERROR;
-        _LOG_ERROR("call get_local_addr_ipv6 failed, devname:%s, errno:%d.", config_.devname.get_value(), errno);
+      if (OB_FAIL(obsys::ObNetUtil::get_local_addr_ipv6(config_.devname, ipv6, sizeof(ipv6)))) {
+        LOG_ERROR("get ipv6 address by devname failed", "devname",
+            config_.devname.get_value(), KR(ret));
       } else {
         config_.local_ip.set_value(ipv6);
         config_.local_ip.set_version(start_time_);
         _LOG_INFO("set local_ip via devname, local_ip:%s, devname:%s.", ipv6, config_.devname.get_value());
       }
     } else {
-      uint32_t ipv4_binary = obsys::ObNetUtil::get_local_addr_ipv4(config_.devname);
+      uint32_t ipv4_net = 0;
       char ipv4[INET_ADDRSTRLEN] = { '\0' };
-      if (nullptr == inet_ntop(AF_INET, (void *)&ipv4_binary, ipv4, sizeof(ipv4))) {
-        ret = OB_ERROR;
-        _LOG_ERROR("call inet_ntop failed, devname:%s, ipv4_binary:0x%08x, errno:%d.",
-                   config_.devname.get_value(), ipv4_binary, errno);
+      if (OB_FAIL(obsys::ObNetUtil::get_local_addr_ipv4(config_.devname, ipv4_net))) {
+        LOG_ERROR("get ipv4 address by devname failed", "devname",
+            config_.devname.get_value(), KR(ret));
+      } else if (nullptr == inet_ntop(AF_INET, (void *)&ipv4_net, ipv4, sizeof(ipv4))) {
+        ret = OB_ERR_SYS;
+        LOG_ERROR("call inet_ntop failed", K(ipv4_net), K(errno), KERRMSG, KR(ret));
       } else {
         config_.local_ip.set_value(ipv4);
         config_.local_ip.set_version(start_time_);
@@ -1880,8 +1905,14 @@ int ObServer::init_config()
       obsys::ObNetUtil::get_local_addr_ipv6(config_.devname, ipv6, sizeof(ipv6));
       self_addr_.set_ip_addr(ipv6, local_port);
       } else {
-        int32_t ipv4 = ntohl(obsys::ObNetUtil::get_local_addr_ipv4(config_.devname));
-        self_addr_.set_ipv4_addr(ipv4, local_port);
+        uint32_t ipv4_net = 0;
+        if (OB_FAIL(obsys::ObNetUtil::get_local_addr_ipv4(config_.devname, ipv4_net))) {
+          LOG_ERROR("get ipv4 address by devname failed", "devname",
+              config_.devname.get_value(), KR(ret));
+        } else {
+          int32_t ipv4 = ntohl(ipv4_net);
+          self_addr_.set_ipv4_addr(ipv4, local_port);
+        }
       }
     }
 
@@ -2124,11 +2155,8 @@ int ObServer::init_io()
         int64_t data_disk_percentage = 0;
         int64_t log_disk_percentage = 0;
 
-        if (OB_FAIL(log_block_mgr_.init(storage_env_.clog_dir_))) {
+        if (OB_SUCC(ret) && OB_FAIL(log_block_mgr_.init(storage_env_.clog_dir_))) {
           LOG_ERROR("log block mgr init failed", KR(ret));
-        } else if (OB_FAIL(ObServerUtils::check_slog_data_binding(storage_env_.sstable_dir_,
-            storage_env_.log_spec_.log_dir_))) {
-          LOG_ERROR("fail to check need reserved space", K(ret), K(storage_env_));
         } else if (OB_FAIL(ObServerUtils::cal_all_part_disk_size(config_.datafile_size,
                                                   config_.log_disk_size,
                                                   config_.datafile_disk_percentage,
@@ -2206,6 +2234,39 @@ int ObServer::init_interrupt()
   return ret;
 }
 
+int ObServer::init_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else if (OB_FAIL(zlib_lite_compressor->init(0))) { // 0 means preserve 0 qpl job
+    LOG_ERROR("failed to init zlib lite compressor", K(ret));
+  } else {
+    const char *zlib_lite_compress_method = zlib_lite_compressor->compression_method();
+    LOG_INFO("zlib lite compressor init success", KCSTRING(zlib_lite_compress_method));
+  }
+  return ret;
+}
+
+void ObServer::deinit_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else {
+    zlib_lite_compressor->deinit();
+  }
+  LOG_INFO("zlib lite compressor deinit done");
+}
+
 int ObServer::init_loaddata_global_stat()
 {
   int ret = OB_SUCCESS;
@@ -2228,6 +2289,8 @@ int ObServer::init_network()
   if (OB_FAIL(net_frame_.init())) {
     LOG_ERROR("init server network fail");
   } else if (OB_FAIL(net_frame_.get_proxy(srv_rpc_proxy_))) {
+    LOG_ERROR("get rpc proxy fail", KR(ret));
+  } else if (OB_FAIL(net_frame_.get_proxy(storage_rpc_proxy_))) {
     LOG_ERROR("get rpc proxy fail", KR(ret));
   } else if (OB_FAIL(net_frame_.get_proxy(rs_rpc_proxy_))) {
     LOG_ERROR("get rpc proxy fail", KR(ret));
@@ -2478,6 +2541,7 @@ int ObServer::init_global_context()
   gctx_.lst_operator_ = &lst_operator_;
   gctx_.tablet_operator_ = &tablet_operator_;
   gctx_.srv_rpc_proxy_ = &srv_rpc_proxy_;
+  gctx_.storage_rpc_proxy_ = &storage_rpc_proxy_;
   gctx_.dbms_job_rpc_proxy_ = &dbms_job_rpc_proxy_;
   gctx_.inner_sql_rpc_proxy_ = &inner_sql_rpc_proxy_;
   gctx_.dbms_sched_job_rpc_proxy_ = &dbms_sched_job_rpc_proxy_;
@@ -2527,6 +2591,7 @@ int ObServer::init_global_context()
 #endif
   (void)gctx_.set_upgrade_stage(obrpc::OB_UPGRADE_STAGE_INVALID);
   gctx_.wr_service_ = &wr_service_;
+  gctx_.startup_accel_handler_ = &startup_accel_handler_;
 
   gctx_.flashback_scn_ = opts_.flashback_scn_;
   gctx_.server_id_ = config_.observer_id;

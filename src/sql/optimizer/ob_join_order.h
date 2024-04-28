@@ -160,7 +160,8 @@ namespace sql
         force_no_mat_(false),
         prune_mj_(true),
         force_inner_nl_(false),
-        ignore_hint_(true) { }
+        ignore_hint_(true),
+        is_reverse_path_(false) { }
     virtual ~ValidPathInfo() {};
     void reset()
     {
@@ -173,6 +174,7 @@ namespace sql
       prune_mj_ = true;
       force_inner_nl_ = false;
       ignore_hint_ = true;
+      is_reverse_path_ = false;
     }
     TO_STRING_KV(K_(join_type),
                  K_(local_methods),
@@ -182,7 +184,8 @@ namespace sql
                  K_(force_no_mat),
                  K_(prune_mj),
                  K_(force_inner_nl),
-                 K_(ignore_hint));
+                 K_(ignore_hint),
+                 K_(is_reverse_path));
     ObJoinType join_type_;
     int64_t local_methods_;
     int64_t distributed_methods_;
@@ -192,6 +195,7 @@ namespace sql
     bool prune_mj_; // prune merge join path
     bool force_inner_nl_;
     bool ignore_hint_;
+    bool is_reverse_path_;
   };
 
   enum OptimizationMethod
@@ -246,7 +250,8 @@ namespace sql
     force_part_filter_(NULL),
     pushdown_filter_table_(),
     in_current_dfo_(true),
-    skip_subpart_(false) {}
+    skip_subpart_(false),
+    use_column_store_(false) {}
 
   TO_STRING_KV(
     K_(lexprs),
@@ -264,7 +269,8 @@ namespace sql
     K_(force_filter),
     K_(force_part_filter),
     K_(in_current_dfo),
-    K_(skip_subpart)
+    K_(skip_subpart),
+    K_(use_column_store)
   );
 
   common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> lexprs_;
@@ -287,7 +293,7 @@ namespace sql
   // Indicates that part bf is only generated for the 1-level partition in the 2-level partition
   // If the table is a 1-level partition, this value is false.
   bool skip_subpart_;
-
+  bool use_column_store_;
 };
 
 struct EstimateCostInfo {
@@ -589,12 +595,6 @@ struct EstimateCostInfo {
         is_get_(false),
         order_direction_(direction),
         is_hash_index_(false),
-        table_row_count_(0),
-        output_row_count_(0.0),
-        phy_query_range_row_count_(0),
-        query_range_row_count_(0),
-        index_back_row_count_(0),
-        index_back_cost_(0.0),
         est_cost_info_(table_id,
                        ref_table_id,
                        index_id),
@@ -602,7 +602,9 @@ struct EstimateCostInfo {
         range_prefix_count_(0),
         table_opt_info_(),
         for_update_(false),
-        use_skip_scan_(OptSkipScanState::SS_UNSET)
+        use_skip_scan_(OptSkipScanState::SS_UNSET),
+        use_column_store_(false),
+        is_valid_inner_path_(false)
     {
     }
     virtual ~AccessPath() {
@@ -619,16 +621,18 @@ struct EstimateCostInfo {
     }
     bool is_get() const { return is_get_; }
     void set_is_get(bool is_get) { is_get_ = is_get; }
-    void set_output_row_count(double output_row_count) { output_row_count_ = output_row_count; }
-    void set_table_row_count(int64_t table_row_count) { table_row_count_ = table_row_count; }
-    int64_t get_table_row_count() const { return table_row_count_; }
-    double get_output_row_count() const { return output_row_count_; }
+    double get_table_row_count() const
+    { return est_cost_info_.table_meta_info_ == NULL ? 1.0 : est_cost_info_.table_meta_info_->table_row_count_; }
+    double get_output_row_count() const { return est_cost_info_.output_row_count_; }
+    double get_logical_query_range_row_count() const { return est_cost_info_.logical_query_range_row_count_; }
+    double get_phy_query_range_row_count() const { return est_cost_info_.phy_query_range_row_count_; }
+    double get_index_back_row_count() const { return est_cost_info_.index_back_row_count_; }
     double get_cost() { return cost_; }
     const ObCostTableScanInfo &get_cost_table_scan_info() const
     { return est_cost_info_; }
     ObCostTableScanInfo &get_cost_table_scan_info() { return est_cost_info_; }
     int compute_parallel_degree(const int64_t cur_min_parallel_degree,
-                                int64_t &parallel) const;
+                                int64_t &parallel);
     int check_and_prepare_estimate_parallel_params(const int64_t cur_min_parallel_degree,
                                                    int64_t &px_part_gi_min_part_per_dop,
                                                    double &cost_threshold_us,
@@ -646,18 +650,19 @@ struct EstimateCostInfo {
     int estimate_cost_for_parallel(const int64_t cur_parallel,
                                    const double part_cnt_per_dop,
                                    double &px_cost,
-                                   double &cost) const;
+                                   double &cost);
     virtual int estimate_cost() override;
     virtual int re_estimate_cost(EstimateCostInfo &info, double &card, double &cost) override;
     static int re_estimate_cost(const EstimateCostInfo &param,
                                 ObCostTableScanInfo &est_cost_info,
                                 const SampleInfo &sample_info,
-                                const ObOptEstCost::MODEL_TYPE model_type,
-                                const double orign_phy_query_range_row_count,
-                                const double orign_query_range_row_count,
+                                const ObOptimizerContext &opt_ctx,
                                 double &card,
-                                double &index_back_cost,
                                 double &cost);
+    int check_adj_index_cost_valid(double &stats_phy_query_range_row_count,
+                                   double &stats_logical_query_range_row_count,
+                                   int64_t &opt_stats_cost_percent,
+                                   bool &is_valid) const;
     inline bool can_use_remote_estimate()
     {
       return NULL == table_opt_info_ ? false :
@@ -672,6 +677,8 @@ struct EstimateCostInfo {
       }
       return ret;
     }
+    // compute current path is inner path and contribute query ranges
+    int compute_valid_inner_path();
 
     TO_STRING_KV(K_(table_id),
                  K_(ref_table_id),
@@ -683,18 +690,14 @@ struct EstimateCostInfo {
                  K_(is_get),
                  K_(order_direction),
                  K_(is_hash_index),
-                 K_(table_row_count),
-                 K_(output_row_count),
-                 K_(phy_query_range_row_count),
-                 K_(query_range_row_count),
-                 K_(index_back_row_count),
-                 K_(index_back_cost),
                  K_(est_cost_info),
                  K_(sample_info),
                  K_(range_prefix_count),
                  K_(for_update),
                  K_(use_das),
-                 K_(use_skip_scan));
+                 K_(use_skip_scan),
+                 K_(use_column_store),
+                 K_(is_valid_inner_path));
   public:
     //member variables
     uint64_t table_id_;
@@ -708,12 +711,6 @@ struct EstimateCostInfo {
     bool is_get_;
     ObOrderDirection order_direction_;//序的方向（升序or倒序）
     bool is_hash_index_;  // is hash index (virtual table and is index)
-    int64_t table_row_count_; // all table row count
-    double output_row_count_;      // 估计出的要输出的行数
-    double phy_query_range_row_count_; // 估计出的要抽出的query range中所包含的行数(physical)
-    double query_range_row_count_; // 估计出的要抽出的query range中所包含的行数(logical)
-    double index_back_row_count_;  // 估计出的需要回表的行数，主表扫描时，index_back_row_count和output_row_count等价
-    double index_back_cost_; // cost for index back
     ObCostTableScanInfo est_cost_info_; // estimate cost info
     common::ObSEArray<ObEstRowCountRecord, 2,
                       common::ModulePageAllocator, true> est_records_;
@@ -722,6 +719,9 @@ struct EstimateCostInfo {
     BaseTableOptInfo *table_opt_info_;
     bool for_update_;
     OptSkipScanState use_skip_scan_;
+    bool use_column_store_;
+    // mark this access path is inner path and contribute query range
+    bool is_valid_inner_path_;
   private:
     DISALLOW_COPY_AND_ASSIGN(AccessPath);
   };
@@ -1396,7 +1396,7 @@ struct NullAwareAntiJoinInfo {
                                 ObIArray<ObRawExpr*> &subquery_exprs);
 
     int param_json_table_expr(ObRawExpr* &json_table_expr,
-                              ObExecParamRawExpr*& nl_params,
+                              ObIArray<ObExecParamRawExpr *> &nl_params,
                               ObIArray<ObRawExpr*> &subquery_exprs);
     /**
      * 为本节点增加一条路径，代价竞争过程在这里实现
@@ -1546,7 +1546,15 @@ struct NullAwareAntiJoinInfo {
                                PathHelper &helper,
                                AccessPath *&ap,
                                bool use_das,
+                               bool use_column_store,
                                OptSkipScanState use_skip_scan);
+
+    int init_sample_info_for_access_path(AccessPath *ap,
+                                         const uint64_t table_id);
+
+    int init_filter_selectivity(ObCostTableScanInfo &est_cost_info);
+
+    int init_column_store_est_info(const uint64_t table_id, ObCostTableScanInfo &est_cost_info);
 
     int will_use_das(const uint64_t table_id,
                      const uint64_t ref_id,
@@ -1770,7 +1778,7 @@ struct NullAwareAntiJoinInfo {
     int get_base_path_table_dop(uint64_t index_id, int64_t &parallel);
     int compute_access_path_parallel(ObIArray<AccessPath *> &access_paths,
                                      int64_t &parallel);
-    int get_random_parallel(const ObIArray<AccessPath *> &access_paths, int64_t &parallel);
+    int get_random_parallel(const int64_t parallel_degree_limit, int64_t &parallel);
     int get_parallel_from_available_access_paths(int64_t &parallel) const;
     int compute_base_table_parallel_and_server_info(const OpParallelRule op_parallel_rule,
                                                     const int64_t parallel,
@@ -2203,10 +2211,9 @@ struct NullAwareAntiJoinInfo {
     int add_table_by_heuristics(const uint64_t table_id,
                                 const uint64_t ref_table_id,
                                 const ObIndexInfoCache &index_info_cache,
-                                const ObIArray<uint64_t> &valid_index_ids,
-                                bool &added,
-                                PathHelper &helper,
-                                ObIArray<AccessPath *> &access_paths);
+                                const ObIArray<uint64_t> &candi_index_ids,
+                                ObIArray<uint64_t> &valid_index_ids,
+                                PathHelper &helper);
 
     // table heuristics for a virtual table.
     int virtual_table_heuristics(const uint64_t table_id,
@@ -2247,6 +2254,7 @@ struct NullAwareAntiJoinInfo {
                             const ObJoinType join_type,
                             const ObIArray<ObRawExpr*> &join_conditions,
                             const bool ignore_hint,
+                            const bool reverse_join_tree,
                             ValidPathInfo &path_info);
     int get_valid_path_info_from_hint(const ObRelIds &table_set,
                                       bool both_access,

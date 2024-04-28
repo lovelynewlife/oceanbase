@@ -33,6 +33,7 @@
 #include "log_io_worker_wrapper.h"
 #include "block_gc_timer_task.h"
 #include "log_updater.h"
+#include "log_io_utils.h"
 namespace oceanbase
 {
 namespace common
@@ -45,6 +46,10 @@ namespace frame
 {
 class ObReqTransport;
 }
+}
+namespace obrpc
+{
+class ObBatchRpc;
 }
 namespace palf
 {
@@ -214,6 +219,7 @@ public:
            const int64_t cluster_id,
            const int64_t tenant_id,
            rpc::frame::ObReqTransport *transport,
+           obrpc::ObBatchRpc *batch_rpc,
            common::ObILogAllocator *alloc_mgr,
            ILogBlockPool *log_block_pool,
            PalfMonitorCb *monitor);

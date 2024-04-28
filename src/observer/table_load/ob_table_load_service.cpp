@@ -15,8 +15,10 @@
 #include "observer/table_load/ob_table_load_service.h"
 #include "observer/omt/ob_tenant.h"
 #include "observer/table_load/ob_table_load_client_task.h"
+#include "observer/table_load/ob_table_load_coordinator.h"
 #include "observer/table_load/ob_table_load_coordinator_ctx.h"
 #include "observer/table_load/ob_table_load_schema.h"
+#include "observer/table_load/ob_table_load_store.h"
 #include "observer/table_load/ob_table_load_store_ctx.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 #include "observer/table_load/ob_table_load_utils.h"
@@ -58,16 +60,57 @@ void ObTableLoadService::ObCheckTenantTask::runTimerTask()
     LOG_WARN("ObTableLoadService::ObCheckTenantTask not init", KR(ret), KP(this));
   } else {
     LOG_DEBUG("table load check tenant", K(tenant_id_));
-    ObTenant *tenant = nullptr;
-    if (OB_FAIL(GCTX.omt_->get_tenant(tenant_id_, tenant))) {
-      LOG_WARN("fail to get tenant", KR(ret), K(tenant_id_));
-    } else if (OB_UNLIKELY(ObUnitInfoGetter::ObUnitStatus::UNIT_NORMAL !=
-                           tenant->get_unit_status())) {
-      LOG_DEBUG("tenant unit status not normal, clear", K(tenant_id_), KPC(tenant));
+    if (OB_FAIL(ObTableLoadService::check_tenant())) {
+      LOG_WARN("fail to check_tenant", KR(ret));
       // abort all client task
       service_.abort_all_client_task();
       // fail all current tasks
-      service_.fail_all_ctx(OB_ERR_UNEXPECTED_UNIT_STATUS);
+      service_.fail_all_ctx(ret);
+    }
+  }
+}
+
+/**
+ * ObHeartBeatTask
+ */
+
+int ObTableLoadService::ObHeartBeatTask::init(uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  if (IS_INIT) {
+    ret = OB_INIT_TWICE;
+    LOG_WARN("ObTableLoadService::ObHeartBeatTask init twice", KR(ret), KP(this));
+  } else {
+    tenant_id_ = tenant_id;
+    is_inited_ = true;
+  }
+  return ret;
+}
+
+void ObTableLoadService::ObHeartBeatTask::runTimerTask()
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObTableLoadService::ObHeartBeatTask not init", KR(ret), KP(this));
+  } else {
+    LOG_DEBUG("table load heart beat", K(tenant_id_));
+    ObTableLoadManager &manager = service_.get_manager();
+    ObArray<ObTableLoadTableCtx *> table_ctx_array;
+    if (OB_FAIL(manager.get_all_table_ctx(table_ctx_array))) {
+      LOG_WARN("fail to get all table ctx", KR(ret), K(tenant_id_));
+    }
+    for (int64_t i = 0; i < table_ctx_array.count(); ++i) {
+      ObTableLoadTableCtx *table_ctx = table_ctx_array.at(i);
+      if (nullptr != table_ctx->coordinator_ctx_ && table_ctx->coordinator_ctx_->enable_heart_beat()) {
+        ObTableLoadCoordinator coordinator(table_ctx);
+        if (OB_FAIL(coordinator.init())) {
+          LOG_WARN("fail to init coordinator", KR(ret));
+        } else if (OB_FAIL(coordinator.heart_beat())) {
+          LOG_WARN("fail to coordinator heart beat", KR(ret));
+        }
+      }
+      manager.put_table_ctx(table_ctx);
     }
   }
 }
@@ -98,48 +141,100 @@ void ObTableLoadService::ObGCTask::runTimerTask()
   } else {
     LOG_DEBUG("table load start gc", K(tenant_id_));
     ObTableLoadManager &manager = service_.get_manager();
-    ObArray<ObTableLoadTableCtx *> inactive_table_ctx_array;
-    if (OB_FAIL(manager.get_inactive_table_ctx_list(inactive_table_ctx_array))) {
-      LOG_WARN("fail to get inactive table ctx list", KR(ret), K(tenant_id_));
+    ObArray<ObTableLoadTableCtx *> table_ctx_array;
+    if (OB_FAIL(manager.get_all_table_ctx(table_ctx_array))) {
+      LOG_WARN("fail to get all  table ctx", KR(ret), K(tenant_id_));
     }
-    for (int64_t i = 0; i < inactive_table_ctx_array.count(); ++i) {
-      ObTableLoadTableCtx *table_ctx = inactive_table_ctx_array.at(i);
-      const uint64_t table_id = table_ctx->param_.table_id_;
-      const uint64_t hidden_table_id = table_ctx->ddl_param_.dest_table_id_;
-      // check if table ctx is removed
-      if (table_ctx->is_dirty()) {
-        LOG_DEBUG("table load ctx is dirty", K(tenant_id_), K(table_id), "ref_count",
-                  table_ctx->get_ref_count());
-      }
-      // check if table ctx is activated
-      else if (table_ctx->get_ref_count() > 1) {
-        LOG_DEBUG("table load ctx is active", K(tenant_id_), K(table_id), "ref_count",
-                  table_ctx->get_ref_count());
-      }
-      // check if table ctx can be recycled
-      else {
-        ObSchemaGetterGuard schema_guard;
-        const ObTableSchema *table_schema = nullptr;
-        if (OB_FAIL(ObTableLoadSchema::get_table_schema(tenant_id_, hidden_table_id, schema_guard,
-                                                        table_schema))) {
-          if (OB_UNLIKELY(OB_TABLE_NOT_EXIST != ret)) {
-            LOG_WARN("fail to get table schema", KR(ret), K(tenant_id_), K(hidden_table_id));
-          } else {
-            LOG_INFO("hidden table not exist, gc table load ctx", K(tenant_id_), K(table_id),
-                     K(hidden_table_id));
-            ObTableLoadService::remove_ctx(table_ctx);
-          }
-        } else if (table_schema->is_in_recyclebin()) {
-          LOG_INFO("hidden table is in recyclebin, gc table load ctx", K(tenant_id_), K(table_id),
-                   K(hidden_table_id));
-          ObTableLoadService::remove_ctx(table_ctx);
-        } else {
-          LOG_DEBUG("table load ctx is running", K(tenant_id_), K(table_id), K(hidden_table_id));
-        }
+    for (int64_t i = 0; i < table_ctx_array.count(); ++i) {
+      ObTableLoadTableCtx *table_ctx = table_ctx_array.at(i);
+      if (gc_heart_beat_expired_ctx(table_ctx)) {
+      } else if (gc_table_not_exist_ctx(table_ctx)) {
       }
       manager.put_table_ctx(table_ctx);
     }
   }
+}
+
+bool ObTableLoadService::ObGCTask::gc_heart_beat_expired_ctx(ObTableLoadTableCtx *table_ctx)
+{
+  int ret = OB_SUCCESS;
+  bool is_removed = false;
+  if (OB_ISNULL(table_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected table ctx is null", KR(ret));
+    is_removed = true;
+  } else {
+    const uint64_t table_id = table_ctx->param_.table_id_;
+    const uint64_t hidden_table_id = table_ctx->ddl_param_.dest_table_id_;
+    // check if table ctx is removed
+    if (table_ctx->is_dirty()) {
+      LOG_DEBUG("table load ctx is dirty", K(tenant_id_), K(table_id), "ref_count",
+                table_ctx->get_ref_count());
+      is_removed = true;
+    }
+    // check if heart beat expired
+    else if (nullptr != table_ctx->store_ctx_ && table_ctx->store_ctx_->enable_heart_beat_check()) {
+      if (OB_UNLIKELY(
+            table_ctx->store_ctx_->check_heart_beat_expired(HEART_BEEAT_EXPIRED_TIME_US))) {
+        LOG_INFO("store heart beat expired, abort", K(tenant_id_), K(table_id), K(hidden_table_id));
+        bool is_stopped = false;
+        ObTableLoadStore::abort_ctx(table_ctx, is_stopped);
+        // 先不移除, 防止心跳超时后, 网络恢复, 控制节点查不到table_ctx, 直接认为已经停止
+        // 如果网络一直不恢复, 也可以通过table不存在来gc此table_ctx
+        is_removed = true; // skip other gc
+      }
+    }
+  }
+  return is_removed;
+}
+
+bool ObTableLoadService::ObGCTask::gc_table_not_exist_ctx(ObTableLoadTableCtx *table_ctx)
+{
+  int ret = OB_SUCCESS;
+  bool is_removed = false;
+  if (OB_ISNULL(table_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected table ctx is null", KR(ret));
+    is_removed = true;
+  } else {
+    const uint64_t table_id = table_ctx->param_.table_id_;
+    const uint64_t hidden_table_id = table_ctx->ddl_param_.dest_table_id_;
+    // check if table ctx is removed
+    if (table_ctx->is_dirty()) {
+      LOG_DEBUG("table load ctx is dirty", K(tenant_id_), K(table_id), "ref_count",
+                table_ctx->get_ref_count());
+      is_removed = true;
+    }
+    // check if table ctx is activated
+    else if (table_ctx->get_ref_count() > 1) {
+      LOG_DEBUG("table load ctx is active", K(tenant_id_), K(table_id), "ref_count",
+                table_ctx->get_ref_count());
+    }
+    // check if table ctx can be recycled
+    else {
+      ObSchemaGetterGuard schema_guard;
+      const ObTableSchema *table_schema = nullptr;
+      if (OB_FAIL(ObTableLoadSchema::get_table_schema(tenant_id_, hidden_table_id, schema_guard,
+                                                      table_schema))) {
+        if (OB_UNLIKELY(OB_TABLE_NOT_EXIST != ret)) {
+          LOG_WARN("fail to get table schema", KR(ret), K(tenant_id_), K(hidden_table_id));
+        } else {
+          LOG_INFO("hidden table not exist, gc table load ctx", K(tenant_id_), K(table_id),
+                   K(hidden_table_id));
+          ObTableLoadService::remove_ctx(table_ctx);
+          is_removed = true;
+        }
+      } else if (table_schema->is_in_recyclebin()) {
+        LOG_INFO("hidden table is in recyclebin, gc table load ctx", K(tenant_id_), K(table_id),
+                 K(hidden_table_id));
+        ObTableLoadService::remove_ctx(table_ctx);
+        is_removed = true;
+      } else {
+        LOG_DEBUG("table load ctx is running", K(tenant_id_), K(table_id), K(hidden_table_id));
+      }
+    }
+  }
+  return is_removed;
 }
 
 /**
@@ -273,6 +368,9 @@ int ObTableLoadService::mtl_init(ObTableLoadService *&service)
   return ret;
 }
 
+
+
+
 int ObTableLoadService::check_tenant()
 {
   int ret = OB_SUCCESS;
@@ -280,8 +378,13 @@ int ObTableLoadService::check_tenant()
   ObTenant *tenant = nullptr;
   if (OB_FAIL(GCTX.omt_->get_tenant(tenant_id, tenant))) {
     LOG_WARN("fail to get tenant", KR(ret), K(tenant_id));
+  } else if (tenant->get_unit_status() == ObUnitInfoGetter::ObUnitStatus::UNIT_MARK_DELETING
+    || tenant->get_unit_status() == ObUnitInfoGetter::ObUnitStatus::UNIT_WAIT_GC_IN_OBSERVER
+    || tenant->get_unit_status() == ObUnitInfoGetter::ObUnitStatus::UNIT_DELETING_IN_OBSERVER) {
+    ret = OB_EAGAIN;
+    LOG_WARN("unit is migrate out, should retry direct load", KR(ret), K(tenant->get_unit_status()));
   } else if (OB_UNLIKELY(ObUnitInfoGetter::ObUnitStatus::UNIT_NORMAL !=
-                         tenant->get_unit_status())) {
+                         tenant->get_unit_status() && ObUnitInfoGetter::ObUnitStatus::UNIT_MIGRATE_OUT != tenant->get_unit_status())) {
     ret = OB_ERR_UNEXPECTED_UNIT_STATUS;
     LOG_WARN("unit status not normal", KR(ret), K(tenant->get_unit_status()));
   }
@@ -426,6 +529,7 @@ void ObTableLoadService::put_ctx(ObTableLoadTableCtx *table_ctx)
 
 ObTableLoadService::ObTableLoadService()
   : check_tenant_task_(*this),
+    heart_beat_task_(*this),
     gc_task_(*this),
     release_task_(*this),
     client_task_auto_abort_task_(*this),
@@ -447,6 +551,8 @@ int ObTableLoadService::init(uint64_t tenant_id)
     LOG_WARN("fail to init client service", KR(ret));
   } else if (OB_FAIL(check_tenant_task_.init(tenant_id))) {
     LOG_WARN("fail to init check tenant task", KR(ret));
+  } else if (OB_FAIL(heart_beat_task_.init(tenant_id))) {
+    LOG_WARN("fail to init heart beat task", KR(ret));
   } else if (OB_FAIL(gc_task_.init(tenant_id))) {
     LOG_WARN("fail to init gc task", KR(ret));
   } else if (OB_FAIL(release_task_.init(tenant_id))) {
@@ -473,6 +579,8 @@ int ObTableLoadService::start()
       LOG_WARN("fail to init gc timer", KR(ret));
     } else if (OB_FAIL(timer_.schedule(check_tenant_task_, CHECK_TENANT_INTERVAL, true))) {
       LOG_WARN("fail to schedule check tenant task", KR(ret));
+    } else if (OB_FAIL(timer_.schedule(heart_beat_task_, HEART_BEEAT_INTERVAL, true))) {
+      LOG_WARN("fail to schedule heart beat task", KR(ret));
     } else if (OB_FAIL(timer_.schedule(gc_task_, GC_INTERVAL, true))) {
       LOG_WARN("fail to schedule gc task", KR(ret));
     } else if (OB_FAIL(timer_.schedule(release_task_, RELEASE_INTERVAL, true))) {

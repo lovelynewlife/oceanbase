@@ -68,10 +68,12 @@ int ObPLParser::fast_parse(const ObString &query,
   parse_ctx.is_for_trigger_ = 0;
   parse_ctx.is_dynamic_ = 0;
   parse_ctx.is_inner_parse_ = 1;
-  parse_ctx.charset_info_ = ObCharset::get_charset(connection_collation_);
-  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
-        (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
-  parse_ctx.connection_collation_ = connection_collation_;
+  parse_ctx.charset_info_ = ObCharset::get_charset(charsets4parser_.string_collation_);
+  parse_result.charset_info_oracle_db_ = ObCharset::is_valid_collation(charsets4parser_.nls_collation_) ?
+          ObCharset::get_charset(charsets4parser_.nls_collation_) : NULL;
+  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(charsets4parser_.string_collation_) ?
+        (ObCharset::charset_type_by_coll(charsets4parser_.string_collation_) != CHARSET_UTF8MB4) : false;
+  parse_ctx.connection_collation_ = charsets4parser_.string_collation_;
   parse_ctx.mysql_compatible_comment_ = false;
   int64_t new_length = stmt_block.length() + 1;
   char *buf = (char *)parse_malloc(new_length, parse_ctx.mem_pool_);
@@ -82,35 +84,37 @@ int ObPLParser::fast_parse(const ObString &query,
     parse_ctx.no_param_sql_ = buf;
     parse_ctx.no_param_sql_buf_len_ = new_length;
   }
-  ret = parse_stmt_block(parse_ctx, parse_result.result_tree_);
-  if (OB_ERR_PARSE_SQL == ret) {
-    int err_len = 0;
-    const char *err_str = "", *global_errmsg = "";
-    int err_line = 0;
-    if (parse_ctx.cur_error_info_ != NULL) {
-      int first_column = parse_ctx.cur_error_info_->stmt_loc_.first_column_;
-      int last_column = parse_ctx.cur_error_info_->stmt_loc_.last_column_;
-      err_len = last_column - first_column + 1;
-      err_str = parse_ctx.stmt_str_ + first_column;
-      err_line = parse_ctx.cur_error_info_->stmt_loc_.last_line_ + 1;
-      global_errmsg = parse_ctx.global_errmsg_;
+  if (OB_SUCC(ret)) {
+    ret = parse_stmt_block(parse_ctx, parse_result.result_tree_);
+    if (OB_ERR_PARSE_SQL == ret) {
+      int err_len = 0;
+      const char *err_str = "", *global_errmsg = "";
+      int err_line = 0;
+      if (parse_ctx.cur_error_info_ != NULL) {
+        int first_column = parse_ctx.cur_error_info_->stmt_loc_.first_column_;
+        int last_column = parse_ctx.cur_error_info_->stmt_loc_.last_column_;
+        err_len = last_column - first_column + 1;
+        err_str = parse_ctx.stmt_str_ + first_column;
+        err_line = parse_ctx.cur_error_info_->stmt_loc_.last_line_ + 1;
+        global_errmsg = parse_ctx.global_errmsg_;
+      }
+      ObString stmt(parse_ctx.stmt_len_, parse_ctx.stmt_str_);
+      LOG_WARN("failed to parser pl stmt",
+              K(ret), K(err_line), K(global_errmsg), K(stmt));
+      LOG_USER_ERROR(OB_ERR_PARSE_SQL, ob_errpkt_strerror(OB_ERR_PARSER_SYNTAX, false),
+                    err_len, err_str, err_line);
+    } else {
+      memmove(parse_ctx.no_param_sql_ + parse_ctx.no_param_sql_len_,
+                      parse_ctx.stmt_str_ + parse_ctx.copied_pos_,
+                      parse_ctx.stmt_len_ - parse_ctx.copied_pos_);
+      parse_ctx.no_param_sql_len_ += parse_ctx.stmt_len_ - parse_ctx.copied_pos_;
+      parse_result.no_param_sql_ = parse_ctx.no_param_sql_;
+      parse_result.no_param_sql_len_ = parse_ctx.no_param_sql_len_;
+      parse_result.no_param_sql_buf_len_ = parse_ctx.no_param_sql_buf_len_;
+      parse_result.param_node_num_ = parse_ctx.param_node_num_;
+      parse_result.param_nodes_ = parse_ctx.param_nodes_;
+      parse_result.tail_param_node_ = parse_ctx.tail_param_node_;
     }
-    ObString stmt(parse_ctx.stmt_len_, parse_ctx.stmt_str_);
-    LOG_WARN("failed to parser pl stmt",
-             K(ret), K(err_line), K(global_errmsg), K(stmt));
-    LOG_USER_ERROR(OB_ERR_PARSE_SQL, ob_errpkt_strerror(OB_ERR_PARSER_SYNTAX, false),
-                   err_len, err_str, err_line);
-  } else {
-    memmove(parse_ctx.no_param_sql_ + parse_ctx.no_param_sql_len_,
-                    parse_ctx.stmt_str_ + parse_ctx.copied_pos_,
-                    parse_ctx.stmt_len_ - parse_ctx.copied_pos_);
-    parse_ctx.no_param_sql_len_ += parse_ctx.stmt_len_ - parse_ctx.copied_pos_;
-    parse_result.no_param_sql_ = parse_ctx.no_param_sql_;
-    parse_result.no_param_sql_len_ = parse_ctx.no_param_sql_len_;
-    parse_result.no_param_sql_buf_len_ = parse_ctx.no_param_sql_buf_len_;
-    parse_result.param_node_num_ = parse_ctx.param_node_num_;
-    parse_result.param_nodes_ = parse_ctx.param_nodes_;
-    parse_result.tail_param_node_ = parse_ctx.tail_param_node_;
   }
   return ret;
 }
@@ -170,10 +174,10 @@ int ObPLParser::parse_procedure(const ObString &stmt_block,
   parse_ctx.is_for_trigger_ = is_for_trigger ? 1 : 0;
   parse_ctx.is_dynamic_ = is_dynamic ? 1 : 0;
   parse_ctx.is_inner_parse_ = is_inner_parse ? 1 : 0;
-  parse_ctx.charset_info_ = ObCharset::get_charset(connection_collation_);
-  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
-        (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
-  parse_ctx.connection_collation_ = connection_collation_;
+  parse_ctx.charset_info_ = ObCharset::get_charset(charsets4parser_.string_collation_);
+  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(charsets4parser_.string_collation_) ?
+        (ObCharset::charset_type_by_coll(charsets4parser_.string_collation_) != CHARSET_UTF8MB4) : false;
+  parse_ctx.connection_collation_ = charsets4parser_.string_collation_;
   parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
   ret = parse_stmt_block(parse_ctx, multi_stmt);
@@ -237,10 +241,12 @@ int ObPLParser::parse_routine_body(const ObString &routine_body, ObStmtNodeTree 
     parse_ctx.is_inner_parse_ = 1;
     parse_ctx.is_for_trigger_ = is_for_trigger ? 1 : 0;
     parse_ctx.comp_mode_ = lib::is_oracle_mode();
-    parse_ctx.charset_info_ = ObCharset::get_charset(connection_collation_);
-    parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
-          (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
-    parse_ctx.connection_collation_ = connection_collation_;
+    parse_ctx.charset_info_ = ObCharset::get_charset(charsets4parser_.string_collation_);
+    parse_ctx.charset_info_oracle_db_ = ObCharset::is_valid_collation(charsets4parser_.nls_collation_) ?
+          ObCharset::get_charset(charsets4parser_.nls_collation_) : NULL;
+    parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(charsets4parser_.string_collation_) ?
+          (ObCharset::charset_type_by_coll(charsets4parser_.string_collation_) != CHARSET_UTF8MB4) : false;
+    parse_ctx.connection_collation_ = charsets4parser_.string_collation_;
     parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
     if (OB_FAIL(parse_stmt_block(parse_ctx, routine_stmt))) {
@@ -270,10 +276,12 @@ int ObPLParser::parse_package(const ObString &package,
   parse_ctx.comp_mode_ = lib::is_oracle_mode();
   parse_ctx.is_inner_parse_ = 1;
   parse_ctx.is_for_trigger_ = is_for_trigger ? 1 : 0;
-  parse_ctx.charset_info_ = ObCharset::get_charset(connection_collation_);
-  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
-        (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
-  parse_ctx.connection_collation_ = connection_collation_;
+  parse_ctx.charset_info_ = ObCharset::get_charset(charsets4parser_.string_collation_);
+  parse_ctx.charset_info_oracle_db_ = ObCharset::is_valid_collation(charsets4parser_.nls_collation_) ?
+        ObCharset::get_charset(charsets4parser_.nls_collation_) : NULL;
+  parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(charsets4parser_.string_collation_) ?
+        (ObCharset::charset_type_by_coll(charsets4parser_.string_collation_) != CHARSET_UTF8MB4) : false;
+  parse_ctx.connection_collation_ = charsets4parser_.string_collation_;
   parse_ctx.scanner_ctx_.sql_mode_ = sql_mode_;
 
   if (OB_FAIL(parse_stmt_block(parse_ctx, package_stmt))) {
@@ -368,10 +376,12 @@ int ObPLParser::reconstruct_trigger_package(ObStmtNodeTree *&package_stmt,
     trg_parse_ctx.comp_mode_ = 1;
     trg_parse_ctx.is_inner_parse_ = 1;
     trg_parse_ctx.is_for_trigger_ = 1;
-    trg_parse_ctx.charset_info_ = ObCharset::get_charset(connection_collation_);
-    trg_parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(connection_collation_) ?
-        (ObCharset::charset_type_by_coll(connection_collation_) != CHARSET_UTF8MB4) : false;
-    trg_parse_ctx.connection_collation_ = connection_collation_;
+    trg_parse_ctx.charset_info_ = ObCharset::get_charset(charsets4parser_.string_collation_);
+    trg_parse_ctx.charset_info_oracle_db_ = ObCharset::is_valid_collation(charsets4parser_.nls_collation_) ?
+          ObCharset::get_charset(charsets4parser_.nls_collation_) : NULL;
+    trg_parse_ctx.is_not_utf8_connection_ = ObCharset::is_valid_collation(charsets4parser_.string_collation_) ?
+        (ObCharset::charset_type_by_coll(charsets4parser_.string_collation_) != CHARSET_UTF8MB4) : false;
+    trg_parse_ctx.connection_collation_ = charsets4parser_.string_collation_;
     if (OB_FAIL(parse_stmt_block(trg_parse_ctx, trg_tree))) {
       LOG_WARN("failed to parse trigger", K(ret));
     } else if (OB_ISNULL(trg_tree)) {

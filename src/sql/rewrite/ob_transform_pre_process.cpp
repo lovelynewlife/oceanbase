@@ -79,6 +79,15 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
       }
     }
     if (OB_SUCC(ret)) {
+      if (OB_FAIL(transform_json_object_expr_with_star(parent_stmts, stmt, is_happened))) {
+        LOG_WARN("failed to transform for json object star", K(ret));
+      } else {
+        trans_happened |= is_happened;
+        OPT_TRACE("transform for udt columns", is_happened);
+        LOG_TRACE("succeed to transform for udt columns", K(is_happened), K(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
       if (OB_FAIL(transform_udt_columns(parent_stmts, stmt, is_happened))) {
         LOG_WARN("failed to transform for transform for cast multiset", K(ret));
       } else {
@@ -2461,7 +2470,7 @@ int ObTransformPreProcess::create_and_mock_join_view(ObSelectStmt &stmt)
       LOG_WARN("failed to adjust pseudo column like exprs", K(ret));
     } else if (OB_FAIL(stmt.formalize_stmt(session_info))) {
       LOG_WARN("failed to formalize stmt", K(ret));
-    } else if (OB_FAIL(stmt.formalize_stmt_expr_reference())) {
+    } else if (OB_FAIL(stmt.formalize_stmt_expr_reference(expr_factory, session_info))) {
       LOG_WARN("failed to formalize stmt expr reference", K(ret));
     }
   }
@@ -4436,10 +4445,14 @@ int ObTransformPreProcess::transform_for_merge_into(ObDMLStmt *&stmt, bool &tran
     ObMergeStmt *merge_stmt = static_cast<ObMergeStmt*>(stmt);
     TableItem *target_table = stmt->get_table_item(TARGET_TABLE_IDX);
     TableItem *source_table = stmt->get_table_item(SOURCE_TABLE_IDX);
+    bool is_valid = false;
     if (OB_ISNULL(target_table) || OB_ISNULL(source_table)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid table item", K(target_table), K(source_table), K(ret));
-    } else if (!merge_stmt->has_update_clause() && merge_stmt->has_insert_clause()) {
+    } else if (OB_FAIL(check_can_transform_insert_only_merge_into(merge_stmt,
+                                                                  is_valid))) {
+      LOG_WARN("failed to check can transform insert only merge into", K(ret));
+    } else if (is_valid) {
       ObDMLStmt* insert_stmt = NULL;
       if (OB_FAIL(transform_insert_only_merge_into(stmt, insert_stmt))) {
         LOG_WARN("failed to transform for insert only merge into", K(ret));
@@ -4515,7 +4528,7 @@ int ObTransformPreProcess::transform_merge_into_subquery(ObMergeStmt *merge_stmt
                                                    update_has_subquery,
                                                    delete_subquery_exprs))) {
     LOG_WARN("failed to allocate delete condition subquery", K(ret));
-  } else if (OB_FAIL(merge_stmt->formalize_stmt_expr_reference())) {
+  } else if (OB_FAIL(merge_stmt->formalize_stmt_expr_reference(expr_factory, ctx_->session_info_))) {
     LOG_WARN("failed to formalize stmt expr reference", K(ret));
   }
   return ret;
@@ -5856,6 +5869,8 @@ int ObTransformPreProcess::replace_cast_expr_align_date4cmp(ObRawExprFactory &ex
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("align_date4cmp_expr is null.", K(ret));
         } else {
+          align_date4cmp_expr->set_data_type(expr->get_data_type());
+          align_date4cmp_expr->set_accuracy(expr->get_accuracy());
           align_date4cmp_expr->set_func_name("INTERNAL_FUNCTION");
           // Copy cast_mode to facilitate determining the method of handling invalid_time.
           align_date4cmp_expr->set_extra(expr->get_extra());
@@ -5902,6 +5917,48 @@ int ObTransformPreProcess::replace_cast_expr_align_date4cmp(ObRawExprFactory &ex
   return ret;
 }
 
+int ObTransformPreProcess::replace_op_row_expr_align_date4cmp(ObRawExprFactory &expr_factory,
+                                                            const ObItemType &cmp_type,
+                                                            ObRawExpr *&left_row_expr,
+                                                            ObRawExpr *&right_row_expr)
+{
+  int ret = OB_SUCCESS;
+  if (left_row_expr->get_expr_type() == T_OP_ROW &&
+      right_row_expr->get_expr_type() == T_OP_ROW) {
+    int64_t expr_cnt = left_row_expr->get_param_count();
+    if (right_row_expr->get_param_count() != expr_cnt) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid param cnt", K(ret), KPC(left_row_expr),
+                                            KPC(right_row_expr));
+    } else {
+      int64_t last_expr_idx = expr_cnt - 1;
+      ObRawExpr *expr0 = left_row_expr->get_param_expr(last_expr_idx);
+      ObRawExpr *expr1 = right_row_expr->get_param_expr(last_expr_idx);
+      if (OB_ISNULL(expr0) || OB_ISNULL(expr1)) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid null params", K(ret), KPC(left_row_expr),
+                                                KPC(right_row_expr));
+      } else {
+        const ObItemType reverse_cmp_type = reverse_cmp_type_of_align_date4cmp(cmp_type);
+        if (OB_FAIL(replace_cast_expr_align_date4cmp(expr_factory, reverse_cmp_type, expr0))) {
+          LOG_WARN("replace left cast_expr fail.", K(ret), KPC(expr0));
+        } else {
+          left_row_expr->get_param_expr(last_expr_idx) = expr0;
+        }
+
+        if (OB_SUCC(ret)) {
+          if (OB_FAIL(replace_cast_expr_align_date4cmp(expr_factory, cmp_type, expr1))) {
+            LOG_WARN("replace right cast_expr fail.", K(ret), KPC(expr1));
+          } else {
+            right_row_expr->get_param_expr(last_expr_idx) = expr1;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformPreProcess::check_and_transform_align_date4cmp(ObRawExprFactory &expr_factory,
                                                            ObRawExpr *&cmp_expr,
                                                            const ObItemType &cmp_type)
@@ -5917,6 +5974,9 @@ int ObTransformPreProcess::check_and_transform_align_date4cmp(ObRawExprFactory &
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid null params", K(ret), K(cmp_expr->get_param_expr(0)),
               K(cmp_expr->get_param_expr(1)));
+    } else if (OB_FAIL(replace_op_row_expr_align_date4cmp(expr_factory,
+                                        cmp_type, expr0, expr1))){
+      LOG_WARN("fail to replace op_row_expr", K(ret));
     } else {
       // By default, align_date4cmp_expr expects the first parameter to be
       // the value on the right side of the comparison operator.
@@ -5986,30 +6046,31 @@ int ObTransformPreProcess::transformer_aggr_expr(ObDMLStmt *stmt,
   //之前的逻辑保证了两者嵌套聚合及普通函数的改写顺序，传进来的trans_happened包含了是否发生嵌套聚合函数改写的信息
   bool is_trans_nested_aggr_happened = trans_happened;
   trans_happened = false;
-  if (OB_ISNULL(stmt) || OB_ISNULL(ctx_)) {
+  if (OB_ISNULL(stmt) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid null allocator", K(ret));
-  } else if (OB_FAIL(ObExpandAggregateUtils::expand_aggr_expr(stmt, ctx_, is_expand_aggr))) {
-    LOG_WARN("failed to expand aggr expr", K(ret));
-  } else if (OB_FAIL(ObExpandAggregateUtils::expand_window_aggr_expr(stmt,
-                                                                     ctx_,
-                                                                     is_expand_window_aggr))) {
-    LOG_WARN("failed to expand window aggr expr", K(ret));
-  //如果发生了嵌套聚合函数改写：
-  // select max(avg(c1)) from t1 group by c2;
-  // ==>
-  // select max(a) from (select avg(c1) as a from t1 group by c2);
-  // 需要改写view里面的聚合函数，同时需要注释的是嵌套聚合函数只有内外两层，不会生成超过2层的结构
-  } else if (is_trans_nested_aggr_happened) {
-    TableItem *table_item = NULL;
-    if (OB_UNLIKELY(stmt->get_table_items().count() != 1) ||
-        OB_ISNULL(table_item = stmt->get_table_item(0)) ||
-        OB_UNLIKELY(!table_item->is_generated_table())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected error", K(table_item), K(stmt->get_table_items().count()), K(ret));
-    } else if (OB_FAIL(transformer_aggr_expr(table_item->ref_query_, is_happened))) {
-      LOG_WARN("failed to transformer aggr expr", K(ret));
-    } else {/*do nothing*/}
+  } else {
+    ObExpandAggregateUtils expand_aggr_utils(*ctx_->expr_factory_,  ctx_->session_info_);
+    if (OB_FAIL(expand_aggr_utils.expand_aggr_expr(stmt, is_expand_aggr))) {
+      LOG_WARN("failed to expand aggr expr", K(ret));
+    } else if (OB_FAIL(expand_aggr_utils.expand_window_aggr_expr(stmt, is_expand_window_aggr))) {
+      LOG_WARN("failed to expand window aggr expr", K(ret));
+    //如果发生了嵌套聚合函数改写：
+    // select max(avg(c1)) from t1 group by c2;
+    // ==>
+    // select max(a) from (select avg(c1) as a from t1 group by c2);
+    // 需要改写view里面的聚合函数，同时需要注释的是嵌套聚合函数只有内外两层，不会生成超过2层的结构
+    } else if (is_trans_nested_aggr_happened) {
+      TableItem *table_item = NULL;
+      if (OB_UNLIKELY(stmt->get_table_items().count() != 1) ||
+          OB_ISNULL(table_item = stmt->get_table_item(0)) ||
+          OB_UNLIKELY(!table_item->is_generated_table())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(table_item), K(stmt->get_table_items().count()), K(ret));
+      } else if (OB_FAIL(transformer_aggr_expr(table_item->ref_query_, is_happened))) {
+        LOG_WARN("failed to transformer aggr expr", K(ret));
+      } else {/*do nothing*/}
+    }
   }
   if (OB_SUCC(ret)) {
     trans_happened = is_expand_aggr | is_expand_window_aggr | is_happened;
@@ -6894,7 +6955,8 @@ int ObTransformPreProcess::replace_udt_assignment_exprs(ObDMLStmt *stmt,
           } else if (param_store.at(param_idx).is_xml_sql_type() ||
                      param_store.at(param_idx).is_extend_xml_type()){
             // do nothing
-          } else if (ob_is_number_tc(param_store.at(param_idx).get_type())) {
+          } else if (ob_is_decimal_int_tc(param_store.at(param_idx).get_type()) ||
+                        ob_is_number_tc(param_store.at(param_idx).get_type())) {
             ret = OB_ERR_INVALID_TYPE_FOR_OP;
             LOG_WARN("old_expr_type invalid ObLongTextType type", K(ret), K(param_store.at(param_idx).get_type()));
           } else {
@@ -7139,6 +7201,37 @@ int ObTransformPreProcess::check_skip_child_select_view(const ObIArray<ObParentD
       skip_for_view_table = true;
     }
   }
+  return ret;
+}
+
+int ObTransformPreProcess::transform_json_object_expr_with_star(const ObIArray<ObParentDMLStmt> &parent_stmts,
+                                                                ObDMLStmt *stmt, bool &trans_happened)
+{
+  INIT_SUCC(ret);
+  ObSEArray<ObRawExpr*, 4> replace_exprs;
+
+  JsonObjectStarChecker expr_checker(replace_exprs);
+  ObStmtExprGetter visitor;
+  visitor.checker_ = &expr_checker;
+  if (OB_SUCC(ret) && OB_FAIL(stmt->iterate_stmt_expr(visitor))) {
+    LOG_WARN("get relation exprs failed", K(ret));
+  }
+
+  //collect query udt exprs which need to be replaced
+  for (int64_t i = 0; OB_SUCC(ret) && i < replace_exprs.count(); i++) {
+    if (OB_ISNULL(replace_exprs.at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("replace expr is null", K(ret));
+    } else {
+      ObSysFunRawExpr *func_expr = static_cast<ObSysFunRawExpr*>(replace_exprs.at(i));
+      if (OB_FAIL(ObTransformUtils::expand_wild_star_to_columns(ctx_, stmt, func_expr))) {
+        LOG_WARN("fail to transform star to column node", K(ret));
+      } else {
+        trans_happened = true;
+      }
+    }
+  }
+
   return ret;
 }
 
@@ -9267,7 +9360,7 @@ int ObTransformPreProcess::add_constructor_to_multiset(ObDMLStmt &stmt,
              OB_UNLIKELY(OB_INVALID_ID == elem_udt_id)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected params", KPC(multiset_expr), K(elem_type));
-  } else if (!multiset_stmt->is_set_stmt()) {
+  } else if (!multiset_stmt->is_set_stmt() && !multiset_stmt->is_distinct()) {
     // if multiset stmt is set stmt, create a view for it.
     // e.g. create type tbl_obj as table of obj
     //      cast(multiset(select 1 as a from dual union select 2 as a from dual) as tbl_obj)
@@ -9429,7 +9522,7 @@ int ObTransformPreProcess::add_column_conv_to_multiset(ObQueryRefRawExpr *multis
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
     LOG_WARN("unexpected column count", K(ret), KPC(multiset_stmt), KPC(multiset_expr));
   } else {
-    if (!multiset_stmt->is_set_stmt()) {
+    if (!multiset_stmt->is_set_stmt() && !multiset_stmt->is_distinct()) {
       // do nothing
       // if multiset stmt is set stmt, create a view for it.
     } else if (OB_FAIL(ObTransformUtils::create_stmt_with_generated_table(ctx_, multiset_stmt, new_stmt))) {
@@ -10026,6 +10119,30 @@ int ObTransformPreProcess::check_is_correlated_cte(ObSelectStmt *stmt, ObIArray<
         } else if (OB_FAIL(exec_param->clear_flag(BE_USED))) {
           LOG_WARN("failed to clear flag", K(ret));
         }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformPreProcess::check_can_transform_insert_only_merge_into(const ObMergeStmt *merge_stmt,
+                                                                      bool &is_valid)
+{
+  int ret = OB_SUCCESS;
+  is_valid = true;
+  if (OB_ISNULL(merge_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (merge_stmt->has_update_clause() || !merge_stmt->has_insert_clause()) {
+    is_valid = false;
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && is_valid && i < merge_stmt->get_values_vector().count(); ++i) {
+      const ObRawExpr *expr = merge_stmt->get_values_vector().at(i);
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (expr->is_static_const_expr()) {
+        is_valid = false;
       }
     }
   }

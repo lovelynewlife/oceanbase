@@ -31,6 +31,7 @@
 #include "storage/tx/ob_clog_encrypt_info.h"
 #include "storage/tx/ob_trans_define.h"
 #include "sql/monitor/ob_plan_info_manager.h"
+#include "sql/engine/ob_subschema_ctx.h"
 
 namespace oceanbase
 {
@@ -483,6 +484,8 @@ public:
 
   void set_enable_px_fast_reclaim(bool value) { is_enable_px_fast_reclaim_ = value; }
   bool is_enable_px_fast_reclaim() const { return is_enable_px_fast_reclaim_; }
+  int set_all_local_session_vars(ObIArray<ObLocalSessionVar> *all_local_session_vars);
+  ObIArray<ObLocalSessionVar> & get_all_local_session_vars() { return all_local_session_vars_; }
 public:
   static const int64_t MAX_PRINTABLE_SIZE = 2 * 1024 * 1024;
 private:
@@ -596,7 +599,6 @@ private:
   // constraint for duplicate table to choose replica
   // dist plan will use this as (dup_tab_pos, advisor_tab_pos) pos is position in base constraint
   DupTabReplicaArray dup_table_replica_cons_;
-
 public:
   ObExprFrameInfo expr_frame_info_;
 
@@ -608,6 +610,7 @@ public:
   bool need_drive_dml_query_;
   int64_t tx_id_; //for dblink recover xa tx
   int64_t tm_sessid_; //for dblink get connection attached on tm session
+  ExprFixedArray var_init_exprs_;
 private:
   bool is_returning_; //是否设置了returning
 
@@ -659,6 +662,9 @@ public:
   ObLogicalPlanRawData logical_plan_;
   // for detector manager
   bool is_enable_px_fast_reclaim_;
+  ObSubSchemaCtx subschema_ctx_;
+private:
+  common::ObFixedArray<ObLocalSessionVar, common::ObIAllocator> all_local_session_vars_;
 };
 
 inline void ObPhysicalPlan::set_affected_last_insert_id(bool affected_last_insert_id)

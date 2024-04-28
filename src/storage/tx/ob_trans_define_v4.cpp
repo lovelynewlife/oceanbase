@@ -194,6 +194,80 @@ OB_SERIALIZE_MEMBER(ObTxReadSnapshot,
                     parts_,
                     snapshot_ls_role_);
 OB_SERIALIZE_MEMBER(ObTxPart, id_, addr_, epoch_, first_scn_, last_scn_);
+
+DEFINE_SERIALIZE(ObTxDesc::FLAG::FOR_FIXED_SER_VAL)
+{
+  int ret = OB_SUCCESS;
+  return serialization::encode_i64(buf, buf_len, pos, v_);
+}
+DEFINE_DESERIALIZE(ObTxDesc::FLAG::FOR_FIXED_SER_VAL)
+{
+  int ret = OB_SUCCESS;
+  return serialization::decode_i64(buf, data_len, pos, (int64_t*)&v_);
+}
+DEFINE_GET_SERIALIZE_SIZE(ObTxDesc::FLAG::FOR_FIXED_SER_VAL)
+{
+  return serialization::encoded_length_i64(v_);
+}
+
+uint64_t ObTxDesc::FLAG::COMPAT_FOR_EXEC::get_serialize_v_() const
+{
+  FLAG ret_flag;
+  FLAG this_flag;
+  this_flag.compat_for_exec_.v_ = v_;
+  ret_flag.compat_for_exec_.v_ = 0;
+#define _SET_FLAG_(x) ret_flag.x = this_flag.x
+  LST_DO(_SET_FLAG_, (;),
+         EXPLICIT_,
+         SHADOW_,
+         REPLICA_,
+         TRACING_);
+#undef _SET_FLAG_
+  return ret_flag.compat_for_exec_.v_;
+}
+
+uint64_t ObTxDesc::FLAG::COMPAT_FOR_TX_ROUTE::get_serialize_v_() const
+{
+  FLAG ret_flag;
+  FLAG this_flag;
+  this_flag.compat_for_tx_route_.v_ = v_;
+  ret_flag.compat_for_tx_route_.v_ = 0;
+#define _SET_FLAG_(x) ret_flag.x = this_flag.x
+  LST_DO(_SET_FLAG_, (;),
+         EXPLICIT_,
+         SHADOW_,
+         REPLICA_,
+         TRACING_,
+         RELEASED_,
+         PARTS_INCOMPLETE_,
+         PART_EPOCH_MISMATCH_,
+         WITH_TEMP_TABLE_,
+         DEFER_ABORT_);
+#undef _SET_FLAG_
+  return ret_flag.compat_for_tx_route_.v_;
+}
+
+#define DEF_SERIALIZE_COMPAT_FOR_TX_DESC_FLAG(THE_TYPE) \
+  DEFINE_SERIALIZE(ObTxDesc::FLAG::THE_TYPE)     \
+  {                                              \
+    int ret = OB_SUCCESS;                                               \
+    const uint64_t compat_v = get_serialize_v_();                       \
+    return serialization::encode_vi64(buf, buf_len, pos, compat_v);     \
+  }                                                                     \
+  DEFINE_DESERIALIZE(ObTxDesc::FLAG::THE_TYPE)                          \
+  {                                                                     \
+    int ret = OB_SUCCESS;                                               \
+    return serialization::decode_vi64(buf, data_len, pos, (int64_t*)&v_); \
+  }                                                                     \
+  DEFINE_GET_SERIALIZE_SIZE(ObTxDesc::FLAG::THE_TYPE)                   \
+  {                                                                     \
+    const uint64_t compat_v = get_serialize_v_();                       \
+    return serialization::encoded_length_vi64(compat_v);                \
+  }
+
+DEF_SERIALIZE_COMPAT_FOR_TX_DESC_FLAG(COMPAT_FOR_EXEC)
+DEF_SERIALIZE_COMPAT_FOR_TX_DESC_FLAG(COMPAT_FOR_TX_ROUTE)
+
 OB_SERIALIZE_MEMBER(ObTxDesc,
                     tenant_id_,
                     cluster_id_,
@@ -205,14 +279,15 @@ OB_SERIALIZE_MEMBER(ObTxDesc,
                     access_mode_,
                     op_sn_,
                     state_,
-                    flags_.v_,
+                    flags_.compat_for_exec_,
                     expire_ts_,
                     active_ts_,
                     timeout_us_,
                     lock_timeout_us_,
                     active_scn_,
                     parts_,
-                    xid_);
+                    xid_,
+                    flags_.for_serialize_v_);
 OB_SERIALIZE_MEMBER(ObTxParam,
                     timeout_us_,
                     lock_timeout_us_,
@@ -362,13 +437,24 @@ inline void ObTxDesc::FLAG::switch_to_idle_()
   REPLICA_ = sv.REPLICA_;
 }
 
+// this function helper will update current flag with the given
+// and ensure private flags will not be overriden
 ObTxDesc::FLAG ObTxDesc::FLAG::update_with(const ObTxDesc::FLAG &flag)
 {
-  ObTxDesc::FLAG n = flag;
-#define KEEP_(x) n.x = x
-LST_DO(KEEP_, (;), SHADOW_, REPLICA_, TRACING_, INTERRUPTED_, RELEASED_, BLOCK_);
-#undef KEEP_
-  return n;
+  ObTxDesc::FLAG ret = flag;
+#define KEEP_PRIVATE_(x) ret.x = x
+  LST_DO(KEEP_PRIVATE_, (;),
+         SHADOW_,        // private for each scheduler node
+         REPLICA_,       // private for each scheduler node
+         INTERRUPTED_,   // private on original scheduler
+         RELEASED_,      // private on original scheduler
+         BLOCK_);        // private for single stmt scope
+#undef KEEP_PRIVATE_
+  // do merge for some flags, because it may be set asynchorously
+  // PART_ABORTED may be set on original scheduler while stmt executing on remote scheduler
+  // in such case, it should not be override by state update from remote scheduler
+  ret.PART_ABORTED_ |= PART_ABORTED_;
+  return ret;
 }
 
 ObTxDesc::~ObTxDesc()
@@ -606,6 +692,14 @@ int ObTxDesc::update_part_(ObTxPart &a, const bool append)
   return ret;
 }
 
+void ObTxDesc::post_rb_savepoint_(ObTxPartRefList &parts, const ObTxSEQ &savepoint)
+{
+  ARRAY_FOREACH_NORET(parts, i) {
+    parts[i].last_scn_ = savepoint;
+  }
+  state_change_flags_.PARTS_CHANGED_ = true;
+}
+
 int ObTxDesc::update_clean_part(const share::ObLSID &id,
                                 const int64_t epoch,
                                 const ObAddr &addr)
@@ -656,8 +750,15 @@ void ObTxDesc::implicit_start_tx_()
 {
   if (parts_.count() > 0 && state_ == ObTxDesc::State::IDLE) {
     state_ = ObTxDesc::State::IMPLICIT_ACTIVE;
-    active_ts_ = ObClockGenerator::getClock();
-    expire_ts_ = active_ts_ + timeout_us_;
+    if (expire_ts_ == INT64_MAX ) {
+      /*
+       * To calculate transaction's execution time
+       * and determine whether transaction has timeout
+       * just set active_ts and expire_ts on stmt's first execution
+       */
+      active_ts_ = ObClockGenerator::getClock();
+      expire_ts_ = active_ts_ + timeout_us_;
+    }
     active_scn_ = get_tx_seq();
     state_change_flags_.mark_all();
   }
@@ -1573,6 +1674,33 @@ ObTxSEQ ObTxDesc::inc_and_get_tx_seq(int16_t branch) const
   int64_t seq = ObSequence::inc_and_get_max_seq_no();
   return ObTxSEQ::mk_v0(seq);
 }
+void ObTxDesc::mark_part_abort(const ObTransID tx_id, const int abort_cause)
+{
+  ObSpinLockGuard guard(lock_);
+  if (tx_id == tx_id_ && state_ < State::IN_TERMINATE && !flags_.PART_ABORTED_) {
+    flags_.PART_ABORTED_ = true;
+    abort_cause_ = abort_cause;
+  }
+}
+
+int64_t ObTxDesc::get_coord_epoch() const
+{
+  int64_t epoch = -1;
+
+  if (OB_UNLIKELY(!coord_id_.is_valid())) {
+    epoch = -1;
+  } else {
+    ARRAY_FOREACH_NORET(commit_parts_, i) {
+      const ObTxExecPart &part = commit_parts_[i];
+      if (coord_id_ == part.ls_id_) {
+        epoch = part.exec_epoch_;
+      }
+    }
+  }
+
+  return epoch;
+}
+
 } // transaction
 } // oceanbase
 #undef USING_LOG_PREFIX

@@ -115,10 +115,6 @@ public:
   virtual int submit_ls_update_task(
       const uint64_t tenant_id,
       const share::ObLSID &ls_id) override;
-  virtual int submit_tablet_update_task(
-      const uint64_t tenant_id,
-      const share::ObLSID &ls_id,
-      const ObTabletID &tablet_id) override;
 
   ////////////////////////////////////////////////////////////////
   int check_frozen_scn(const obrpc::ObCheckFrozenScnArg &arg);
@@ -167,6 +163,9 @@ public:
   ////////////////////////////////////////////////////////////////
   // ObRpcMinorFreezeP @RS minor freeze
   int minor_freeze(const obrpc::ObMinorFreezeArg &arg,
+                   obrpc::Int64 &result);
+  // ObRpcTabletMajorFreezeP @RS tablet major freeze
+  int tablet_major_freeze(const obrpc::ObTabletMajorFreezeArg &arg,
                    obrpc::Int64 &result);
   // ObRpcCheckSchemaVersionElapsedP @RS global index builder
   int check_schema_version_elapsed(
@@ -274,7 +273,6 @@ private:
       share::ObTabletReplica &tablet_replica,
       share::ObTabletReplicaChecksumItem &tablet_checksum,
       const bool need_checksum);
-
   int register_self();
   int check_server_empty(bool &server_empty);
 
@@ -305,7 +303,6 @@ private:
   ObRemoteMasterRsUpdateTask remote_master_rs_update_task_;
   // report
   ObLSTableUpdater ls_table_updater_;
-  ObTabletTableUpdater tablet_table_updater_;
   ObServerMetaTableChecker meta_table_checker_;
 };
 

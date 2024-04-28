@@ -69,6 +69,9 @@ namespace share
     case OB_ERR_TENANT_IS_LOCKED:                                                                      \
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "get primary " args ", primary tenant is locked");           \
       break;                                                                                           \
+    case OB_CONNECT_ERROR:                                                                             \
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "get primary " args ", all servers are unreachable");        \
+      break;                                                                                           \
     default:                                                                                           \
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "get primary " args);                                        \
   }                                                                                                    \
@@ -206,7 +209,6 @@ ObLogRestoreProxyUtil::ObLogRestoreProxyUtil() :
   connection_(),
   user_name_(),
   user_password_(),
-  db_name_(),
   sql_proxy_(),
   is_oracle_mode_(false)
 {}
@@ -283,7 +285,6 @@ void ObLogRestoreProxyUtil::destroy()
   server_prover_.destroy();
   user_name_.reset();
   user_password_.reset();
-  db_name_.reset();
   is_oracle_mode_ = false;
 }
 
@@ -300,11 +301,20 @@ int ObLogRestoreProxyUtil::refresh_conn(const common::ObIArray<common::ObAddr> &
       || OB_ISNULL(user_password)
       || OB_ISNULL(db_name)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (is_user_changed_(user_name, user_password, db_name)
-      && OB_FAIL(connection_.set_db_param(user_name, user_password, db_name))) {
-    LOG_WARN("set db param failed", K(user_name), K(user_password), K(db_name));
   } else if (OB_FAIL(server_prover_.set_restore_source_server(addr_array))) {
     LOG_WARN("set_restore_source_server failed", K(addr_array));
+  } else if (!is_user_changed_(user_name, user_password)) {
+    // do nothing
+  } else if (OB_FAIL(connection_.set_db_param(user_name, user_password, db_name))) {
+    LOG_WARN("set db param failed", K(user_name), K(user_password), K(db_name));
+  }
+  // fix string user_name_ and user_password_ is enough to hold these two params
+  else if (OB_FAIL(user_name_.assign(user_name))) {
+    LOG_ERROR("user_name_ assign failed", K(user_name));
+  } else if (OB_FAIL(user_password_.assign(user_password))) {
+    LOG_ERROR("user_password_ assign failed", K(user_password));
+  } else {
+    LOG_INFO("log restore proxy connection refresh", K(user_name_));
   }
   return ret;
 }
@@ -317,13 +327,16 @@ int ObLogRestoreProxyUtil::try_init(const uint64_t tenant_id,
   int ret = OB_SUCCESS;
   const char *db_name = nullptr;
   ObLogRestoreMySQLProvider tmp_server_prover;
+  common::ObArray<common::ObAddr> fixed_server_list;
 
-  if (OB_FAIL(tmp_server_prover.init(server_list))) {
-    LOG_WARN("server_prover_ init failed", K(tenant_id), K(server_list));
-  } else if (OB_FAIL(detect_tenant_mode_(&tmp_server_prover, user_name, user_password))) {
+  if (OB_FAIL(fixed_server_list.assign(server_list))) {
+    LOG_WARN("fail to assign fixed server list", K(tenant_id), K(server_list));
+  } else if (OB_FAIL(tmp_server_prover.init(server_list))) {
+    LOG_WARN("tmp_server_prover_ init failed", K(tenant_id), K(server_list));
+  } else if (OB_FAIL(detect_tenant_mode_(&tmp_server_prover, user_name, user_password, &fixed_server_list))) {
     LOG_WARN("detect tenant mode failed", KR(ret), K_(user_name));
   } else if (OB_FALSE_IT(db_name = is_oracle_mode_ ? OB_ORA_SYS_SCHEMA_NAME : OB_SYS_DATABASE_NAME)) {
-  } else if (OB_FAIL(init(tenant_id, server_list, user_name, user_password, db_name))) {
+  } else if (OB_FAIL(init(tenant_id, fixed_server_list, user_name, user_password, db_name))) {
     LOG_WARN("[RESTORE PROXY] fail to init restore proxy");
   }
 
@@ -562,11 +575,17 @@ int ObLogRestoreProxyUtil::construct_server_ip_list(const common::ObSqlString &s
   }
   return ret;
 }
-bool ObLogRestoreProxyUtil::is_user_changed_(const char *user_name, const char *user_password, const char *db_name)
+
+bool ObLogRestoreProxyUtil::is_user_changed_(const char *user_name, const char *user_password)
 {
-  return user_name_ != common::ObFixedLengthString<common::OB_MAX_USER_NAME_BUF_LENGTH>(user_name)
-    || user_password_ != common::ObFixedLengthString<common::OB_MAX_PASSWORD_LENGTH + 1>(user_password)
-    || db_name_ != common::ObFixedLengthString<common::OB_MAX_DATABASE_NAME_BUF_LENGTH>(db_name);
+  bool changed =  user_name_ != common::ObFixedLengthString<common::OB_MAX_USER_NAME_BUF_LENGTH>(user_name)
+    || user_password_ != common::ObFixedLengthString<common::OB_MAX_PASSWORD_LENGTH + 1>(user_password);
+
+  if (changed) {
+    LOG_INFO("restore proxy user info changed", K(user_name_),
+        K(common::ObFixedLengthString<common::OB_MAX_USER_NAME_BUF_LENGTH>(user_name)));
+  }
+  return changed;
 }
 
 int ObLogRestoreProxyUtil::get_tenant_info(ObTenantRole &role, schema::ObTenantStatus &status)
@@ -713,10 +732,12 @@ void ObLogRestoreProxyUtil::destroy_tg_()
 
 int ObLogRestoreProxyUtil::detect_tenant_mode_(common::sqlclient::ObMySQLServerProvider *server_provider,
                                                const char *user_name,
-                                               const char *user_password)
+                                               const char *user_password,
+                                               common::ObIArray<common::ObAddr> *fixed_server_list)
 {
+  LOG_INFO("start to detec tenant mode");
   int ret = OB_SUCCESS;
-
+  common::ObArray<int64_t> invalid_ip_array;
   if (OB_ISNULL(server_provider)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[RESTORE PROXY] invalid server_provider", KR(ret));
@@ -727,8 +748,7 @@ int ObLogRestoreProxyUtil::detect_tenant_mode_(common::sqlclient::ObMySQLServerP
       LOG_WARN("[RESTORE PROXY] expect valid svr_cnt", K(svr_cnt));
     } else {
       bool detect_succ = false;
-
-      for (int idx = 0; OB_SUCC(ret) && ! detect_succ && idx < svr_cnt; idx++) {
+      for (int idx = 0; idx < svr_cnt; idx++) {
         MYSQL *mysql;
         common::ObAddr server;
         if (OB_FAIL(server_provider->get_server(idx, server))) {
@@ -743,11 +763,17 @@ int ObLogRestoreProxyUtil::detect_tenant_mode_(common::sqlclient::ObMySQLServerP
             ret = OB_BUF_NOT_ENOUGH;
             LOG_WARN("fail to get host.", K(server), K(ret));
           } else if (NULL == (mysql = mysql_init(NULL))) {
-            LOG_ERROR("mysql_init fail", KR(ret));
             ret = OB_ERR_UNEXPECTED;
+            LOG_ERROR("mysql_init fail", KR(ret));
           } else {
+            int64_t final_timeout = cal_timeout_();
+            mysql_options(mysql, MYSQL_OPT_CONNECT_TIMEOUT, &final_timeout);
             if (mysql != mysql_real_connect(mysql, host, user_name, user_password, default_db_name, port, NULL, 0)) {
-              LOG_WARN("mysql connect failed", "mysql_error", mysql_error(mysql), K(host), K(port));
+              int mysql_error_code = mysql_errno(mysql);   // remove invalid ip if mysql error code is ER_CONNECT_FAILED
+              if ((ER_CONNECT_FAILED == mysql_error_code) && OB_FAIL(invalid_ip_array.push_back(idx))) {
+                LOG_WARN("[RESTORE PROXY] fail to push back invalid_ip_array", K(invalid_ip_array), K(idx));
+              }
+              LOG_WARN("[RESTORE PROXY] mysql connect failed", "mysql_error", mysql_error(mysql), K(mysql_error_code), K(host), K(port));
             } else {
  #ifdef OB_BUILD_ORACLE_PARSER
               is_oracle_mode_ = mysql->oracle_mode;
@@ -755,23 +781,47 @@ int ObLogRestoreProxyUtil::detect_tenant_mode_(common::sqlclient::ObMySQLServerP
               is_oracle_mode_ = false;
  #endif
               detect_succ = true;
-              LOG_INFO("[RESTORE PROXY][DETECT_TENANT_MODE] detect tenant mode success", KR(ret));
+              LOG_INFO("[RESTORE PROXY] detect tenant mode success", KR(ret), K(host), K(port));
+            }
+            if (OB_NOT_NULL(mysql)) {
+              mysql_close(mysql);
             }
           }
         }
-        if (OB_SUCC(ret) && OB_NOT_NULL(mysql)) {
-          mysql_close(mysql);
-          mysql = NULL;
-        }
+        mysql = NULL;
       }
       if (OB_UNLIKELY(!detect_succ)) {
         ret = OB_CONNECT_ERROR;
         LOG_WARN("[RESTORE PROXY][DETECT_TENANT_MODE] connect to all server in tenant endpoint list failed", KR(ret), K(svr_cnt));
+      } else if (!invalid_ip_array.empty()) {
+        for (int64_t idx = invalid_ip_array.count() - 1; idx >= 0; idx--) {
+          if (OB_FAIL(fixed_server_list->remove(invalid_ip_array.at(idx)))) {
+            LOG_WARN("[RESTORE PROXY] fail to remove from fixed_server_list", K(invalid_ip_array), K(*fixed_server_list), K(idx));
+          }
+        }
+        LOG_INFO("[RESTORE PROXY] fixed server list", K_(tenant_id), K(*fixed_server_list));
+      }
+      if (fixed_server_list->count() <= 0) {
+        ret = OB_CONNECT_ERROR;
+        LOG_WARN("[RESTORE PROXY] all servers are unreachable", K_(tenant_id), K(ret));
       }
     }
   }
-
   return ret;
+}
+
+int64_t ObLogRestoreProxyUtil::cal_timeout_() {
+  const int64_t DEFAULT_MAX_TIMEOUT = 10; // default max time is 10s
+  int64_t final_timeout = DEFAULT_MAX_TIMEOUT;
+  int64_t abs_timeout_ts = THIS_WORKER.get_timeout_ts();
+  int64_t curr_ts = ObTimeUtility::fast_current_time();
+  int64_t abs_timeout = (abs_timeout_ts - curr_ts) /1000 /1000 /2; // half of the total timeout
+  if (abs_timeout > 0) {
+    final_timeout = abs_timeout < DEFAULT_MAX_TIMEOUT ? abs_timeout : DEFAULT_MAX_TIMEOUT;
+  }
+  LOG_INFO("[RESTORE PROXY] set time out,",
+    K(abs_timeout_ts), K(curr_ts), K(abs_timeout), K(final_timeout), K(DEFAULT_MAX_TIMEOUT));
+  return final_timeout;
 }
 
 } // namespace share

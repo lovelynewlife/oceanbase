@@ -85,10 +85,11 @@ private:
 class ObTableApiSessPool final
 {
 public:
-  // key is user_id
+  // key is ObTableApiCredential.hash_val_
   typedef common::hash::ObHashMap<uint64_t, ObTableApiSessNode*> CacheKeyNodeMap;
   static const int64_t SESS_POOL_DEFAULT_BUCKET_NUM = 10; // 取决于客户端登录的用户数量
   static const int64_t SESS_RETIRE_TIME = 300 * 1000000; // 超过300s未被访问的session会被标记淘汰
+  static const int64_t BACKCROUND_TASK_DELETE_SESS_NUM = 1000; // 后台任务每次删除淘汰的session node数量
 public:
   explicit ObTableApiSessPool()
       : allocator_("TbSessPool", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
@@ -127,8 +128,7 @@ friend class ObTableApiSessNode;
 friend class ObTableApiSessGuard;
 public:
   explicit ObTableApiSessNodeVal(ObTableApiSessNode *owner)
-      : allocator_("TbSessNodeVal", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
-        is_inited_(false),
+      : is_inited_(false),
         owner_node_(owner)
   {}
   TO_STRING_KV(K_(is_inited),
@@ -143,7 +143,6 @@ public:
   }
   void give_back_to_free_list();
 private:
-  common::ObArenaAllocator allocator_;
   bool is_inited_;
   sql::ObSQLSessionInfo sess_info_;
   ObTableApiSessNode *owner_node_;
@@ -311,7 +310,6 @@ class ObTableApiSessUtil final
 public:
   static int init_sess_info(uint64_t tenant_id,
                             const common::ObString &tenant_name,
-                            common::ObIAllocator *allocator,
                             share::schema::ObSchemaGetterGuard &schema_guard,
                             sql::ObSQLSessionInfo &sess_info);
 private:

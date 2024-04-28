@@ -1003,6 +1003,7 @@
 #define N_JSON_EQUAL                        "json_equal"
 #define N_JSON_QUERY                        "json_query"
 #define N_JSON_EXISTS                       "json_exists"
+#define N_JSON_OBJECT_STAR                  "json_object_star"
 
 #define N_POINT                             "point"
 #define N_LINESTRING                        "linestring"
@@ -1069,4 +1070,7 @@
 #define N_NLS_INITCAP                       "nls_initcap"
 #define N_TEMP_TABLE_SSID                   "temp_table_ssid"
 #define N_ALIGN_DATE4CMP                    "align_date4cmp"
+#define N_INEER_IS_TRUE                     "inner_is_true"
+#define N_INNER_DECODE_LIKE                 "inner_decode_like"
+#define N_EXTRACT_CERT_EXPIRED_TIME         "extract_cert_expired_time"
 #endif //OCEANBASE_LIB_OB_NAME_DEF_H_

@@ -12,6 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include <gtest/gtest.h>
+#include <thread>
 #include "mtlenv/mock_tenant_module_env.h"
 #include "storage/mockcontainer/mock_ob_iterator.h"
 #include "storage/mockcontainer/mock_ob_end_trans_callback.h"
@@ -259,10 +260,11 @@ TEST_F(TestTrans, basic)
   ASSERT_EQ(OB_SUCCESS, MTL(ObLSService*)->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD));
   ObTabletHandle tablet_handle;
   ASSERT_EQ(OB_SUCCESS, ls_handle.get_ls()->get_tablet_svr()->get_tablet(tablet_id, tablet_handle, 0));
-  ObIMemtableMgr *mt_mgr = tablet_handle.get_obj()->get_memtable_mgr();
-  ASSERT_EQ(1, mt_mgr->get_memtable_count_());
+  ObProtectedMemtableMgrHandle *protected_handle = NULL;
+  ASSERT_EQ(OB_SUCCESS, tablet_handle.get_obj()->get_protected_memtable_mgr_handle(protected_handle));
+  ASSERT_EQ(1, protected_handle->memtable_mgr_handle_.get_memtable_mgr()->get_memtable_count_());
   ObTableHandleV2 mt_handle;
-  ASSERT_EQ(OB_SUCCESS, mt_mgr->get_active_memtable(mt_handle));
+  ASSERT_EQ(OB_SUCCESS, protected_handle->get_active_memtable(mt_handle));
   memtable::ObMemtable *mt;
   ASSERT_EQ(OB_SUCCESS, mt_handle.get_data_memtable(mt));
 
@@ -364,6 +366,79 @@ TEST_F(TestTrans, freeze)
   ASSERT_EQ(OB_SUCCESS, ls->logstream_freeze());
 }
 */
+TEST_F(TestTrans, transfer_block)
+{
+  int ret = OB_SUCCESS;
+  uint64_t tenant_id = MTL_ID();
+  ObLSID ls_id(100);
+  ObTabletID tablet_id(1001);
+
+  LOG_INFO("start transaction");
+  ObTxDesc *tx_desc = NULL;
+  ObTxReadSnapshot snapshot;
+  prepare_tx_desc(tx_desc, snapshot);
+  // prepare insert param
+  const char *ins_str =
+      "bigint    dml          \n"
+      "300        T_DML_INSERT \n";
+  insert_rows(ls_id, tablet_id, *tx_desc, snapshot, ins_str);
+
+  ObTransService *tx_service = MTL(ObTransService*);
+  ObPartTransCtx *part_ctx;
+  ASSERT_EQ(OB_SUCCESS, tx_service->tx_ctx_mgr_.get_tx_ctx(ls_id, tx_desc->tx_id_, false, part_ctx));
+  part_ctx->sub_state_.set_transfer_blocking();
+  ASSERT_EQ(OB_SUCCESS, tx_service->tx_ctx_mgr_.revert_tx_ctx(part_ctx));
+
+  std::thread th([part_ctx] () {
+    ::sleep(3);
+    part_ctx->sub_state_.clear_transfer_blocking();
+  });
+
+  LOG_INFO("commit transaction");
+  ASSERT_EQ(OB_SUCCESS, tx_service->commit_tx(*tx_desc, ObTimeUtility::current_time() + 100000000));
+
+  LOG_INFO("release transaction");
+  tx_service->release_tx(*tx_desc);
+
+  th.join();
+}
+
+TEST_F(TestTrans, transfer_block2)
+{
+  int ret = OB_SUCCESS;
+  uint64_t tenant_id = MTL_ID();
+  ObLSID ls_id(100);
+  ObTabletID tablet_id(1001);
+
+  LOG_INFO("start transaction");
+  ObTxDesc *tx_desc = NULL;
+  ObTxReadSnapshot snapshot;
+  prepare_tx_desc(tx_desc, snapshot);
+  // prepare insert param
+  const char *ins_str =
+      "bigint    dml          \n"
+      "400        T_DML_INSERT \n";
+  insert_rows(ls_id, tablet_id, *tx_desc, snapshot, ins_str);
+
+  ObTransService *tx_service = MTL(ObTransService*);
+  ObPartTransCtx *part_ctx;
+  ASSERT_EQ(OB_SUCCESS, tx_service->tx_ctx_mgr_.get_tx_ctx(ls_id, tx_desc->tx_id_, false, part_ctx));
+  bool is_blocked = false;
+  part_ctx->sub_state_.set_transfer_blocking();
+  ASSERT_EQ(OB_SUCCESS, tx_service->tx_ctx_mgr_.revert_tx_ctx(part_ctx));
+
+  std::thread th([part_ctx] () {
+    ::sleep(3);
+    part_ctx->sub_state_.clear_transfer_blocking();
+  });
+
+  LOG_INFO("rollback transaction");
+  ASSERT_EQ(OB_SUCCESS, tx_service->rollback_tx(*tx_desc));
+
+  LOG_INFO("release transaction");
+  tx_service->release_tx(*tx_desc);
+  th.join();
+}
 
 TEST_F(TestTrans, remove_ls)
 {

@@ -90,6 +90,7 @@ public:
   void destroy();
 
   int create_hidden_sys_tenant();
+  int update_hidden_sys_tenant();
   int convert_hidden_to_real_sys_tenant(const share::ObUnitInfoGetter::ObTenantConfig &unit, const int64_t abs_timeout_us = INT64_MAX);
   int create_tenant_without_unit(const uint64_t tenant_id, const double min_cpu, const double max_cpu);
   int create_tenant(const ObTenantMeta &meta, bool write_slog, const int64_t abs_timeout_us = INT64_MAX);
@@ -116,6 +117,7 @@ public:
   int update_tenant_config(uint64_t tenant_id);
   int update_palf_config();
   int update_tenant_dag_scheduler_config();
+  int update_tenant_ddl_config();
   int get_tenant(const uint64_t tenant_id, ObTenant *&tenant) const;
   int get_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
   int get_active_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
@@ -183,6 +185,9 @@ protected:
                                     const share::ObUnitInfoGetter::ObTenantConfig &expected_unit_config,
                                     share::ObUnitInfoGetter::ObTenantConfig &allowed_unit);
 
+private:
+  int update_tenant_freezer_config_();
+  int update_throttle_config_();
 protected:
       static const int DEL_TRY_TIMES = 30;
       enum class ObTenantCreateStep {

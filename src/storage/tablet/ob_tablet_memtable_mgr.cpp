@@ -34,15 +34,17 @@ namespace storage
 using namespace mds;
 
 ObTabletMemtableMgr::ObTabletMemtableMgr()
-  : ObIMemtableMgr(LockType::OB_SPIN_RWLOCK, &lock_def_),
-    ls_(nullptr),
+  : ls_(nullptr),
     lock_def_(common::ObLatchIds::TABLET_MEMTABLE_LOCK),
     retry_times_(0),
     schema_recorder_(),
     medium_info_recorder_()
 {
+  lock_.lock_type_ = LockType::OB_SPIN_RWLOCK;
+  lock_.lock_ = &lock_def_;
+
 #if defined(__x86_64__)
-  static_assert(sizeof(ObTabletMemtableMgr) <= 2048, "The size of ObTabletMemtableMgr will affect the meta memory manager, and the necessity of adding new fields needs to be considered.");
+  static_assert(sizeof(ObTabletMemtableMgr) <= 480, "The size of ObTabletMemtableMgr will affect the meta memory manager, and the necessity of adding new fields needs to be considered.");
 #endif
 }
 
@@ -79,6 +81,11 @@ void ObTabletMemtableMgr::destroy()
   medium_info_recorder_.destroy();
   retry_times_ = 0;
   is_inited_ = false;
+}
+
+void ObTabletMemtableMgr::reset()
+{
+  destroy();
 }
 
 int ObTabletMemtableMgr::init(const common::ObTabletID &tablet_id,
@@ -164,6 +171,7 @@ int ObTabletMemtableMgr::reset_storage_recorder()
 // 2. create the new memtable after freezing the old memtable
 int ObTabletMemtableMgr::create_memtable(const SCN clog_checkpoint_scn,
                                          const int64_t schema_version,
+                                         const SCN new_clog_checkpoint_scn,
                                          const bool for_replay)
 {
   ObTimeGuard time_guard("ObTabletMemtableMgr::create_memtable", 10 * 1000);
@@ -178,7 +186,6 @@ int ObTabletMemtableMgr::create_memtable(const SCN clog_checkpoint_scn,
   memtable::ObMemtable *active_memtable = nullptr;
   uint32_t memtable_freeze_clock = UINT32_MAX;
   share::ObLSID ls_id;
-  SCN new_clog_checkpoint_scn;
   int64_t memtable_count = get_memtable_count_();
   if (has_memtable && OB_NOT_NULL(active_memtable = get_active_memtable_())) {
     memtable_freeze_clock = active_memtable->get_freeze_clock();
@@ -204,8 +211,6 @@ int ObTabletMemtableMgr::create_memtable(const SCN clog_checkpoint_scn,
                 K(get_memtable_count_()),
                 KPC(first_frozen_memtable.get_table()));
     }
-  } else if (OB_FAIL(get_newest_clog_checkpoint_scn(new_clog_checkpoint_scn))) {
-    LOG_WARN("failed to get newest clog_checkpoint_scn", K(ret), K(ls_id), K(tablet_id_), K(new_clog_checkpoint_scn));
   } else if (for_replay && clog_checkpoint_scn != new_clog_checkpoint_scn) {
     ret = OB_EAGAIN;
     LOG_INFO("clog_checkpoint_scn changed, need retry to replay", K(ls_id), K(tablet_id_), K(clog_checkpoint_scn), K(new_clog_checkpoint_scn));
@@ -505,7 +510,7 @@ int ObTabletMemtableMgr::unset_logging_blocked_for_active_memtable(memtable::ObI
   return ret;
 }
 
-int ObTabletMemtableMgr::set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle, bool is_force_freeze)
+int ObTabletMemtableMgr::set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle)
 {
   handle.reset();
   memtable::ObIMemtable *active_memtable = nullptr;
@@ -526,9 +531,6 @@ int ObTabletMemtableMgr::set_is_tablet_freeze_for_active_memtable(ObTableHandleV
   } else if (FALSE_IT(memtable = static_cast<ObMemtable*>(active_memtable))) {
   } else if (memtable->allow_freeze()) {
     memtable->set_is_tablet_freeze();
-    if (is_force_freeze) {
-      memtable->set_is_force_freeze();
-    }
   } else {
     handle.reset();
     ret = OB_ENTRY_NOT_EXIST;

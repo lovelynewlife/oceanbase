@@ -348,6 +348,8 @@ int ObCdcFetcher::fetch_log_in_archive_(
     ClientLSCtx &ctx)
 {
   int ret = OB_SUCCESS;
+  // always reserve 4K for archive header
+  const int64_t SINGLE_READ_SIZE = 16 * 1024 * 1024L - 4 * 1024;
   if (OB_ISNULL(ctx.get_source()) && OB_FAIL(init_archive_source_(ctx, ls_id))) {
     LOG_WARN("init archive source failed", K(ctx), K(ls_id));
   } else {
@@ -358,7 +360,7 @@ int ObCdcFetcher::fetch_log_in_archive_(
       LOG_WARN("convert progress to scn failed", KR(ret), K(ctx));
     } else if (need_init_iter && OB_FAIL(remote_iter.init(tenant_id_, ls_id, pre_scn,
                                                           start_lsn, LSN(LOG_MAX_LSN_VAL), large_buffer_pool_,
-                                                          log_ext_handler_))) {
+                                                          log_ext_handler_, SINGLE_READ_SIZE))) {
       LOG_WARN("init remote log iterator failed", KR(ret), K(tenant_id_), K(ls_id));
     } else if (OB_FAIL(remote_iter.next(log_entry, lsn, buf, buf_size))) {
       // expected OB_ITER_END and OB_SUCCEES, error occurs when other code is returned.
@@ -635,14 +637,16 @@ int ObCdcFetcher::ls_fetch_log_(const ObLSID &ls_id,
     remote_iter.update_source_cb();
   }
 
+  if (OB_ITER_END == ret) {
+    // has iterated to the end of block.
+    ret = OB_SUCCESS;
+  }
+
   if (OB_SUCCESS == ret) {
     // do nothing
     if (ls_exist_in_palf && reach_max_lsn) {
       handle_when_reach_max_lsn_in_palf_(ls_id, palf_guard, fetched_log_count, frt, resp);
     }
-  } else if (OB_ITER_END == ret) {
-    // has iterated to the end of block.
-    ret = OB_SUCCESS;
   } else if (OB_ERR_OUT_OF_LOWER_BOUND == ret) {
     // log not exists
     int tmp_ret = OB_SUCCESS;
@@ -1007,6 +1011,11 @@ int ObCdcFetcher::init_archive_source_(ClientLSCtx &ctx, ObLSID ls_id) {
     } else {
       ctx.set_source(source);
       LOG_INFO("init archive source succ", K(ctx), K(ls_id));
+    }
+
+    if (OB_FAIL(ret)) {
+      logservice::ObResSrcAlloctor::free(source);
+      source = nullptr;
     }
   }
   return ret;

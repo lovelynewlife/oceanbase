@@ -68,6 +68,23 @@ bool ObTabletChecksumItem::is_same_tablet(const ObTabletChecksumItem &item) cons
     && (ls_id_ == item.ls_id_);
 }
 
+int ObTabletChecksumItem::compare_tablet(const ObTabletReplicaChecksumItem &replica_item) const
+{
+  int ret = 0;
+  if (tablet_id_.id() < replica_item.tablet_id_.id()) {
+    ret = -1;
+  } else if (tablet_id_.id() > replica_item.tablet_id_.id()) {
+    ret = 1;
+  } else {
+    if (ls_id_.id() < replica_item.ls_id_.id()) {
+      ret = -1;
+    } else if (ls_id_.id() > replica_item.ls_id_.id()) {
+      ret = 1;
+    }
+  }
+  return ret;
+}
+
 int ObTabletChecksumItem::verify_tablet_column_checksum(const ObTabletReplicaChecksumItem &replica_item) const
 {
   int ret = OB_SUCCESS;
@@ -338,6 +355,7 @@ int ObTabletChecksumOperator::construct_load_sql_str_(
       compaction_scn.get_val_for_inner_table_field()))) {
     LOG_WARN("fail to assign sql", KR(ret), K(tenant_id));
   } else {
+    ObSqlString order_by_sql;
     for (int64_t idx = start_idx; OB_SUCC(ret) && (idx < end_idx); ++idx) {
       const ObTabletLSPair &pair = pairs.at(idx);
       if (OB_UNLIKELY(!pair.is_valid())) {
@@ -349,12 +367,15 @@ int ObTabletChecksumOperator::construct_load_sql_str_(
           pair.get_ls_id().id(),
           ((idx == end_idx - 1) ? ")" : ", ")))) {
         LOG_WARN("fail to assign sql", KR(ret), K(tenant_id), K(pair));
+      } else if (OB_FAIL(order_by_sql.append_fmt(
+          ",%ld",
+          pair.get_tablet_id().id()))) {
+        SHARE_LOG(WARN, "fail to assign sql", KR(ret), K(tenant_id), K(pair));
       }
     }
-  }
-
-  if (FAILEDx(sql.append_fmt(" ORDER BY tenant_id, tablet_id, ls_id, compaction_scn"))) {
-    LOG_WARN("fail to assign sql string", KR(ret), K(tenant_id), K(pairs_cnt));
+    if (FAILEDx(sql.append_fmt(" ORDER BY FIELD(tablet_id%s)", order_by_sql.string().ptr()))) {
+      SHARE_LOG(WARN, "fail to assign sql string", KR(ret), K(tenant_id), K(compaction_scn), K(pairs_cnt));
+    }
   }
   return ret;
 }
@@ -657,7 +678,7 @@ int ObTabletChecksumOperator::is_first_tablet_in_sys_ls_exist(
       ObMySQLResult *result = nullptr;
       uint64_t compaction_scn_val = compaction_scn.get_val_for_inner_table_field();
       if (OB_FAIL(sql.assign_fmt("SELECT COUNT(*) AS cnt FROM %s WHERE tenant_id = '%lu' AND "
-            "compaction_scn = %lu AND tablet_id = %lu AND ls_id = %ld", OB_ALL_TABLET_CHECKSUM_TNAME,
+            "compaction_scn >= %lu AND tablet_id = %lu AND ls_id = %ld", OB_ALL_TABLET_CHECKSUM_TNAME,
             extract_tenant_id, compaction_scn_val, ObTabletID::MIN_VALID_TABLET_ID, ObLSID::SYS_LS_ID))) {
         LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
       } else if (OB_FAIL(sql_client.read(res, tenant_id, sql.ptr()))) {
@@ -671,7 +692,7 @@ int ObTabletChecksumOperator::is_first_tablet_in_sys_ls_exist(
         int64_t cnt = 0;
         EXTRACT_INT_FIELD_MYSQL(*result, "cnt", cnt, int64_t);
         if (OB_SUCC(ret)) {
-          if (1 == cnt) {
+          if (cnt >= 1) {
             is_exist = true;
           } else if (0 == cnt) {
             is_exist = false;
@@ -683,6 +704,76 @@ int ObTabletChecksumOperator::is_first_tablet_in_sys_ls_exist(
       }
     }
   }
+  return ret;
+}
+
+int ObTabletChecksumOperator::is_all_tablet_checksum_sync(
+    ObISQLClient &sql_client,
+    const uint64_t tenant_id,
+    ObIArray<uint64_t> &frozen_scn_vals,
+    bool &is_sync)
+{
+  int ret = OB_SUCCESS;
+  int64_t frozen_scn_vals_cnt = frozen_scn_vals.count();
+  if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id) || (frozen_scn_vals_cnt <= 0))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", KR(ret), K(tenant_id), K(frozen_scn_vals_cnt));
+  } else {
+    is_sync = false;
+    const uint64_t extract_tenant_id = 0;
+    // split into several batches, so as to avoid the sql too long
+    const int64_t batch_cnt = 100;
+    int64_t start_idx = 0;
+    int64_t end_idx = min(batch_cnt, frozen_scn_vals_cnt);
+    while (OB_SUCC(ret) && !is_sync && (start_idx < end_idx)) {
+      ObSqlString sql;
+      SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+        ObMySQLResult *result = nullptr;
+        if (OB_FAIL(sql.append_fmt("SELECT COUNT(*) AS cnt FROM %s WHERE tenant_id = '%lu' AND "
+              "compaction_scn IN (", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id))) {
+          LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
+        } else {
+          for (int64_t i = start_idx; (i < end_idx) && OB_SUCC(ret); ++i) {
+            if (OB_FAIL(sql.append_fmt("%lu%s", frozen_scn_vals.at(i),
+                        (i == (end_idx - 1)) ? "" : ","))) {
+              LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
+            }
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(sql.append_fmt(") AND tablet_id = %lu AND ls_id = %ld",
+              ObTabletID::MIN_VALID_TABLET_ID, ObLSID::SYS_LS_ID))) {
+          LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(sql_client.read(res, tenant_id, sql.ptr()))) {
+          LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(tenant_id), K(sql));
+        } else if (OB_ISNULL(result = res.get_result())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("fail to get sql result", KR(ret), K(tenant_id), K(sql));
+        } else if (OB_FAIL(result->next())) {
+          LOG_WARN("get next result failed", KR(ret), K(tenant_id), K(sql));
+        } else {
+          int64_t cnt = 0;
+          EXTRACT_INT_FIELD_MYSQL(*result, "cnt", cnt, int64_t);
+          if (OB_SUCC(ret)) {
+            if (cnt >= 1) {
+              is_sync = true;
+            } else if (0 == cnt) {
+              is_sync = false;
+            } else {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected count", KR(ret), K(tenant_id), K(sql), K(cnt));
+            }
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        start_idx = end_idx;
+        end_idx = min(start_idx + batch_cnt, frozen_scn_vals_cnt);
+      }
+    }
+  }
+  LOG_INFO("finish to check is all tablet checksum sync", KR(ret), K(is_sync),
+           K(tenant_id), K(frozen_scn_vals));
   return ret;
 }
 

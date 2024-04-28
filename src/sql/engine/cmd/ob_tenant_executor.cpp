@@ -342,7 +342,7 @@ int check_sys_var_options(ObExecContext &ctx,
             if (OB_FAIL(ObVariableSetExecutor::check_and_convert_sys_var(ctx, set_var, *sys_var, value_obj, out_obj, is_set_stmt))) {
               LOG_WARN("fail to check_and_convert_sys_var", K(cur_node), K(*sys_var), K(value_obj), K(ret));
             } else if (FALSE_IT(value_obj = out_obj)) {
-            } else if (OB_FAIL(ObVariableSetExecutor::cast_value(ctx, cur_node, fake_tenant_id, *expr_ctx.calc_buf_,
+            } else if (OB_FAIL(ObVariableSetExecutor::cast_value(ctx, cur_node, fake_tenant_id, ctx.get_allocator(),
                                           *sys_var, value_obj, out_obj))) {
               LOG_WARN("fail to cast value", K(cur_node), K(*sys_var), K(value_obj), K(ret));
             } else if (FALSE_IT(value_obj = out_obj)) {
@@ -379,9 +379,18 @@ int check_sys_var_options(ObExecContext &ctx,
               EXPR_DEFINE_CAST_CTX(expr_ctx, CM_NONE);
               EXPR_GET_VARCHAR_V2(value_obj, val_str);
               if (OB_SUCC(ret)) {
-                if(OB_UNLIKELY(val_str.length() > OB_MAX_SYS_VAR_VAL_LENGTH)) {
+                int64_t sys_var_val_length = OB_MAX_SYS_VAR_VAL_LENGTH;
+                if (set_var.var_name_ == OB_SV_TCP_INVITED_NODES) {
+                  uint64_t data_version = 0;
+                  if (OB_FAIL(GET_MIN_DATA_VERSION(session->get_effective_tenant_id(), data_version))) {
+                    LOG_WARN("fail to get tenant data version", KR(ret));
+                  } else if (data_version >= DATA_VERSION_4_2_1_1) {
+                    sys_var_val_length = OB_MAX_TCP_INVITED_NODES_LENGTH;
+                  }
+                }
+                if (OB_SUCC(ret) && OB_UNLIKELY(val_str.length() > sys_var_val_length)) {
                   ret = OB_SIZE_OVERFLOW;
-                  LOG_WARN("set sysvar value is overflow", "max length", OB_MAX_SYS_VAR_VAL_LENGTH, "value length", val_str.length(), K(sys_id), K(val_str));
+                  LOG_WARN("set sysvar value is overflow", "max length", sys_var_val_length, "value length", val_str.length(), K(sys_id), K(val_str));
                 } else if (OB_FAIL(sys_var_list.push_back(obrpc::ObSysVarIdValue(sys_id, val_str)))) {
                   LOG_WARN("failed to push back", K(sys_id), K(val_str), K(ret));
                 }
@@ -768,11 +777,14 @@ int ObDropTenantExecutor::execute(ObExecContext &ctx, ObDropTenantStmt &stmt)
       LOG_USER_ERROR(OB_TENANT_NOT_EXIST, drop_tenant_arg.tenant_name_.length(), drop_tenant_arg.tenant_name_.ptr());
       LOG_WARN("tenant not exist", KR(ret), K(drop_tenant_arg));
     }
-  } else if (OB_FAIL(common_rpc_proxy->drop_tenant(drop_tenant_arg))) {
-    LOG_WARN("rpc proxy drop tenant failed", K(ret));
-  } else if (OB_FAIL(check_tenant_has_been_dropped_(
-             ctx, stmt, tenant_schema->get_tenant_id()))) {
-    LOG_WARN("fail to check tenant has been dropped", KR(ret), KPC(tenant_schema));
+  } else {
+    DEBUG_SYNC(BEFORE_DROP_TENANT);
+    if (OB_FAIL(common_rpc_proxy->drop_tenant(drop_tenant_arg))) {
+      LOG_WARN("rpc proxy drop tenant failed", K(ret));
+    } else if (OB_FAIL(check_tenant_has_been_dropped_(
+              ctx, stmt, tenant_schema->get_tenant_id()))) {
+      LOG_WARN("fail to check tenant has been dropped", KR(ret), KPC(tenant_schema));
+    }
   }
   return ret;
 }
@@ -916,10 +928,10 @@ int ObPurgeRecycleBinExecutor::execute(ObExecContext &ctx, ObPurgeRecycleBinStmt
         total_purge_count += affected_rows;
       }
       int64_t cost_time = ObTimeUtility::current_time() - start_time;
-      LOG_INFO("purge recycle objects", K(ret), K(cost_time), K(total_purge_count),
-          K(purge_recyclebin_arg), K(affected_rows), K(is_tenant_finish));
+      LOG_INFO("purge recycle objects", KR(ret), K(cost_time), K(cal_timeout),
+               K(total_purge_count), K(purge_recyclebin_arg), K(affected_rows), K(is_tenant_finish));
     }
-    LOG_INFO("purge recyclebin success", K(purge_recyclebin_arg), K(total_purge_count), K(ret));
+    LOG_INFO("purge recyclebin success", KR(ret), K(purge_recyclebin_arg), K(total_purge_count));
   }
   return ret;
 }

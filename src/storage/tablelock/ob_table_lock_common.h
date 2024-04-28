@@ -242,6 +242,7 @@ enum class ObLockOBJType : char
   OBJ_TYPE_DATABASE_NAME = 9,   // for database related ddl
   OBJ_TYPE_OBJECT_NAME = 10,     // for obj related ddl
   OBJ_TYPE_DBMS_LOCK = 11,  // for dbms lock
+  OBJ_TYPE_MATERIALIZED_VIEW = 12, // for materialized view operations
   OBJ_TYPE_MAX
 };
 
@@ -294,6 +295,10 @@ int lock_obj_type_to_string(const ObLockOBJType obj_type,
   }
   case ObLockOBJType::OBJ_TYPE_DBMS_LOCK: {
     strncpy(str, "DBMS_LOCK", str_len);
+    break;
+  }
+  case ObLockOBJType::OBJ_TYPE_MATERIALIZED_VIEW: {
+    strncpy(str, "MATERIALIZED_VIEW", str_len);
     break;
   }
   default: {
@@ -468,6 +473,10 @@ public:
             is_in_trans_common_lock_op_type(op_type_));
   }
   bool need_replay_or_recover(const ObTableLockOp &lock_op) const;
+
+  bool is_tablet_lock(const ObTabletID &tablet_id) {
+    return lock_id_.is_tablet_lock() && lock_id_.obj_id_ == tablet_id.id();
+  }
 private:
   bool is_need_record_lock_mode_() const
   {

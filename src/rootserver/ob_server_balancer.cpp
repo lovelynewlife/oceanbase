@@ -1194,7 +1194,7 @@ int ObServerBalancer::generate_standalone_units(
          LOG_WARN("tenant id unexpected", K(ret), K(tenant_id));
        } else if (is_meta_tenant(tenant_id)) {
          // meta tenant has no unit, do not handle
-       } else if (OB_FAIL(unit_mgr_->get_pools_by_tenant(tenant_id, pools))) {
+       } else if (OB_FAIL(unit_mgr_->get_pools_by_tenant_(tenant_id, pools))) {
          LOG_WARN("fail to get pools by tenant", K(ret), K(tenant_id));
        } else if (OB_UNLIKELY(NULL == pools)) {
          ret = OB_ERR_UNEXPECTED;
@@ -7664,6 +7664,7 @@ int ObServerBalancer::ResourceSum::append_resource(
   resource_sum_.cpu_ += resource.cpu_;
   resource_sum_.mem_total_ += resource.mem_total_;
   resource_sum_.disk_total_ += resource.disk_total_;
+  resource_sum_.log_disk_total_ += resource.log_disk_total_;
   return ret;
 }
 
@@ -7674,6 +7675,7 @@ int ObServerBalancer::ResourceSum::append_resource(
   resource_sum_.cpu_ += resource.resource_sum_.cpu_;
   resource_sum_.mem_total_ += resource.resource_sum_.mem_total_;
   resource_sum_.disk_total_ += resource.resource_sum_.disk_total_;
+  resource_sum_.log_disk_total_ += resource.resource_sum_.log_disk_total_;
   return ret;
 }
 

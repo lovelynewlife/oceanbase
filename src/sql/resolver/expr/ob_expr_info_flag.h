@@ -103,6 +103,7 @@ enum ObExprInfoFlag
   CNT_ORA_ROWSCN_EXPR,
   CNT_OP_PSEUDO_COLUMN,
   CNT_ASSIGN_EXPR,
+  CNT_OBJ_ACCESS_EXPR,
   CNT_ASSOCIATED_FLAG_END, //add CNT_xxx flag before me
 
   BE_USED, // expression has been applied
@@ -175,6 +176,7 @@ inline const char* get_expr_info_flag_str(const ObExprInfoFlag flag)
     case IS_PL_UDF: { ret = "IS_PL_UDF"; break; };
     case IS_SEQ_EXPR: { ret = "IS_SEQ_EXPR"; break; }
     case IS_ENUM_OR_SET: { ret = "IS_ENUM_OR_SET"; break; }
+    case IS_ASSIGN_EXPR: { ret = "IS_ASSIGN_EXPR"; break; }
     case IS_CONST_EXPR: { ret = "IS_CONST_EXPR"; break; }
     case CNT_CONST_EXPR: { ret = "CNT_CONST_EXPR"; break; }
     case CNT_CONST: { ret = "CNT_CONST"; break; }
@@ -212,6 +214,7 @@ inline const char* get_expr_info_flag_str(const ObExprInfoFlag flag)
     case CNT_SEQ_EXPR: { ret = "CNT_SEQ_EXPR"; break; }
     case CNT_DYNAMIC_PARAM: { ret = "CNT_DYNAMIC_PARAM"; break; }
     case CNT_ENUM_OR_SET: { ret = "CNT_ENUM_OR_SET"; break; }
+    case CNT_ASSIGN_EXPR: { ret = "CNT_ASSIGN_EXPR"; break; }
     case BE_USED: { ret = "BE_USED"; break; }
     case IS_SIMPLE_COND: { ret = "IS_SIMPLE_COND"; break; }
     case IS_RANGE_COND: { ret = "IS_RANGE_COND"; break; }

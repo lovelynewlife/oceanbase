@@ -75,6 +75,7 @@ bool ObLSRouterValue::need_switch_server(
 {
   bool bool_ret = false;
 
+  ObByteLockGuard guard(lock_);
   bool_ret = ls_svr_list_.need_switch_server(router_key, next_lsn, blacklist_, cur_svr);
 
   return bool_ret;
@@ -128,6 +129,12 @@ int ObLSRouterValue::get_server_array_for_locate_start_lsn(ObIArray<common::ObAd
   }
 
   return ret;
+}
+
+void ObLSRouterValue::refresh_ls_svr_list(const LSSvrList &svr_list)
+{
+  ObByteLockGuard guard(lock_);
+  ls_svr_list_ = svr_list;
 }
 
 } // namespace logservice

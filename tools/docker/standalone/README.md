@@ -93,7 +93,7 @@ oceanbase-ce image installs the Sysbench tool by default. And the Sysbench tool 
 docker exec -it oceanbase-ce obd test sysbench obcluster
 ```
 
-## Mount Volumn
+## Mount Volume
 You can use `-v /your/host/path:/container/path` parameter in docker `run` command to save data in host os if you want to persistence the data of a container.
 
 Below is an example.
@@ -106,4 +106,25 @@ Note that you should use your own path.
 
 The docker image `oceanbase-ce` saves the data to /root/ob directory default. You should bind both the /root/ob and /root/.obd. You can not start new docker image if you only bind the /root/ob directory, because the docker image oceanbase-ce uses the [obd](https://github.com/oceanbase/obdeploy) to manage database clusters and there is no information about the database cluster in a new docker container.
 
-You can view more information about `docker -v` at [docker volumn](https://docs.docker.com/storage/volumes/).
+You can view more information about `docker -v` at [docker volume](https://docs.docker.com/storage/volumes/).
+
+## Fast boot image building for a standalone node
+The `fast_boot_docker_build.sh` script is provided in the `tools/docker/standalone` directory, through which the fast boot image can be built. Before running the script, please first modify the `tools/docker/standalone/boot/_env` environment configuration script:
+
+- Required: Modify the `MODE` configuration item to `STANDALONE`
+- Optional: Modify the remaining configuration items
+
+After the modification is completed, execute the image build script:
+
+- `./fast_boot_docker_build.sh <oceanbase_rpm_version>`. For example `./fast_boot_docker_build.sh 4.2.1.0-100000102023092807`
+
+After waiting for the build to be completed, you can start and test the instance in the same way as mentioned above.
+
+## Fault Diagnosis
+A series of diagnostic methods are provided to diagnose errors in Docker.
+### Support for 'enable_rich_error_msg' parameter
+- Initially, the 'enable_rich_error_msg' parameter is enabled by default during the Docker startup process. If an error occurs during the startup process, more error information can be obtained using the trace command. After a successful startup, Docker sets this parameter to the false state.
+- Users can open this parameter to obtain more error information about SQL statements during the runtime phase. The method to open it is to connect to Docker's oceanbase using the system tenant, and then execute the following command:
+```bash
+alter system set enable_rich_error_msg = true;
+```

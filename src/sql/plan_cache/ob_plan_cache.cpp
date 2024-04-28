@@ -452,8 +452,8 @@ int ObPlanCache::get_normalized_pattern_digest(const ObPlanCacheCtx &pc_ctx, uin
   if (pc_ctx.mode_ == PC_PS_MODE || pc_ctx.mode_ == PC_PL_MODE || pc_ctx.fp_result_.pc_key_.name_.empty()) {
     ObFastParserResult fp_result;
     ObSQLMode sql_mode = pc_ctx.sql_ctx_.session_info_->get_sql_mode();
-    ObCollationType conn_coll = pc_ctx.sql_ctx_.session_info_->get_local_collation_connection();
-    FPContext fp_ctx(conn_coll);
+    ObCharsets4Parser charsets4parser = pc_ctx.sql_ctx_.session_info_->get_charsets4parser();
+    FPContext fp_ctx(charsets4parser);
     fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
     fp_ctx.sql_mode_ = sql_mode;
     if (OB_FAIL(ObSqlParameterization::fast_parser(pc_ctx.allocator_,
@@ -594,10 +594,13 @@ int ObPlanCache::get_plan(common::ObIAllocator &allocator,
         if (GCONF.enable_perf_event) {
           uint64_t tenant_id = pc_ctx.sql_ctx_.session_info_->get_effective_tenant_id();
           bool read_only = false;
-          if (OB_FAIL(pc_ctx.sql_ctx_.schema_guard_->get_tenant_read_only(tenant_id, read_only))) {
+          if ((pc_ctx.sql_ctx_.session_info_->is_inner() && !pc_ctx.sql_ctx_.is_from_pl_)) {
+            // do nothing
+          } else if (OB_FAIL(pc_ctx.sql_ctx_.schema_guard_->get_tenant_read_only(tenant_id,
+                                                                                 read_only))) {
             LOG_WARN("failed to check read_only privilege", K(ret));
           } else if (OB_FAIL(pc_ctx.sql_ctx_.session_info_->check_read_only_privilege(
-                             read_only, pc_ctx.sql_traits_))) {
+                       read_only, pc_ctx.sql_traits_))) {
             LOG_WARN("failed to check read_only privilege", K(ret));
           }
         }
@@ -688,7 +691,7 @@ int ObPlanCache::construct_fast_parser_result(common::ObIAllocator &allocator,
     LOG_WARN("get unexpected null", K(ret));
   } else {
     ObSQLMode sql_mode = pc_ctx.sql_ctx_.session_info_->get_sql_mode();
-    ObCollationType conn_coll = pc_ctx.sql_ctx_.session_info_->get_local_collation_connection();
+    ObCharsets4Parser charsets4parser = pc_ctx.sql_ctx_.session_info_->get_charsets4parser();
     // if exact mode is on, not needs to do fast parser
     bool enable_exact_mode = pc_ctx.sql_ctx_.session_info_->get_enable_exact_mode();
     fp_result.cache_params_ =
@@ -701,7 +704,7 @@ int ObPlanCache::construct_fast_parser_result(common::ObIAllocator &allocator,
     } else if (enable_exact_mode) {
       (void)fp_result.pc_key_.name_.assign_ptr(raw_sql.ptr(), raw_sql.length());
     } else {
-      FPContext fp_ctx(conn_coll);
+      FPContext fp_ctx(charsets4parser);
       fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
       fp_ctx.sql_mode_ = sql_mode;
       bool can_do_batch_insert = false;
@@ -972,8 +975,8 @@ int ObPlanCache::check_can_do_insert_opt(common::ObIAllocator &allocator,
     int64_t upd_params_count = 0;
     int64_t delta_length = 0;
     ObSQLMode sql_mode = pc_ctx.sql_ctx_.session_info_->get_sql_mode();
-    ObCollationType conn_coll = pc_ctx.sql_ctx_.session_info_->get_local_collation_connection();
-    FPContext fp_ctx(conn_coll);
+    ObCharsets4Parser charsets4parser = pc_ctx.sql_ctx_.session_info_->get_charsets4parser();
+    FPContext fp_ctx(charsets4parser);
     fp_ctx.enable_batched_multi_stmt_ = pc_ctx.sql_ctx_.handle_batched_multi_stmt();
     fp_ctx.sql_mode_ = sql_mode;
     ObFastParserMysql fp(allocator, fp_ctx);
@@ -2175,7 +2178,6 @@ int ObPlanCache::get_ps_plan(ObCacheObjGuard& guard,
   int ret = OB_SUCCESS;
   ObGlobalReqTimeService::check_req_timeinfo();
   UNUSED(stmt_id);
-  ObSqlTraits sql_traits;
   pc_ctx.handle_id_ = guard.ref_handle_;
   int64_t original_param_cnt = 0;
 
@@ -2228,10 +2230,12 @@ int ObPlanCache::get_ps_plan(ObCacheObjGuard& guard,
   if (OB_SUCC(ret) && GCONF.enable_perf_event) {
     uint64_t tenant_id = pc_ctx.sql_ctx_.session_info_->get_effective_tenant_id();
     bool read_only = false;
-    if (OB_FAIL(pc_ctx.sql_ctx_.schema_guard_->get_tenant_read_only(tenant_id, read_only))) {
+    if ((pc_ctx.sql_ctx_.session_info_->is_inner() && !pc_ctx.sql_ctx_.is_from_pl_)) {
+      // do nothing
+    } else if (OB_FAIL(pc_ctx.sql_ctx_.schema_guard_->get_tenant_read_only(tenant_id, read_only))) {
       SQL_PC_LOG(WARN, "fail to get tenant read only attribute", K(tenant_id), K(ret));
     } else if (OB_FAIL(pc_ctx.sql_ctx_.session_info_->check_read_only_privilege(read_only,
-                                                                                sql_traits))) {
+                                                                                pc_ctx.sql_traits_))) {
       SQL_PC_LOG(WARN, "failed to check read_only privilege", K(ret));
     }
   }

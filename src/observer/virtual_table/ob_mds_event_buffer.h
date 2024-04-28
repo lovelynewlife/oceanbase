@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #ifndef VEITUAL_TABLE_OB_MDS_EVENT_BUFFER_H
 #define VEITUAL_TABLE_OB_MDS_EVENT_BUFFER_H
 
@@ -243,9 +255,9 @@ struct ObMdsEventBuffer {
     }
     void append(const MdsEventKey &key, const MdsEvent &event, const char *file, const uint32_t line, const char *func) {
       if (OB_NOT_NULL(file) && OB_UNLIKELY(line != 0) && OB_NOT_NULL(func) && OB_NOT_NULL(event.event_)) {
-        share::ObTaskController::get().allow_next_syslog();
-        ::oceanbase::common::OB_PRINT("[MDS.EVENT]", OB_LOG_LEVEL_INFO, file, line, func, OB_LOG_LOCATION_HASH_VAL, OB_SUCCESS,
-                                      event.event_, LOG_KVS(K(key), K(event)));
+        //share::ObTaskController::get().allow_next_syslog();
+        //::oceanbase::common::OB_PRINT("[MDS.EVENT]", OB_LOG_LEVEL_INFO, file, line, func, OB_LOG_LOCATION_HASH_VAL, OB_SUCCESS,
+                                      //event.event_, LOG_KVS(K(key), K(event)));
       }
       if (is_inited_) {
         (void) mds_event_cache_.append(key, event, file, line, func);

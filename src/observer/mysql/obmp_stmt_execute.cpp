@@ -317,6 +317,16 @@ int ObMPStmtExecute::construct_execute_param_for_arraybinding(int64_t pos)
     CK (1 == coll->get_column_count());
     CK (OB_NOT_NULL(data = reinterpret_cast<ObObj*>(coll->get_data())));
     OX (params_->at(i) = *(data + pos));
+    if (data[pos].is_numeric_type()) {
+      ObAccuracy default_acc =
+        ObAccuracy::DDL_DEFAULT_ACCURACY2[lib::is_oracle_mode()][data[pos].get_type()];
+      if (params_->at(i).get_scale() == NUMBER_SCALE_UNKNOWN_YET) {
+        params_->at(i).set_scale(default_acc.get_scale());
+      }
+      if (params_->at(i).get_precision() == PRECISION_UNKNOWN_YET) {
+        params_->at(i).set_precision(default_acc.get_precision());
+      }
+    }
   }
   return ret;
 }
@@ -560,7 +570,7 @@ int ObMPStmtExecute::before_process()
     }
   }
   if (OB_FAIL(ret)) {
-    send_error_packet(ret, NULL);
+    send_error_packet(ret, NULL, (void *)(ctx_.get_reroute_info()));
     if (OB_ERR_PREPARE_STMT_CHECKSUM == ret) {
       force_disconnect();
       LOG_WARN("prepare stmt checksum error, disconnect connection", K(ret));
@@ -714,6 +724,7 @@ int ObMPStmtExecute::parse_request_param_value(ObIAllocator &alloc,
 {
   int ret = OB_SUCCESS;
   ObCharsetType charset = CHARSET_INVALID;
+  ObCharsetType ncharset = CHARSET_INVALID;
   ObCollationType cs_conn = CS_TYPE_INVALID;
   ObCollationType cs_server = CS_TYPE_INVALID;
   if (OB_ISNULL(session)) {
@@ -724,6 +735,8 @@ int ObMPStmtExecute::parse_request_param_value(ObIAllocator &alloc,
   } else if (OB_FAIL(session->get_collation_connection(cs_conn))) {
     LOG_WARN("get charset for client failed", K(ret));
   } else if (OB_FAIL(session->get_collation_server(cs_server))) {
+    LOG_WARN("get charset for client failed", K(ret));
+  } else if (OB_FAIL(session->get_ncharacter_set_connection(ncharset))) {
     LOG_WARN("get charset for client failed", K(ret));
   }
   // Step5: decode value
@@ -739,6 +752,7 @@ int ObMPStmtExecute::parse_request_param_value(ObIAllocator &alloc,
     if (OB_FAIL(parse_param_value(alloc,
                                          param_type,
                                          charset,
+                                         ncharset,
                                          is_oracle_mode() ? cs_server : cs_conn,
                                          session->get_nls_collation_nation(),
                                          pos,
@@ -1432,7 +1446,8 @@ int ObMPStmtExecute::response_result(
       // NOTE: sql_end_cb必须在drv.response_result()之前初始化好
       ObSqlEndTransCb &sql_end_cb = session.get_mysql_end_trans_cb();
       if (OB_FAIL(sql_end_cb.init(packet_sender_, &session,
-                                    stmt_id_, params_num_))) {
+                                    stmt_id_, params_num_,
+                                    is_prexecute() ? packet_sender_.get_comp_seq() : 0))) {
         LOG_WARN("failed to init sql end callback", K(ret));
       } else if (OB_FAIL(drv.response_result(result))) {
         LOG_WARN("fail response async result", K(ret));
@@ -1458,7 +1473,8 @@ int ObMPStmtExecute::response_result(
       ObSqlEndTransCb &sql_end_cb = session.get_mysql_end_trans_cb();
       ObAsyncCmdDriver drv(gctx_, ctx_, session, retry_ctrl_, *this, is_prexecute());
       if (OB_FAIL(sql_end_cb.init(packet_sender_, &session,
-                                    stmt_id_, params_num_))) {
+                                    stmt_id_, params_num_,
+                                    is_prexecute() ? packet_sender_.get_comp_seq() : 0))) {
         LOG_WARN("failed to init sql end callback", K(ret));
       } else if (OB_FAIL(drv.response_result(result))) {
         LOG_WARN("fail response async result", K(ret));
@@ -1492,7 +1508,6 @@ OB_NOINLINE int ObMPStmtExecute::process_retry(ObSQLSessionInfo &session,
 {
   int ret = OB_SUCCESS;
   //create a temporary memory context to process retry, avoid memory bloat caused by retries
-  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
   lib::ContextParam param;
   param.set_mem_attr(MTL_ID(),
       ObModIds::OB_SQL_EXECUTOR, ObCtxIds::DEFAULT_CTX_ID)
@@ -1520,6 +1535,7 @@ int ObMPStmtExecute::do_process_single(ObSQLSessionInfo &session,
   int ret = OB_SUCCESS;
   // 每次执行不同sql都需要更新
   ctx_.self_add_plan_ = false;
+  oceanbase::lib::Thread::WaitGuard guard(oceanbase::lib::Thread::WAIT_FOR_LOCAL_RETRY);
   do {
     // 每次都必须设置为OB_SCCESS, 否则可能会因为没有调用do_process()造成死循环
     ret = OB_SUCCESS;
@@ -1770,7 +1786,7 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
   do_after_process(session, ctx_, async_resp_used);
 
   if (OB_FAIL(ret) && need_response_error && is_conn_valid()) {
-    send_error_packet(ret, NULL);
+    send_error_packet(ret, NULL, (void *)(ctx_.get_reroute_info()));
   }
 
   return ret;
@@ -1825,6 +1841,8 @@ int ObMPStmtExecute::process()
     if (OB_UNLIKELY(!session.is_valid())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("invalid session", K_(stmt_id), K(ret));
+    } else if (OB_FAIL(process_kill_client_session(session))) {
+      LOG_WARN("client session has been killed", K(ret));
     } else if (OB_UNLIKELY(session.is_zombie())) {
       //session has been killed some moment ago
       ret = OB_ERR_SESSION_INTERRUPTED;
@@ -1925,7 +1943,7 @@ int ObMPStmtExecute::process()
 
   if (OB_FAIL(ret) && is_conn_valid()) {
     if (need_response_error) {
-      send_error_packet(ret, NULL);
+      send_error_packet(ret, NULL, (void *)(ctx_.get_reroute_info()));
     }
     if (need_disconnect) {
       force_disconnect();
@@ -2124,6 +2142,7 @@ int ObMPStmtExecute::parse_complex_param_value(ObIAllocator &allocator,
 int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
                                              const uint32_t type,
                                              const ObCharsetType charset,
+                                             const ObCharsetType ncharset,
                                              const ObCollationType cs_type,
                                              const ObCollationType ncs_type,
                                              const char *& data,
@@ -2258,6 +2277,12 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
       ObString dst;
       uint64_t length = 0;
       ObCollationType cur_cs_type = ObCharset::get_default_collation(charset);
+      ObCollationType cur_ncs_type = ObCollationType::CS_TYPE_INVALID;
+      if (ncharset == ObCharsetType::CHARSET_INVALID || ncharset == ObCharsetType::CHARSET_BINARY) {
+        cur_ncs_type = ObCharset::get_default_collation(charset);
+      } else {
+        cur_ncs_type = ObCharset::get_default_collation(ncharset);
+      }
       if (OB_FAIL(ObMySQLUtil::get_length(data, length))) {
         LOG_ERROR("decode varchar param value failed", K(ret));
       } else {
@@ -2271,7 +2296,7 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
           LOG_WARN("input param len is over size", K(ret), K(length));
         } else if (MYSQL_TYPE_OB_NVARCHAR2 == type
                   || MYSQL_TYPE_OB_NCHAR == type) {
-          OZ(copy_or_convert_str(allocator, cur_cs_type, ncs_type, str, dst));
+          OZ(copy_or_convert_str(allocator, cur_ncs_type, ncs_type, str, dst));
           if (OB_SUCC(ret)) {
             MYSQL_TYPE_OB_NVARCHAR2 == type ? param.set_nvarchar2(dst)
                                             : param.set_nchar(dst);
@@ -2469,6 +2494,7 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
 int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
                                        const uint32_t type,
                                        const ObCharsetType charset,
+                                       const ObCharsetType ncharset,
                                        const ObCollationType cs_type,
                                        const ObCollationType ncs_type,
                                        const char *&data,
@@ -2512,7 +2538,7 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
       }
     } else {
       bool is_unsigned = NULL == type_info || !type_info->elem_type_.get_meta_type().is_unsigned_integer() ? false : true;
-      if (OB_FAIL(parse_basic_param_value(allocator, type, charset, cs_type, ncs_type,
+      if (OB_FAIL(parse_basic_param_value(allocator, type, charset, ncharset, cs_type, ncs_type,
                                           data, tz_info, param, false, &analysis_checker_, is_unsigned))) {
         LOG_WARN("failed to parse basic param value", K(ret));
       } else {
@@ -2608,7 +2634,7 @@ int ObMPStmtExecute::parse_param_value(ObIAllocator &allocator,
         } else {
           const char* src = tmp;
           bool is_unsigned = NULL == type_info || !type_info->elem_type_.get_meta_type().is_unsigned_integer() ? false : true;
-          if (OB_FAIL(parse_basic_param_value(allocator, type, charset, cs_type, ncs_type,
+          if (OB_FAIL(parse_basic_param_value(allocator, type, charset, ncharset, cs_type, ncs_type,
                                               src, tz_info, param, false, NULL ,is_unsigned))) {
             LOG_WARN("failed to parse basic param value", K(ret));
           } else {
@@ -2965,7 +2991,12 @@ int ObMPStmtExecute::parse_mysql_time_value(const char *&data, ObObj &param, ObP
           LOG_WARN("invalid date format", K(ret));
         } else {
           ob_time.parts_[DT_DATE] = ObTimeConverter::ob_time_to_date(ob_time);
+          ob_time.parts_[DT_HOUR] += ob_time.parts_[DT_MDAY] * 24;
+          ob_time.parts_[DT_MDAY] = 0;
           value = ObTimeConverter::ob_time_to_time(ob_time);
+          if(is_negative) {
+            value = -value;
+          }
         }
       }
     }
@@ -3056,11 +3087,22 @@ int ObMPStmtExecute::response_query_header(ObSQLSessionInfo &session, pl::ObDbms
                            *this,
                            false,
                            OB_INVALID_COUNT);
-  if (OB_FAIL(drv.response_query_header(cursor.get_field_columns(),
-                                        false,
-                                        false,
-                                        true))) {
-    LOG_WARN("fail to get autocommit", K(ret));
+  if (0 == cursor.get_field_columns().count()) {
+    // SELECT * INTO OUTFILE return null field, and only response ok packet
+    ObOKPParam ok_param;
+    ok_param.affected_rows_ = 0;
+    ok_param.is_partition_hit_ = session.partition_hit().get_bool();
+    ok_param.has_more_result_ = false;
+    if (OB_FAIL(send_ok_packet(session, ok_param))) {
+      LOG_WARN("fail to send ok packt", K(ok_param), K(ret));
+    }
+  } else {
+    if (OB_FAIL(drv.response_query_header(cursor.get_field_columns(),
+                                          false,
+                                          false,
+                                          true))) {
+      LOG_WARN("fail to get autocommit", K(ret));
+    }
   }
   return ret;
 }

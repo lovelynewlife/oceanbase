@@ -105,6 +105,10 @@ private:
       EventItem &item = ::oceanbase::common::EventTable::instance().get_event(event_no); \
       item.call(SELECT(1, ##__VA_ARGS__)); })
 
+#define EVENT_CODE(event_no, ...) ({ \
+      EventItem &item = ::oceanbase::common::EventTable::instance().get_event(event_no); \
+      item.get_event_code(); })
+
 #define ERRSIM_POINT_DEF(name) void name##name(){}; static oceanbase::common::NamedEventItem name( \
     #name, oceanbase::common::EventTable::global_item_list());
 #define ERRSIM_POINT_CALL(name) name?:
@@ -227,44 +231,47 @@ struct EventItem
       cond_(0) {}
 
   int call(const int64_t v) { return cond_ == v ? call() : 0; }
-  int call()
+  int call() { return static_cast<int>(get_event_code()); }
+  int64_t get_event_code()
   {
-    int ret = 0;
+    int64_t event_code = 0;
     int64_t trigger_freq = trigger_freq_;
     if (occur_ > 0) {
       do {
         int64_t occur = occur_;
         if (occur > 0) {
           if (ATOMIC_VCAS(&occur_, occur, occur - 1)) {
-            ret = static_cast<int>(error_code_);
+            event_code = error_code_;
             break;
           }
         } else {
-          ret = 0;
+          event_code = 0;
           break;
         }
       } while (true);
     } else if (OB_LIKELY(trigger_freq == 0)) {
-      ret = 0;
+      event_code = 0;
     } else if (get_tp_switch()) { // true means skip errsim
-      ret = 0;
+      event_code = 0;
     } else if (trigger_freq == 1) {
-      ret = static_cast<int>(error_code_);
+      event_code = error_code_;
 #ifdef NDEBUG
       if (REACH_TIME_INTERVAL(1 * 1000 * 1000))
 #endif
       {
-        COMMON_LOG(WARN, "[ERRSIM] sim error", K(ret));
+        int ret = static_cast<int>(event_code);
+        COMMON_LOG(WARN, "[ERRSIM] sim error", K(event_code));
       }
     } else {
       if (rand() % trigger_freq == 0) {
-        ret = static_cast<int>(error_code_);
+        event_code = error_code_;
+        int ret = static_cast<int>(event_code);
         COMMON_LOG(WARN, "[ERRSIM] sim error", K(ret), K_(error_code), K(trigger_freq), KCSTRING(lbt()));
       } else {
-        ret = 0;
+        event_code = 0;
       }
     }
-    return ret;
+    return event_code;
   }
 
 };
@@ -577,6 +584,8 @@ class EventTable
       EN_DAS_SIMULATE_LOOKUPOP_INIT_ERROR = 306,
       EN_DAS_SIMULATE_ASYNC_RPC_TIMEOUT = 307,
       EN_DAS_SIMULATE_DUMP_WRITE_BUFFER = 308,
+      EN_DAS_SIMULATE_AGG_TASK_BUFF_LIMIT = 309,
+      EN_DAS_ALL_PARALLEL_TASK_MEM_LIMIT = 310,
 
       EN_REPLAY_STORAGE_SCHEMA_FAILURE = 351,
       EN_SKIP_GET_STORAGE_SCHEMA = 352,
@@ -598,6 +607,9 @@ class EventTable
       EN_TABLE_INSERT_UP_BATCH_ROW_COUNT = 402,
       EN_EXPLAIN_BATCHED_MULTI_STATEMENT = 403,
       EN_INS_MULTI_VALUES_BATCH_OPT = 404,
+      EN_SQL_MEMORY_LABEL_HIGH64 = 405,
+      EN_SQL_MEMORY_LABEL_LOW64 = 406,
+      EN_SQL_MEMORY_DYNAMIC_LEAK_SIZE = 407,
 
       // DDL related 500-550
       EN_DATA_CHECKSUM_DDL_TASK = 501,
@@ -636,6 +648,9 @@ class EventTable
       EN_PX_P2P_MSG_REG_DM_FAILED= 611,
       EN_PX_JOIN_FILTER_HOLD_MSG = 612,
       EN_PX_DTL_TRACE_LOG_ENABLE = 613,
+      EN_PX_DISABLE_RUNTIME_FILTER_EXTRACT_QUERY_RANGE = 614,
+      EN_PX_MAX_IN_FILTER_QR_COUNT = 615,
+      EN_PX_DISABLE_WHITE_RUNTIME_FILTER = 616,
       // please add new trace point after 700 or before 600
 
       // Compaction Related 700-750
@@ -643,15 +658,40 @@ class EventTable
       EN_COMPACTION_DIAGNOSE_CANNOT_MAJOR = 701,
       EN_COMPACTION_MERGE_TASK = 702,
       EN_MEDIUM_COMPACTION_SUBMIT_CLOG_FAILED = 703,
-      EN_MEDIUM_COMPACTION_UPDATE_CUR_SNAPSHOT_FAILED = 704,
+      EN_MEDIUM_COMPACTION_UPDATE_CUR_SNAPSHOT_FAILED = 704,  // not used
       EN_MEDIUM_REPLICA_CHECKSUM_ERROR = 705,
       EN_MEDIUM_CREATE_DAG = 706,
       EN_MEDIUM_VERIFY_GROUP_SKIP_SET_VERIFY = 707,
-      EN_MEDIUM_VERIFY_GROUP_SKIP_COLUMN_CHECKSUM = 708,
+      EN_MEDIUM_VERIFY_GROUP_SKIP_COLUMN_CHECKSUM = 708,  // not used
       EN_SCHEDULE_MEDIUM_COMPACTION = 709,
       EN_SCHEDULE_MAJOR_GET_TABLE_SCHEMA = 710,
       EN_SKIP_INDEX_MAJOR = 711,
       EN_BUILD_DATA_MICRO_BLOCK = 712,
+      EN_COMPACTION_CO_MERGE_EXE_FAILED = 713,
+      EN_COMPACTION_CO_MERGE_SCHEDULE_FAILED = 714,
+      EN_COMPACTION_MEDIUM_INIT_PARALLEL_RANGE = 715,
+      EN_RS_USER_INDEX_CHECKSUM_ERROR = 716,
+      EN_RS_CANT_GET_ALL_TABLET_CHECKSUM = 717,
+      EN_SWAP_TABLET_IN_COMPACTION = 718,
+      EN_COMPACTION_CO_MERGE_PREPARE_CTX_FAILED = 719,
+      EN_COMPACTION_CO_MERGE_PREPARE_FAILED = 720,
+      EN_COMPACTION_CO_MERGE_PREPARE_MINOR_FAILED = 721,
+      EN_COMPACTION_CO_MERGE_FINISH_FAILED = 722,
+      EN_COMPACTION_ITER_TABLET_NOT_EXIST = 723,
+      EN_COMPACTION_ITER_LS_NOT_EXIST = 724,
+      EN_COMPACTION_ITER_INVALID_TABLET_ID = 725,
+      EN_RS_CHECK_SPECIAL_TABLE = 726,
+      EN_COMPACTION_REPORT_ADD_TASK_FAILED = 727,
+      EN_COMPACTION_REPORT_PROCESS_TASK_FAILED = 728,
+      EN_RS_CHECK_MERGE_PROGRESS = 729,
+      EN_CAN_NOT_SCHEDULE_MINOR = 730,
+      EN_SCHEDULE_MEDIUM_FAILED = 731,
+      EN_SPECIAL_TABLE_HAVE_LARGER_SCN = 732,
+      EN_COMPACTION_CO_PUSH_TABLES_FAILED = 733,
+      EN_COMPACTION_CO_MERGE_PARTITION_LONG_TIME = 734,
+      EN_COMPACTION_SCHEDULE_META_MERGE = 735,
+      EN_COMPACTION_ESTIMATE_ROW_FAILED = 736,
+      EN_COMPACTION_UPDATE_REPORT_SCN = 737,
 
       // please add new trace point after 750
       EN_SESSION_LEAK_COUNT_THRESHOLD = 751,
@@ -706,6 +746,7 @@ class EventTable
       EN_RESTORE_TABLET_TASK_FAILED = 1113,
       EN_INSERT_USER_RECOVER_JOB_FAILED = 1114,
       EN_INSERT_AUX_TENANT_RESTORE_JOB_FAILED = 1115,
+      EN_RESTORE_CREATE_LS_FAILED = 1116,
       // END OF STORAGE HA - 1101 - 2000
 
       // sql parameterization 1170-1180
@@ -724,6 +765,7 @@ class EventTable
       EN_SESS_POOL_MGR_CTRL = 1186,
       // session info diagnosis control
       // EN_SESS_INFO_DIAGNOSIS_CONTROL = 1187,
+      EN_SESS_CLEAN_KILL_MAP_TIME = 1188,
       EN_ENABLE_NEWSORT_FORCE = 1200,
 
       // Transaction // 2001 - 2100
@@ -737,6 +779,9 @@ class EventTable
 
       EN_ENABLE_SET_TRACE_CONTROL_INFO = 2100,
       EN_CHEN = 2101,
+      EN_ENABLE_TABLE_LOCK = 2102,
+      EN_ENABLE_ROWKEY_CONFLICT_CHECK = 2103,
+      EN_ENABLE_ORA_DECINT_CONST = 2104,
 
       // WR && ASH
       EN_CLOSE_ASH = 2201,

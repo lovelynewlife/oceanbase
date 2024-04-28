@@ -113,11 +113,11 @@ public:
   DEF_INT(br_queue_length, OB_CLUSTER_PARAMETER, "0", "[0, ]", "user_binlog_record queue length");
   DEF_INT(cached_schema_version_count, OB_CLUSTER_PARAMETER, "32", "[1,]", "cached schema version count");
   DEF_INT(history_schema_version_count, OB_CLUSTER_PARAMETER, "16", "[1,]", "history schema version count");
-  DEF_INT(resource_collector_thread_num, OB_CLUSTER_PARAMETER, "10", "[1,]", "resource collector thread number");
+  DEF_INT(resource_collector_thread_num, OB_CLUSTER_PARAMETER, "11", "[1,]", "resource collector thread number");
   DEF_INT(resource_collector_thread_num_for_br, OB_CLUSTER_PARAMETER, "7", "[1,]", "binlog record resource collector thread number");
   DEF_INT(instance_num, OB_CLUSTER_PARAMETER, "1", "[1,]", "store instance number");
   DEF_INT(instance_index, OB_CLUSTER_PARAMETER, "0", "[0,]", "store instance index, start from 0");
-  DEF_INT(part_trans_task_prealloc_count, OB_CLUSTER_PARAMETER, "300000", "[1,]",
+  DEF_INT(part_trans_task_prealloc_count, OB_CLUSTER_PARAMETER, "0", "[0,]",
       "part trans task pre-alloc count");
   DEF_INT(part_trans_task_active_count_upper_bound, OB_CLUSTER_PARAMETER, "0", "[0,]",
       "active part trans task count upper bound");
@@ -135,7 +135,7 @@ public:
       "part trans task prealloc page count");
   // Log_level=INFO in the startup scenario, and then optimize the schema to WARN afterwards
   DEF_STR(init_log_level, OB_CLUSTER_PARAMETER, "ALL.*:INFO;PALF.*:WARN;SHARE.SCHEMA:INFO", "log level: DEBUG, TRACE, INFO, WARN, USER_ERR, ERROR");
-  DEF_STR(log_level, OB_CLUSTER_PARAMETER, "ALL.*:INFO;PALF.*:WARN;SHARE.SCHEMA:WARN", "log level: DEBUG, TRACE, INFO, WARN, USER_ERR, ERROR");
+  DEF_STR(log_level, OB_CLUSTER_PARAMETER, "ALL.*:INFO;PALF.*:WARN;SHARE.SCHEMA:WARN;CLOG.*:WARN;STORAGE.*:WARN;ARCHIVE.*:WARN", "log level: DEBUG, TRACE, INFO, WARN, USER_ERR, ERROR");
   // root server info for oblog, seperated by `;` between multi rootserver, a root server info format as `ip:rpc_port:sql_port`
   DEF_STR(rootserver_list, OB_CLUSTER_PARAMETER, "|", "OB RootServer list");
   DEF_STR(cluster_url, OB_CLUSTER_PARAMETER, "|", "OB configure url");
@@ -252,6 +252,8 @@ public:
   // the destination of archive log.
   DEF_STR(archive_dest, OB_CLUSTER_PARAMETER, "|", "the location of archive log");
   T_DEF_INT_INFT(rocksdb_write_buffer_size, OB_CLUSTER_PARAMETER, 64, 16, "write buffer size[M]");
+  DEF_TIME(rocksdb_flush_interval, OB_CLUSTER_PARAMETER, "10m", "[0s,1d]", "rocksdb flush interval for redo_storage, 0s means never");
+  DEF_TIME(rocksdb_compact_interval, OB_CLUSTER_PARAMETER, "6h", "[0s,7d]", "rocksdb compact interval for redo_storage, 0s means never");
 
   T_DEF_INT_INFT(io_thread_num, OB_CLUSTER_PARAMETER, 4, 1, "io thread number");
   T_DEF_INT(idle_pool_thread_num, OB_CLUSTER_PARAMETER, 4, 1, 32, "idle pool thread num");
@@ -327,11 +329,6 @@ public:
   // LS fetch progress update timeout in seconds
   // If the logs are not fetched after a certain period of time, the stream will be cut
   T_DEF_INT_INFT(ls_fetch_progress_update_timeout_sec, OB_CLUSTER_PARAMETER, 15, 1, "logstream fetch progress update timeout in seconds");
-  // Timeout time for lagging replica logstreams
-  //
-  // If logs are not fetched for more than a certain period of time on a lagging copy, cut the stream
-  T_DEF_INT_INFT(ls_fetch_progress_update_timeout_sec_for_lagged_replica, OB_CLUSTER_PARAMETER, 3, 1,
-      "fetch progress update timeout for lagged replica in seconds");
 
   T_DEF_INT_INFT(log_router_background_refresh_interval_sec, OB_CLUSTER_PARAMETER, 10, 1,
                  "log_route_service background_refresh_time in seconds");
@@ -372,13 +369,13 @@ public:
   T_DEF_INT_INFT(blacklist_survival_time_penalty_period_min, OB_CLUSTER_PARAMETER, 1, 1, "blacklist survival time punish interval in minute");
 
   // Blacklist history expiration time, used to delete history
-  T_DEF_INT_INFT(blacklist_history_overdue_time_min, OB_CLUSTER_PARAMETER, 30, 10, "blacklist history overdue in minute");
+  T_DEF_INT_INFT(blacklist_history_overdue_time_min, OB_CLUSTER_PARAMETER, 3, 1, "blacklist history overdue in minute");
 
   // Clear blacklist history period, unit: minutes
-  T_DEF_INT_INFT(blacklist_history_clear_interval_min, OB_CLUSTER_PARAMETER, 20, 10, "blacklist history clear interval in minute");
+  T_DEF_INT_INFT(blacklist_history_clear_interval_min, OB_CLUSTER_PARAMETER, 2, 1, "blacklist history clear interval in minute");
 
   // Check the need for active cut-off cycles, in minutes
-  T_DEF_INT_INFT(check_switch_server_interval_min, OB_CLUSTER_PARAMETER, 30, 1, "check switch server interval in minute");
+  T_DEF_INT_INFT(check_switch_server_interval_sec, OB_CLUSTER_PARAMETER, 60, 1, "check switch server interval in seconds");
 
   // Print the number of LSs with the slowest progress of the Fetcher module
   T_DEF_INT_INFT(print_fetcher_slowest_ls_num, OB_CLUSTER_PARAMETER, 10, 1, "print fetcher slowest ls num");
@@ -413,10 +410,13 @@ public:
   DEF_CAP(extra_redo_dispatch_memory_size, OB_CLUSTER_PARAMETER, "0KB", "[0, 512M]", "extra redo dispatcher memory for data skew participant");
   T_DEF_INT(pause_redo_dispatch_task_count_threshold, OB_CLUSTER_PARAMETER, 80, 0, 100, "task cound percent threshold for pause redo dispatch");
   T_DEF_INT(memory_usage_warn_threshold, OB_CLUSTER_PARAMETER, 85, 10, 100, "memory usage wan threshold, may pause fetch while reach the threshold");
+  T_DEF_INT_INFT(queue_backlog_lowest_tolerance, OB_CLUSTER_PARAMETER, 500, 0, "lowest threshold of queue_backlog that will touch redo_dispatch flow controll");
   // sorter thread num
   T_DEF_INT(msg_sorter_thread_num, OB_CLUSTER_PARAMETER, 1, 1, 32, "trans msg sorter thread num");
   // sorter thread
   T_DEF_INT_INFT(msg_sorter_task_count_upper_limit, OB_CLUSTER_PARAMETER, 0, 0, "trans msg sorter task count per thread");
+  // ignore delete tablets
+  T_DEF_BOOL(skip_delete_tablet_op, OB_CLUSTER_PARAMETER, 0, "0:disabled 1:enabled");
 
   // ------------------------------------------------------------------------
   // Test mode, used only in obtest and other test tool scenarios

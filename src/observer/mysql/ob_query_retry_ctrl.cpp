@@ -218,8 +218,15 @@ public:
     if (v.session_.is_terminate(ret)) {
       v.no_more_test_ = true;
       v.retry_type_ = RETRY_TYPE_NONE;
-      v.client_ret_ = ret; // session terminated
-      LOG_WARN("execution was terminated", K(ret));
+      // In the kill client session scenario, the server session will be marked
+      // with the SESSION_KILLED mark. In the retry scenario, there will be an error
+      // code covering 5066, so the judgment logic is added here.
+      if (ret == OB_ERR_SESSION_INTERRUPTED && v.err_ == OB_ERR_KILL_CLIENT_SESSION) {
+        v.client_ret_ = v.err_;
+      } else{
+        v.client_ret_ = ret; // session terminated
+      }
+      LOG_WARN("execution was terminated", K(ret), K(v.client_ret_), K(v.err_));
     } else if (THIS_WORKER.is_timeout()) {
       v.no_more_test_ = true;
       v.retry_type_ = RETRY_TYPE_NONE;
@@ -252,6 +259,13 @@ class ObStmtTypeRetryPolicy : public ObRetryPolicy
 public:
   ObStmtTypeRetryPolicy() = default;
   ~ObStmtTypeRetryPolicy() = default;
+
+  bool is_direct_load(ObRetryParam &v) const
+  {
+    ObExecContext &exec_ctx = v.result_.get_exec_context();
+    return exec_ctx.get_table_direct_insert_ctx().get_is_direct();
+  }
+
   virtual void test(ObRetryParam &v) const override
   {
     int err = v.err_;
@@ -267,6 +281,14 @@ public:
       v.no_more_test_ = true;
     } else if (ObStmt::is_ddl_stmt(v.result_.get_stmt_type(), v.result_.has_global_variable())) {
       if (is_ddl_stmt_packet_retry_err(err)) {
+        try_packet_retry(v);
+      } else {
+        v.client_ret_ = err;
+        v.retry_type_ = RETRY_TYPE_NONE;
+      }
+      v.no_more_test_ = true;
+    } else if (is_direct_load(v)) {
+      if (is_direct_load_retry_err(err)) {
         try_packet_retry(v);
       } else {
         v.client_ret_ = err;
@@ -520,6 +542,10 @@ public:
     if (local_schema_not_full || OB_ERR_REMOTE_SCHEMA_NOT_FULL == v.err_) {
       v.no_more_test_ = true;
       v.retry_type_ = RETRY_TYPE_LOCAL;
+      sleep_before_local_retry(v,
+                          RETRY_SLEEP_TYPE_LINEAR,
+                          WAIT_RETRY_SHORT_US,
+                          THIS_WORKER.get_timeout_ts());
     }
   }
 };
@@ -556,7 +582,9 @@ public:
     // sql which in pl will local retry first. see ObInnerSQLConnection::process_retry.
     // sql which not in pl use the same strategy to avoid never getting the lock.
     if (v.is_from_pl_) {
-      if (v.local_retry_times_ <= 1 || !v.session_.get_pl_can_retry()) {
+      if (v.local_retry_times_ <= 1 ||
+          !v.session_.get_pl_can_retry() ||
+          ObSQLUtils::is_in_autonomous_block(v.session_.get_cur_exec_ctx())) {
         v.no_more_test_ = true;
         v.retry_type_ = RETRY_TYPE_LOCAL;
       } else {
@@ -591,8 +619,15 @@ public:
     } else if (v.session_.is_terminate(ret)) {
       v.no_more_test_ = true;
       v.retry_type_ = RETRY_TYPE_NONE;
-      v.client_ret_ = ret; // session terminated
-      LOG_WARN("execution was terminated", K(ret));
+      // In the kill client session scenario, the server session will be marked
+      // with the SESSION_KILLED mark. In the retry scenario, there will be an error
+      // code covering 5066, so the judgment logic is added here.
+      if (ret == OB_ERR_SESSION_INTERRUPTED && v.err_ == OB_ERR_KILL_CLIENT_SESSION) {
+        v.client_ret_ = v.err_;
+      } else{
+        v.client_ret_ = ret; // session terminated
+      }
+      LOG_WARN("execution was terminated", K(ret), K(v.client_ret_), K(v.err_));
     } else if (THIS_WORKER.is_timeout()) {
       v.no_more_test_ = true;
       v.retry_type_ = RETRY_TYPE_NONE;
@@ -614,7 +649,8 @@ private:
                          && parent_ctx->get_pl_stack_ctx() != nullptr
                          && !parent_ctx->get_pl_stack_ctx()->in_autonomous());
     bool is_fk_nested = (parent_ctx != nullptr && parent_ctx->get_das_ctx().is_fk_cascading_);
-    return is_pl_nested || is_fk_nested;
+    bool is_online_stat_gathering_nested = (parent_ctx != nullptr && parent_ctx->is_online_stats_gathering());
+    return is_pl_nested || is_fk_nested || is_online_stat_gathering_nested;
   }
 };
 

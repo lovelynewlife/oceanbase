@@ -29,6 +29,7 @@
 #include "share/ob_srv_rpc_proxy.h"
 #include "share/rc/ob_tenant_base.h"
 #include "share/ls/ob_ls_life_manager.h"
+#include "share/ob_debug_sync.h"
 #include "storage/tx_storage/ob_ls_handle.h"
 #include "rootserver/ob_ls_recovery_reportor.h"      // ObLSRecoveryReportor
 #include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
@@ -359,7 +360,9 @@ ObGCHandler::ObGCHandler() : is_inited_(false),
                              ls_(NULL),
                              gc_seq_invalid_member_(-1),
                              gc_start_ts_(OB_INVALID_TIMESTAMP),
-                             block_tx_ts_(OB_INVALID_TIMESTAMP)
+                             block_tx_ts_(OB_INVALID_TIMESTAMP),
+                             block_log_debug_time_(OB_INVALID_TIMESTAMP),
+                             log_sync_stopped_(false)
 {
 }
 
@@ -375,6 +378,8 @@ void ObGCHandler::reset()
   ls_ = NULL;
   gc_start_ts_ = OB_INVALID_TIMESTAMP;
   block_tx_ts_ = OB_INVALID_TIMESTAMP;
+  block_log_debug_time_ = OB_INVALID_TIMESTAMP;
+  log_sync_stopped_ = false;
   is_inited_ = false;
 }
 
@@ -395,6 +400,11 @@ int ObGCHandler::init(ObLS *ls)
   return ret;
 }
 
+void ObGCHandler::set_log_sync_stopped()
+{
+  ATOMIC_SET(&log_sync_stopped_, true);
+  CLOG_LOG(INFO, "set log_sync_stopped_ to true", K(ls_->get_ls_id()));
+}
 int ObGCHandler::execute_pre_remove()
 {
   int ret = OB_SUCCESS;
@@ -533,8 +543,7 @@ int ObGCHandler::check_ls_can_offline(const share::ObLSStatus &ls_status)
   return ret;
 }
 
-int ObGCHandler::gc_check_invalid_member_seq(const int64_t gc_seq,
-                                             bool &need_gc)
+int ObGCHandler::gc_check_invalid_member_seq(const int64_t gc_seq, bool &need_gc)
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -580,8 +589,34 @@ int ObGCHandler::replay(const void *buffer,
   } else {
     WLockGuard wlock_guard(rwlock_);
     ObGCLSLOGType log_type = static_cast<ObGCLSLOGType>(gc_log.get_log_type());
-    (void)update_ls_gc_state_after_submit_log_(log_type, scn);
-    CLOG_LOG(INFO, "replay gc log", K(log_type));
+    share::ObTenantRole::Role tenant_role = MTL_GET_TENANT_ROLE_CACHE();
+    if (ObGCLSLOGType::BLOCK_TABLET_TRANSFER_IN == log_type) {
+      if (is_invalid_tenant(tenant_role) || is_standby_tenant(tenant_role)) {
+        //block_tx log in standby tenant should replay after tenant_readable_scn surpassed max_decided_scn of current ls
+        SCN ls_max_decided_scn;
+        SCN tenant_readable_scn;
+        ObLSID ls_id = ls_->get_ls_id();
+        if (OB_FAIL(ls_->get_max_decided_scn(ls_max_decided_scn))) {
+          CLOG_LOG(WARN, "get_max_decided_scn failed", K(ls_id));
+        } else if (OB_FAIL(get_tenant_readable_scn_(tenant_readable_scn))) {
+          CLOG_LOG(WARN, "get_tenant_readable_scn_ failed", K(ls_id));
+        } else if (ls_max_decided_scn.is_valid() && tenant_readable_scn.is_valid() &&
+                   tenant_readable_scn >= ls_max_decided_scn) {
+          // block_tx gc log can replay
+        } else {
+          ret = OB_EAGAIN;
+          if (palf_reach_time_interval(2 * 1000 * 1000, block_log_debug_time_)) {
+            CLOG_LOG(WARN, "BLOCK_TX log can not replay because tenant_readable_lsn is smaller"
+            " than ls_max_decided_scn", K(tenant_readable_scn), K(ls_max_decided_scn), K(ls_id));
+          }
+        }
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      (void)update_ls_gc_state_after_submit_log_(log_type, scn);
+      CLOG_LOG(INFO, "replay gc log", K(log_type), K(scn));
+    }
   }
   return ret;
 }
@@ -798,8 +833,11 @@ int ObGCHandler::try_check_and_set_wait_gc_when_log_archive_is_off_(
       ls_status = ObGarbageCollector::LSStatus::LS_NEED_DELETE_ENTRY;
       CLOG_LOG(INFO, "Tenant is dropped and the log stream can be removed, try_check_and_set_wait_gc_ success",
           K(tenant_id), K(ls_id), K(gc_state), K(offline_scn), K(readable_scn));
-    } else if (offline_scn.is_valid() && MTL_GET_TENANT_ROLE() == share::ObTenantRole::RESTORE_TENANT) {
+    } else if (offline_scn.is_valid() &&
+        (MTL_GET_TENANT_ROLE_CACHE() == share::ObTenantRole::RESTORE_TENANT ||
+         MTL_GET_TENANT_ROLE_CACHE() == share::ObTenantRole::CLONE_TENANT)) {
       // restore tenant, not need gc delay
+      // for clone tenant, we can ensure no ls's changes during clone procedure, so no need to deal with gc status
       if (OB_FAIL(ls_->set_gc_state(LSGCState::WAIT_GC))) {
         CLOG_LOG(WARN, "set_gc_state failed", K(ls_id), K(gc_state), K(ret));
       }
@@ -999,6 +1037,7 @@ void ObGCHandler::block_ls_transfer_in_(const SCN &block_scn)
 
 void ObGCHandler::offline_ls_(const SCN &offline_scn)
 {
+  DEBUG_SYNC(LS_GC_BEFORE_OFFLINE);
   int ret = OB_SUCCESS;
   LSGCState gc_state = INVALID_LS_GC_STATE;
   ObLSID ls_id = ls_->get_ls_id();
@@ -1304,12 +1343,13 @@ void ObGarbageCollector::run1()
         (void)execute_gc_(gc_candidates);
         seq_++;
       }
-      // safe destroy task
-      (void) safe_destroy_handler_.handle();
     } else {
       CLOG_LOG(INFO, "Garbage Collector is not running, waiting for ObServerCheckpointSlogHandler",
                K(seq_), K(gc_interval));
     }
+    // safe destroy handler keep running even if ObServerCheckpointSlogHandler is not started,
+    // because ls still need to be safe destroy when observer fail to start.
+    (void) safe_destroy_handler_.handle();
     ob_usleep(gc_interval);
   }
 }
@@ -1620,6 +1660,22 @@ void ObGarbageCollector::execute_gc_(ObGCCandidateArray &gc_candidates)
       tmp_ret = OB_ERR_UNEXPECTED;
       CLOG_LOG(ERROR, "gc_handler is NULL", K(tmp_ret), K(id));
     } else if (is_need_gc_ls_status_(ls_status)) {
+      //this replica  may not be able to synchornize complete logs
+      if (GCReason::LS_STATUS_ENTRY_NOT_EXIST == gc_reason) {
+        SCN offline_scn;
+        if (OB_SUCCESS != (tmp_ret = (ls->get_offline_scn(offline_scn)))) {
+          CLOG_LOG(ERROR, "get_offline_scn failed", K(id));
+        } else if (!offline_scn.is_valid()) {
+          gc_handler->set_log_sync_stopped();
+        }
+      } else if (NOT_IN_LEADER_MEMBER_LIST == gc_reason) {
+        ObLogHandler *log_handler = NULL;
+        if (OB_ISNULL(log_handler = ls->get_log_handler())) {
+          CLOG_LOG(ERROR, "log_handler is NULL", K(tmp_ret), K(id));
+        } else if (!log_handler->is_sync_enabled() || !log_handler->is_replay_enabled()) {
+          gc_handler->set_log_sync_stopped();
+        }
+      }
       ObSwitchLeaderAdapter switch_leader_adapter;
       if (OB_SUCCESS != (tmp_ret = (gc_handler->execute_pre_remove()))) {
         CLOG_LOG(WARN, "failed to execute_pre_remove", K(tmp_ret), K(id), K_(self_addr));

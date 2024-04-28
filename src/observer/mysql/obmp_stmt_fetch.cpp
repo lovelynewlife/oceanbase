@@ -353,7 +353,7 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("get unexpect streaming result set.", K(ret), K(cursor.get_id()));
               }
-              if (OB_OCI_DEFAULT != offset_type_ || OB_OCI_FETCH_NEXT != offset_type_) {
+              if (OB_OCI_DEFAULT != offset_type_ && OB_OCI_FETCH_NEXT != offset_type_) {
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("streaming result set not support this offset type.", K(ret), 
                                                                                K(cursor.get_id()), 
@@ -462,9 +462,9 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
           if (OB_SUCC(ret) && !need_fetch && NULL != row) {
             if (has_long_data()) {
               OZ (response_row(session, *(const_cast<common::ObNewRow*>(row)), 
-                               fields, column_flag_, cursor_id_, true));
+                               fields, column_flag_, cursor_id_, true, cursor.is_packed()));
             } else {
-              OZ (response_row(session, *(const_cast<common::ObNewRow*>(row)), fields));
+              OZ (response_row(session, *(const_cast<common::ObNewRow*>(row)), fields, cursor.is_packed()));
             }
             if (OB_FAIL(ret)) {
               LOG_WARN("response row fail.", K(ret));
@@ -489,9 +489,9 @@ int ObMPStmtFetch::response_result(pl::ObPLCursorInfo &cursor,
             cursor.set_current_position(cur);
             if (has_long_data()) {
               OZ (response_row(session, row, fields, column_flag_, cursor_id_,
-                                0 == row_num ? true : false));
+                                0 == row_num ? true : false, cursor.is_packed()));
             } else {
-              OZ (response_row(session, row, fields));
+              OZ (response_row(session, row, fields, cursor.is_packed()));
             }
             if (OB_SUCC(ret)) {
               ++row_num;
@@ -695,6 +695,8 @@ int ObMPStmtFetch::process()
     if (OB_UNLIKELY(!session.is_valid())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("invalid session", K_(cursor_id), K(ret));
+    } else if (OB_FAIL(process_kill_client_session(session))) {
+      LOG_WARN("client session has been killed", K(ret));
     } else if (OB_UNLIKELY(session.is_zombie())) {
       //session has been killed some moment ago
       ret = OB_ERR_SESSION_INTERRUPTED;
@@ -776,7 +778,8 @@ int ObMPStmtFetch::response_row(ObSQLSessionInfo &session,
                                 const ColumnsFieldArray *fields,
                                 char *column_map,
                                 int32_t stmt_id,
-                                bool first_time)
+                                bool first_time,
+                                bool is_packed)
 {
   int ret = OB_SUCCESS;
   common::ObNewRow row;
@@ -874,7 +877,7 @@ int ObMPStmtFetch::response_row(ObSQLSessionInfo &session,
 
   if (OB_FAIL(ret)) {
     // do nothing
-  } else if (OB_FAIL(response_row(session, row, fields))) {
+  } else if (OB_FAIL(response_row(session, row, fields, is_packed))) {
     LOG_WARN("response row fail.", K(ret), K(stmt_id));
   } else {
     LOG_DEBUG("response row success.", K(stmt_id));

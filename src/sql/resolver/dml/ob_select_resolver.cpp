@@ -335,6 +335,9 @@ int ObSelectResolver::do_resolve_set_query_in_cte(const ParseNode &parse_tree, b
     } else if (OB_NOT_NULL(parse_tree.children_[PARSE_SELECT_LIMIT])) {
       ret = OB_ERR_CTE_ILLEGAL_RECURSIVE_BRANCH;
       LOG_WARN("use limit clause in the recursive cte is not allowed", K(ret));
+    } else if (is_oracle_mode() &&
+               OB_FAIL(adjust_recursive_cte_table_columns(select_stmt, right_select_stmt))) {
+      LOG_WARN("failed to adjust recursive cte table columns", K(ret));
     } else {
       /**
       * 设置这个一个set query是否是with clause中的递归类型
@@ -960,33 +963,6 @@ int ObSelectResolver::check_order_by()
   return ret;
 }
 
-int ObSelectResolver::check_field_list()
-{
-  int ret = OB_SUCCESS;
-  ObSelectStmt *select_stmt = get_select_stmt();
-  if (! is_oracle_mode()) {
-  } else if (OB_ISNULL(select_stmt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("select stmt is null", K(ret));
-  } else if (select_stmt->has_distinct()) {
-    common::ObIArray<SelectItem> &select_items = select_stmt->get_select_items();
-    for (int64_t i = 0; OB_SUCC(ret) && i < select_items.count(); i++) {
-      ObRawExpr *expr = NULL;
-      if (OB_ISNULL(expr = select_items.at(i).expr_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("select expr is null", K(ret));
-      } else if (ObLongTextType == expr->get_data_type() || ObLobType == expr->get_data_type()) {
-        ret = OB_ERR_INVALID_TYPE_FOR_OP;
-        LOG_WARN("select distinct lob not allowed", K(ret));
-      } else if (lib::is_oracle_mode() && ObJsonType == expr->get_data_type()) {
-        ret = OB_ERR_INVALID_CMP_OP;
-        LOG_WARN("select distinct json not allowed", K(ret));
-      }
-    }
-  }
-  return ret;
-}
-
 int ObSelectResolver::search_connect_group_by_clause(const ParseNode &parent,
                                    const ParseNode *&start_with,
                                    const ParseNode *&connect_by,
@@ -1175,7 +1151,6 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
   OZ( select_stmt->formalize_stmt(session_info_) );
 
   //统一为本层的表达式进行only full group by验证，避免检查的逻辑过于分散
-  OZ( check_field_list() );
   OZ( check_group_by() );
   OZ( check_order_by() );
   OZ( check_pseudo_columns() );
@@ -1767,9 +1742,14 @@ int ObSelectResolver::resolve_order_item(const ParseNode &sort_node, OrderItem &
     }
   }
   if (OB_SUCC(ret) && OB_NOT_NULL(order_item.expr_) && order_item.expr_->has_flag(CNT_ASSIGN_EXPR)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("Not supported variable assignment in order by item", K(ret));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "Variable assignment in order by item");
+    LOG_USER_WARN(OB_ERR_DEPRECATED_SYNTAX, "Setting user variables within expressions",
+      "SET variable=expression, ... or SELECT expression(s) INTO variables(s)");
+    if (OB_NOT_NULL(session_info_) && OB_NOT_NULL(session_info_->get_cur_exec_ctx()) &&
+        OB_NOT_NULL(session_info_->get_cur_exec_ctx()->get_sql_ctx())) {
+      const ObSqlCtx *sql_ctx = session_info_->get_cur_exec_ctx()->get_sql_ctx();
+      LOG_ERROR("Variable assignment in order by items will cause uncertain behavior",
+                K(ObString(sql_ctx->sql_id_)));
+    }
   }
   return ret;
 }
@@ -1850,19 +1830,15 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
       continue;
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(ObCharset::charset_convert(*allocator_,
-                                             select_item.expr_name_,
-                                             session_info_->get_local_collation_connection(),
-                                             CS_TYPE_UTF8MB4_BIN,
+      if (OB_FAIL(ObSQLUtils::convert_sql_text_to_schema_for_storing(*allocator_,
+                                             session_info_->get_dtc_params(),
                                              select_item.expr_name_,
                                              ObCharset::REPLACE_UNKNOWN_CHARACTER))) {
         LOG_WARN("fail to charset convert", K(ret));
-      } else if (OB_FAIL(ObCharset::charset_convert(*allocator_,
-                                                    select_item.alias_name_,
-                                                    session_info_->get_local_collation_connection(),
-                                                    CS_TYPE_UTF8MB4_BIN,
-                                                    select_item.alias_name_,
-                                                    ObCharset::REPLACE_UNKNOWN_CHARACTER))) {
+      } else if (OB_FAIL(ObSQLUtils::convert_sql_text_to_schema_for_storing(*allocator_,
+                                             session_info_->get_dtc_params(),
+                                             select_item.alias_name_,
+                                             ObCharset::REPLACE_UNKNOWN_CHARACTER))) {
         LOG_WARN("fail to charset convert", K(ret));
       }
     }
@@ -3675,8 +3651,7 @@ int ObSelectResolver::gen_unpivot_target_column(const int64_t table_count,
                                                                         types.count(),
                                                                         coll_type,
                                                                         true,
-                                                                        default_ls,
-                                                                        session_info_))) {
+                                                                        default_ls))) {
               LOG_WARN("fail to aggregate_result_type_for_merge", K(ret), K(types));
             }
           }
@@ -4356,6 +4331,7 @@ int ObSelectResolver::check_grouping_columns(ObSelectStmt &stmt, ObRawExpr *&exp
   ObStmtCompareContext questionmark_checker;
   questionmark_checker.reset();
   questionmark_checker.override_const_compare_ = true;
+  questionmark_checker.ora_numeric_compare_ = true;
   if (OB_ISNULL(params_.query_ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null pointer.", K(ret));
@@ -4541,7 +4517,7 @@ int ObSelectResolver::mock_to_named_windows(ObString &name,
                                    win_str.ptr()))) {
       LOG_WARN("fail to concat string", K(ret));
     } else if (OB_FAIL(ObRawExprUtils::parse_expr_node_from_str(sql_str.string(),
-                                                                params_.session_info_->get_local_collation_connection(),
+                                                                params_.session_info_->get_charsets4parser(),
                                                                 params_.expr_factory_->get_allocator(),
                                                                 mock_node))) {
       LOG_WARN("parse expr node from string failed", K(ret));
@@ -6494,6 +6470,90 @@ int ObSelectResolver::resolve_check_option_clause(const ParseNode *node)
   return ret;
 }
 
+/* ObSelectResolver::check_auto_gen_column_names()
+ *
+ * For a long expr with no alias
+ * MySQL will rename the overlong auto generated alias to "Name_exp_x",
+ * but Oracle will throw "identifier is too long" error.
+ */
+int ObSelectResolver::check_auto_gen_column_names() {
+  int ret = OB_SUCCESS;
+  ObSelectStmt *select_stmt = get_select_stmt();
+  if (OB_ISNULL(select_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("select stmt is null", K(ret));
+  } else if (OB_FAIL(recursive_check_auto_gen_column_names(select_stmt))) {
+    LOG_WARN("fail to check auto gen column names", K(ret));
+  }
+  return ret;
+}
+
+int ObSelectResolver::recursive_check_auto_gen_column_names(ObSelectStmt *select_stmt) {
+  int ret = OB_SUCCESS;
+  ObSEArray<ObSelectStmt*, 4> child_stmts;
+  if (OB_ISNULL(select_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("select stmt is null", K(ret));
+  } else if (OB_FAIL(select_stmt->get_child_stmts(child_stmts))) {
+    LOG_WARN("fail to get child stmts", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); i++) {
+    ObSelectStmt *child_stmt = child_stmts.at(i);
+    if (OB_ISNULL(child_stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("child select stmt is null", K(ret), K(i));
+    } else if (OB_FAIL(SMART_CALL(recursive_check_auto_gen_column_names(child_stmt)))) {
+      LOG_WARN("fail to check child stmt", K(ret), K(i));
+    }
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); ++i) {
+    SelectItem *select_item = &(select_stmt->get_select_item(i));
+    if (OB_ISNULL(select_item) || OB_ISNULL(select_item->expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("select item expr is null", K(ret), K(select_item));
+    } else if (select_item->alias_name_.length() > static_cast<size_t>(OB_MAX_COLUMN_NAME_LENGTH)) {
+      if (lib::is_oracle_mode()) {
+        ret = OB_ERR_TOO_LONG_IDENT;
+        LOG_WARN("auto generated alias is too long", K(ret), K(select_item->alias_name_.length()), K(select_item->alias_name_));
+      } else {
+        char temp_str_buf[OB_MAX_COLUMN_NAME_BUF_LENGTH] = { 0 };
+        if (snprintf(temp_str_buf, sizeof(temp_str_buf), SYNTHETIC_FIELD_NAME "%ld", auto_name_id_++) < 0) {
+          ret = OB_SIZE_OVERFLOW;
+          LOG_WARN("failed to generate buffer for temp_str_buf", K(ret));
+        } else {
+          ObString tmp_col_name = ObString::make_string(temp_str_buf);
+          ObString col_name;
+          if (OB_FAIL(ob_write_string(*allocator_, tmp_col_name, col_name))) {
+            LOG_WARN("Can not malloc space for constraint name", K(ret));
+          } else if (OB_FALSE_IT(select_item->alias_name_.assign_ptr(col_name.ptr(), col_name.length()))) {
+          } else if (select_item->expr_->is_column_ref_expr()) {
+            ObColumnRefRawExpr *col_ref_expr = static_cast<ObColumnRefRawExpr*>(select_item->expr_);
+            TableItem *table_item = NULL;
+            ObSelectStmt *ref_stmt = NULL;
+            SelectItem *ref_select_item = NULL;
+            if (OB_ISNULL(table_item = select_stmt->get_table_item_by_id(col_ref_expr->get_table_id()))) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("table item is null", K(ret));
+            } else if (OB_ISNULL(ref_stmt = table_item->ref_query_)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("ref query stmt is null", K(ret));
+            } else if (OB_ISNULL(ref_select_item = &ref_stmt->get_select_item(col_ref_expr->get_column_id() - OB_APP_MIN_COLUMN_ID))) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("select item is null", K(ret));
+            } else if (OB_FAIL(ob_write_string(*allocator_, ref_select_item->alias_name_, col_name))) {
+              LOG_WARN("Can not malloc space for constraint name", K(ret));
+            } else {
+              col_ref_expr->get_column_name().assign_ptr(col_name.ptr(), col_name.length());
+            }
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObSelectResolver::check_rollup_items_valid(const ObIArray<ObRollupItem> &rollup_items)
 {
   int ret = OB_SUCCESS;
@@ -6672,6 +6732,55 @@ int ObSelectResolver::resolve_shared_order_item(OrderItem &order_item, ObSelectS
     } else {
       order_item.expr_ = expr;
       find = true;
+    }
+  }
+  return ret;
+}
+
+int ObSelectResolver::adjust_recursive_cte_table_columns(const ObSelectStmt* parent_stmt, ObSelectStmt *right_stmt)
+{
+  int ret = OB_SUCCESS;
+  TableItem *table_item = NULL;
+  ObSEArray<ColumnItem, 4> columns;
+  ObSEArray<ObRawExpr*, 4> parent_sel_exprs;
+  if (OB_ISNULL(parent_stmt) ||
+      OB_ISNULL(right_stmt) ||
+      OB_ISNULL(schema_checker_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_FAIL(parent_stmt->get_select_exprs(parent_sel_exprs))) {
+    LOG_WARN("failed to get select exprs", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < right_stmt->get_table_size(); ++i) {
+    columns.reuse();
+    if (OB_ISNULL(table_item = right_stmt->get_table_item(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (!table_item->is_fake_cte_table() ||
+               table_item->table_name_ != cte_ctx_.current_cte_table_name_) {
+      //do nothing
+    } else if (OB_FAIL(right_stmt->get_column_items(table_item->table_id_, columns))) {
+      LOG_WARN("failed to get column items", K(ret));
+    } else {
+      for (int64_t j = 0; OB_SUCC(ret) && j < columns.count(); ++j) {
+        ObRawExpr *sel_expr = NULL;
+        ObRawExpr *column_expr = NULL;
+        int64_t idx = columns.at(j).column_id_ - OB_APP_MIN_COLUMN_ID;
+        if (OB_UNLIKELY(idx >= parent_sel_exprs.count()) ||
+            OB_ISNULL(sel_expr = parent_sel_exprs.at(idx)) ||
+            OB_ISNULL(column_expr = columns.at(j).expr_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get unexpected null", K(sel_expr), K(ret));
+        } else if (OB_FAIL(schema_checker_->adjust_fake_cte_column_type(table_item->ref_id_,
+                                                                        columns.at(j).column_id_,
+                                                                        sel_expr->get_data_type(),
+                                                                        sel_expr->get_accuracy()))) {
+          LOG_WARN("failed to adjust fake cte column type", K(ret));
+        } else {
+          column_expr->set_data_type(sel_expr->get_data_type());
+          column_expr->set_accuracy(sel_expr->get_accuracy());
+        }
+      }
     }
   }
   return ret;

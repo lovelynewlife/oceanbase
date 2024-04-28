@@ -432,8 +432,8 @@ int ObLogTenantMgr::start_tenant_service_(
       } else if (OB_SYS_TENANT_ID == tenant_id) {
         // sys tenant, do nothing
       } else if (! is_normal_new_created_tenant) {
-        if (OB_FAIL(ls_getter_.get_ls_ids(tenant_id, ls_id_array))) {
-          LOG_ERROR("ls_getter_ get_ls_ids failed", KR(ret), K(tenant_id), K(ls_id_array));
+        if (OB_FAIL(ls_getter_.get_ls_ids(tenant_id, start_tstamp_ns, ls_id_array))) {
+          LOG_ERROR("ls_getter_ get_ls_ids failed", KR(ret), K(tenant_id), K(ls_id_array), K(start_tstamp_ns));
         }
       }
     } else if (is_data_dict_refresh_mode(refresh_mode_)) {
@@ -611,7 +611,7 @@ int ObLogTenantMgr::add_tenant(
         ObDictTenantInfoGuard dict_tenant_info_guard;
         ObDictTenantInfo *tenant_info = nullptr;
 
-        if (OB_FAIL(GLOGMETADATASERVICE.get_tenant_info_guard(tenant_id, dict_tenant_info_guard))) {
+        if (FAILEDx(GLOGMETADATASERVICE.get_tenant_info_guard(tenant_id, dict_tenant_info_guard))) {
           LOG_ERROR("get_tenant_info_guard failed", KR(ret), K(tenant_id));
         } else if (OB_ISNULL(tenant_info = dict_tenant_info_guard.get_tenant_info())) {
           ret = OB_ERR_UNEXPECTED;
@@ -998,7 +998,7 @@ int ObLogTenantMgr::remove_tenant_(const uint64_t tenant_id, ObLogTenant *tenant
   } else if (OB_ISNULL(tenant)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("tenant is NULL", KR(ret), K(tenant_id), K(tenant));
-  } else if (OB_ISNULL(cf = tenant->get_cf())) {
+  } else if (OB_ISNULL(cf = tenant->get_redo_storage_cf_handle())) {
     ret= OB_ERR_UNEXPECTED;
     LOG_ERROR("cf is NULL", KR(ret), K(tid), KPC(tenant));
   } else if (OB_FAIL(store_service->drop_column_family(cf))) {
@@ -1333,8 +1333,8 @@ int ObLogTenantMgr::get_tenant_ids_(
     // get available tenant id list
     else if (OB_FAIL(sys_schema_guard.get_available_tenant_ids(tenant_id_list, timeout))) {
       LOG_ERROR("get_available_tenant_ids fail", KR(ret), K(tenant_id_list), K(timeout));
-    } else if (OB_FAIL(ls_getter_.init(tenant_id_list))) {
-      LOG_ERROR("ObLogLsGetter init fail", KR(ret), K(tenant_id_list));
+    } else if (OB_FAIL(ls_getter_.init(tenant_id_list, start_tstamp_ns))) {
+      LOG_ERROR("ObLogLsGetter init fail", KR(ret), K(tenant_id_list), K(start_tstamp_ns));
     }
   } else if (is_data_dict_refresh_mode(refresh_mode_)) {
     IObLogSysTableHelper *systable_helper = TCTX.systable_helper_;
@@ -1434,7 +1434,7 @@ bool ObLogTenantMgr::TenantPrinter::operator()(const TenantID &tid, ObLogTenant 
       serving_tenant_count_++;
     }
     (void)tenant_ids_.push_back(tid.tenant_id_);
-    (void)cf_handles_.push_back(tenant->get_cf());
+    (void)cf_handles_.push_back(tenant->get_redo_storage_cf_handle());
     (void)lob_storage_cf_handles_.push_back(tenant->get_lob_storage_cf_handle());
   }
   return true;
@@ -1455,6 +1455,42 @@ void ObLogTenantMgr::print_stat_info()
   if (NULL != store_service) {
     store_service->get_mem_usage(printer.tenant_ids_, printer.cf_handles_);
     store_service->get_mem_usage(printer.tenant_ids_, printer.lob_storage_cf_handles_);
+  }
+}
+
+bool ObLogTenantMgr::TenantRedoStorageOperator::operator()(const TenantID &tid, ObLogTenant *tenant)
+{
+  if (OB_NOT_NULL(tenant)) {
+    if (TenantStorageOp::FLUSH == op_) {
+      tenant->flush_storage();
+    } else if (TenantStorageOp::COMPACT == op_) {
+      tenant->compact_storage();
+    } else {
+      LOG_INFO("UNKNOWN_TENANT_STORAGE_OPERATION, IGNORE", K(tid), K_(op));
+    }
+  }
+
+  return true;
+}
+
+void ObLogTenantMgr::flush_storaged_redo()
+{
+  IObStoreService *store_service = TCTX.store_service_;
+
+  if (OB_NOT_NULL(store_service)) {
+    TenantStorageOp op = TenantStorageOp::FLUSH;
+    TenantRedoStorageOperator redo_compactor(*store_service, op);
+    (void)tenant_hash_map_.for_each(redo_compactor);
+  }
+}
+void ObLogTenantMgr::compact_storaged_redo()
+{
+  IObStoreService *store_service = TCTX.store_service_;
+
+  if (OB_NOT_NULL(store_service)) {
+    TenantStorageOp op = TenantStorageOp::COMPACT;
+    TenantRedoStorageOperator redo_compactor(*store_service, op);
+    (void)tenant_hash_map_.for_each(redo_compactor);
   }
 }
 

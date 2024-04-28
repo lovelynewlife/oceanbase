@@ -1,10 +1,13 @@
-/*
- * (C) 2007-2010 Alibaba Group Holding Limited.
- *
- *  Version: $Id: ob_prepare_stmt_struct.h 10/27/2016 04:13:54 PM
- *
- *  Authors:
- *     hualong <>
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_SQL_PLAN_CACHE_OB_PREPARE_STMT_STRUCT_H_
@@ -27,20 +30,24 @@ struct ObPsSqlKey
 {
 public:
   ObPsSqlKey()
-    : db_id_(OB_INVALID_ID),
+    : flag_(0),
+      db_id_(OB_INVALID_ID),
       inc_id_(OB_INVALID_ID),
       ps_sql_()
   {}
   ObPsSqlKey(uint64_t db_id,
              const common::ObString &ps_sql)
-    : db_id_(db_id),
+    : flag_(0),
+      db_id_(db_id),
       inc_id_(OB_INVALID_ID),
       ps_sql_(ps_sql)
   {}
-  ObPsSqlKey(uint64_t db_id,
+  ObPsSqlKey(uint32_t flag,
+             uint64_t db_id,
              uint64_t inc_id,
              const common::ObString &ps_sql)
-    : db_id_(db_id),
+    : flag_(flag),
+      db_id_(db_id),
       inc_id_(inc_id),
       ps_sql_(ps_sql)
   {}
@@ -49,15 +56,40 @@ public:
   int hash(uint64_t &hash_val) const { hash_val = hash(); return OB_SUCCESS; }
   ObPsSqlKey &operator=(const ObPsSqlKey &other);
   bool operator==(const ObPsSqlKey &other) const;
+  void set_is_client_return_rowid()
+  {
+    is_client_return_hidden_rowid_ = true;
+  }
+  bool get_is_client_return_rowid()
+  {
+    return is_client_return_hidden_rowid_;
+  }
+  void set_flag(uint32_t flag)
+  {
+    flag_ = flag;
+  }
+  uint32_t get_flag() const
+  {
+    return flag_;
+  }
   void reset()
   {
+    flag_ = 0;
     db_id_ = OB_INVALID_ID;
     inc_id_ = OB_INVALID_ID;
     ps_sql_.reset();
   }
-  TO_STRING_KV(K_(db_id), K_(inc_id), K_(ps_sql));
+  TO_STRING_KV(K_(flag), K_(db_id), K_(inc_id), K_(ps_sql));
 
 public:
+  union
+  {
+    uint32_t flag_;
+    struct {
+      uint32_t is_client_return_hidden_rowid_ : 1;
+      uint32_t reserved_ : 31;
+    };
+  };
   uint64_t db_id_;
   // MySQL allows session-level temporary tables with the same name to have different schema definitions.
   // In order to distinguish this scenario, an incremental id is used to generate different prepared

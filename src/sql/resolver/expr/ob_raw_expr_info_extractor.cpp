@@ -39,7 +39,6 @@ int ObRawExprInfoExtractor::visit(ObConstRawExpr &expr)
   int ret = OB_SUCCESS;
   ObItemType type = expr.get_expr_type();
   switch (type) {
-  //case T_USER_VARIABLE_IDENTIFIER:
   case T_SYSTEM_VARIABLE:
   case T_QUESTIONMARK: {
     if (OB_FAIL(expr.add_flag(IS_STATIC_PARAM))) {
@@ -59,9 +58,7 @@ int ObRawExprInfoExtractor::visit(ObConstRawExpr &expr)
     break;
   }
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(ret)) {
-      // do nothing
-    } else if (OB_FAIL(expr.add_flag(IS_CONST))) {
+    if (OB_FAIL(expr.add_flag(IS_CONST))) {
       LOG_WARN("failed to add flag IS_CONST", K(ret));
     }
   }
@@ -323,6 +320,11 @@ int ObRawExprInfoExtractor::visit(ObOpRawExpr &expr)
   if (OB_SUCC(ret) && OB_FAIL(visit_subquery_node(expr))) {
     LOG_WARN("visit subquery node failed", K(ret));
   }
+  if (OB_SUCC(ret) && expr.get_expr_type() == T_OBJ_ACCESS_REF) {
+    if (OB_FAIL(expr.add_flag(CNT_OBJ_ACCESS_EXPR))) {
+      LOG_WARN("failed to add flag IS_OR", K(ret));
+    }
+  }
   return ret;
 }
 
@@ -574,8 +576,6 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
            || T_FUN_SYS_IS_JSON == expr.get_expr_type()
            || (T_FUN_SYS_JSON_MERGE_PATCH == expr.get_expr_type() && lib::is_oracle_mode())
            || T_FUN_SYS_JSON_OBJECT == expr.get_expr_type()
-           || T_FUN_SYS_XML_ELEMENT == expr.get_expr_type()
-           || T_FUN_SYS_XMLPARSE == expr.get_expr_type()
            || IS_LABEL_SE_POLICY_FUNC(expr.get_expr_type()))
         && OB_FAIL(expr.clear_flag(IS_CONST_EXPR))) {
       LOG_WARN("failed to clear flag", K(ret));

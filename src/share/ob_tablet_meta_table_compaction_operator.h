@@ -1,13 +1,15 @@
-/*
-*  Copyright (c) 2021 Ant Group CO., Ltd.
-*  OceanBase is licensed under Mulan PubL v1.
-*  You can use this software according to the terms and conditions of the Mulan PubL v1.
-*  You may obtain a copy of Mulan PubL v1 at: http://license.coscl.org.cn/MulanPubL-1.0
-*  THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-*  EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-*  MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-*  See the Mulan PubL v1 for more details.
-*/
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #ifndef OCEANBASE_SHARE_OB_TABLET_MEDIUM_SNAPSHOT_TABLE_OPERATOR_
 #define OCEANBASE_SHARE_OB_TABLET_MEDIUM_SNAPSHOT_TABLE_OPERATOR_
 
@@ -86,9 +88,9 @@ public:
 class ObTabletMetaTableCompactionOperator
 {
 public:
-  static int set_info_status(
-      const ObTabletCompactionScnInfo &input_info,
-      ObTabletCompactionScnInfo &ret_info,
+  static int batch_set_info_status(
+      const uint64_t tenant_id,
+      const ObIArray<ObTabletLSPair> &tablet_ls_pairs,
       int64_t &affected_rows);
   static int get_status(
       const ObTabletCompactionScnInfo &input_info,
@@ -111,10 +113,6 @@ public:
   static int batch_update_status(
       const uint64_t tenant_id,
       const int64_t expected_epoch);
-  static int get_unique_status(
-      const uint64_t tenant_id,
-      common::ObIArray<ObTabletLSPair> &pairs,
-      common::ObIArray<ObTabletReplica::ScnStatus> &status_arr);
   static int batch_update_unequal_report_scn_tablet(
       const uint64_t tenant_id,
       const share::ObLSID &ls_id,
@@ -123,7 +121,34 @@ public:
   static int get_min_compaction_scn(
       const uint64_t tenant_id,
       SCN &min_compaction_scn);
+  static int range_scan_for_compaction(
+      const uint64_t tenant_id,
+      const int64_t compaction_scn,
+      const common::ObTabletID &start_tablet_id,
+      const int64_t batch_size,
+      const bool add_report_scn_filter,
+      common::ObTabletID &end_tablet_id,
+      ObIArray<ObTabletInfo> &tablet_infos);
 private:
+  static int inner_range_scan_for_compaction(
+      const uint64_t tenant_id,
+      const int64_t compaction_scn,
+      const common::ObTabletID &start_tablet_id,
+      const int64_t batch_size,
+      const bool add_report_scn_filter,
+      common::ObTabletID &end_tablet_id,
+      ObIArray<ObTabletInfo> &tablet_infos);
+  static int inner_get_max_tablet_id_in_range(
+      const uint64_t tenant_id,
+      const common::ObTabletID &start_tablet_id,
+      const int64_t batch_size,
+      common::ObTabletID &max_tablet_id);
+  static int inner_batch_set_info_status_(
+      const uint64_t tenant_id,
+      const ObIArray<ObTabletLSPair> &tablet_ls_pairs,
+      const int64_t start_idx,
+      const int64_t end_idx,
+      int64_t &affected_rows);
   // is_update_finish_scn = TRUE: update finish_scn
   // is_update_finish_scn = FALSE: delete rows
   static int inner_batch_update_with_trans(
@@ -141,7 +166,6 @@ private:
       const int64_t meta_tenant_id,
       const ObSqlString &sql,
       ObTabletCompactionScnInfo &ret_info);
-  static void handle_trans_stat(common::ObMySQLTransaction &trans, int &ret);
   // construct compaction_scn_info based on part of the fileds defined in the schema
   static int construct_compaction_related_info(
       sqlclient::ObMySQLResult &result,
@@ -157,33 +181,32 @@ private:
       const int64_t start_idx,
       const int64_t end_idx,
       ObSqlString &sql);
-  static int construct_unequal_tablet_id_array(
+  static int construct_tablet_id_array(
       sqlclient::ObMySQLResult &result,
-      common::ObIArray<ObTabletID> &unequal_tablet_id_array);
+      common::ObIArray<ObTabletID> &tablet_id_array);
   static int get_estimated_timeout_us(const uint64_t tenant_id, int64_t &estimated_timeout_us);
   static int get_tablet_replica_cnt(const uint64_t tenant_id, int64_t &tablet_replica_cnt);
   // get tablet_ids larger than @start_tablet_id, and get up to @limit_cnt records
   static int batch_get_tablet_ids(
       const uint64_t tenant_id,
-      const uint64_t start_tablet_id,
-      const int64_t limit_cnt,
-      common::ObIArray<uint64_t> &tablet_ids);
+      const ObSqlString &sql,
+      common::ObIArray<ObTabletID> &tablet_ids);
   static int construct_batch_update_report_scn_sql_str_(
       const uint64_t tenant_id,
       const uint64_t global_braodcast_scn_val,
       const ObTabletReplica::ScnStatus &except_status,
-      const common::ObIArray<uint64_t> &tablet_ids,
+      const common::ObIArray<ObTabletID> &tablet_ids,
       ObSqlString &sql);
   static int construct_batch_update_status_sql_str_(
       const uint64_t tenant_id,
-      const common::ObIArray<uint64_t> &tablet_ids,
+      const common::ObIArray<ObTabletID> &tablet_ids,
       ObSqlString &sql);
   static int get_next_batch_tablet_ids(
       const uint64_t tenant_id,
       const int64_t batch_update_cnt,
-      common::ObIArray<uint64_t> &tablet_ids);
+      common::ObIArray<ObTabletID> &tablet_ids);
 private:
-  const static int64_t MAX_BATCH_COUNT = 150;
+  const static int64_t MAX_BATCH_COUNT = 500;
 };
 
 } // end namespace share

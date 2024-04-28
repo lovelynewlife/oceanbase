@@ -709,11 +709,18 @@ int ObRawExprPrinter::print(ObOpRawExpr *expr)
     case T_OBJ_ACCESS_REF: {
       ObObjAccessRawExpr *obj_access_expr = static_cast<ObObjAccessRawExpr*>(expr);
       bool parent_is_table = false;
-      for (int64_t i = 0; OB_SUCC(ret) && i < obj_access_expr->get_orig_access_idxs().count(); ++i) {
-        pl::ObObjAccessIdx &current_idx = obj_access_expr->get_orig_access_idxs().at(i);
+      ObIArray<pl::ObObjAccessIdx> &access_idxs = obj_access_expr->get_orig_access_idxs();
+      int64_t start = access_idxs.count() - 1;
+      for (;start > 0; --start) {
+        if (OB_NOT_NULL(access_idxs.at(start).get_sysfunc_)) {
+          break;
+        }
+      }
+      for (int64_t i = start; OB_SUCC(ret) && i < access_idxs.count(); ++i) {
+        pl::ObObjAccessIdx &current_idx = access_idxs.at(i);
         if (parent_is_table) {
           DATA_PRINTF("(");
-        } else if (i > 0) {
+        } else if (i > start) {
           DATA_PRINTF(".");
         }
         if (OB_NOT_NULL(current_idx.get_sysfunc_)) {
@@ -1114,9 +1121,9 @@ int ObRawExprPrinter::print(ObAggFunRawExpr *expr)
       if (OB_SUCC(ret)) {
         if (0 == expr->get_param_count()) {
           if (T_FUN_COUNT == type) {
-            // count(*) -> count(0)
+            // count(*)
             // but do not transform group_id() to group_id(0);
-            DATA_PRINTF("0");
+            DATA_PRINTF("*");
           } else if (T_FUN_GROUP_ID == type) {
             // do nothing.
           } else {
@@ -1436,23 +1443,26 @@ int ObRawExprPrinter::print_json_object(ObSysFunRawExpr *expr)
   if (OB_SUCC(ret)) {
     for (int i = 0; i < num_para - 4; i += 3) {
       PRINT_EXPR(expr->get_param_expr(i));
-      DATA_PRINTF(" VALUE ");
-      PRINT_EXPR(expr->get_param_expr(i + 1));
-      if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(i + 2))->get_value().is_int()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("type value isn't int value");
+      if (T_FUN_SYS_JSON_OBJECT_WILD_STAR == expr->get_param_expr(i)->get_expr_type()) { // do nothing
       } else {
-        int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(i + 2))->get_value().get_int();
-        switch (type) {
-          case 0:
-            break;
-          case 1:
-            DATA_PRINTF(" format json");
-            break;
-          default:
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("invalid type value.", K(type));
-            break;
+        DATA_PRINTF(" VALUE ");
+        PRINT_EXPR(expr->get_param_expr(i + 1));
+        if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(i + 2))->get_value().is_int()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("type value isn't int value");
+        } else {
+          int64_t type = static_cast<ObConstRawExpr*>(expr->get_param_expr(i + 2))->get_value().get_int();
+          switch (type) {
+            case 0:
+              break;
+            case 1:
+              DATA_PRINTF(" format json");
+              break;
+            default:
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("invalid type value.", K(type));
+              break;
+          }
         }
       }
       if (i != num_para - 7 && OB_SUCC(ret)) {
@@ -1961,6 +1971,24 @@ int ObRawExprPrinter::print_json_value(ObSysFunRawExpr *expr)
   return ret;
 }
 
+int ObRawExprPrinter::print_dot_notation(ObSysFunRawExpr *expr)
+{
+  INIT_SUCC(ret);
+  const ObString db_str(0, "");
+  ObColumnRefRawExpr *bin_expr = static_cast<ObColumnRefRawExpr*>(expr->get_param_expr(0));
+  bin_expr->set_database_name(db_str);
+  PRINT_EXPR(bin_expr); // table_name.col_name  not print db_name
+  ObObj path_obj = static_cast<ObConstRawExpr*>(expr->get_param_expr(1))->get_value();
+  ObItemType expr_type = expr->get_param_expr(1)->get_expr_type();
+  if (T_VARCHAR != expr_type && T_CHAR != expr_type) {
+  } else if (!path_obj.get_string().empty()) {
+    // we should print string without quote
+    DATA_PRINTF("%.*s", (path_obj.get_string().length() - 1), (path_obj.get_string().ptr() + 1));
+  }
+
+  return ret;
+}
+
 int ObRawExprPrinter::print_json_query(ObSysFunRawExpr *expr)
 {
   INIT_SUCC(ret);
@@ -2355,6 +2383,23 @@ int ObRawExprPrinter::print_is_json(ObSysFunRawExpr *expr)
   return ret;
 }
 
+int ObRawExprPrinter::print_json_object_star(ObSysFunRawExpr *expr)
+{
+  INIT_SUCC(ret);
+  ObObj tab_obj = static_cast<ObConstRawExpr*>(expr->get_param_expr(0))->get_value();
+  ObItemType expr_type = expr->get_param_expr(0)->get_expr_type();
+  if (T_VARCHAR != expr_type && T_CHAR != expr_type) {
+  } else if (!tab_obj.get_string().empty()) {
+    // we should print string without qoute
+    DATA_PRINTF("%.*s", (tab_obj.get_string().length()), (tab_obj.get_string().ptr()));
+    DATA_PRINTF(".");
+  }
+  if (OB_SUCC(ret)) {
+    DATA_PRINTF("*");
+  }
+  return ret;
+}
+
 int ObRawExprPrinter::print_json_expr(ObSysFunRawExpr *expr)
 {
   int ret = OB_SUCCESS;
@@ -2365,11 +2410,20 @@ int ObRawExprPrinter::print_json_expr(ObSysFunRawExpr *expr)
     ObString func_name = expr->get_func_name();
     switch (expr->get_expr_type()) {
       case T_FUN_SYS_JSON_VALUE: {
-        // json value parameter count more than 12, because mismatch is multi-val and default value.
-        // json_value(expr(0), expr(1) returning cast_type ascii xxx on empty(default value) xxx on error(default value) xxx on mismatch (xxx))
-        if (OB_UNLIKELY(expr->get_param_count() < 12)) {
+        // if json value only have one mismatch clause, the size of parameter is 13
+        const int8_t JSN_VAL_WITH_ONE_MISMATCH = 13;
+        // json value parameter count more than 13, because mismatch is multi-val and default value.
+        // json_value(expr(0), expr(1) returning cast_type truncate ascii xxx on empty(default value) xxx on error(default value) xxx on mismatch (xxx))
+        if (OB_UNLIKELY(expr->get_param_count() < JSN_VAL_WITH_ONE_MISMATCH)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected param count of expr to type", K(ret), KPC(expr));
+        } else if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(JSN_VAL_WITH_ONE_MISMATCH - 1))->get_value().is_int()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("type value isn't int value");
+        } else if (static_cast<ObConstRawExpr*>(expr->get_param_expr(JSN_VAL_WITH_ONE_MISMATCH - 1))->get_value().get_int() == 8) {
+          if (OB_FAIL(print_dot_notation(expr))) {
+            LOG_WARN("fail to print dot notation", K(ret));
+          }
         } else {
           DATA_PRINTF("json_value(");
           PRINT_EXPR(expr->get_param_expr(0));
@@ -2383,9 +2437,17 @@ int ObRawExprPrinter::print_json_expr(ObSysFunRawExpr *expr)
       }
       case T_FUN_SYS_JSON_QUERY: {
         // json query (json doc, json path, (returning cast_type) opt_scalars opt_pretty opt_ascii opt_wrapper on_error on_empty on_mismatch).
+        int64_t type = 0;
         if (OB_UNLIKELY(expr->get_param_count() != 11)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected param count of expr to type", K(ret), KPC(expr), K(expr->get_param_count()));
+        } else if (!static_cast<ObConstRawExpr*>(expr->get_param_expr(10))->get_value().is_int()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("type value isn't int value");
+        } else if (static_cast<ObConstRawExpr*>(expr->get_param_expr(10))->get_value().get_int() == 3) {
+          if (OB_FAIL(print_dot_notation(expr))) {
+            LOG_WARN("fail to print dot notation", K(ret));
+          }
         } else {
           DATA_PRINTF("json_query(");
           PRINT_EXPR(expr->get_param_expr(0));
@@ -3070,6 +3132,12 @@ int ObRawExprPrinter::print(ObSysFunRawExpr *expr)
         }
         break;
       }
+      case T_FUN_SYS_JSON_OBJECT_WILD_STAR: {
+        if (OB_FAIL(print_json_object_star(expr))) {
+          LOG_WARN("fail to print star in json object", K(ret));
+        }
+        break;
+      }
       case T_FUN_PAD: {
         if (print_params_.for_dblink_) {
           // Oracle do not have function pad,
@@ -3234,16 +3302,66 @@ int ObRawExprPrinter::print_translate(ObSysFunRawExpr *expr)
 int ObRawExprPrinter::print(ObUDFRawExpr *expr)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(buf_) || OB_ISNULL(pos_) || OB_ISNULL(expr)) {
+  if (OB_ISNULL(buf_) || OB_ISNULL(pos_) || OB_ISNULL(expr) || OB_ISNULL(schema_guard_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt_ is NULL of buf_ is NULL or pos_ is NULL or expr is NULL", K(ret));
   } else {
-    if (!print_params_.for_dblink_ &&
-        !expr->get_database_name().empty() &&
-         expr->get_database_name().case_compare("oceanbase") != 0) {
-      PRINT_IDENT_WITH_QUOT(expr->get_database_name());
-      DATA_PRINTF(".");
+    if (!print_params_.for_dblink_) {
+      if (!expr->get_database_name().empty()) {
+        if (expr->get_database_name().case_compare("oceanbase") != 0) {
+          PRINT_IDENT_WITH_QUOT(expr->get_database_name());
+          DATA_PRINTF(".");
+        }
+      } else if (OB_ISNULL(schema_guard_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("schema_guard for print raw expr is null", K(ret));
+      } else {
+
+#define PRINT_IMPLICIT_DATABASE_NAME(OBJECT, object_id, get_object_info_func, get_name_func) \
+do { \
+  const uint64_t tenant_id = pl::get_tenant_id_by_object_id(object_id); \
+  const share::schema::ObDatabaseSchema *database_schema = NULL; \
+  const share::schema::OBJECT *object_info = NULL; \
+  ObSchemaChecker checker; \
+  bool exist = false; \
+  if (OB_SYS_TENANT_ID == tenant_id) { \
+  } else if (OB_FAIL(schema_guard_->get_object_info_func(tenant_id, object_id, object_info))) { \
+    LOG_WARN("failed to get udt info", K(ret), KPC(expr), K(tenant_id)); \
+  } else if (OB_ISNULL(object_info)) { \
+    ret = OB_ERR_UNEXPECTED; \
+    LOG_WARN("object info is null", K(ret), KPC(expr), K(tenant_id)); \
+  } else if (OB_FAIL(schema_guard_->get_database_schema(tenant_id, object_info->get_database_id(), database_schema))) { \
+    LOG_WARN("failed to get database schema", K(ret), KPC(expr), K(tenant_id)); \
+  } else if (OB_ISNULL(database_schema)) { \
+    ret = OB_ERR_UNEXPECTED; \
+    LOG_WARN("database schema info is null", K(ret), K(database_schema), KPC(expr), K(tenant_id)); \
+  } else if (OB_FAIL(checker.init(*schema_guard_, schema_guard_->get_session_id()))) { \
+    LOG_WARN("failed to init schema checker", K(ret)); \
+  } else if (OB_FAIL(checker.check_exist_same_name_object_with_synonym(tenant_id, \
+                                                                       database_schema->get_database_id(), \
+                                                                       database_schema->get_database_name_str(), \
+                                                                       exist))) { \
+    LOG_WARN("failed to check exist same name object with database name", K(ret), KPC(database_schema)); \
+  } else if (!exist) { \
+    PRINT_IDENT_WITH_QUOT(database_schema->get_database_name_str()); \
+    DATA_PRINTF("."); \
+  } \
+} while (0)
+
+        if (expr->get_pkg_id() != OB_INVALID_ID) { // package or udt udf
+          if (expr->get_is_udt_udf()) {
+            PRINT_IMPLICIT_DATABASE_NAME(ObUDTTypeInfo, expr->get_pkg_id(), get_udt_info, get_type_name);
+          } else if (!expr->is_pkg_body_udf()) {
+            PRINT_IMPLICIT_DATABASE_NAME(ObPackageInfo, expr->get_pkg_id(), get_package_info, get_package_name);
+          }
+        } else if (expr->get_udf_id() != OB_INVALID_ID && 0 == expr->get_subprogram_path().count()) { // standalone udf
+          PRINT_IMPLICIT_DATABASE_NAME(ObRoutineInfo, expr->get_udf_id(), get_routine_info, get_routine_name);
+        }
+      }
+
+#undef PRINT_IMPLICIT_DATABASE_NAME
     }
+
     if (!expr->get_package_name().empty() &&
         !expr->get_is_udt_cons()) {
       PRINT_IDENT_WITH_QUOT(expr->get_package_name());

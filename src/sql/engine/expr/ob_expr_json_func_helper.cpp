@@ -314,7 +314,8 @@ int ObJsonExprHelper::eval_oracle_json_val(ObExpr *expr,
                                            ObIJsonBase*& j_base,
                                            bool is_format_json,
                                            bool is_strict,
-                                           bool is_bin)
+                                           bool is_bin,
+                                           bool is_absent_null)
 {
   INIT_SUCC(ret);
   ObDatum *json_datum = nullptr;
@@ -323,6 +324,8 @@ int ObJsonExprHelper::eval_oracle_json_val(ObExpr *expr,
 
   if (OB_FAIL(json_arg->eval(ctx, json_datum))) {
     LOG_WARN("eval json arg failed", K(ret), K(json_arg->datum_meta_));
+  } else if ((json_datum->is_null() || ob_is_null(json_arg->obj_meta_.get_type()))
+             && is_absent_null) {
   } else if (OB_FAIL(oracle_datum2_json_val(json_datum,
                                             json_arg->obj_meta_,
                                             allocator,
@@ -532,6 +535,72 @@ int ObJsonExprHelper::oracle_datum2_json_val(const ObDatum *json_datum,
       LOG_WARN("failed: parse value to jsonBase", K(ret), K(val_type));
     }
   }
+  return ret;
+}
+
+int ObJsonExprHelper::convert_string_collation_type(ObCollationType in_cs_type,
+                                                    ObCollationType dst_cs_type,
+                                                    ObIAllocator* allocator,
+                                                    ObString &in_str,
+                                                    ObString &out_str)
+{
+  INIT_SUCC(ret);
+
+  bool is_need_convert = ((CS_TYPE_BINARY == dst_cs_type)
+          || (ObCharset::charset_type_by_coll(in_cs_type) != ObCharset::charset_type_by_coll(dst_cs_type)));
+
+  if (is_need_convert) {
+    if (CS_TYPE_BINARY != in_cs_type && CS_TYPE_BINARY != dst_cs_type
+        && (ObCharset::charset_type_by_coll(in_cs_type) != ObCharset::charset_type_by_coll(dst_cs_type))) {
+      char *buf = nullptr;
+      int64_t buf_len = (in_str.length() == 0 ? 1 : in_str.length()) * ObCharset::CharConvertFactorNum;
+      uint32_t result_len = 0;
+
+      if (OB_ISNULL(buf = reinterpret_cast<char*>(allocator->alloc(buf_len)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("alloc memory failed", K(ret), K(buf_len));
+      } else if (OB_FAIL(ObCharset::charset_convert(in_cs_type,
+                                                    in_str.ptr(),
+                                                    in_str.length(),
+                                                    dst_cs_type,
+                                                    buf,
+                                                    buf_len,
+                                                    result_len))) {
+        LOG_WARN("charset convert failed", K(ret));
+      } else {
+        out_str.assign_ptr(buf, result_len);
+      }
+    } else {
+      if (CS_TYPE_BINARY == in_cs_type || CS_TYPE_BINARY == dst_cs_type) {
+        // just copy string when in_cs_type or out_cs_type is binary
+        const ObCharsetInfo *cs = NULL;
+        int64_t align_offset = 0;
+        if (CS_TYPE_BINARY == in_cs_type && (NULL != (cs = ObCharset::get_charset(dst_cs_type)))) {
+          if (cs->mbminlen > 0 && in_str.length() % cs->mbminlen != 0) {
+            align_offset = cs->mbminlen - in_str.length() % cs->mbminlen;
+          }
+        }
+        int64_t len = align_offset + in_str.length();
+        char *buf = nullptr;
+
+        if (OB_ISNULL(buf = static_cast<char*>(allocator->alloc(len)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate memory failed", K(ret), K(len));
+        } else {
+          MEMMOVE(buf + align_offset, in_str.ptr(), len - align_offset);
+          MEMSET(buf, 0, align_offset);
+          out_str.assign_ptr(buf, len);
+        }
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("same charset should not be here, just use cast_eval_arg", K(ret),
+                  K(in_cs_type), K(dst_cs_type), K(in_cs_type), K(dst_cs_type));
+      }
+    }
+  } else {
+    out_str = in_str;
+  }
+
   return ret;
 }
 
@@ -821,7 +890,7 @@ int ObJsonExprHelper::transform_scalar_2jsonBase(const T &datum,
         node_type = ObJsonNodeType::J_DATETIME;
         value = datum.get_datetime();
         ob_time.mode_ = DT_TYPE_DATETIME;
-        if (OB_FAIL(ObTimeConverter::datetime_to_ob_time(value, tz_info, ob_time))) {
+        if (OB_FAIL(ObTimeConverter::datetime_to_ob_time(value, nullptr, ob_time))) {
           LOG_WARN("datetime transform to ob time failed", K(ret), K(value));
         }
       } else {
@@ -903,7 +972,7 @@ int ObJsonExprHelper::transform_scalar_2jsonBase(const T &datum,
       }
       break;
     }
-
+    case ObDecimalIntType:
     case ObUNumberType:
     case ObNumberFloatType:
     case ObNumberType: {
@@ -913,8 +982,16 @@ int ObJsonExprHelper::transform_scalar_2jsonBase(const T &datum,
       if (OB_ISNULL(buf)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("buf allocate failed", K(ret), K(type));
+      }
+      if (OB_FAIL(ret)) {
+      } else if (ob_is_decimal_int(type)) {
+        if (OB_FAIL(wide::to_number(datum.get_decimal_int(), datum.get_int_bytes(), scale, *allocator, num))) {
+          LOG_WARN("cast decimal int to number failed", K(ret));
+        }
       } else if (OB_FAIL(num.deep_copy_v3(datum.get_number(), *allocator))) {
         LOG_WARN("num deep copy failed", K(ret), K(type));
+      }
+      if (OB_FAIL(ret)) {
       } else {
         // shadow copy
         json_node = (ObJsonDecimal *)new(buf)ObJsonDecimal(num, -1, scale);
@@ -928,6 +1005,25 @@ int ObJsonExprHelper::transform_scalar_2jsonBase(const T &datum,
         LOG_WARN("buf allocate failed", K(ret), K(type));
       } else {
         json_node = (ObJsonOpaque *)new(buf)ObJsonOpaque(datum.get_string(), type);
+      }
+      break;
+    }
+    case ObBitType: {
+      // using bit as char array to do cast.
+      uint64_t in_val = datum.get_uint64();
+      char *bit_buf = nullptr;
+      const int32_t bit_buf_len = (OB_MAX_BIT_LENGTH + 7) / 8;
+      int64_t bit_buf_pos = 0;
+      if (OB_ISNULL(bit_buf = static_cast<char*>(allocator->alloc(bit_buf_len)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("allocate bit buf fail", K(ret), K(type), K(bit_buf_len));
+      } else if (OB_FAIL(bit_to_char_array(in_val, scale, bit_buf, bit_buf_len, bit_buf_pos))) {
+        LOG_WARN("bit_to_char_array fail", K(ret), K(in_val), K(scale), KP(bit_buf), K(bit_buf_len), K(bit_buf_pos));
+      } else if (OB_ISNULL(buf = allocator->alloc(sizeof(ObJsonOpaque)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("allocate ObJsonOpaque fail", K(ret), K(type), "size", sizeof(ObJsonOpaque));
+      } else {
+        json_node = (ObJsonOpaque *)new(buf)ObJsonOpaque(ObString(bit_buf_pos, bit_buf), type);
       }
       break;
     }
@@ -1532,9 +1628,16 @@ int ObJsonExprHelper::calc_asciistr_in_expr(const ObString &src,
             } else {
               buf[pos++] = '\\';
             }
-            if (OB_SUCC(ret)) {
+            if (OB_SUCC(ret) && '\\' != wchar) {
+              if (OB_UNLIKELY(pos >= buf_len)) {
+                ret = OB_SIZE_OVERFLOW;
+                LOG_WARN("size overflow", K(ret), K(pos), K(buf_len));
+              } else {
+                buf[pos++] = 'u';
+              }
               int64_t hex_writtern_bytes = 0;
-              if (OB_FAIL(hex_print(temp_buf + i*utf16_minmb_len, utf16_minmb_len,
+              if (OB_FAIL(ret)) {
+              } else if (OB_FAIL(hex_print(temp_buf + i*utf16_minmb_len, utf16_minmb_len,
                                     buf + pos, buf_len - pos, hex_writtern_bytes))) {
                 LOG_WARN("fail to convert to hex", K(ret), K(temp_written_bytes), K(pos), K(buf_len));
               } else {
@@ -1640,8 +1743,9 @@ int ObJsonExprHelper::pre_default_value_check(ObObjType dst_type, ObString time_
       }
       break;
     }
-    case ObNumberType: {
-      if (val_type == ObNumberType) {
+    case ObNumberType:
+    case ObDecimalIntType: {
+      if (val_type == ObNumberType || val_type == ObDecimalIntType) {
       } else {
         len = time_str.length();
         for(size_t i = 0; i < len; i++) {

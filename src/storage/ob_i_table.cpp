@@ -20,6 +20,7 @@
 #include "storage/tablelock/ob_lock_memtable.h"
 #include "storage/tx_table/ob_tx_ctx_memtable.h"
 #include "storage/tx_table/ob_tx_data_memtable.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 
 using namespace oceanbase;
 using namespace oceanbase::blocksstable;
@@ -66,6 +67,15 @@ const char* ObITable::table_type_name_[] =
   "DDL_DUMP",
   "REMOTE_LOGICAL_MINOR",
   "DDL_MEM",
+  "COL_ORIENTED",
+  "NORMAL_COL_GROUP",
+  "ROWKEY_COL_GROUP",
+  "COL_ORIENTED_META",
+  "DDL_MERGE_CO",
+  "DDL_MERGE_CG",
+  "DDL_MEM_CO",
+  "DDL_MEM_CG",
+  "MDS"
 };
 
 uint64_t ObITable::TableKey::hash() const
@@ -560,10 +570,22 @@ int ObTableHandleV2::set_sstable(ObITable *table, const ObStorageMetaHandle &met
   return ret;
 }
 
+
 ObTablesHandleArray::ObTablesHandleArray()
   : tablet_id_(),
     handles_array_()
 {
+}
+
+ObTablesHandleArray::ObTablesHandleArray(const uint64_t tenant_id)
+  : tablet_id_(),
+    handles_array_()
+{
+  int64_t ctx_id = share::is_reserve_mode()
+                 ? ObCtxIds::MERGE_RESERVE_CTX_ID
+                 : ObCtxIds::DEFAULT_CTX_ID;
+
+  handles_array_.set_attr(lib::ObMemAttr(tenant_id, "TableHdArray", ctx_id));
 }
 
 ObTablesHandleArray::~ObTablesHandleArray()
@@ -634,7 +656,11 @@ int ObTablesHandleArray::add_sstable(ObITable *table, const ObStorageMetaHandle 
       ObStorageMetaKey meta_key(MTL_ID(), addr);
       ObStorageMetaHandle handle;
       ObSSTable *sstable = nullptr;
-      if (OB_FAIL(meta_cache.get_meta(ObStorageMetaValue::MetaType::SSTABLE, meta_key, handle, nullptr))) {
+      ObStorageMetaValue::MetaType meta_type = table->is_co_sstable()
+                                             ? ObStorageMetaValue::MetaType::CO_SSTABLE
+                                             : ObStorageMetaValue::MetaType::SSTABLE;
+
+      if (OB_FAIL(meta_cache.get_meta(meta_type, meta_key, handle, nullptr))) {
         LOG_WARN("fail to get sstable from meta cache", K(ret), K(addr));
       } else if (OB_FAIL(handle.get_sstable(sstable))) {
         LOG_WARN("fail to get sstable", K(ret), K(handle));
@@ -762,8 +788,7 @@ int ObTablesHandleArray::check_continues(const share::ObScnRange *scn_range) con
     if (OB_ISNULL(table = handles_array_.at(i).get_table())) {
       ret = OB_ERR_SYS;
       LOG_WARN("table is NULL", KPC(table));
-    } else if (table->is_major_sstable() || table->is_meta_major_sstable()) {
-      base_end_scn = table->is_meta_major_sstable() ? table->get_end_scn() : SCN::min_scn();
+    } else if (table->is_major_sstable()) {
       i++;
     }
     // 2:check minor sstable
@@ -772,7 +797,7 @@ int ObTablesHandleArray::check_continues(const share::ObScnRange *scn_range) con
       if (OB_ISNULL(table)) {
         ret = OB_ERR_SYS;
         LOG_WARN("table is NULL", KPC(table));
-      } else if (table->is_major_sstable() || table->is_meta_major_sstable()) {
+      } else if (table->is_major_sstable()) {
         ret = OB_ERR_SYS;
         LOG_WARN("major sstable or meta merge should be first", K(ret), K(i), K(table));
       } else if (OB_ISNULL(last_table)) { // first table

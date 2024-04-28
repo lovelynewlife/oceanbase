@@ -39,7 +39,8 @@ ObTableSchemaParam::ObTableSchemaParam(ObIAllocator &allocator)
     columns_(allocator),
     col_map_(allocator),
     pk_name_(),
-    read_info_()
+    read_info_(),
+    lob_inrow_threshold_(OB_DEFAULT_LOB_INROW_THRESHOLD)
 {
 }
 
@@ -65,6 +66,7 @@ void ObTableSchemaParam::reset()
   col_map_.clear();
   pk_name_.reset();
   read_info_.reset();
+  lob_inrow_threshold_ = OB_DEFAULT_LOB_INROW_THRESHOLD;
 }
 
 int ObTableSchemaParam::convert(const ObTableSchema *schema)
@@ -75,6 +77,9 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
   ObSEArray<ObColDesc, COMMON_COLUMN_NUM> all_column_ids;
   ObSEArray<ObColDesc, COMMON_COLUMN_NUM> tmp_col_descs;
   ObSEArray<int32_t, COMMON_COLUMN_NUM> tmp_cols_index;
+  ObSEArray<int32_t, COMMON_COLUMN_NUM> tmp_cg_idxs;
+  bool use_cs = false;
+  int32_t cg_idx = 0;
 
   if (OB_ISNULL(schema)) {
     ret = OB_INVALID_ARGUMENT;
@@ -83,6 +88,8 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
     table_id_ = schema->get_table_id();
     schema_version_ = schema->get_schema_version();
     table_type_ = schema->get_table_type();
+    use_cs = !schema->is_row_store();
+    lob_inrow_threshold_ = schema->get_lob_inrow_threshold();
   }
 
   if (OB_SUCC(ret) && schema->is_user_table() && !schema->is_heap_table()) {
@@ -121,6 +128,17 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
     }
   }
 
+  if (OB_SUCC(ret) && schema->is_mlog_table()) {
+    index_type_ = schema->get_index_type();
+    index_status_ = schema->get_index_status();
+    ObString tmp_name;
+    if (OB_FAIL(schema->get_mlog_name(tmp_name))) {
+      LOG_WARN("fail to get materialized view log name", KR(ret));
+    } else if (OB_FAIL(ob_write_string(allocator_, tmp_name, index_name_))) {
+      LOG_WARN("fail to copy materialized view log name", KR(ret), K(tmp_name));
+    }
+  }
+
   if (OB_SUCC(ret) && OB_FAIL(schema->get_column_ids(all_column_ids, false))) {
     LOG_WARN("fail to get column ids", K(ret));
   }
@@ -151,8 +169,14 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
       col_index = i - virtual_cols_cnt;
     }
 
-    if (OB_SUCC(ret) && OB_FAIL(tmp_cols_index.push_back(col_index))) {
-      LOG_WARN("fail to push_back col_index", K(ret));
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(tmp_cols_index.push_back(col_index))) {
+        LOG_WARN("fail to push_back col_index", K(ret));
+      } else if (use_cs && OB_FAIL(schema->get_column_group_index(*column, cg_idx))) {
+        LOG_WARN("Fail to get column group index", K(ret));
+      } else if (use_cs && OB_FAIL(tmp_cg_idxs.push_back(cg_idx))) {
+        LOG_WARN("Fail to push back cg idx", K(ret));
+      }
     }
   }
 
@@ -166,7 +190,8 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
                 lib::is_oracle_mode(),
                 tmp_col_descs,
                 &tmp_cols_index,
-                &tmp_cols))) {
+                &tmp_cols,
+                use_cs ? &tmp_cg_idxs : nullptr))) {
       LOG_WARN("Fail to init read info", K(ret));
     } else if (!col_map_.is_inited()) {
       if (OB_FAIL(col_map_.init(tmp_cols))) {
@@ -334,7 +359,8 @@ int64_t ObTableSchemaParam::to_string(char *buf, const int64_t buf_len) const
        K_(index_name),
        K_(pk_name),
        K_(columns),
-       K_(read_info));
+       K_(read_info),
+       K_(lob_inrow_threshold));
   J_OBJ_END();
   return pos;
 }
@@ -367,6 +393,7 @@ OB_DEF_SERIALIZE(ObTableSchemaParam)
   OB_UNIS_ENCODE(spatial_geo_col_id_);
   OB_UNIS_ENCODE(spatial_cellid_col_id_);
   OB_UNIS_ENCODE(spatial_mbr_col_id_);
+  OB_UNIS_ENCODE(lob_inrow_threshold_);
   return ret;
 }
 
@@ -404,7 +431,7 @@ OB_DEF_DESERIALIZE(ObTableSchemaParam)
   if (OB_SUCC(ret) && (data_len - pos) > MINIMAL_NEEDED_SIZE) {
      ObString tmp_name;
      if (OB_FAIL(tmp_name.deserialize(buf, data_len, pos))) {
-       LOG_WARN("failed to deserialize pk name", K(ret));
+       LOG_WARN("failed to deserialize pk name", K(ret), K(data_len), K(pos));
      } else if (OB_FAIL(ob_write_string(allocator_, tmp_name, pk_name_))) {
        LOG_WARN("failed to copy pk name", K(ret), K(tmp_name));
      }
@@ -412,6 +439,7 @@ OB_DEF_DESERIALIZE(ObTableSchemaParam)
   OB_UNIS_DECODE(spatial_geo_col_id_);
   OB_UNIS_DECODE(spatial_cellid_col_id_);
   OB_UNIS_DECODE(spatial_mbr_col_id_);
+  OB_UNIS_DECODE(lob_inrow_threshold_);
   return ret;
 }
 
@@ -443,6 +471,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchemaParam)
   OB_UNIS_ADD_LEN(spatial_geo_col_id_);
   OB_UNIS_ADD_LEN(spatial_cellid_col_id_);
   OB_UNIS_ADD_LEN(spatial_mbr_col_id_);
+  OB_UNIS_ADD_LEN(lob_inrow_threshold_);
   return len;
 }
 

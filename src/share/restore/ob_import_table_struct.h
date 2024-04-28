@@ -32,8 +32,9 @@ public:
   int set_result(const bool is_succeed, const char *buf);
   int set_result(const int err_code, const share::ObTaskId &trace_id, const ObAddr &addr, const ObString &extra_info = ObString());
   void reset();
-  const char *get_result_str() const { return is_succeed_ ? "SUCCEESS" : "FAILED"; }
+  const char *get_result_str() const { return is_succeed_ ? "SUCCESS" : "FAILED"; }
   const char *get_comment() const { return comment_.ptr(); }
+  const ObString get_comment_str() const { return comment_.str(); }
   bool is_succeed() const { return is_succeed_; }
   bool is_comment_setted() const { return !comment_.is_empty(); }
   ObImportResult &operator=(const ObImportResult &result);
@@ -319,12 +320,13 @@ public:
     PREPARE = 0,
     RECOVERING = 1,
     RESTORE_AUX_TENANT = 2,
-    PRECHECK_IMPORT = 3,
-    GEN_IMPORT_JOB = 4,
-    IMPORTING = 5,
-    CANCELING = 6,
-    COMPLETED = 7,
-    FAILED = 8,
+    ACTIVE_AUX_TENANT = 3,
+    PRECHECK_IMPORT = 4,
+    GEN_IMPORT_JOB = 5,
+    IMPORTING = 6,
+    CANCELING = 7,
+    COMPLETED = 8,
+    FAILED = 9,
     MAX_STATUS
   };
 public:

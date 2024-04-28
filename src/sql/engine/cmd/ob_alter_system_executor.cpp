@@ -46,6 +46,7 @@
 #include "sql/plan_cache/ob_plan_cache.h"
 #include "sql/plan_cache/ob_ps_cache.h"
 #include "share/table/ob_ttl_util.h"
+#include "rootserver/restore/ob_tenant_clone_util.h"
 namespace oceanbase
 {
 using namespace common;
@@ -166,6 +167,19 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
         int64_t timeout = THIS_WORKER.get_timeout_remain();
         if (OB_FAIL(common_rpc_proxy->timeout(timeout).root_minor_freeze(arg))) {
           LOG_WARN("minor freeze rpc failed", K(arg), K(ret), K(timeout), "dst", common_rpc_proxy->get_server());
+        }
+      }
+    } else if (stmt.get_tablet_id().is_valid()) {
+      if (OB_UNLIKELY(1 != stmt.get_tenant_ids().count())) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("not support schedule tablet major freeze for several tenant", K(ret), K(stmt));
+      } else {
+        rootserver::ObTabletMajorFreezeParam param;
+        param.tenant_id_ = stmt.get_tenant_ids().at(0);
+        param.tablet_id_ = stmt.get_tablet_id();
+        param.is_rebuild_column_group_ = stmt.is_rebuild_column_group();
+        if (OB_FAIL(rootserver::ObMajorFreezeHelper::tablet_major_freeze(param))) {
+          LOG_WARN("failed to schedule tablet major freeze", K(ret), K(param));
         }
       }
     } else {
@@ -1200,13 +1214,14 @@ int ObSetTPExecutor::execute(ObExecContext &ctx, ObSetTPStmt &stmt)
 {
   int ret = OB_SUCCESS;
   ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc_proxy = nullptr;
   if (OB_ISNULL(task_exec_ctx)) {
     ret = OB_NOT_INIT;
     LOG_WARN("get task executor context failed");
-  } else if (OB_ISNULL(task_exec_ctx->get_common_rpc())) {
+  } else if (OB_ISNULL(common_rpc_proxy = task_exec_ctx->get_common_rpc())) {
     ret = OB_NOT_INIT;
     LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-  } else if (OB_FAIL(task_exec_ctx->get_common_rpc()->admin_set_tracepoint(
+  } else if (OB_FAIL(common_rpc_proxy->admin_set_tracepoint(
                        stmt.get_rpc_arg()))) {
     LOG_WARN("set tracepoint rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
   }
@@ -2415,43 +2430,30 @@ int ObBackupSetEncryptionExecutor::execute(ObExecContext &ctx, ObBackupSetEncryp
 {
   int ret = OB_SUCCESS;
   common::ObCurTraceId::mark_user_request();
-  common::ObMySQLProxy *sql_proxy = nullptr;
-  ObSqlString set_mode_sql;
-  ObSqlString set_passwd_sql;
-  sqlclient::ObISQLConnection *conn = nullptr;
-  observer::ObInnerSQLConnectionPool *pool = nullptr;
   ObSQLSessionInfo *session_info = ctx.get_my_session();
-  int64_t affected_rows = 0;
+  ObSessionVariable encryption_mode;
+  ObSessionVariable encryption_passwd;
   if (OB_ISNULL(session_info)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), KP(session_info));
-  } else if (OB_ISNULL(sql_proxy = GCTX.sql_proxy_) || OB_ISNULL(sql_proxy->get_pool())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql proxy must not null", K(ret), KP(GCTX.sql_proxy_));
-  } else if (sqlclient::INNER_POOL != sql_proxy->get_pool()->get_type()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool type must be inner", K(ret), "type", sql_proxy->get_pool()->get_type());
-  } else if (OB_ISNULL(pool = static_cast<observer::ObInnerSQLConnectionPool*>(sql_proxy->get_pool()))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool must not null", K(ret));
-  } else if (OB_FAIL(set_mode_sql.assign_fmt("set @%s = '%s'",
-      OB_BACKUP_ENCRYPTION_MODE_SESSION_STR, ObBackupEncryptionMode::to_str(stmt.get_mode())))) {
-    LOG_WARN("failed to set mode", K(ret));
-  } else if (OB_FAIL(set_passwd_sql.assign_fmt("set @%s = '%.*s'",
-      OB_BACKUP_ENCRYPTION_PASSWD_SESSION_STR, stmt.get_passwd().length(), stmt.get_passwd().ptr()))) {
-    LOG_WARN("failed to set passwd", K(ret));
-  } else if (OB_FAIL(pool->acquire(session_info, conn))) {
-    LOG_WARN("failed to get conn", K(ret));
-  } else if (OB_FAIL(conn->execute_write(session_info->get_effective_tenant_id(), set_mode_sql.ptr(),
-      affected_rows))) {
-    LOG_WARN("failed to set mode", K(ret), K(set_mode_sql));
-  } else if (OB_FAIL(conn->execute_write(session_info->get_effective_tenant_id(), set_passwd_sql.ptr(),
-      affected_rows))) {
-    LOG_WARN("failed to set passwd", K(ret), K(set_passwd_sql));
   } else {
-    LOG_INFO("ObBackupSetEncryptionExecutor::execute", K(stmt), K(ctx),
-        K(set_mode_sql), K(set_passwd_sql));
+    encryption_mode.value_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+    encryption_mode.value_.set_varchar(ObBackupEncryptionMode::to_str(stmt.get_mode()));
+    encryption_mode.meta_.set_meta(encryption_mode.value_.meta_);
+
+    encryption_passwd.value_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+    encryption_passwd.value_.set_varchar(stmt.get_passwd().ptr(), stmt.get_passwd().length());
+    encryption_passwd.meta_.set_meta(encryption_passwd.value_.meta_);
+
+    if (OB_FAIL(session_info->replace_user_variable(OB_BACKUP_ENCRYPTION_MODE_SESSION_STR, encryption_mode))) {
+      LOG_WARN("failed to set encryption mode", K(ret), K(encryption_mode));
+    } else if (OB_FAIL(session_info->replace_user_variable(OB_BACKUP_ENCRYPTION_PASSWD_SESSION_STR, encryption_passwd))) {
+      LOG_WARN("failed to set encryption passwd", K(ret), K(encryption_passwd));
+    } else {
+      LOG_INFO("ObBackupSetEncryptionExecutor::execute", K(encryption_mode), K(encryption_passwd));
+    }
   }
+
   return ret;
 }
 
@@ -2459,35 +2461,23 @@ int ObBackupSetDecryptionExecutor::execute(ObExecContext &ctx, ObBackupSetDecryp
 {
   int ret = OB_SUCCESS;
   common::ObCurTraceId::mark_user_request();
-  common::ObMySQLProxy *sql_proxy = nullptr;
-  ObSqlString set_passwd_sql;
-  sqlclient::ObISQLConnection *conn = nullptr;
-  observer::ObInnerSQLConnectionPool *pool = nullptr;
   ObSQLSessionInfo *session_info = ctx.get_my_session();
-  int64_t affected_rows = 0;
+  ObSessionVariable decryption_passwd;
   if (OB_ISNULL(session_info)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), KP(session_info));
-  } else if (OB_ISNULL(sql_proxy = GCTX.sql_proxy_) || OB_ISNULL(sql_proxy->get_pool())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql proxy must not null", K(ret), KP(GCTX.sql_proxy_));
-  } else if (sqlclient::INNER_POOL != sql_proxy->get_pool()->get_type()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool type must be inner", K(ret), "type", sql_proxy->get_pool()->get_type());
-  } else if (OB_ISNULL(pool = static_cast<observer::ObInnerSQLConnectionPool*>(sql_proxy->get_pool()))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool must not null", K(ret));
-  } else if (OB_FAIL(set_passwd_sql.assign_fmt("set @%s = '%.*s'", OB_BACKUP_DECRYPTION_PASSWD_ARRAY_SESSION_STR,
-      stmt.get_passwd_array().length(), stmt.get_passwd_array().ptr()))) {
-    LOG_WARN("failed to set passwd", K(ret));
-  } else if (OB_FAIL(pool->acquire(session_info, conn))) {
-    LOG_WARN("failed to get conn", K(ret));
-  } else if (OB_FAIL(conn->execute_write(session_info->get_effective_tenant_id(), set_passwd_sql.ptr(),
-      affected_rows))) {
-    LOG_WARN("failed to set passwd", K(ret), K(set_passwd_sql));
   } else {
-    LOG_INFO("ObBackupSetEncryptionExecutor::execute", K(stmt), K(ctx), K(set_passwd_sql));
+    decryption_passwd.value_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+    decryption_passwd.value_.set_varchar(stmt.get_passwd_array().ptr(), stmt.get_passwd_array().length());
+    decryption_passwd.meta_.set_meta(decryption_passwd.value_.meta_);
+
+    if (OB_FAIL(session_info->replace_user_variable(OB_BACKUP_DECRYPTION_PASSWD_ARRAY_SESSION_STR, decryption_passwd))) {
+      LOG_WARN("failed to set decryption passwd", K(ret), K(decryption_passwd));
+    } else {
+      LOG_INFO("ObBackupSetDecryptionExecutor::execute", K(decryption_passwd));
+    }
   }
+
   return ret;
 }
 
@@ -2524,26 +2514,13 @@ int ObAddRestoreSourceExecutor::execute(ObExecContext &ctx, ObAddRestoreSourceSt
 {
   int ret = OB_SUCCESS;
   common::ObCurTraceId::mark_user_request();
-  common::ObMySQLProxy *sql_proxy = nullptr;
-  ObSqlString add_restore_source_sql;
-  sqlclient::ObISQLConnection *conn = nullptr;
-  observer::ObInnerSQLConnectionPool *pool = nullptr;
   ObSQLSessionInfo *session_info = ctx.get_my_session();
-  int64_t affected_rows = 0;
   ObObj value;
+  ObSessionVariable new_value;
 
   if (OB_ISNULL(session_info)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), KP(session_info));
-  } else if (OB_ISNULL(sql_proxy = GCTX.sql_proxy_) || OB_ISNULL(sql_proxy->get_pool())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql proxy must not null", K(ret), KP(GCTX.sql_proxy_));
-  } else if (sqlclient::INNER_POOL != sql_proxy->get_pool()->get_type()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool type must be inner", K(ret), "type", sql_proxy->get_pool()->get_type());
-  } else if (OB_ISNULL(pool = static_cast<observer::ObInnerSQLConnectionPool*>(sql_proxy->get_pool()))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pool must not null", K(ret));
   } else if (!session_info->user_variable_exists(OB_RESTORE_SOURCE_NAME_SESSION_STR)) {
     LOG_INFO("no restore source specified before");
   } else {
@@ -2555,20 +2532,18 @@ int ObAddRestoreSourceExecutor::execute(ObExecContext &ctx, ObAddRestoreSourceSt
   }
 
   if (OB_FAIL(ret)) {
-    // do nothing
-  } else if (OB_FAIL(add_restore_source_sql.assign_fmt(
-      "set @%s = '%.*s'", OB_RESTORE_SOURCE_NAME_SESSION_STR,
-      stmt.get_restore_source_array().length(),
-      stmt.get_restore_source_array().ptr()))) {
-    LOG_WARN("failed to add restore source", K(ret), K(stmt));
-  } else if (OB_FAIL(pool->acquire(session_info, conn))) {
-    LOG_WARN("failed to get conn", K(ret));
-  } else if (OB_FAIL(conn->execute_write(session_info->get_effective_tenant_id(),
-      add_restore_source_sql.ptr(), affected_rows))) {
-    LOG_WARN("failed to add restore source", K(ret), K(add_restore_source_sql));
   } else {
-    LOG_INFO("ObAddRestoreSourceExecutor::execute", K(stmt), K(ctx), K(add_restore_source_sql));
+    new_value.value_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+    new_value.value_.set_varchar(stmt.get_restore_source_array().ptr(), stmt.get_restore_source_array().length());
+    new_value.meta_.set_meta(new_value.value_.meta_);
+
+    if (OB_FAIL(session_info->replace_user_variable(OB_RESTORE_SOURCE_NAME_SESSION_STR, new_value))) {
+      LOG_WARN("failed to set user variable", K(ret), K(new_value));
+    } else {
+      LOG_INFO("ObAddRestoreSourceExecutor::execute", K(stmt), K(new_value));
+    }
   }
+
   return ret;
 }
 
@@ -2705,6 +2680,70 @@ int ObTableTTLExecutor::execute(ObExecContext& ctx, ObTableTTLStmt& stmt)
       LOG_WARN("fail to dispatch ttl cmd", K(ret), K(param));
     }
   }
+  return ret;
+}
+
+int ObResetConfigExecutor::execute(ObExecContext &ctx, ObResetConfigStmt &stmt)
+{
+  int ret = OB_SUCCESS;
+  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
+  obrpc::ObCommonRpcProxy *common_rpc = NULL;
+  if (OB_ISNULL(task_exec_ctx)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed");
+  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
+  } else if (OB_FAIL(common_rpc->admin_set_config(stmt.get_rpc_arg()))) {
+    LOG_WARN("set config rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
+  }
+  return ret;
+}
+
+int ObCancelCloneExecutor::execute(ObExecContext &ctx, ObCancelCloneStmt &stmt)
+{
+  int ret = OB_SUCCESS;
+  ObTaskExecutorCtx *task_exec_ctx = NULL;
+  common::ObMySQLProxy *sql_proxy = nullptr;
+  const ObString &clone_tenant_name = stmt.get_clone_tenant_name();
+  bool clone_already_finish = false;
+
+  if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("get task executor context failed", KR(ret));
+  } else if (OB_ISNULL(sql_proxy = ctx.get_sql_proxy())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sql proxy must not be null", KR(ret));
+  } else {
+    ObSchemaGetterGuard guard;
+    const ObTenantSchema *tenant_schema = nullptr;
+    if (OB_FAIL(GSCHEMASERVICE.get_tenant_schema_guard(OB_SYS_TENANT_ID, guard))) {
+      LOG_WARN("failed to get sys tenant schema guard", KR(ret));
+    } else if (OB_FAIL(guard.get_tenant_info(clone_tenant_name, tenant_schema))) {
+      LOG_WARN("failed to get tenant info", KR(ret), K(stmt));
+    } else if (OB_ISNULL(tenant_schema)) {
+      LOG_INFO("tenant not exist", KR(ret), K(clone_tenant_name));
+    } else if (tenant_schema->is_normal()) {
+      ret = OB_OP_NOT_ALLOW;
+      LOG_WARN("the new tenant has completed the cloning operation", KR(ret), K(clone_tenant_name));
+      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "The new tenant has completed the cloning operation, "
+                                      "or this is not the name of a cloning tenant. "
+                                      "Cancel cloning");
+    }
+  }
+
+  if (FAILEDx(rootserver::ObTenantCloneUtil::cancel_clone_job(*sql_proxy,
+                                                              clone_tenant_name,
+                                                              clone_already_finish))) {
+    LOG_WARN("cancel clone job failed", KR(ret), K(clone_tenant_name));
+  } else if (clone_already_finish) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_WARN("the new tenant has completed the cloning operation", KR(ret), K(clone_tenant_name));
+    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "The new tenant has completed the cloning operation, "
+                                     "or this is not the name of a cloning tenant. "
+                                     "Cancel cloning");
+  }
+
   return ret;
 }
 

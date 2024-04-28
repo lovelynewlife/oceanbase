@@ -96,6 +96,8 @@ int ObTenantInfoLoader::start()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret));
   } else if (!is_user_tenant(tenant_id_)) {
+    //meta and sys tenant is primary
+    MTL_SET_TENANT_ROLE_CACHE(ObTenantRole::PRIMARY_TENANT);
     LOG_INFO("not user tenant no need load", K(tenant_id_));
   } else if (OB_FAIL(logical_start())) {
     LOG_WARN("failed to start", KR(ret));
@@ -347,15 +349,12 @@ void ObTenantInfoLoader::broadcast_tenant_info_content_()
     }
 
     int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_code_array))) {
+    if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
       LOG_WARN("wait all batch result failed", KR(ret), KR(tmp_ret));
       ret = OB_SUCCESS == ret ? tmp_ret : ret;
-    } else if (proxy.get_results().count() != return_code_array.count()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("result count not match", KR(ret),
-                K(rpc_count), K(return_code_array), "arg count",
-                proxy.get_args().count(), K(proxy.get_results().count()));
     } else if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("fail to check return cnt", KR(ret), "return_cnt", return_code_array.count());
     } else {
       (void)ATOMIC_AAF(&broadcast_times_, 1);
       ObUpdateTenantInfoCacheRes res;
@@ -502,6 +501,19 @@ int ObTenantInfoLoader::get_sync_scn(share::SCN &sync_scn)
   return ret;
 }
 
+int ObTenantInfoLoader::get_recovery_until_scn(share::SCN &recovery_until_scn)
+{
+  int ret = OB_SUCCESS;
+  share::ObAllTenantInfo tenant_info;
+  recovery_until_scn.set_invalid();
+  if (OB_FAIL(get_tenant_info(tenant_info))) {
+    LOG_WARN("failed to get tenant info", KR(ret));
+  } else {
+    recovery_until_scn = tenant_info.get_recovery_until_scn();
+  }
+  return ret;
+}
+
 int ObTenantInfoLoader::get_tenant_info(share::ObAllTenantInfo &tenant_info)
 {
   int ret = OB_SUCCESS;
@@ -592,7 +604,7 @@ int ObAllTenantInfoCache::refresh_tenant_info(const uint64_t tenant_id,
     SpinWLockGuard guard(lock_);
     if (ora_rowscn >= ora_rowscn_) {
       if (ora_rowscn > ora_rowscn_) {
-        MTL_SET_TENANT_ROLE(new_tenant_info.get_tenant_role().value());
+        MTL_SET_TENANT_ROLE_CACHE(new_tenant_info.get_tenant_role().value());
         (void)tenant_info_.assign(new_tenant_info);
         ora_rowscn_ = ora_rowscn;
         content_changed = true;
@@ -631,7 +643,7 @@ int ObAllTenantInfoCache::update_tenant_info_cache(
       ret = OB_EAGAIN;
       LOG_WARN("my tenant_info is invalid, don't refresh", KR(ret), K_(tenant_info), K_(ora_rowscn));
     } else if (new_ora_rowscn > ora_rowscn_) {
-      MTL_SET_TENANT_ROLE(new_tenant_info.get_tenant_role().value());
+      MTL_SET_TENANT_ROLE_CACHE(new_tenant_info.get_tenant_role().value());
       (void)tenant_info_.assign(new_tenant_info);
       ora_rowscn_ = new_ora_rowscn;
       refreshed = true;

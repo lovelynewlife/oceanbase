@@ -1171,13 +1171,13 @@ int ObBackupStorageInfo::get_access_key_(char *key_buf, const int64_t key_buf_le
   return ret;
 }
 
-int ObBackupStorageInfo::parse_storage_info_(const char *storage_info, bool &has_appid)
+int ObBackupStorageInfo::parse_storage_info_(const char *storage_info, bool &has_needed_extension)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(storage_info) || strlen(storage_info) >= OB_MAX_BACKUP_STORAGE_INFO_LENGTH) {
     ret = OB_INVALID_BACKUP_DEST;
     LOG_WARN("storage info is invalid", K(ret), K(storage_info), K(strlen(storage_info)));
-  } else if (OB_FAIL(ObObjectStorageInfo::parse_storage_info_(storage_info, has_appid))) {
+  } else if (OB_FAIL(ObObjectStorageInfo::parse_storage_info_(storage_info, has_needed_extension))) {
     LOG_WARN("failed to parse storage info", K(ret), K(storage_info));
   } else {
     char tmp[OB_MAX_BACKUP_STORAGE_INFO_LENGTH] = { 0 };
@@ -1528,6 +1528,28 @@ int ObBackupDest::set(const char *root_path, const ObBackupStorageInfo *storage_
   return ret;
 }
 
+// check if backup_dest contains "encrypt_key=" then set
+int ObBackupDest::set_without_decryption(const common::ObString &backup_dest) {
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator;
+  char *backup_dest_str = nullptr;
+  char *result = nullptr;
+  if (OB_ISNULL(backup_dest_str = reinterpret_cast<char *>(allocator.alloc(backup_dest.length() + 1)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate memory failed" ,KR(ret));
+  } else {
+    MEMCPY(backup_dest_str, backup_dest.ptr(), backup_dest.length());
+    backup_dest_str[backup_dest.length()] = '\0';
+    if (OB_NOT_NULL(result = strstr(backup_dest_str, ENCRYPT_KEY))) {
+      ret = OB_INVALID_BACKUP_DEST;
+      LOG_WARN("backup destination should not contain encrypt_key", K(ret), K(backup_dest_str));
+      LOG_USER_ERROR(OB_INVALID_BACKUP_DEST, "backup destination contains encrypt_key, which");
+    } else if (OB_FAIL(set(backup_dest_str))) {
+      LOG_WARN("fail to set backup dest", K(ret));
+    }
+  }
+  return ret;
+}
 
 void ObBackupDest::root_path_trim_()
 {
@@ -3036,16 +3058,23 @@ bool ObBackupStats::is_valid() const
       && finish_file_count_ >= 0;
 }
 
-void ObBackupStats::assign(const ObBackupStats &other)
+int ObBackupStats::assign(const ObBackupStats &other)
 {
-  input_bytes_ = other.input_bytes_;
-  output_bytes_ = other.output_bytes_;
-  tablet_count_ = other.tablet_count_;
-  finish_tablet_count_ = other.finish_tablet_count_;
-  macro_block_count_ = other.macro_block_count_;
-  finish_macro_block_count_ = other.finish_macro_block_count_;
-  extra_bytes_ = other.extra_bytes_;
-  finish_file_count_ = other.finish_file_count_;
+  int ret = OB_SUCCESS;
+  if (!other.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid arg", K(ret), K(other));
+  } else {
+    input_bytes_ = other.input_bytes_;
+    output_bytes_ = other.output_bytes_;
+    tablet_count_ = other.tablet_count_;
+    finish_tablet_count_ = other.finish_tablet_count_;
+    macro_block_count_ = other.macro_block_count_;
+    finish_macro_block_count_ = other.finish_macro_block_count_;
+    extra_bytes_ = other.extra_bytes_;
+    finish_file_count_ = other.finish_file_count_;
+  }
+  return ret;
 }
 
 void ObBackupStats::cum_with(const ObBackupStats &other)
@@ -3830,18 +3859,26 @@ int ObBackupSetFileDesc::assign(const ObBackupSetFileDesc &other)
   return ret;
 }
 
-int64_t ObBackupSetFileDesc::to_string(char *min_restore_scn_str_buf, char *buf, int64_t buf_len) const {
+int64_t ObBackupSetFileDesc::to_string(char *min_restore_scn_str_buf,  char *buf, int64_t buf_len) const {
   int64_t pos = 0;
   if (OB_ISNULL(min_restore_scn_str_buf) || OB_ISNULL(buf) || buf_len <= 0 || !is_valid()) {
     // do nothing
   } else {
     J_OBJ_START();
     ObQuoteSzString min_restore_scn_display(min_restore_scn_str_buf);
+    char tenant_compatible_str[OB_CLUSTER_VERSION_LENGTH] = { 0 };
+    char cluster_version_str[OB_CLUSTER_VERSION_LENGTH] = { 0 };
+    int64_t version_str_pos =  ObClusterVersion::print_version_str(
+      tenant_compatible_str, OB_CLUSTER_VERSION_LENGTH, tenant_compatible_);
+    version_str_pos =  ObClusterVersion::print_version_str(
+      cluster_version_str, OB_CLUSTER_VERSION_LENGTH, cluster_version_);
+    ObQuoteSzString tenant_compatible_display(tenant_compatible_str);
+    ObQuoteSzString cluster_version_display(cluster_version_str);
     J_KV(K_(backup_set_id), K_(incarnation), K_(tenant_id), K_(dest_id), K_(backup_type), K_(plus_archivelog),
       K_(date), K_(prev_full_backup_set_id), K_(prev_inc_backup_set_id), K_(stats), K_(start_time), K_(end_time),
       K_(status), K_(result), K_(encryption_mode), K_(passwd), K_(file_status), K_(backup_path), K_(start_replay_scn),
-      K_(min_restore_scn), K(min_restore_scn_display), K_(tenant_compatible), K_(backup_compatible), K_(data_turn_id), K_(meta_turn_id),
-      K_(cluster_version), K_(consistent_scn));
+      K_(min_restore_scn), K(min_restore_scn_display), K(tenant_compatible_display), K_(backup_compatible), K_(data_turn_id), K_(meta_turn_id),
+      K(cluster_version_display), K_(consistent_scn));
     J_OBJ_END();
   }
   return pos;
@@ -4034,7 +4071,7 @@ int ObLogArchiveDestAtrr::set_log_archive_dest(const common::ObString &str)
   if (str.empty()) {
     ret = OB_INVALID_ARGUMENT;
      LOG_WARN("invalid args", K(ret), K(str));
-  } else if (OB_FAIL(dest_.set(str.ptr()))) {
+  } else if (OB_FAIL(dest_.set_without_decryption(str))) {
     LOG_WARN("fail to set dest", K(ret));
   }
   return ret;

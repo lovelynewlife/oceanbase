@@ -1,13 +1,15 @@
 /**
- * Copyright 2014-2016 Alibaba Inc. All Rights Reserved.
- *
- * Date: 2022年3月19日
- *
- * ob_das_spatial_index_lookup_op.cpp is for …
- *
- * Authors:
- *     shengle<>
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
+
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/ob_das_spatial_index_lookup_op.h"
 #include "sql/engine/ob_exec_context.h"
@@ -263,23 +265,21 @@ int ObSpatialIndexLookupOp::process_data_table_rowkey()
   ObObj *obj_ptr = nullptr;
   void *buf = nullptr;
   ObNewRange lookup_range;
-  if (OB_ISNULL(buf = lookup_rtdef_->scan_allocator_.alloc(sizeof(ObObj) * rowkey_cnt))) {
+  ObArenaAllocator tmp_allocator("GisLookup");
+  if (OB_ISNULL(buf = tmp_allocator.alloc(sizeof(ObObj) * rowkey_cnt))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("allocate buffer failed", K(ret), K(rowkey_cnt));
   } else {
     obj_ptr = new(buf) ObObj[rowkey_cnt];
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_cnt; ++i) {
-    ObObj tmp_obj;
     ObExpr *expr = index_ctdef_->result_output_.at(i);
     if (T_PSEUDO_GROUP_ID == expr->type_) {
       // do nothing
     } else {
       ObDatum &col_datum = expr->locate_expr_datum(*lookup_rtdef_->eval_ctx_);
-      if (OB_FAIL(col_datum.to_obj(tmp_obj, expr->obj_meta_, expr->obj_datum_map_))) {
+      if (OB_FAIL(col_datum.to_obj(obj_ptr[i], expr->obj_meta_, expr->obj_datum_map_))) {
         LOG_WARN("convert datum to obj failed", K(ret));
-      } else if (OB_FAIL(ob_write_obj(lookup_rtdef_->scan_allocator_, tmp_obj, obj_ptr[i]))) {
-        LOG_WARN("deep copy rowkey value failed", K(ret), K(tmp_obj));
       }
     }
   }

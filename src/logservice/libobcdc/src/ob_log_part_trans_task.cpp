@@ -343,7 +343,7 @@ int MutatorRow::parse_columns_(
 {
   int ret = OB_SUCCESS;
   blocksstable::ObRowReader row_reader;
-  blocksstable::ObDatumRow datum_row;
+  blocksstable::ObDatumRow datum_row(tenant_id);
   // warpper cols for udt column values
   ObCDCUdtValueMap udt_value_map(allocator_, tb_schema_info, cols);
 
@@ -752,7 +752,7 @@ int MutatorRow::parse_columns_(
 {
   int ret = OB_SUCCESS;
   blocksstable::ObRowReader row_reader;
-  blocksstable::ObDatumRow datum_row;
+  blocksstable::ObDatumRow datum_row(OB_SERVER_TENANT_ID);
   const ObArray<share::schema::ObColDesc> &col_des_array = inner_table_schema.get_cols_des_array();
   const share::schema::ObTableSchema &table_schema = inner_table_schema.get_table_schema();
 
@@ -1150,6 +1150,12 @@ const logservice::TenantLSID &DmlStmtTask::get_tls_id() const
 int64_t DmlStmtTask::get_global_schema_version() const
 {
   return host_.get_global_schema_version();
+}
+
+int DmlStmtTask::parse_aux_meta_table_cols(
+    const ObCDCLobAuxTableSchemaInfo &lob_aux_table_schema_info)
+{
+  return row_.parse_cols(lob_aux_table_schema_info);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -1777,8 +1783,8 @@ void DdlStmtTask::reset()
 
 ////////////////////////////////////////////////////////////////////////////////////
 
-ObLogEntryTask::ObLogEntryTask() :
-    host_(NULL),
+ObLogEntryTask::ObLogEntryTask(PartTransTask &host) :
+    host_(&host),
     participant_(NULL),
     tls_id_(),
     trans_id_(),
@@ -1787,7 +1793,7 @@ ObLogEntryTask::ObLogEntryTask() :
     stmt_list_(),
     formatted_stmt_num_(0),
     row_ref_cnt_(0),
-    arena_allocator_("LogEntryTask", OB_MALLOC_MIDDLE_BLOCK_SIZE)
+    arena_allocator_(host.get_log_entry_task_base_allocator(), "LogEntryTask", host.get_tenant_id())
 {
 }
 
@@ -2183,7 +2189,8 @@ PartTransTask::PartTransTask() :
     wait_data_ready_cond_(),
     wait_formatted_cond_(NULL),
     output_br_count_by_turn_(0),
-    allocator_()
+    allocator_(),
+    log_entry_task_base_allocator_()
 {
 }
 
@@ -2319,6 +2326,23 @@ void PartTransTask::reset()
   output_br_count_by_turn_ = 0;
   // reuse memory
   allocator_.reset();
+  log_entry_task_base_allocator_.destroy();
+}
+
+int PartTransTask::init_log_entry_task_allocator()
+{
+  int ret = OB_SUCCESS;
+  lib::ObMemAttr attr(tls_id_.get_tenant_id(), "LogEntryTaskBas");
+  const int64_t cache_block_count = 4; // nway for vslice_alloc
+
+  if (OB_FAIL(log_entry_task_base_allocator_.init(
+      OB_MALLOC_MIDDLE_BLOCK_SIZE,
+      attr,
+      cache_block_count))) {
+    LOG_ERROR("init log_entry_task_base_allocator_ failed", KR(ret), KPC(this));
+  }
+
+  return ret;
 }
 
 int PartTransTask::push_redo_log(

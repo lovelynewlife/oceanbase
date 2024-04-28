@@ -18,7 +18,7 @@
 #include "lib/alloc/ob_malloc_sample_struct.h"
 #include "lib/allocator/ob_tc_malloc.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "rpc/obrpc/ob_rpc_handler.h"
 #include "share/ob_cluster_version.h"
 #include "share/ob_task_define.h"
@@ -31,6 +31,7 @@
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
 #include "storage/slog/ob_storage_logger_manager.h"
+#include "share/ob_ddl_sim_point.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -87,54 +88,44 @@ ObServerReloadConfig::~ObServerReloadConfig()
 
 int ObServerReloadConfig::operator()()
 {
-  int ret = OB_SUCCESS;
-  int real_ret = ret;
+  int tmp_ret = OB_SUCCESS;
+  int ret = tmp_ret;
   const bool is_arbitration_mode = OBSERVER.is_arbitration_mode();
 
   if (!gctx_.is_inited()) {
-    real_ret = ret = OB_INNER_STAT_ERROR;
-    LOG_WARN("gctx not init", "gctx inited", gctx_.is_inited(), K(ret));
+    ret = tmp_ret = OB_INNER_STAT_ERROR;
+    LOG_WARN("gctx not init", "gctx inited", gctx_.is_inited(), K(tmp_ret));
   } else {
-    if (OB_FAIL(ObReloadConfig::operator()())) {
-      real_ret = ret;
-      LOG_WARN("ObReloadConfig operator() failed", K(ret));
+    if (OB_TMP_FAIL(ObReloadConfig::operator()())) {
+      LOG_WARN("ObReloadConfig operator() failed", K(tmp_ret));
     }
-    if (OB_FAIL(gctx_.root_service_->reload_config())) {
-      real_ret = ret;
-      LOG_WARN("root_service_ reload_config failed", K(ret));
+    if (OB_TMP_FAIL(gctx_.root_service_->reload_config())) {
+      LOG_WARN("root_service_ reload_config failed", K(tmp_ret));
     }
-    if (OB_FAIL(gctx_.location_service_->reload_config())) {
-      real_ret = ret;
-      LOG_WARN("location service reload config failed", KR(ret));
+    if (OB_TMP_FAIL(gctx_.location_service_->reload_config())) {
+      LOG_WARN("location service reload config failed", KR(tmp_ret));
     }
-    if (OB_FAIL(ObClusterVersion::get_instance().reload_config())) {
-      real_ret = ret;
-      LOG_WARN("cluster version reload config failed", K(ret));
+    if (OB_TMP_FAIL(ObClusterVersion::get_instance().reload_config())) {
+      LOG_WARN("cluster version reload config failed", K(tmp_ret));
     }
 
-    if (OB_FAIL(OBSERVER.reload_config())) {
-      real_ret = ret;
-      LOG_WARN("reload configuration for ob service fail", K(ret));
+    if (OB_TMP_FAIL(OBSERVER.reload_config())) {
+      LOG_WARN("reload configuration for ob service fail", K(tmp_ret));
     }
-    if (OB_FAIL(OBSERVER.get_net_frame().reload_config())) {
-      real_ret = ret;
-      LOG_WARN("reload configuration for net frame fail", K(ret));
+    if (OB_TMP_FAIL(OBSERVER.get_net_frame().reload_config())) {
+      LOG_WARN("reload configuration for net frame fail", K(tmp_ret));
     }
-    if (OB_FAIL(OBSERVER.get_net_frame().reload_ssl_config())) {
-      real_ret = ret;
-      LOG_WARN("reload ssl config for net frame fail", K(ret));
+    if (OB_TMP_FAIL(OBSERVER.get_net_frame().reload_ssl_config())) {
+      LOG_WARN("reload ssl config for net frame fail", K(tmp_ret));
     }
-    if (OB_FAIL(OBSERVER.get_rl_mgr().reload_config())) {
-      real_ret = ret;
-      LOG_WARN("reload config for ratelimit manager fail", K(ret));
+    if (OB_TMP_FAIL(OBSERVER.get_rl_mgr().reload_config())) {
+      LOG_WARN("reload config for ratelimit manager fail", K(tmp_ret));
     }
-    if (OB_FAIL(ObTdeEncryptEngineLoader::get_instance().reload_config())) {
-      real_ret = ret;
-      LOG_WARN("reload config for tde encrypt engine fail", K(ret));
+    if (OB_TMP_FAIL(ObTdeEncryptEngineLoader::get_instance().reload_config())) {
+      LOG_WARN("reload config for tde encrypt engine fail", K(tmp_ret));
     }
-    if (OB_FAIL(OBSERVER.get_net_frame().reload_rpc_auth_method())) {
-      real_ret = ret;
-      LOG_WARN("reload config for rpc auth method fail", K(ret));
+    if (OB_TMP_FAIL(ObSrvNetworkFrame::reload_rpc_auth_method())) {
+      LOG_WARN("reload config for rpc auth method fail", K(tmp_ret));
     }
   }
   {
@@ -142,9 +133,8 @@ int ObServerReloadConfig::operator()()
     const int64_t limit_memory = GMEMCONF.get_server_memory_limit();
     OB_LOGGER.set_info_as_wdiag(GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_1_0_0);
     // reload log config again after get MIN_CLUSTER_VERSION
-    if (OB_FAIL(ObReloadConfig::operator()())) {
-      real_ret = ret;
-      LOG_WARN("ObReloadConfig operator() failed", K(ret));
+    if (OB_TMP_FAIL(ObReloadConfig::operator()())) {
+      LOG_WARN("ObReloadConfig operator() failed", K(tmp_ret));
     }
     const int64_t reserved_memory = GCONF.cache_wash_threshold;
     const int64_t reserved_urgent_memory = GCONF.memory_reserved;
@@ -172,15 +162,13 @@ int ObServerReloadConfig::operator()()
       io_config.data_storage_warning_tolerance_time_ = GCONF.data_storage_warning_tolerance_time;
       io_config.data_storage_error_tolerance_time_ = GCONF.data_storage_error_tolerance_time;
       if (!is_arbitration_mode
-          && OB_FAIL(ObIOManager::get_instance().set_io_config(io_config))) {
-        real_ret = ret;
-        LOG_WARN("reload io manager config fail, ", K(ret));
+          && OB_TMP_FAIL(ObIOManager::get_instance().set_io_config(io_config))) {
+        LOG_WARN("reload io manager config fail, ", K(tmp_ret));
       }
 
       (void)reload_diagnose_info_config(GCONF.enable_perf_event);
       (void)reload_trace_log_config(GCONF.enable_record_trace_log);
 
-      reload_tenant_freezer_config_();
       reload_tenant_scheduler_config_();
     }
   }
@@ -233,10 +221,17 @@ int ObServerReloadConfig::operator()()
       // do-nothing
     } else {
       reset_mem_leak_checker_label(GCONF.leak_mod_to_check.str());
-      ObKVGlobalCache::get_instance().set_checker_cache_name(GCONF.leak_mod_to_check.str());  // TODO : @lvling add system variable to set cache handle diagnose filter
 
       STRNCPY(last_value, GCONF.leak_mod_to_check.str(), sizeof(last_value));
       last_value[sizeof(last_value) - 1] = '\0';
+    }
+  }
+
+  {
+    static char last_storage_check_mod[MAX_CACHE_NAME_LENGTH];
+    if (0 != STRNCMP(last_storage_check_mod, GCONF._storage_leak_check_mod.str(), sizeof(last_storage_check_mod))) {
+      ObKVGlobalCache::get_instance().set_storage_leak_check_mod(GCONF._storage_leak_check_mod.str());
+      STRNCPY(last_storage_check_mod, GCONF._storage_leak_check_mod.str(), sizeof(last_storage_check_mod));
     }
   }
 #ifndef ENABLE_SANITY
@@ -322,7 +317,7 @@ int ObServerReloadConfig::operator()()
   {
     ObMallocAllocator::get_instance()->force_malloc_for_absent_tenant_ = GCONF._force_malloc_for_absent_tenant;
   }
-  return real_ret;
+  return ret;
 }
 
 void ObServerReloadConfig::reload_tenant_scheduler_config_()
@@ -335,23 +330,7 @@ void ObServerReloadConfig::reload_tenant_scheduler_config_()
   } else {
     auto f = [] () {
       (void)MTL(ObTenantDagScheduler *)->reload_config();
-      (void)MTL(ObTenantTabletScheduler *)->reload_tenant_config();
-      return OB_SUCCESS;
-    };
-    omt->operate_in_each_tenant(f);
-  }
-}
-
-void ObServerReloadConfig::reload_tenant_freezer_config_()
-{
-  int ret = OB_SUCCESS;
-  omt::ObMultiTenant *omt = GCTX.omt_;
-  if (OB_ISNULL(omt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("omt should not be null", K(ret));
-  } else {
-    auto f = [] () {
-      MTL(ObTenantFreezer *)->reload_config();
+      (void)MTL(compaction::ObTenantTabletScheduler *)->reload_tenant_config();
       return OB_SUCCESS;
     };
     omt->operate_in_each_tenant(f);

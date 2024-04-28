@@ -23,13 +23,14 @@
 #include "storage/blocksstable/ob_macro_block_struct.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "storage/meta_mem/ob_tablet_handle.h"
-#include "storage/blocksstable/ob_index_block_builder.h"
-#include "storage/blocksstable/ob_sstable_sec_meta_iterator.h"
+#include "storage/blocksstable/index_block/ob_index_block_builder.h"
+#include "storage/blocksstable/index_block/ob_sstable_sec_meta_iterator.h"
 #include "storage/tablet/ob_tablet_create_delete_helper.h"
 #include "storage/ls/ob_ls.h"
 #include "share/ob_ls_id.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_slog_handler.h"
+#include "storage/blocksstable/ob_data_store_desc.h"
 
 namespace oceanbase
 {
@@ -38,6 +39,7 @@ namespace blocksstable
 using namespace common;
 using namespace common::hash;
 using namespace share;
+using namespace compaction;
 
 /**
  * ---------------------------------------ObBlockInfo----------------------------------------
@@ -77,6 +79,7 @@ ObSharedMacroBlockMgr::ObSharedMacroBlockMgr()
     blocks_mutex_(),
     block_used_size_(),
     defragmentation_task_(*this),
+    io_allocator_("SMBM_IOUB", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
     tg_id_(-1),
     is_inited_(false)
 {
@@ -207,6 +210,7 @@ int ObSharedMacroBlockMgr::write_block(
 
     if (OB_SUCC(ret)) {
       write_info.offset_ = offset_;
+      write_info.io_timeout_ms_ = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
       if (OB_FAIL(do_write_block(write_info, block_info))) {
         LOG_WARN("fail to do write block", K(ret), K(write_info), K(block_info));
       } else {
@@ -230,14 +234,13 @@ int ObSharedMacroBlockMgr::do_write_block(
 {
   int ret = OB_SUCCESS;
   ObMacroBlockHandle write_macro_handle;
-  const int64_t io_timeout_ms = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
 
   if (OB_FAIL(write_macro_handle.set_macro_block_id(macro_handle_.get_macro_id()))) {
     LOG_WARN("fail to set macro block id", K(ret), K(macro_handle_.get_macro_id()));
   } else if (OB_FAIL(write_macro_handle.async_write(write_info))) {
     LOG_WARN("fail to async write virtual macro block", K(ret), K(write_macro_handle));
-  } else if (OB_FAIL(write_macro_handle.wait(io_timeout_ms))) {
-    LOG_WARN("fail to wait previous io", K(ret), K(io_timeout_ms));
+  } else if (OB_FAIL(write_macro_handle.wait())) {
+    LOG_WARN("fail to wait previous io", K(ret), K(write_info));
   }
 
   if (OB_TIMEOUT == ret) {
@@ -269,20 +272,26 @@ int ObSharedMacroBlockMgr::check_write_complete(const MacroBlockId &macro_id, co
   read_info.size_ = macro_size;
   read_info.offset_ = offset_;
   read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
+  read_info.io_timeout_ms_ = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
   read_info.io_desc_.set_group_id(ObIOModule::SHARED_MACRO_BLOCK_MGR_IO);
-  const int64_t io_timeout_ms = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
   ObMacroBlockHandle read_handle;
   ObSSTableMacroBlockChecker macro_block_checker;
+  io_allocator_.reuse();
 
-  if (OB_FAIL(ObBlockManager::async_read_block(read_info, read_handle))) {
-    LOG_WARN("fail to async read macro block", K(ret), K(read_info));
-  } else if (OB_FAIL(read_handle.wait(io_timeout_ms))) {
-    LOG_WARN("fail to wait io finish", K(ret), K(io_timeout_ms));
-  } else if (OB_FAIL(macro_block_checker.check(
-      read_handle.get_buffer(),
-      read_handle.get_data_size(),
-      CHECK_LEVEL_PHYSICAL))) {
-    LOG_WARN("fail to verify macro block", K(ret), K(macro_id));
+  if (OB_ISNULL(read_info.buf_ = reinterpret_cast<char*>(io_allocator_.alloc(read_info.size_)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    STORAGE_LOG(WARN, "failed to alloc macro read info buffer", K(ret), K(read_info.size_));
+  } else {
+    if (OB_FAIL(ObBlockManager::async_read_block(read_info, read_handle))) {
+      LOG_WARN("fail to async read macro block", K(ret), K(read_info));
+    } else if (OB_FAIL(read_handle.wait())) {
+      LOG_WARN("fail to wait io finish", K(ret), K(read_info));
+    } else if (OB_FAIL(macro_block_checker.check(
+        read_info.buf_,
+        read_handle.get_data_size(),
+        CHECK_LEVEL_PHYSICAL))) {
+      LOG_WARN("fail to verify macro block", K(ret), K(macro_id));
+    }
   }
   return ret;
 }
@@ -292,6 +301,7 @@ int ObSharedMacroBlockMgr::try_switch_macro_block()
   int ret = OB_SUCCESS;
   const MacroBlockId &block_id = macro_handle_.get_macro_id();
   const int32_t used_size = offset_;
+  // we add_block_size extraly to avoid defragmenting the previous block if some sstables haven't been inited
   if (block_id.is_valid() && OB_FAIL(add_block(block_id, used_size))) {
     LOG_WARN("fail to add cur block to map", K(ret), K(block_id));
   } else if (FALSE_IT(macro_handle_.reset())) {
@@ -306,6 +316,7 @@ int ObSharedMacroBlockMgr::try_switch_macro_block()
     write_info.size_ = header_size_;
     write_info.offset_ = 0;
     write_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_WRITE);
+    write_info.io_timeout_ms_ = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
     if (OB_FAIL(do_write_block(write_info, block_info))) {
       LOG_WARN("fail to write common header to the shared macro block", K(ret), K(block_info));
     }
@@ -328,6 +339,12 @@ void ObSharedMacroBlockMgr::get_cur_shared_block(MacroBlockId &macro_id)
 {
   lib::ObMutexGuard guard(mutex_);
   macro_id = macro_handle_.get_macro_id();
+}
+
+bool ObSharedMacroBlockMgr::is_recyclable(const MacroBlockId &macro_id, const int64_t &used_size) const
+{
+  // current macro block is excluded
+  return macro_id != macro_handle_.get_macro_id() && used_size < RECYCLABLE_BLOCK_SIZE;
 }
 
 int ObSharedMacroBlockMgr::add_block(const MacroBlockId &block_id, const int64_t block_size)
@@ -358,8 +375,7 @@ int ObSharedMacroBlockMgr::free_block(const MacroBlockId &block_id, const int64_
 {
   int ret = OB_SUCCESS;
   int32_t curr_size = 0;
-  if (OB_UNLIKELY(!block_id.is_valid() || block_size <= 0
-      || block_size >= SMALL_SSTABLE_STHRESHOLD_SIZE)) {
+  if (OB_UNLIKELY(!block_id.is_valid() || block_size <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid block size or id", K(ret), K(block_id), K(block_size));
   } else {
@@ -385,7 +401,7 @@ int ObSharedMacroBlockMgr::get_recyclable_blocks(ObIAllocator &allocator, ObIArr
     // since we need for_loop, we need mutex to protect array
     lib::ObMutexGuard guard(blocks_mutex_);
     ObFixedArray<MacroBlockId, ObIAllocator> recycled_block_ids(allocator);
-    GetSmallBlockOp getOp(block_ids, recycled_block_ids);
+    GetSmallBlockOp getOp(*this, block_ids, recycled_block_ids);
 
     if (OB_FAIL(recycled_block_ids.init(MAX_RECYCLABLE_BLOCK_CNT))) {
       LOG_WARN("fail to init recycled_block_ids", K(ret));
@@ -419,7 +435,8 @@ int ObSharedMacroBlockMgr::defragment()
   ObArenaAllocator task_allocator("SSTDefragTask", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   ObArenaAllocator iter_allocator("SSTDefragIter", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   ObFixedArray<MacroBlockId, ObIAllocator> macro_ids(task_allocator);
-  ObTenantTabletIterator tablet_iter(*(MTL(ObTenantMetaMemMgr*)), iter_allocator);
+  ObHasNestedTableFilterOp op;
+  ObTenantTabletIterator tablet_iter(*(MTL(ObTenantMetaMemMgr*)), iter_allocator, &op);
   ObSSTableIndexBuilder *sstable_index_builder = nullptr;
   ObIndexBlockRebuilder *index_block_rebuilder = nullptr;
   int64_t rewrite_cnt = 0;
@@ -449,6 +466,8 @@ int ObSharedMacroBlockMgr::defragment()
         LOG_WARN("invalid tablet handle", K(ret), K(tablet_handle));
       } else if (tablet_handle.get_obj()->is_ls_inner_tablet()) {
         // skip update
+      } else if (!tablet_handle.get_obj()->is_row_store()) {
+        // TODO @danling support small sstable for column store
       } else if (OB_FAIL(update_tablet(
           tablet_handle,
           macro_ids,
@@ -511,6 +530,7 @@ int ObSharedMacroBlockMgr::update_tablet(
   ObMetaDiskAddr cur_addr;
   const ObTabletMapKey key(ls_id, tablet_meta.tablet_id_);
 
+  //ATTENTION!!! get_all_sstables should unpack cosstable, and make cosstable again finally
   if (OB_FAIL(tablet_handle.get_obj()->get_all_sstables(table_store_iter))) {
     LOG_WARN("fail to get sstables of this tablet", K(ret));
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(MTL_ID(), data_version))) {
@@ -612,6 +632,7 @@ int ObSharedMacroBlockMgr::update_tablet(
       }
     }
   }
+
   return ret;
 }
 
@@ -625,7 +646,7 @@ int ObSharedMacroBlockMgr::rebuild_sstable(
     ObSSTable &new_sstable)
 {
   int ret = OB_SUCCESS;
-  ObDataStoreDesc data_desc;
+  ObWholeDataStoreDesc data_desc;
   ObMergeType merge_type;
   sstable_index_builder.reset();
   index_block_rebuilder.reset();
@@ -636,6 +657,7 @@ int ObSharedMacroBlockMgr::rebuild_sstable(
   ObSSTableMergeRes res;
   ObSSTableMetaHandle old_meta_handle;
   ObSSTableMetaHandle new_meta_handle;
+  common::ObArenaAllocator read_allocator;
 
   if (OB_FAIL(old_sstable.get_meta(old_meta_handle))) {
     LOG_WARN("get meta handle fail", K(ret), K(old_sstable));
@@ -647,13 +669,14 @@ int ObSharedMacroBlockMgr::rebuild_sstable(
       merge_type,
       tablet.get_snapshot_version(),
       data_version,
+      old_sstable.get_end_scn(),
       data_desc))) {
-    LOG_WARN("fail to prepare data desc", K(ret), K(merge_type), K(tablet.get_snapshot_version()));
-  } else if (OB_FAIL(sstable_index_builder.init(data_desc, nullptr, ObSSTableIndexBuilder::DISABLE))) {
+    LOG_WARN("fail to prepare data desc", K(ret), "merge_type", merge_type_to_str(merge_type), K(tablet.get_snapshot_version()));
+  } else if (OB_FAIL(sstable_index_builder.init(data_desc.get_desc(), nullptr, ObSSTableIndexBuilder::DISABLE))) {
     LOG_WARN("fail to init sstable index builder", K(ret), K(data_desc));
   } else if (OB_FAIL(index_block_rebuilder.init(sstable_index_builder))) {
     LOG_WARN("fail to init index block rebuilder", K(ret));
-  } else if (OB_FAIL(read_sstable_block(old_sstable, block_handle))) {
+  } else if (OB_FAIL(read_sstable_block(old_sstable, block_handle, read_allocator))) {
     LOG_WARN("fail to read old_sstable's block", K(ret), K(old_sstable));
   } else if (OB_FAIL(write_block(
       block_handle.get_buffer(), block_handle.get_data_size(), block_info, write_ctx))) {
@@ -762,41 +785,31 @@ int ObSharedMacroBlockMgr::prepare_data_desc(
     const ObMergeType &merge_type,
     const int64_t snapshot_version,
     const int64_t cluster_version,
-    ObDataStoreDesc &data_desc) const
+    const share::SCN &end_scn,
+    ObWholeDataStoreDesc &data_desc) const
 {
   int ret = OB_SUCCESS;
   ObArenaAllocator tmp_arena("ShrBlkMgrTmp");
-  const ObStorageSchema *storage_schema = nullptr;
+  ObStorageSchema *storage_schema = nullptr;
   data_desc.reset();
   if (OB_FAIL(tablet.load_storage_schema(tmp_arena, storage_schema))) {
-    LOG_WARN("fail to load storage schema", K(ret), K(tablet));
-  } else if (OB_FAIL(data_desc.init_as_index(
-      *storage_schema,
-      tablet.get_tablet_meta().ls_id_,
-      tablet.get_tablet_meta().tablet_id_,
-      merge_type,
-      snapshot_version,
-      cluster_version))) {
-    LOG_WARN("fail to init data store desc", K(ret),
-      K(tablet), K(merge_type), K(snapshot_version), K(cluster_version));
-  } else {
+  LOG_WARN("fail to load storage schema", K(ret), K(tablet));
+  } else if (OB_FAIL(data_desc.init(
+        *storage_schema,
+        tablet.get_tablet_meta().ls_id_,
+        tablet.get_tablet_meta().tablet_id_,
+        merge_type,
+        snapshot_version,
+        cluster_version,
+        end_scn))) {
+    LOG_WARN("failed to init static desc", K(ret), KPC(storage_schema),
+      K(tablet), "merge_type", merge_type_to_str(merge_type), K(snapshot_version), K(cluster_version));
+  } else if (OB_FAIL(data_desc.get_desc().update_basic_info_from_macro_meta(basic_meta))) {
     // overwrite the encryption related memberships, otherwise these memberships of new sstable may differ
     // from that of old sstable, since the encryption method of one tablet may change before defragmentation
-    data_desc.row_store_type_ = basic_meta.root_row_store_type_;
-    data_desc.compressor_type_ = basic_meta.compressor_type_;
-    data_desc.master_key_id_ = basic_meta.master_key_id_;
-    data_desc.encrypt_id_ = basic_meta.encrypt_id_;
-    data_desc.encoder_opt_.set_store_type(basic_meta.root_row_store_type_);
-    MEMCPY(data_desc.encrypt_key_, basic_meta.encrypt_key_, share::OB_MAX_TABLESPACE_ENCRYPT_KEY_LENGTH);
-
-    // since the schema is always newer than the original sstable and new cols can only be added to the tail,
-    // it's safe to pop back the default checksum of new cols to keep the consistency of sstable_meta.
-    data_desc.full_stored_col_cnt_ = basic_meta.column_cnt_;
-    while(data_desc.col_default_checksum_array_.count() > basic_meta.column_cnt_) {
-      data_desc.col_default_checksum_array_.pop_back();
-    }
+    LOG_WARN("failed to update basic info from macro_meta", KR(ret), K(basic_meta));
   }
-  ObTablet::free_storage_schema(tmp_arena, storage_schema);
+  ObTabletObjLoadHelper::free(tmp_arena, storage_schema);
   return ret;
 }
 
@@ -806,7 +819,9 @@ int ObSharedMacroBlockMgr::parse_merge_type(const ObSSTable &sstable, ObMergeTyp
   merge_type = ObMergeType::INVALID_MERGE_TYPE;
 
   if (sstable.is_major_sstable()) {
-    merge_type = ObMergeType::MAJOR_MERGE;
+    merge_type = sstable.is_meta_major_sstable()
+               ? ObMergeType::META_MAJOR_MERGE
+               : ObMergeType::MAJOR_MERGE;
   } else if (sstable.is_minor_sstable()) {
     merge_type = ObMergeType::MINOR_MERGE;
   } else {
@@ -838,7 +853,8 @@ int ObSharedMacroBlockMgr::alloc_for_tools(
 
 int ObSharedMacroBlockMgr::read_sstable_block(
     const ObSSTable &sstable,
-    ObMacroBlockHandle &block_handle)
+    ObMacroBlockHandle &block_handle,
+    common::ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
   ObMacroBlockReadInfo read_info;
@@ -857,15 +873,21 @@ int ObSharedMacroBlockMgr::read_sstable_block(
     read_info.offset_ = sstable.get_macro_offset();
     read_info.size_ = upper_align(sstable.get_macro_read_size(), DIO_READ_ALIGN_SIZE);
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
+    read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
     read_info.io_desc_.set_group_id(ObIOModule::SHARED_MACRO_BLOCK_MGR_IO);
   }
 
-  if (OB_FAIL(ObBlockManager::read_block(read_info, block_handle))) {
-    LOG_WARN("fail to read block", K(ret), K(read_info));
-  } else if (OB_UNLIKELY(!block_handle.is_valid()
-      || sstable.get_macro_read_size() != block_handle.get_data_size())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("block handle is invalid", K(ret), K(block_handle));
+  if (OB_ISNULL(read_info.buf_ = reinterpret_cast<char*>(allocator.alloc(read_info.size_)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    STORAGE_LOG(WARN, "failed to alloc macro read info buffer", K(ret), K(read_info.size_));
+  } else {
+    if (OB_FAIL(ObBlockManager::read_block(read_info, block_handle))) {
+      LOG_WARN("fail to read block", K(ret), K(read_info));
+    } else if (OB_UNLIKELY(!block_handle.is_valid()
+          || sstable.get_macro_read_size() != block_handle.get_data_size())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("block handle is invalid", K(ret), K(block_handle));
+    }
   }
   return ret;
 }

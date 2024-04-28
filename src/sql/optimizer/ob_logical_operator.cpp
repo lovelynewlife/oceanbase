@@ -1086,7 +1086,7 @@ int ObLogicalOperator::do_re_est_cost(EstimateCostInfo &param, double &card, dou
       double child_card = child->get_card();
       double child_cost = child->get_cost();
       ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
-      op_cost = ObOptEstCost::cost_get_rows(child_card / parallel, opt_ctx.get_cost_model_type());
+      op_cost = ObOptEstCost::cost_get_rows(child_card / parallel, opt_ctx);
       if (OB_FAIL(SMART_CALL(child->re_est_cost(param, child_card, child_cost)))) {
         LOG_WARN("failed to re est cost", K(ret));
       } else if (OB_FAIL(ObOptSelectivity::calculate_selectivity(get_plan()->get_basic_table_metas(),
@@ -3205,6 +3205,8 @@ int ObLogicalOperator::px_rescan_pre()
         nested_rescan = false;
         if (0 == i) {
           enable_px_batch_rescans.push_back(false);
+        } else if (static_cast<ObLogSubPlanFilter*>(this)->get_onetime_idxs().has_member(i)) {
+          find_px = false;
         } else if (OB_FAIL(get_child(i)->find_nested_dis_rescan(nested_rescan, false))) {
           LOG_WARN("fail to find nested rescan", K(ret));
         } else if (nested_rescan) {
@@ -4034,6 +4036,8 @@ int ObLogicalOperator::allocate_granule_nodes_above(AllocGIContext &ctx)
         } else {
           gi_op->set_tablet_id_expr(tablet_id_expr);
           gi_op->set_join_filter_info(table_scan->get_join_filter_info());
+          ObLogJoinFilter *jf_create_op = gi_op->get_join_filter_info().log_join_filter_create_op_;
+          jf_create_op->set_paired_join_filter(gi_op);
           gi_op->add_flag(GI_USE_PARTITION_FILTER);
         }
       } else if (LOG_GROUP_BY == get_type()) {
@@ -4532,12 +4536,21 @@ int ObLogicalOperator::cal_runtime_filter_compare_func(
     ObRawExpr *join_create_expr)
 {
   int ret = OB_SUCCESS;
+  common::ObCollationType cs_type = join_use_expr->get_collation_type();
   if (ob_is_string_or_lob_type(join_use_expr->get_result_type().get_type())
       || ob_is_string_or_lob_type(join_create_expr->get_result_type().get_type())) {
     if (OB_UNLIKELY(join_use_expr->get_collation_type() != join_create_expr->get_collation_type())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("collation type not match", K(join_use_expr->get_result_type()),
-          K(join_create_expr->get_result_type()));
+      // it's ok if one side of the join is a null type because null types can always be compared.
+      if (ob_is_null(join_use_expr->get_result_type().get_type())) {
+        // use create's cs_type
+        cs_type = join_create_expr->get_collation_type();
+      } else if (ob_is_null(join_create_expr->get_result_type().get_type())) {
+        // use use's cs_type
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("collation type not match", K(join_use_expr->get_result_type()),
+            K(join_create_expr->get_result_type()));
+      }
     }
   }
   if (OB_SUCC(ret)) {
@@ -4550,7 +4563,7 @@ int ObLogicalOperator::cal_runtime_filter_compare_func(
                                   join_use_expr->get_data_type(),
                                   join_create_expr->get_data_type(),
                                   lib::is_oracle_mode()? NULL_LAST : NULL_FIRST,
-                                  join_use_expr->get_collation_type(),
+                                  cs_type,
                                   scale,
                                   lib::is_oracle_mode(),
                                   has_lob_header);
@@ -4768,7 +4781,7 @@ int ObLogicalOperator::allocate_partition_join_filter(const ObIArray<JoinFilterI
           join_filter_create->is_shared_join_filter(),
           info.skip_subpart_,
           join_filter_create->get_p2p_sequence_ids().at(0),
-          right_has_exchange));
+          right_has_exchange, join_filter_create));
       scan_op->set_join_filter_info(bf_info);
       scan_op->set_part_join_filter_created(true);
       filter_id++;
@@ -4821,6 +4834,8 @@ int ObLogicalOperator::allocate_normal_join_filter(const ObIArray<JoinFilterInfo
       } else {
         join_filter_create = static_cast<ObLogJoinFilter *>(filter_create);
         join_filter_use = static_cast<ObLogJoinFilter *>(filter_use);
+        join_filter_create->set_paired_join_filter(join_filter_use);
+        join_filter_use->set_paired_join_filter(join_filter_create);
         join_filter_create->set_is_create_filter(true);
         join_filter_use->set_is_create_filter(false);
         join_filter_create->set_filter_id(filter_id);
@@ -4883,6 +4898,10 @@ int ObLogicalOperator::allocate_normal_join_filter(const ObIArray<JoinFilterInfo
         }
         OZ(create_runtime_filter_info(node,
             join_filter_create, join_filter_use, info.join_filter_selectivity_));
+        if (OB_SUCC(ret) && LOG_TABLE_SCAN == node->get_type()) {
+          ObLogTableScan *scan = static_cast<ObLogTableScan*>(node);
+          scan->set_use_column_store(info.use_column_store_);
+        }
       }
     }
   }

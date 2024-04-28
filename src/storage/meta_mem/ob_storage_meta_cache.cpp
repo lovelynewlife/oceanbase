@@ -17,14 +17,14 @@
 #include "lib/stat/ob_diagnose_info.h"
 #include "lib/statistic_event/ob_stat_event.h"
 #include "share/io/ob_io_struct.h"
+#include "share/ob_tablet_autoincrement_param.h"
 #include "storage/blocksstable/ob_sstable.h"
 #include "storage/blocksstable/ob_storage_cache_suite.h"
 #include "storage/slog_ckpt/ob_tenant_checkpoint_slog_handler.h"
 #include "storage/tablet/ob_tablet_table_store.h"
 #include "storage/tablet/ob_tablet.h"
-#include "share/ob_tablet_autoincrement_param.h"
-#include "storage/tablet/ob_tablet.h"
 #include "storage/blocksstable/ob_storage_cache_suite.h"
+#include "storage/column_store/ob_column_oriented_sstable.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 
 namespace oceanbase
@@ -42,20 +42,6 @@ ObStorageMetaKey::ObStorageMetaKey(const uint64_t tenant_id, const ObMetaDiskAdd
   : tenant_id_(tenant_id),
     phy_addr_(phy_addr)
 {
-}
-
-ObStorageMetaKey::ObStorageMetaKey(
-    const uint64_t tenant_id,
-    const blocksstable::MacroBlockId &block_id,
-    const int64_t offset,
-    const int64_t size)
-  : tenant_id_(tenant_id)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(phy_addr_.set_block_addr(block_id, offset, size))) {
-    LOG_ERROR("fail to set block address", K(ret), K(block_id), K(offset), K(size));
-  }
-  abort_unless(OB_SUCCESS == ret);
 }
 
 ObStorageMetaKey::~ObStorageMetaKey()
@@ -111,14 +97,18 @@ const ObMetaDiskAddr &ObStorageMetaKey::get_meta_addr() const
 
 ObStorageMetaValue::StorageMetaProcessor ObStorageMetaValue::processor[ObStorageMetaValue::MetaType::MAX]
   = { ObStorageMetaValue::process_sstable,
+      ObStorageMetaValue::process_co_sstable,
       ObStorageMetaValue::process_table_store,
       ObStorageMetaValue::process_autoinc_seq,
+      ObStorageMetaValue::process_aux_tablet_info
   };
 
 ObStorageMetaValue::StorageMetaBypassProcessor ObStorageMetaValue::bypass_processor[MetaType::MAX]
   = { ObStorageMetaValue::bypass_process_storage_meta<blocksstable::ObSSTable>,
+      ObStorageMetaValue::bypass_process_storage_meta<storage::ObCOSSTableV2>,
       nullptr, // not support bypass process table store.
       ObStorageMetaValue::bypass_process_storage_meta<share::ObTabletAutoincSeq>,
+      ObStorageMetaValue::bypass_process_storage_meta_for_aux_tablet_info
   };
 
 
@@ -173,7 +163,7 @@ int ObStorageMetaValue::deep_copy(char *buf, const int64_t buf_len, ObIKVCacheVa
         reinterpret_cast<int64_t>(new_buf), ObSSTable::AARCH64_CP_BUF_ALIGN));
     pos = reinterpret_cast<int64_t>(new_buf) - reinterpret_cast<int64_t>(buf);
 #endif
-  pvalue = new (buf) ObStorageMetaValue();
+    pvalue = new (buf) ObStorageMetaValue();
     if (OB_FAIL(obj_->deep_copy(new_buf, buf_len - pos, pvalue->obj_))) {
       LOG_WARN("fail to deep copy storage meta object", K(ret), KP(buf), K(buf_len));
     } else {
@@ -190,7 +180,7 @@ int ObStorageMetaValue::get_sstable(const blocksstable::ObSSTable *&sstable) con
   if (OB_ISNULL(obj_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
-  } else if (OB_UNLIKELY(MetaType::SSTABLE != type_)) {
+  } else if (OB_UNLIKELY(MetaType::SSTABLE != type_ && MetaType::CO_SSTABLE != type_)) {
     ret = OB_STATE_NOT_MATCH;
     LOG_WARN("not sstable", K(ret), K(type_));
   } else {
@@ -205,7 +195,7 @@ int ObStorageMetaValue::get_sstable(blocksstable::ObSSTable *&sstable) const
   if (OB_ISNULL(obj_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
-  } else if (OB_UNLIKELY(MetaType::SSTABLE != type_)) {
+  } else if (OB_UNLIKELY(MetaType::SSTABLE != type_ && MetaType::CO_SSTABLE != type_)) {
     ret = OB_STATE_NOT_MATCH;
     LOG_WARN("not sstable", K(ret), K(type_));
   } else {
@@ -240,6 +230,21 @@ int ObStorageMetaValue::get_autoinc_seq(const share::ObTabletAutoincSeq *&seq) c
     LOG_WARN("not auto inc seq", K(ret), K(type_));
   } else {
     seq = static_cast<share::ObTabletAutoincSeq *>(obj_);
+  }
+  return ret;
+}
+
+int ObStorageMetaValue::get_aux_tablet_info(const ObTabletBindingMdsUserData *&aux_tablet_info) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(obj_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not inited", K(ret));
+  } else if (OB_UNLIKELY(MetaType::AUX_TABLET_INFO != type_)) {
+    ret = OB_STATE_NOT_MATCH;
+    LOG_WARN("not aux tablet info", K(ret), K(type_));
+  } else {
+    aux_tablet_info = static_cast<ObTabletBindingMdsUserData *>(obj_);
   }
   return ret;
 }
@@ -283,6 +288,43 @@ int ObStorageMetaValue::process_sstable(
   return ret;
 }
 
+int ObStorageMetaValue::process_co_sstable(
+    ObStorageMetaValueHandle &handle,
+    const ObStorageMetaKey &key,
+    const char *buf,
+    const int64_t size,
+    const ObTablet *tablet)
+{
+  UNUSED(tablet);
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator;
+  storage::ObCOSSTableV2 co_sstable;
+  ObIStorageMetaObj *tiny_meta = nullptr;
+  char *tmp_buf = nullptr;
+  int64_t pos = 0;
+  if (OB_ISNULL(buf) || OB_UNLIKELY(size <= 0 || !handle.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", K(ret), KP(buf), K(size), K(handle));
+  } else if (OB_FAIL(co_sstable.deserialize(allocator, buf, size, pos))) {
+    LOG_WARN("fail to deserialize co sstable", K(ret), KP(buf), K(size));
+  } else if (OB_ISNULL(tmp_buf = static_cast<char *>(allocator.alloc(co_sstable.get_deep_copy_size())))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to allocate buffer", K(ret), K(co_sstable.get_deep_copy_size()));
+  } else if (OB_FAIL(co_sstable.deep_copy(tmp_buf, co_sstable.get_deep_copy_size(), tiny_meta))) {
+    LOG_WARN("fail to deep copy co sstable", K(ret), KP(tmp_buf), K(co_sstable));
+  } else {
+    ObStorageMetaCacheValue *cache_value = handle.get_cache_value();
+    ObStorageMetaValue value(MetaType::CO_SSTABLE, tiny_meta);
+    if (OB_FAIL(OB_STORE_CACHE.get_storage_meta_cache().put_and_fetch(key, value, cache_value->value_, cache_value->cache_handle_))) {
+      LOG_WARN("fail to put and fetch value into secondary meta cache", K(ret), K(key), K(value), K(cache_value));
+    }
+  }
+  if (OB_NOT_NULL(tiny_meta)) {
+    tiny_meta->~ObIStorageMetaObj();
+  }
+  return ret;
+}
+
 int ObStorageMetaValue::process_table_store(
     ObStorageMetaValueHandle &handle,
     const ObStorageMetaKey &key,
@@ -296,22 +338,27 @@ int ObStorageMetaValue::process_table_store(
   ObIStorageMetaObj *tiny_meta = nullptr;
   char *tmp_buf = nullptr;
   int64_t pos = 0;
+  ObTimeGuard time_guard("cache_process", 10_ms); //10ms
   if (OB_ISNULL(buf) || OB_UNLIKELY(size <= 0 || !handle.is_valid()) || OB_ISNULL(tablet)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(buf), K(size), K(handle));
   } else if (OB_FAIL(table_store.deserialize(allocator, *tablet, buf, size, pos))) {
     LOG_WARN("fail to deserialize table store", K(ret), KP(buf), K(size));
+  } else if (FALSE_IT(time_guard.click("deserialize"))) {
   } else if (OB_ISNULL(tmp_buf = static_cast<char *>(allocator.alloc(table_store.get_deep_copy_size())))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to allocate buffer", K(ret), K(table_store.get_deep_copy_size()));
+  } else if (FALSE_IT(time_guard.click("allocate"))) {
   } else if (OB_FAIL(table_store.deep_copy(tmp_buf, table_store.get_deep_copy_size(), tiny_meta))) {
     LOG_WARN("fail to deep copy table store", K(ret), KP(tmp_buf), K(table_store));
   } else {
+    time_guard.click("deep_copy");
     ObStorageMetaCacheValue *cache_value = handle.get_cache_value();
     ObStorageMetaValue value(MetaType::TABLE_STORE, tiny_meta);
     if (OB_FAIL(OB_STORE_CACHE.get_storage_meta_cache().put_and_fetch(key, value, cache_value->value_, cache_value->cache_handle_))) {
       LOG_WARN("fail to put and fetch value into storage meta cache", K(ret), K(key), K(value), K(cache_value));
     }
+    time_guard.click("put_cache");
   }
   if (OB_NOT_NULL(tiny_meta)) {
     tiny_meta->~ObIStorageMetaObj();
@@ -352,6 +399,104 @@ int ObStorageMetaValue::process_autoinc_seq(
   }
   if (OB_NOT_NULL(tiny_meta)) {
     tiny_meta->~ObIStorageMetaObj();
+  }
+  return ret;
+}
+
+int ObStorageMetaValue::process_aux_tablet_info(
+    ObStorageMetaValueHandle &handle,
+    const ObStorageMetaKey &key,
+    const char *buf,
+    const int64_t size,
+    const ObTablet *tablet)
+{
+  UNUSED(tablet);
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "AuxTabletInfo"));
+  mds::MdsDumpKV dump_kv;
+  ObTabletBindingMdsUserData aux_tablet_info;
+  ObIStorageMetaObj *tiny_meta = nullptr;
+  int64_t pos = 0;
+
+  if (OB_ISNULL(buf) || OB_UNLIKELY(size <= 0 || !handle.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", K(ret), KP(buf), K(size), K(handle));
+  } else if (OB_FAIL(dump_kv.deserialize(allocator, buf, size, pos))) {
+    LOG_WARN("fail to deserialize mds dump kv", K(ret), KP(buf), K(size));
+  } else {
+    pos = 0; // reset pos
+    char *tmp_buf = nullptr;
+    const common::ObString &str = dump_kv.v_.user_data_;
+    if (str.empty()) {
+      // keep aux tablet info empty
+      aux_tablet_info.set_default_value();
+    } else if (OB_FAIL(aux_tablet_info.deserialize(str.ptr(), str.length(), pos))) {
+      LOG_WARN("fail to deserialize aux tablet info", K(ret), K(str));
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_ISNULL(tmp_buf = static_cast<char *>(allocator.alloc(aux_tablet_info.get_deep_copy_size())))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to allocate buffer", K(ret), "deep_copy_size", aux_tablet_info.get_deep_copy_size());
+    } else if (OB_FAIL(aux_tablet_info.deep_copy(tmp_buf, aux_tablet_info.get_deep_copy_size(), tiny_meta))) {
+      LOG_WARN("fail to deep copy auto inc seq", K(ret), KP(tmp_buf), K(aux_tablet_info));
+    } else {
+      ObStorageMetaCacheValue *cache_value = handle.get_cache_value();
+      ObStorageMetaValue value(MetaType::AUX_TABLET_INFO, tiny_meta);
+      if (OB_FAIL(OB_STORE_CACHE.get_storage_meta_cache().put_and_fetch(key, value, cache_value->value_, cache_value->cache_handle_))) {
+        LOG_WARN("fail to put and fetch value into storage meta cache", K(ret), K(key), K(value), K(cache_value));
+      }
+    }
+  }
+  if (OB_NOT_NULL(tiny_meta)) {
+    tiny_meta->~ObIStorageMetaObj();
+  }
+
+  return ret;
+}
+
+
+int ObStorageMetaValue::bypass_process_storage_meta_for_aux_tablet_info(
+    const MetaType type,
+    common::ObSafeArenaAllocator &allocator,
+    ObStorageMetaValueHandle &handle,
+    const char *buf,
+    const int64_t size)
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator tmp_allocator(common::ObMemAttr(MTL_ID(), "ProcMetaVaule"));
+  int64_t pos = 0;
+  mds::MdsDumpKV dump_kv;
+  char *buffer = nullptr;
+  if (OB_ISNULL(buf) || OB_UNLIKELY(size <= 0 || !handle.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid arguments", K(ret), KP(buf), K(size), K(handle));
+  } else if (OB_UNLIKELY(type != ObStorageMetaValue::AUX_TABLET_INFO)) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid meta type", K(ret), K(type));
+  } else if (OB_FAIL(dump_kv.deserialize(tmp_allocator, buf, size, pos))) {
+    STORAGE_LOG(WARN, "fail to deserialize ", K(ret), KP(buf), K(size));
+  } else {
+    pos = 0;
+    ObTabletBindingMdsUserData aux_tablet_info;
+    const common::ObString &str = dump_kv.v_.user_data_;
+    if (OB_FAIL(aux_tablet_info.deserialize(str.ptr(), str.length(), pos))) {
+      STORAGE_LOG(WARN, "fail to deserialize aux tablet info", K(ret), K(str));
+    } else {
+      ObIStorageMetaObj *tiny_meta = nullptr;
+      const int64_t buffer_pos = sizeof(ObStorageMetaValue);
+      const int64_t buffer_size = sizeof(ObStorageMetaValue) + aux_tablet_info.get_deep_copy_size();
+      if (OB_ISNULL(buffer = static_cast<char *>(allocator.alloc(buffer_size)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        STORAGE_LOG(WARN, "fail to allocate memory", K(ret), K(buffer_size));
+      } else {
+        if (OB_FAIL(aux_tablet_info.deep_copy(buffer + buffer_pos, aux_tablet_info.get_deep_copy_size(), tiny_meta))) {
+          STORAGE_LOG(WARN, "fail to deserialize aux tablet info", K(ret), KP(buf), K(size));
+        } else {
+          handle.get_cache_value()->value_ = new (buffer) ObStorageMetaValue(type, tiny_meta);
+        }
+      }
+    }
   }
   return ret;
 }
@@ -437,7 +582,7 @@ ObStorageMetaHandle::~ObStorageMetaHandle()
 int ObStorageMetaHandle::get_value(const ObStorageMetaValue *&value)
 {
   int ret = OB_SUCCESS;
-  if (!io_handle_.is_empty() && OB_FAIL(wait(GCONF._data_storage_io_timeout / 1000L))) { /*wait if not hit cache*/
+  if (!io_handle_.is_empty() && OB_FAIL(wait())) { /*wait if not hit cache*/
     LOG_WARN("fail to wait", K(ret), KPC(this));
   } else {
     value = cache_handle_.get_cache_value()->value_;
@@ -472,13 +617,13 @@ bool ObStorageMetaHandle::is_valid() const
   return valid_cache_handle || valid_io_handle;
 }
 
-int ObStorageMetaHandle::wait(const int64_t timeout_ms)
+int ObStorageMetaHandle::wait()
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!phy_addr_.is_block())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected meta address", K(ret), K_(phy_addr));
-  } else if (OB_FAIL(io_handle_.wait(timeout_ms))) {
+  } else if (OB_FAIL(io_handle_.wait())) {
     LOG_WARN("fail to wait io handle", K(ret), K(io_handle_));
   }
   return ret;
@@ -498,34 +643,17 @@ void ObStorageMetaCache::destory()
   common::ObKVCache<ObStorageMetaKey, ObStorageMetaValue>::destroy();
 }
 
-ObStorageMetaCache::ObStorageMetaIOCallback::ObStorageMetaIOCallback()
-  : meta_type_(ObStorageMetaValue::MetaType::MAX),
-    offset_(0),
-    buf_size_(0),
-    data_buf_(nullptr),
-    handle_(),
-    allocator_(nullptr),
-    key_(),
-    tablet_(nullptr),
-    arena_allocator_(nullptr)
-{
-  static_assert(sizeof(*this) <= CALLBACK_BUF_SIZE, "IOCallback buf size not enough");
-}
-
 ObStorageMetaCache::ObStorageMetaIOCallback::ObStorageMetaIOCallback(
+    common::ObIAllocator *io_allocator,
     const ObStorageMetaValue::MetaType type,
     const ObStorageMetaKey &key,
     ObStorageMetaValueHandle &handle,
-    common::ObIAllocator *allocator,
     const ObTablet *tablet,
     common::ObSafeArenaAllocator *arena_allocator)
-  : meta_type_(type),
-    offset_(key.get_meta_addr().offset()),
-    buf_size_(key.get_meta_addr().size()),
-    data_buf_(nullptr),
-    handle_(handle),
-    allocator_(allocator),
+  : ObSharedBlockIOCallback(io_allocator, key.get_meta_addr()),
+    meta_type_(type),
     key_(key),
+    handle_(handle),
     tablet_(tablet),
     arena_allocator_(arena_allocator)
 {
@@ -534,38 +662,11 @@ ObStorageMetaCache::ObStorageMetaIOCallback::ObStorageMetaIOCallback(
 
 ObStorageMetaCache::ObStorageMetaIOCallback::~ObStorageMetaIOCallback()
 {
-  if (nullptr != allocator_ && NULL != data_buf_) {
-    allocator_->free(data_buf_);
-  }
   meta_type_ = ObStorageMetaValue::MetaType::MAX;
-  offset_ = 0;
-  buf_size_ = 0;
-  data_buf_ = nullptr;
   handle_.reset();
-  allocator_ = nullptr;
 }
 
-int ObStorageMetaCache::ObStorageMetaIOCallback::inner_deep_copy(
-        char *buf, const
-        int64_t buf_len,
-        ObIOCallback *&callback) const
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(nullptr == buf || buf_len < size())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_len));
-  } else if (OB_UNLIKELY(!handle_.is_valid()) || OB_ISNULL(allocator_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage meta io callback is not valid", K(ret), K_(handle), KP_(allocator));
-  } else {
-    ObStorageMetaIOCallback *pcallback = new (buf) ObStorageMetaIOCallback();
-    *pcallback = *this;
-    callback = pcallback;
-  }
-  return ret;
-}
-
-int ObStorageMetaCache::ObStorageMetaIOCallback::inner_process(const char *data_buffer, const int64_t size)
+int ObStorageMetaCache::ObStorageMetaIOCallback::do_process(const char *buf, const int64_t buf_len)
 {
   // TODO: callback need to deal with block-crossed shared blocks,
   // in which scene we only store the first blocks' addr
@@ -573,31 +674,16 @@ int ObStorageMetaCache::ObStorageMetaIOCallback::inner_process(const char *data_
   if (OB_UNLIKELY(!is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid storage meta cache callback", K(ret), K_(handle));
-  } else if (OB_UNLIKELY(size <= 0 || data_buffer == nullptr)) {
+  } else if (OB_UNLIKELY(buf_len <= 0 || buf == nullptr)) {
     ret = OB_INVALID_DATA;
-    LOG_WARN("invalid data buffer size", K(ret), K(size), KP(data_buffer));
-  } else if (OB_UNLIKELY(NULL == (data_buf_ = (char*) (allocator_->alloc(size))))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("Fail to allocate memory, ", K(ret), K(size));
-  } else {
-    MEMCPY(data_buf_, data_buffer, size);
-    char *buf = nullptr;
-    int64_t buf_len = 0;
-    if (OB_FAIL(ObSharedBlockReadHandle::parse_data(data_buffer, size, buf, buf_len))) {
-      LOG_WARN("fail to parse data by shared block handle", K(ret), KP(data_buffer));
-    } else if (OB_UNLIKELY(nullptr != arena_allocator_)) { // bypass cache processor
-      if (OB_FAIL(ObStorageMetaValue::bypass_processor[meta_type_](meta_type_, *arena_allocator_,
-          handle_, buf, buf_len))) {
-        LOG_WARN("fail to process io buf", K(ret), K(meta_type_), KP(buf), K(buf_len));
-      }
-    } else if (OB_FAIL(ObStorageMetaValue::processor[meta_type_](handle_, key_, buf, buf_len, tablet_))) {
+    LOG_WARN("invalid data buffer size", K(ret), K(buf_len), KP(buf));
+  } else if (OB_UNLIKELY(nullptr != arena_allocator_)) { // bypass cache processor
+    if (OB_FAIL(ObStorageMetaValue::bypass_processor[meta_type_](meta_type_, *arena_allocator_,
+        handle_, buf, buf_len))) {
       LOG_WARN("fail to process io buf", K(ret), K(meta_type_), KP(buf), K(buf_len));
     }
-  }
-
-  if (OB_FAIL(ret) && NULL != allocator_ && NULL != data_buf_) {
-    allocator_->free(data_buf_);
-    data_buf_ = NULL;
+  } else if (OB_FAIL(ObStorageMetaValue::processor[meta_type_](handle_, key_, buf, buf_len, tablet_))) {
+    LOG_WARN("fail to process io buf", K(ret), K(meta_type_), KP(buf), K(buf_len));
   }
   return ret;
 }
@@ -607,18 +693,10 @@ int64_t ObStorageMetaCache::ObStorageMetaIOCallback::size() const
   return sizeof(*this);
 }
 
-const char *ObStorageMetaCache::ObStorageMetaIOCallback::get_data()
-{
-  return data_buf_;
-}
 
 bool ObStorageMetaCache::ObStorageMetaIOCallback::is_valid() const
 {
-  return key_.is_valid()
-      && handle_.is_valid()
-      && nullptr != allocator_
-      && offset_ >= 0
-      && buf_size_ > 0;
+  return ObSharedBlockIOCallback::is_valid() && key_.is_valid() && handle_.is_valid();
 }
 
 int ObStorageMetaCache::get_meta(
@@ -669,33 +747,35 @@ int ObStorageMetaCache::bypass_get_meta(
 }
 
 int ObStorageMetaCache::batch_get_meta_and_bypass_cache(
-      const ObStorageMetaValue::MetaType type,
+      const common::ObIArray<ObStorageMetaValue::MetaType> &meta_types,
       const common::ObIArray<ObStorageMetaKey> &keys,
       common::ObSafeArenaAllocator &allocator,
       common::ObIArray<ObStorageMetaHandle> &meta_handles)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(type >= ObStorageMetaValue::MAX
+  if (OB_UNLIKELY(meta_types.count() != keys.count()
                || keys.count() == 0)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), K(type), K(keys));
-  } else if (OB_UNLIKELY(ObStorageMetaValue::TABLE_STORE == type)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("Don't supported for table store", K(ret), K(type), K(keys));
+    LOG_WARN("invalid arguments", K(ret), K(meta_types), K(keys));
   } else {
     // TODO: @zhuixin implement batch read in shared block reader.
     for (int64_t i = 0; OB_SUCC(ret) && i < keys.count(); ++i) {
+      const ObStorageMetaValue::MetaType &meta_type = meta_types.at(i);
       const ObStorageMetaKey &key = keys.at(i);
       ObStorageMetaHandle meta_handle;
-      if (OB_FAIL(get_meta_and_bypass_cache(type, key, allocator, meta_handle))) {
-        LOG_WARN("fail to do get meta", K(ret), K(type), K(key), K(meta_handle));
+
+      if (OB_UNLIKELY(ObStorageMetaValue::TABLE_STORE == meta_type)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("Don't supported for table store", K(ret), K(meta_type), K(key));
+      } else if (OB_FAIL(get_meta_and_bypass_cache(meta_type, key, allocator, meta_handle))) {
+        LOG_WARN("fail to do get meta", K(ret), K(meta_type), K(key), K(meta_handle));
       } else if (OB_FAIL(meta_handles.push_back(meta_handle))) {
         LOG_WARN("fail to push back meta handle", K(ret), K(meta_handle));
       }
     }
     if (OB_SUCC(ret) && OB_UNLIKELY(keys.count() != meta_handles.count())) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected error, the number of keys and meta handles is not equal", K(ret), K(type),
+      LOG_WARN("unexpected error, the number of keys and meta handles is not equal", K(ret), K(meta_types),
           K(keys), K(meta_handles));
     }
   }
@@ -713,13 +793,26 @@ int ObStorageMetaCache::prefetch(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), K(key), K(type));
   } else {
-    ObStorageMetaIOCallback callback(type,
-                                     key,
-                                     meta_handle.cache_handle_,
-                                     &(MTL(ObTenantMetaMemMgr *)->get_meta_cache_io_allocator()),
-                                     tablet);
-    if (OB_FAIL(read_io(key.get_meta_addr(), callback, meta_handle))) {
-      LOG_WARN("fail to read storage meta from io", K(ret), K(key), K(meta_handle));
+    void *buf = nullptr;
+    common::ObIAllocator &io_allocator = MTL(ObTenantMetaMemMgr *)->get_meta_cache_io_allocator();
+    ObStorageMetaIOCallback *callback = nullptr;
+    if (OB_ISNULL(buf = io_allocator.alloc(sizeof(ObStorageMetaIOCallback)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_LOG(WARN, "allocate callback memory failed", K(ret));
+    } else {
+      callback = new (buf) ObStorageMetaIOCallback(&io_allocator,
+                                                   type,
+                                                   key,
+                                                   meta_handle.cache_handle_,
+                                                   tablet,
+                                                   nullptr/*bypass_cache if nullptr*/);
+      if (OB_FAIL(read_io(key.get_meta_addr(), *callback, meta_handle))) {
+        LOG_WARN("fail to read storage meta from io", K(ret), K(key), K(meta_handle));
+      }
+      if (OB_FAIL(ret) && OB_NOT_NULL(callback->get_allocator())) { //Avoid double_free with io_handle
+        callback->~ObStorageMetaIOCallback();
+        io_allocator.free(callback);
+      }
     }
   }
   return ret;
@@ -738,14 +831,26 @@ int ObStorageMetaCache::get_meta_and_bypass_cache(
   } else if (OB_FAIL(handle.cache_handle_.new_value(MTL(ObTenantMetaMemMgr *)->get_meta_cache_io_allocator()))) {
     LOG_WARN("fail to new cache handle value", K(ret));
   } else {
-    ObStorageMetaIOCallback callback(type,
-                                     key,
-                                     handle.cache_handle_,
-                                     &(MTL(ObTenantMetaMemMgr *)->get_meta_cache_io_allocator()),
-                                     nullptr/*tablet*/,
-                                     &allocator/*bypass_cache*/);
-    if (OB_FAIL(read_io(key.get_meta_addr(), callback, handle))) {
-      LOG_WARN("fail to read storage meta from io", K(ret), K(key), K(handle));
+    void *buf = nullptr;
+    common::ObIAllocator &io_allocator = MTL(ObTenantMetaMemMgr *)->get_meta_cache_io_allocator();
+    ObStorageMetaIOCallback *callback = nullptr;
+    if (OB_ISNULL(buf = io_allocator.alloc(sizeof(ObStorageMetaIOCallback)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      STORAGE_LOG(WARN, "allocate callback memory failed", K(ret));
+    } else {
+      callback = new (buf) ObStorageMetaIOCallback(&io_allocator,
+                                                   type,
+                                                   key,
+                                                   handle.cache_handle_,
+                                                   nullptr/*tablet*/,
+                                                   &allocator/*bypass_cache if nullptr*/);
+      if (OB_FAIL(read_io(key.get_meta_addr(), *callback, handle))) {
+        LOG_WARN("fail to read storage meta from io", K(ret), K(key), K(handle));
+      }
+      if (OB_FAIL(ret) && OB_NOT_NULL(callback->get_allocator())) { //Avoid double_free with io_handle
+        callback->~ObStorageMetaIOCallback();
+        io_allocator.free(callback);
+      }
     }
   }
   return ret;
@@ -769,6 +874,7 @@ int ObStorageMetaCache::read_io(
     read_info.io_callback_ = &callback;
     read_info.io_desc_.set_mode(ObIOMode::READ);
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
+    read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
     handle.phy_addr_ = meta_addr;
     if (OB_FAIL(ObSharedBlockReaderWriter::async_read(read_info, handle.io_handle_))) {
       LOG_WARN("fail to async read", K(ret), K(read_info));

@@ -51,6 +51,7 @@ public:
   static int eval_substr(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum);
   static int eval_substr_batch(
              const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &skip, const int64_t batch_size);
+  DECLARE_SET_LOCAL_SESSION_VARS;
 
 private:
   int calc_result_length(ObExprResType *types_array,
@@ -82,6 +83,8 @@ private:
   int cast_param_type_for_mysql(const common::ObObj& in,
                                 common::ObExprCtx& expr_ctx,
                                 common::ObObj& out) const;
+
+  static int ora_get_integer(const ObDatum &int_datum, const ObExpr &expr, int64_t &v);
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(ObExprSubstr);
 };

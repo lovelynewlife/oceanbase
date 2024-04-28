@@ -1,6 +1,14 @@
-// Copyright (c) 2022-present Oceanbase Inc. All Rights Reserved.
-// Author:
-//   yuya.yu <>
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #define USING_LOG_PREFIX SQL_ENG
 
@@ -37,6 +45,7 @@ int ObTableDirectInsertCtx::init(ObExecContext *exec_ctx,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("exec_ctx cannot be null", KR(ret));
   } else {
+    is_direct_ = true;
     if (OB_ISNULL(load_exec_ctx_ = OB_NEWx(ObTableLoadSqlExecCtx, &exec_ctx->get_allocator()))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to new ObTableLoadSqlExecCtx", KR(ret));
@@ -64,7 +73,7 @@ int ObTableDirectInsertCtx::init(ObExecContext *exec_ctx,
         param.parallel_ = parallel;
         param.session_count_ = MIN(parallel, (int64_t)tenant->unit_max_cpu() * 2);
         param.px_mode_ = true;
-        param.online_opt_stat_gather_ = false;
+        param.online_opt_stat_gather_ = true;
         param.need_sort_ = true;
         param.max_error_row_count_ = 0;
         param.dup_action_ = sql::ObLoadDupActionType::LOAD_STOP_ON_DUP;

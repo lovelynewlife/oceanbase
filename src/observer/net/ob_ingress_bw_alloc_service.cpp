@@ -59,6 +59,7 @@ int ObNetEndpointIngressManager::register_endpoint(const ObNetEndpointKey &endpo
   } else if (OB_FAIL(ingress_plan_map_.get_refactored(endpoint_key, endpoint_value))) {
     if (OB_HASH_NOT_EXIST == ret) {
       // initialize
+      ret = OB_SUCCESS;
       endpoint_value = (ObNetEndpointValue *)ob_malloc(sizeof(ObNetEndpointValue), "INGRESS_SERVICE");
       if (OB_ISNULL(endpoint_value)) {
         LOG_WARN("failed to alloc memory for objs");
@@ -66,7 +67,7 @@ int ObNetEndpointIngressManager::register_endpoint(const ObNetEndpointKey &endpo
       } else {
         endpoint_value->expire_time_ = expire_time;
       }
-      if (OB_FAIL(ingress_plan_map_.set_refactored(endpoint_key, endpoint_value))) {
+      if (OB_SUCC(ret) && OB_FAIL(ingress_plan_map_.set_refactored(endpoint_key, endpoint_value))) {
         ob_free(endpoint_value);
         LOG_WARN("endpoint register failed", K(ret), K(endpoint_key), K(expire_time));
       } else {
@@ -91,7 +92,7 @@ int ObNetEndpointIngressManager::collect_predict_bw(ObNetEndpointKVArray &update
   const int64_t current_time = ObTimeUtility::current_time();
   {
     ObSpinLockGuard guard(lock_);
-    for (ObIngressPlanMap::iterator iter = ingress_plan_map_.begin(); iter != ingress_plan_map_.end(); ++iter) {
+    for (ObIngressPlanMap::iterator iter = ingress_plan_map_.begin(); OB_SUCC(ret) && iter != ingress_plan_map_.end(); ++iter) {
       const ObNetEndpointKey &endpoint_key = iter->first;
       ObNetEndpointValue *endpoint_value = iter->second;
       if (endpoint_value->expire_time_ < current_time) {
@@ -110,11 +111,10 @@ int ObNetEndpointIngressManager::collect_predict_bw(ObNetEndpointKVArray &update
       }
     }
 
-    for (int64_t i = 0; i < delete_keys.count(); i++) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < delete_keys.count(); i++) {
       const ObNetEndpointKey &endpoint_key = delete_keys[i];
       if (OB_FAIL(ingress_plan_map_.erase_refactored(endpoint_key))) {
         LOG_ERROR("failed to erase endpoint", K(ret), K(endpoint_key));
-        ret = OB_SUCCESS;  // ignore error
       }
     }
   }
@@ -129,40 +129,40 @@ int ObNetEndpointIngressManager::collect_predict_bw(ObNetEndpointKVArray &update
   }
 
   ObArray<int> return_code_array;
-  if (OB_FAIL(proxy_batch.wait_all(return_code_array))) {
-    LOG_WARN("wait batch result failed", KR(ret));
-  }
-  if (OB_FAIL(ret)) {
-  } else if (return_code_array.count() != update_kvs.count() ||
-             return_code_array.count() != proxy_batch.get_results().count()) {
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(proxy_batch.wait_all(return_code_array))) {
+    LOG_WARN("wait batch result failed", KR(tmp_ret), K(ret));
+    ret = OB_SUCC(ret) ? tmp_ret : ret;
+  } else if (OB_FAIL(ret)) {
+  } else if (return_code_array.count() != update_kvs.count()) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("cnt not match",
-        KR(ret),
-        "return_cnt",
-        return_code_array.count(),
-        "result_cnt",
-        proxy_batch.get_results().count(),
-        "server_cnt",
-        ingress_plan_map_.size());
-  }
-
-  for (int64_t i = 0; OB_SUCC(ret) && i < update_kvs.count(); i++) {
-    if (OB_FAIL(return_code_array.at(i))) {
-      const ObAddr &addr = proxy_batch.get_dests().at(i);
-      LOG_WARN("rpc execute failed", KR(ret), K(addr), K(update_kvs[i]));
-      ret = OB_SUCCESS;  // ignore error
-    } else {
-      const obrpc::ObNetEndpointPredictIngressRes *result = proxy_batch.get_results().at(i);
-      if (OB_ISNULL(result)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("result is null", KR(ret));
+    LOG_WARN("cnt not match", KR(ret),
+             "return_cnt", return_code_array.count(),
+             "kv_cnt", update_kvs.count());
+  } else if (OB_FAIL(proxy_batch.check_return_cnt(return_code_array.count()))) {
+    LOG_WARN("cnt not match", KR(ret),
+             "return_cnt", return_code_array.count(),
+             "server_cnt", ingress_plan_map_.size());
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < update_kvs.count(); i++) {
+      if (OB_FAIL(return_code_array.at(i))) {
+        const ObAddr &addr = proxy_batch.get_dests().at(i);
+        LOG_WARN("rpc execute failed", KR(ret), K(addr), K(update_kvs[i]));
         ret = OB_SUCCESS;  // ignore error
       } else {
-        ObNetEndpointValue *endpoint_value = update_kvs[i].value_;
-        endpoint_value->predicted_bw_ = result->predicted_bw_;
+        const obrpc::ObNetEndpointPredictIngressRes *result = proxy_batch.get_results().at(i);
+        if (OB_ISNULL(result)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("result is null", KR(ret));
+          ret = OB_SUCCESS;  // ignore error
+        } else {
+          ObNetEndpointValue *endpoint_value = update_kvs[i].value_;
+          endpoint_value->predicted_bw_ = result->predicted_bw_;
+        }
       }
     }
   }
+
   return ret;
 }
 
@@ -190,40 +190,42 @@ int ObNetEndpointIngressManager::update_ingress_plan(ObNetEndpointKVArray &updat
           predicted_bws[valid_count++] = endpoint_value->predicted_bw_;
         }
       }
-
-      int64_t baseline_bw = 0;
-      int64_t extra_bw = 0;
-      if (remain_bw_limit <= 0) {
-        remain_bw_limit = 0;
-      }
-      std::sort(predicted_bws, predicted_bws + valid_count);
-      int64_t average = (int64_t)remain_bw_limit / valid_count;
-      for (int i = 0; i < valid_count; i++) {
-        average = (int64_t)remain_bw_limit / (valid_count - i);
-        if (average <= predicted_bws[i]) {
+      if (0 != valid_count) {
+        int64_t baseline_bw = 0;
+        int64_t extra_bw = 0;
+        if (remain_bw_limit <= 0) {
           remain_bw_limit = 0;
-          break;
-        } else {
-          remain_bw_limit -= predicted_bws[i];
         }
-      }
-      baseline_bw = average;
-      extra_bw = (int64_t)remain_bw_limit / valid_count;
-
-      for (int64_t i = 0; i < update_kvs.count(); i++) {
-        ObNetEndpointValue *endpoint_value = update_kvs[i].value_;
-        if (OB_UNLIKELY(endpoint_value->predicted_bw_ == -1)) {
-          // do nothing, remain old assigned_bw
-        } else {
-          int64_t predicted_bw = endpoint_value->predicted_bw_;
-          int64_t assigned_bw = -1;
-          if (predicted_bw > baseline_bw) {
-            assigned_bw = baseline_bw;
+        std::sort(predicted_bws, predicted_bws + valid_count);
+        int64_t average = remain_bw_limit / valid_count;
+        bool is_done = false;
+        for (int i = 0; i < valid_count && !is_done; i++) {
+          average = remain_bw_limit / (valid_count - i);
+          if (average <= predicted_bws[i]) {
+            remain_bw_limit = 0;
+            is_done = true;
           } else {
-            assigned_bw = predicted_bw;
+            remain_bw_limit -= predicted_bws[i];
           }
-          assigned_bw += extra_bw;
-          endpoint_value->assigned_bw_ = assigned_bw;
+        }
+        baseline_bw = average;
+        extra_bw = (int64_t)remain_bw_limit / valid_count;
+
+        for (int64_t i = 0; i < update_kvs.count(); i++) {
+          ObNetEndpointValue *endpoint_value = update_kvs[i].value_;
+          if (OB_UNLIKELY(endpoint_value->predicted_bw_ == -1)) {
+            // do nothing, remain old assigned_bw
+          } else {
+            int64_t predicted_bw = endpoint_value->predicted_bw_;
+            int64_t assigned_bw = -1;
+            if (predicted_bw > baseline_bw) {
+              assigned_bw = baseline_bw;
+            } else {
+              assigned_bw = predicted_bw;
+            }
+            assigned_bw += extra_bw;
+            endpoint_value->assigned_bw_ = assigned_bw;
+          }
         }
       }
     }
@@ -254,29 +256,27 @@ int ObNetEndpointIngressManager::commit_bw_limit_plan(ObNetEndpointKVArray &upda
   }
 
   ObArray<int> return_code_array;
-  if (OB_FAIL(proxy_batch.wait_all(return_code_array))) {
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(proxy_batch.wait_all(return_code_array))) {
     LOG_WARN("wait batch result failed", KR(ret));
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (return_code_array.count() != update_kvs.count() ||
-             return_code_array.count() != proxy_batch.get_results().count()) {
+    ret = OB_SUCC(ret) ? tmp_ret : ret;
+  } else if (OB_FAIL(ret)) {
+  } else if (return_code_array.count() != update_kvs.count()) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("cnt not match",
-        KR(ret),
-        "return_cnt",
-        return_code_array.count(),
-        "result_cnt",
-        proxy_batch.get_results().count(),
-        "server_cnt",
-        ingress_plan_map_.size());
-  }
-
-  for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); i++) {
-    if (OB_FAIL(return_code_array.at(i))) {
-      const ObAddr &addr = proxy_batch.get_dests().at(i);
-      LOG_WARN("rpc execute failed", KR(ret), K(addr));
-      ret = OB_SUCCESS;  // ignore error
+    LOG_WARN("cnt not match", KR(ret),
+             "return_cnt", return_code_array.count(),
+             "kv_cnt", update_kvs.count());
+  } else if (OB_FAIL(proxy_batch.check_return_cnt(return_code_array.count()))) {
+    LOG_WARN("cnt not match", KR(ret),
+             "return_cnt", return_code_array.count(),
+             "server_cnt", ingress_plan_map_.size());
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); i++) {
+      if (OB_FAIL(return_code_array.at(i))) {
+        const ObAddr &addr = proxy_batch.get_dests().at(i);
+        LOG_WARN("rpc execute failed", KR(ret), K(addr));
+        ret = OB_SUCCESS;  // ignore error
+      }
     }
   }
   return ret;
@@ -454,25 +454,25 @@ void ObIngressBWAllocService::runTimerTask()
 
 void ObIngressBWAllocService::switch_to_follower_forcedly()
 {
-  ATOMIC_SET(&is_leader_, false);
+  ATOMIC_STORE(&is_leader_, false);
 }
 int ObIngressBWAllocService::switch_to_leader()
 {
   int ret = OB_SUCCESS;
-  ATOMIC_SET(&is_leader_, true);
+  ATOMIC_STORE(&is_leader_, true);
   return ret;
 }
 int ObIngressBWAllocService::switch_to_follower_gracefully()
 {
   int ret = OB_SUCCESS;
-  ATOMIC_SET(&is_leader_, false);
+  ATOMIC_STORE(&is_leader_, false);
   return ret;
 }
 int ObIngressBWAllocService::resume_leader()
 {
   int ret = OB_SUCCESS;
   if (!is_leader()) {
-    ATOMIC_SET(&is_leader_, true);
+    ATOMIC_STORE(&is_leader_, true);
   }
   return ret;
 }

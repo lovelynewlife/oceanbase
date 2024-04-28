@@ -88,7 +88,7 @@ obd demo
 
     ```shell
     # 部署一个mini模式实例
-    docker run -p 2881:2881 --name oceanbase-ce -e MINI_MODE=1 -d oceanbase/oceanbase-ce
+    docker run -p 2881:2881 --name oceanbase-ce -e MODE=mini -d oceanbase/oceanbase-ce
     ```
 
 2. 连接 OceanBase
@@ -115,9 +115,7 @@ OceanBase 已服务超过 400 家来自不同行业的客户，包括金融服�
 
 # 系统架构
 
-![oceanbase architecture](https://cdn.nlark.com/yuque/0/2022/png/25820454/1667369873624-c1707034-471a-4f79-980f-6d1760dac8eb.png)
-
-[了解更多](https://www.oceanbase.com/docs/common-oceanbase-database-cn-10000000001687855)
+[系统架构介绍](https://www.oceanbase.com/docs/common-oceanbase-database-cn-10000000001687855)
 
 # 社区贡献
 

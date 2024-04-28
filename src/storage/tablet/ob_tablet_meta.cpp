@@ -18,6 +18,7 @@
 #include "lib/utility/serialization.h"
 #include "share/scn.h"
 #include "share/schema/ob_table_schema.h"
+#include "storage/column_store/ob_column_oriented_sstable.h"
 #include "storage/tablet/ob_tablet_binding_info.h"
 #include "storage/tablet/ob_tablet_create_delete_mds_user_data.h"
 
@@ -59,6 +60,7 @@ ObTabletMeta::ObTabletMeta()
     ddl_commit_scn_(SCN::min_scn()),
     mds_checkpoint_scn_(),
     transfer_info_(),
+    space_usage_(),
     create_schema_version_(0),
     compat_mode_(lib::Worker::CompatMode::INVALID),
     has_next_tablet_(false),
@@ -117,6 +119,8 @@ int ObTabletMeta::init(
     ddl_commit_scn_.set_min();
     ddl_snapshot_version_ = 0;
     max_sync_storage_schema_version_ = create_schema_version;
+    ddl_execution_id_ = -1;
+    ddl_data_format_version_ = 0;
     mds_checkpoint_scn_ = INIT_CLOG_CHECKPOINT_SCN;
 
     report_status_.merge_snapshot_version_ = snapshot_version;
@@ -445,6 +449,7 @@ void ObTabletMeta::reset()
   ddl_data_format_version_ = 0;
   mds_checkpoint_scn_.reset();
   transfer_info_.reset();
+  space_usage_.reset();
   is_inited_ = false;
 }
 
@@ -590,6 +595,8 @@ int ObTabletMeta::serialize(char *buf, const int64_t len, int64_t &pos) const
     LOG_WARN("failed to serialize transfer info", K(ret), K(len), K(new_pos), K_(transfer_info));
   } else if (new_pos - pos < length && OB_FAIL(serialization::encode_i64(buf, len, new_pos, create_schema_version_))) {
     LOG_WARN("failed to serialize create schema version", K(ret), K(len), K(new_pos), K_(create_schema_version));
+  } else if (new_pos - pos < length && OB_FAIL(space_usage_.serialize(buf, len, new_pos))) {
+    LOG_WARN("failed to serialize tablet space usage", K(ret), K(len), K(new_pos), K_(space_usage));
   } else if (OB_UNLIKELY(length != new_pos - pos)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet meta's length doesn't match standard length", K(ret), K(new_pos), K(pos), K(length), K(length));
@@ -676,7 +683,9 @@ int ObTabletMeta::deserialize(
     } else if (new_pos - pos < length_ && OB_FAIL(transfer_info_.deserialize(buf, len, new_pos))) {
       LOG_WARN("failed to deserialize transfer info", K(ret), K(len), K(new_pos));
     } else if (new_pos - pos < length_ && OB_FAIL(serialization::decode_i64(buf, len, new_pos, &create_schema_version_))) {
-      LOG_WARN("failed to deserialize create schema version", K(ret), K(len));
+      LOG_WARN("failed to deserialize create schema version", K(ret), K(len), K(new_pos));
+    } else if (new_pos - pos < length_ && OB_FAIL(space_usage_.deserialize(buf, len, new_pos))) {
+      LOG_WARN("failed to deserialize tablet space usage", K(ret), K(len), K(new_pos));
     } else if (OB_UNLIKELY(length_ != new_pos - pos)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tablet's length doesn't match standard length", K(ret), K(new_pos), K(pos), K_(length));
@@ -723,6 +732,7 @@ int64_t ObTabletMeta::get_serialize_size() const
   size += mds_checkpoint_scn_.get_fixed_serialize_size();
   size += transfer_info_.get_serialize_size();
   size += serialization::encoded_length_i64(create_schema_version_);
+  size += space_usage_.get_serialize_size();
   return size;
 }
 
@@ -760,7 +770,6 @@ int ObTabletMeta::init_report_info(
     ObTabletReportStatus &report_status)
 {
   int ret = OB_SUCCESS;
-  blocksstable::ObSSTableMetaHandle sst_meta_hdl;
 
   if (OB_ISNULL(sstable) || !sstable->is_major_sstable() || report_version < 0) {
     ret = OB_INVALID_ARGUMENT;
@@ -769,14 +778,14 @@ int ObTabletMeta::init_report_info(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected merge snapshot version", K(ret), K(report_status), KPC(sstable));
   } else if (sstable->get_snapshot_version() == report_status.merge_snapshot_version_) {
-  } else if (OB_FAIL(sstable->get_meta(sst_meta_hdl))) {
-    SERVER_LOG(WARN, "fail to get sstable meta handle", K(ret));
   } else {
     report_status.reset();
     report_status.cur_report_version_ = report_version;
     report_status.merge_snapshot_version_ = sstable->get_snapshot_version();
-    report_status.data_checksum_ = sst_meta_hdl.get_sstable_meta().get_data_checksum();
-    report_status.row_count_ = sst_meta_hdl.get_sstable_meta().get_row_count();
+    report_status.row_count_ = sstable->get_row_count();
+    report_status.data_checksum_ = sstable->is_co_sstable()
+                                 ? static_cast<const ObCOSSTableV2 *>(sstable)->get_cs_meta().data_checksum_
+                                 : sstable->get_data_checksum();
   }
   return ret;
 }
@@ -865,7 +874,7 @@ ObMigrationTabletParam::ObMigrationTabletParam()
     mds_data_(),
     transfer_info_(),
     create_schema_version_(0),
-    allocator_()
+    allocator_("MigTblParam", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID(), ObCtxIds::DEFAULT_CTX_ID)
 {
 }
 
@@ -1403,14 +1412,13 @@ int ObMigrationTabletParam::construct_placeholder_storage_schema_and_medium(
   storage_schema.rowkey_array_.set_allocator(&allocator);
   storage_schema.column_array_.set_allocator(&allocator);
 
-  storage_schema.storage_schema_version_ = ObStorageSchema::STORAGE_SCHEMA_VERSION_V2;
+  storage_schema.storage_schema_version_ = ObStorageSchema::STORAGE_SCHEMA_VERSION_V3;
   storage_schema.is_use_bloomfilter_ = false;
   storage_schema.table_type_ = ObTableType::USER_TABLE;
   //storage_schema.table_mode_
   storage_schema.index_type_ = ObIndexType::INDEX_TYPE_PRIMARY;
-  storage_schema.index_status_ = ObIndexStatus::INDEX_STATUS_AVAILABLE;
   storage_schema.row_store_type_ = ObRowStoreType::FLAT_ROW_STORE;
-  storage_schema.schema_version_ = ObStorageSchema::STORAGE_SCHEMA_VERSION_V2;
+  storage_schema.schema_version_ = ObStorageSchema::STORAGE_SCHEMA_VERSION_V3;
   storage_schema.column_cnt_ = 1;
   storage_schema.store_column_cnt_ = 1;
   storage_schema.tablet_size_ = OB_DEFAULT_TABLET_SIZE;

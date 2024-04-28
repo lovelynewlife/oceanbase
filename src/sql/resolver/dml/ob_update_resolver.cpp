@@ -183,6 +183,8 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
       LOG_TRACE("view not updatable", K(ret));
     } else if (OB_FAIL(update_stmt->check_dml_need_filter_null())) {
       LOG_WARN("failed to check dml need filter null", K(ret));
+    } else if (OB_FAIL(update_stmt->check_dml_source_from_join())) {
+      LOG_WARN("failed to check dml source from join", K(ret));
     } else if (lib::is_mysql_mode() && OB_FAIL(check_safe_update_mode(update_stmt))) {
       LOG_WARN("failed to check fulfill safe update mode", K(ret));
     } else { /*do nothing*/ }
@@ -441,31 +443,17 @@ int ObUpdateResolver::resolve_table_list(const ParseNode &parse_tree)
       LOG_WARN("table node is null");
     } else if (OB_FAIL(ObDMLResolver::resolve_table(*table_node, table_item))) {
       LOG_WARN("failed to resolve table", K(ret));
-    //这里是为了兼容oracle的报错行为，对于直接向子查询更新数据时如果子查询中from项不为1项时，报错这种子查询是非法的，
-    //其他情形同update view类似判断，这里不再重复解决
     } else if (OB_FAIL(resolve_foreign_key_constraint(table_item))) {
       LOG_WARN("failed to resolve foreign key constraint", K(ret), K(table_item->ref_id_));
-    } else if (is_oracle_mode() && table_node->num_child_ == 2) {
-      if (OB_ISNULL(table_item) || (!table_item->is_generated_table() && !table_item->is_temp_table()) ||
-          OB_ISNULL(ref_stmt = table_item->ref_query_)) {
-        int ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected error", K(table_item), K(ref_stmt), K(ret));
-      } else if (OB_UNLIKELY(ref_stmt->get_from_items().count() != 1)) {
-        ret = OB_ERR_ILLEGAL_VIEW_UPDATE;
-        LOG_WARN("not updatable", K(ret));
-      } else {/*do nothing*/}
     } else {/*do nothing*/}
     if (OB_SUCC(ret)) {
       if (OB_FAIL(column_namespace_checker_.add_reference_table(table_item))) {
         LOG_WARN("add reference table to namespace checker failed", K(ret));
       } else if (OB_FAIL(update_stmt->add_from_item(table_item->table_id_, table_item->is_joined_table()))) {
         LOG_WARN("failed to add from item", K(ret));
+      } else if (check_need_fired_trigger(table_item)) {
+        LOG_WARN("failed to check need fired trigger", K(ret));
       } else {
-        if (is_oracle_mode() && table_item->is_view_table_) {
-          bool has_tg = false;
-          OZ (has_need_fired_trigger_on_view(table_item, has_tg));
-          OX (update_stmt->set_has_instead_of_trigger(has_tg));
-        }
       /*
         In order to share the same logic with 'select' to generate access path costly, we
         add the table in the udpate stmt in the from_item list as well.

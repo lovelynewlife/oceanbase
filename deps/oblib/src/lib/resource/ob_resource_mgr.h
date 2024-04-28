@@ -31,7 +31,6 @@ class ObTenantMemoryMgr
 public:
   static const int64_t LARGE_REQUEST_EXTRA_MB_COUNT = 2;
   static const int64_t ALIGN_SIZE = static_cast<int64_t>(INTACT_ACHUNK_SIZE);
-
   ObTenantMemoryMgr();
   ObTenantMemoryMgr(const uint64_t tenant_id);
 

@@ -52,6 +52,8 @@ enum ObSysTaskType
   TRANSFER_TASK,
   MDS_TABLE_MERGE_TASK,
   TABLE_API_TTL_TASK,
+  TENANT_SNAPSHOT_CREATE_TASK,
+  TENANT_SNAPSHOT_GC_TASK,
   MAX_SYS_TASK_TYPE
 };
 
@@ -87,6 +89,7 @@ public:
   int task_exist(const ObTaskId &task_id, bool &is_exist);
   int cancel_task(const ObTaskId &task_id);
   int is_task_cancel(const ObTaskId &task_id, bool &is_cancel);
+  int generate_task_id(ObTaskId &task_id);
 private:
   common::SpinRWLock lock_;
   common::ObArray<ObSysTaskStat> task_array_;

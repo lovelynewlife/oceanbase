@@ -26,7 +26,8 @@ namespace table
 struct ObTTLTaskCtx
 {
 public :
-  ObTTLTaskCtx() : task_info_(),
+  ObTTLTaskCtx() : rowkey_cp_allcoator_(ObMemAttr(MTL_ID(), "TTLTaskCtx")),
+                   task_info_(),
                    task_status_(common::ObTTLTaskStatus::OB_TTL_TASK_INVALID),
                    ttl_para_(),
                    task_start_time_(OB_INVALID_ID),
@@ -39,10 +40,13 @@ public :
     return task_info_.is_valid() && ttl_para_.is_valid();
   }
 
+  int deep_copy_rowkey(const ObString &rowkey);
+
   TO_STRING_KV(K_(task_info), K_(task_status), K_(ttl_para), K_(task_start_time),
                K_(last_modify_time), K_(failure_times), K_(is_dirty), K_(need_refresh));
 
 public:
+  common::ObArenaAllocator  rowkey_cp_allcoator_; // for rowkey copy in ObTTLTaskInfo
   ObTTLTaskInfo    task_info_;
   common::ObTTLTaskStatus task_status_;
   table::ObTTLTaskParam   ttl_para_;
@@ -78,8 +82,7 @@ class ObTenantTabletTTLMgr : public logservice::ObIReplaySubHandler,
 public:
   friend ObTTLTaskCtx;
   ObTenantTabletTTLMgr()
-  : allocator_(ObMemAttr(MTL_ID(), "TenantTTLMgr")),
-    tenant_id_(common::OB_INVALID_TENANT_ID),
+  : tenant_id_(common::OB_INVALID_TENANT_ID),
     schema_service_(NULL),
     sql_proxy_(NULL),
     is_inited_(false),
@@ -91,7 +94,8 @@ public:
     local_schema_version_(OB_INVALID_VERSION),
     has_start_(false),
     is_paused_(false),
-    dag_ref_cnt_(0)
+    dag_ref_cnt_(0),
+    need_reuse_for_switch_(false)
   {
   }
 
@@ -171,8 +175,7 @@ private:
                         cmd_type_(obrpc::ObTTLRequestArg::TTL_INVALID_TYPE),
                         rsp_time_(OB_INVALID_ID),
                         state_(common::ObTTLTaskStatus::OB_TTL_TASK_INVALID),
-                        is_droped_(false),
-                        is_finished_(true)
+                        is_reused_(false)
     {}
     ~ObTTLTenantInfo()
     {
@@ -180,21 +183,17 @@ private:
     }
     void destory()
     {
+      for (TabletTaskMap::const_iterator iter = tablet_task_map_.begin(); iter != tablet_task_map_.end();
+        ++iter) {
+        ObTTLTaskCtx *ctx = iter->second;
+        if (OB_NOT_NULL(ctx)) {
+          ctx->~ObTTLTaskCtx();
+        }
+      }
       tablet_task_map_.destroy();
       allocator_.reset();
     }
-    void reuse()
-    {
-     tablet_task_map_.reuse();
-     allocator_.reuse();
-     is_usr_trigger_ = false;
-     need_check_ = false;
-     is_dirty_ = false;
-     ttl_continue_ = true;
-     state_ = common::ObTTLTaskStatus::OB_TTL_TASK_INVALID;
-     is_finished_ = true;
-    }
-
+    void reuse();
     TO_STRING_KV(K_(tenant_id),
                  K_(task_id),
                  K_(is_usr_trigger),
@@ -203,7 +202,7 @@ private:
                  K_(ttl_continue),
                  K_(rsp_time),
                  K_(state),
-                 K_(is_finished));
+                 K_(is_reused));
 
   public:
       TabletTaskMap                     tablet_task_map_;
@@ -217,8 +216,7 @@ private:
       obrpc::ObTTLRequestArg::TTLRequestType         cmd_type_; // deprecated @dazhi
       int64_t                           rsp_time_; // OB_INVALID_ID means no need response
       common::ObTTLTaskStatus           state_;
-      bool                              is_droped_;   // tenant is droped
-      bool                              is_finished_; // all delete task is finished (or canceled)
+      bool                              is_reused_; // all delete task is finished (or canceled)
   };
 
   int alloc_tenant_info(uint64_t tenant_id);
@@ -231,7 +229,7 @@ private:
   int generate_batch_tablet_task(ObIArray<share::ObTabletTablePair>& tablet_pairs,
                                  hash::ObHashMap<uint64_t, table::ObTTLTaskParam> &param_map);
   int generate_one_tablet_task(table::ObTTLTaskInfo& task_info, const table::ObTTLTaskParam& para);
-  int get_ttl_para_from_schema(const schema::ObTableSchema *table_schema, table::ObTTLTaskParam& param);
+  int get_ttl_para_from_schema(const share::schema::ObTableSchema *table_schema, table::ObTTLTaskParam& param);
   void mark_tenant_need_check();
   virtual int generate_ttl_dag(table::ObTTLTaskInfo& task_info, table::ObTTLTaskParam& para);
   static int construct_task_record_filter(const uint64_t& task_id,
@@ -239,7 +237,8 @@ private:
                                           ObTabletID& tablet_id,
                                           ObTTLStatusFieldArray& filter);
   common::ObMySQLProxy *get_sql_proxy() { return sql_proxy_; }
-  int sync_sys_table(common::ObTabletID& tablet_id);
+  int sync_sys_table_op(ObTTLTaskCtx* ctx, bool force_update, bool &tenant_state_changed);
+  int sync_sys_table(common::ObTabletID& tablet_id, bool &tenant_state_changed);
   int construct_sys_table_record(ObTTLTaskCtx* ctx, common::ObTTLStatus& ttl_record);
   int try_schedule_task(ObTTLTaskCtx* ctx);
   int try_schedule_remaining_tasks(const ObTTLTaskCtx *current_ctx);
@@ -265,7 +264,6 @@ private:
   static const int64_t DEFAULT_TABLET_PAIR_SIZE = 1024;
   static const int64_t DEFAULT_PARAM_BUCKET_SIZE = 200;
   static const int64_t TTL_NORMAL_TIME_THRESHOLD = 3*1000*1000; // 3s
-  common::ObArenaAllocator allocator_;
   uint64_t tenant_id_;
   ObTTLTenantInfo local_tenant_task_;
   share::schema::ObMultiVersionSchemaService *schema_service_;
@@ -282,6 +280,7 @@ private:
   bool has_start_;
   bool is_paused_;
   volatile int64_t dag_ref_cnt_; // ttl dag ref count for current ls
+  bool need_reuse_for_switch_;
 };
 
 } // end namespace table

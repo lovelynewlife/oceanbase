@@ -32,14 +32,11 @@ namespace obrpc
 {
 struct ObBatchCreateTabletArg;
 }
+namespace blocksstable
+{
+class ObSSTable;
+}
 
-namespace share
-{
-namespace schema
-{
-class ObTableSchema;
-}
-}
 namespace storage
 {
 class ObTabletMapKey;
@@ -112,7 +109,6 @@ public:
       common::ObArenaAllocator &allocator,
       ObTabletHandle &handle);
   static int prepare_create_msd_tablet();
-  static int push_msd_tablet_to_queue(ObTabletHandle &handle);
   static int create_msd_tablet(
       const ObTabletMapKey &key,
       ObTabletHandle &handle);
@@ -128,31 +124,68 @@ public:
       const ObTabletMapKey &key,
       ObTabletHandle &handle);
   static int check_need_create_empty_major_sstable(
-      const share::schema::ObTableSchema &table_schema,
+      const ObCreateTabletSchema &create_tablet_schema,
       bool &need_create_sstable);
-  static int build_create_sstable_param(
-      const share::schema::ObTableSchema &table_schema,
+  // Attention !!! only used when first creating tablet
+  static int create_empty_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
       const common::ObTabletID &tablet_id,
       const int64_t snapshot_version,
-      ObTabletCreateSSTableParam &param);
-  static int create_sstable_for_migrate( // TODO: @jinzhu remove me later.
-      const ObTabletCreateSSTableParam &param,
-      common::ObArenaAllocator &allocator,
       ObTableHandleV2 &table_handle);
+  static int create_empty_co_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      ObTableHandleV2 &table_handle);
+
+  template <typename T = blocksstable::ObSSTable>
   static int create_sstable(
       const ObTabletCreateSSTableParam &param,
       common::ObArenaAllocator &allocator,
-      blocksstable::ObSSTable &sstable);
-  // ObTabletBindingHelper usage
+      ObTableHandleV2 &table_handle);
+  template<typename T = blocksstable::ObSSTable>
+  static int create_sstable(
+      const ObTabletCreateSSTableParam &param,
+      common::ObArenaAllocator &allocator,
+      T &sstable);
   static bool is_pure_data_tablets(const obrpc::ObCreateTabletInfo &info);
   static bool is_mixed_tablets(const obrpc::ObCreateTabletInfo &info);
   static bool is_pure_aux_tablets(const obrpc::ObCreateTabletInfo &info);
   static bool is_pure_hidden_tablets(const obrpc::ObCreateTabletInfo &info);
+
+  static int build_create_sstable_param(
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      ObTabletCreateSSTableParam &param);
+  static int build_create_cs_sstable_param(
+      const ObStorageSchema &storage_schema,
+      const ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      const int64_t column_group_idx,
+      const bool has_all_column_group,
+      ObTabletCreateSSTableParam &cs_param);
   template<typename Arg, typename Helper>
   static int process_for_old_mds(
              const char *buf,
              const int64_t len,
              const transaction::ObMulSourceDataNotifyArg &notify_arg);
+private:
+  class ReadMdsFunctor
+  {
+  public:
+    ReadMdsFunctor(ObTabletCreateDeleteMdsUserData &user_data);
+    int operator()(const ObTabletCreateDeleteMdsUserData &data);
+  private:
+    ObTabletCreateDeleteMdsUserData &user_data_;
+  };
+  class DummyReadMdsFunctor
+  {
+  public:
+    int operator()(const ObTabletCreateDeleteMdsUserData &) { return common::OB_SUCCESS; }
+  };
 };
 
 template<typename Arg, typename Helper>
@@ -163,11 +196,14 @@ int ObTabletCreateDeleteHelper::process_for_old_mds(
 {
   int ret = OB_SUCCESS;
   Arg arg;
+  bool is_old_mds = false;
 
   if (OB_ISNULL(buf) || OB_UNLIKELY(len <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid args", K(ret), KP(buf), K(len));
-  } else {
+  } else if (OB_FAIL(Arg::is_old_mds(buf, len, is_old_mds))) {
+    TRANS_LOG(WARN, "failed to is_old_mds", K(ret), KP(buf), K(len));
+  } else if (is_old_mds) {
     do {
       int64_t pos = 0;
       if (OB_FAIL(arg.deserialize(buf, len, pos))) {
@@ -179,39 +215,80 @@ int ObTabletCreateDeleteHelper::process_for_old_mds(
         }
       }
     } while (OB_FAIL(ret) && !notify_arg.for_replay_);
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_ERR_UNEXPECTED;
-    TRANS_LOG(WARN, "arg is invalid", K(ret), K(arg));
-  } else if (arg.is_old_mds_) {
-    mds::MdsCtx mds_ctx;
-    mds_ctx.set_binding_type_id(mds::TupleTypeIdx<mds::BufferCtxTupleHelper, mds::MdsCtx>::value);
-    mds_ctx.set_writer(mds::MdsWriter(notify_arg.tx_id_));
-
-    if (notify_arg.for_replay_) {
-      if (OB_FAIL(Helper::replay_process(arg, notify_arg.scn_, mds_ctx))) {
-        ret = OB_EAGAIN;
-        TRANS_LOG(WARN, "failed to replay_process", K(ret), K(notify_arg), K(arg));
-      }
-    } else {
-      do {
-        if (OB_FAIL(Helper::register_process(arg, mds_ctx))) {
-          TRANS_LOG(ERROR, "fail to register_process, retry", K(ret), K(arg), K(notify_arg));
-          usleep(100 * 1000);
-        }
-      } while (OB_FAIL(ret));
-    }
 
     if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(!arg.is_valid())) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(WARN, "arg is invalid", K(ret), K(arg));
+    } else if (!arg.is_old_mds_) {
+      ret = OB_ERR_UNEXPECTED;
+      TRANS_LOG(WARN, "arg is not old mds, but buf is old mds", K(ret), K(arg));
     } else {
-      mds_ctx.single_log_commit(notify_arg.trans_version_, notify_arg.scn_);
-      TRANS_LOG(INFO, "replay create commit for old_mds", KR(ret), K(arg));
+      mds::MdsCtx mds_ctx;
+      mds_ctx.set_binding_type_id(mds::TupleTypeIdx<mds::BufferCtxTupleHelper, mds::MdsCtx>::value);
+      mds_ctx.set_writer(mds::MdsWriter(notify_arg.tx_id_));
+
+      if (notify_arg.for_replay_) {
+        if (OB_FAIL(Helper::replay_process(arg, notify_arg.scn_, mds_ctx))) {
+          ret = OB_EAGAIN;
+          TRANS_LOG(WARN, "failed to replay_process", K(ret), K(notify_arg), K(arg));
+        }
+      } else {
+        do {
+          if (OB_FAIL(Helper::register_process(arg, mds_ctx))) {
+            TRANS_LOG(ERROR, "fail to register_process, retry", K(ret), K(arg), K(notify_arg));
+            usleep(100 * 1000);
+          }
+        } while (OB_FAIL(ret));
+      }
+
+      if (OB_FAIL(ret)) {
+      } else {
+        mds_ctx.single_log_commit(notify_arg.trans_version_, notify_arg.scn_);
+        TRANS_LOG(INFO, "replay create commit for old_mds", KR(ret), K(arg));
+      }
     }
   }
+
   return ret;
 };
+
+template <typename T>
+int ObTabletCreateDeleteHelper::create_sstable(
+    const ObTabletCreateSSTableParam &param,
+    common::ObArenaAllocator &allocator,
+    ObTableHandleV2 &table_handle)
+{
+  int ret = common::OB_SUCCESS;
+  void *buf = allocator.alloc(sizeof(T));
+  T *sstable = nullptr;
+  if (OB_ISNULL(buf)) {
+    ret = common::OB_ALLOCATE_MEMORY_FAILED;
+    STORAGE_LOG(WARN, "fail to allocate sstable memory", K(ret));
+  } else if (FALSE_IT(sstable = new (buf) T())) {
+  } else if (OB_FAIL(create_sstable(param, allocator, *sstable))) {
+    STORAGE_LOG(WARN, "fail to create sstable", K(ret));
+  } else if (OB_FAIL(table_handle.set_sstable(sstable, &allocator))) {
+    STORAGE_LOG(WARN, "fail to set table handle", K(ret), KPC(sstable));
+  }
+  return ret;
+}
+
+template <typename T>
+int ObTabletCreateDeleteHelper::create_sstable(
+    const ObTabletCreateSSTableParam &param,
+    common::ObArenaAllocator &allocator,
+    T &sstable)
+{
+  int ret = common::OB_SUCCESS;
+  if (OB_UNLIKELY(!param.is_valid())) {
+    ret = common::OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid args", K(ret), K(param));
+  } else if (OB_FAIL(sstable.init(param, &allocator))) {
+    STORAGE_LOG(WARN, "fail to init sstable", K(ret), K(param));
+  }
+  return ret;
+}
 } // namespace storage
 } // namespace oceanbase
 

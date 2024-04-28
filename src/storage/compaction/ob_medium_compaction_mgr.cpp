@@ -21,6 +21,7 @@
 #include "storage/tx/ob_trans_define.h"
 #include "storage/tablet/ob_tablet_obj_load_helper.h"
 #include "storage/tablet/ob_tablet_service_clog_replay_executor.h"
+#include "storage/compaction/ob_tenant_tablet_scheduler.h"
 
 namespace oceanbase
 {
@@ -234,7 +235,7 @@ int ObTabletMediumCompactionInfoRecorder::inner_replay_clog(
 {
   UNUSED(update_version);
   int ret = OB_SUCCESS;
-  ObArenaAllocator tmp_allocator;
+  ObArenaAllocator tmp_allocator("MediumReplay", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   ObMediumCompactionInfo replay_medium_info;
   if (OB_FAIL(replay_medium_info.deserialize(tmp_allocator, buf, size, pos))) {
     LOG_WARN("failed to deserialize medium compaction info", K(ret));
@@ -678,17 +679,17 @@ int ObMediumCompactionInfoList::get_max_sync_medium_scn(int64_t &max_sync_medium
   return ret;
 }
 
-bool ObMediumCompactionInfoList::could_schedule_next_round(const int64_t last_major_snapshot) const
+bool ObMediumCompactionInfoList::need_check_finish() const
 {
-  bool exist = false;
-  DLIST_FOREACH_NORET(info, get_list()) {
-    if (info->medium_snapshot_ > last_major_snapshot) {
-      exist = true;
-      break;
-    }
+  const int64_t wait_check_scn = get_wait_check_medium_scn();
+  bool need_check = (wait_check_scn > 0);
+#ifndef ERRSIM
+  if (need_check && ObMediumCompactionInfo::MAJOR_COMPACTION == get_last_compaction_type()) {
+    need_check = wait_check_scn > MTL(ObTenantTabletScheduler*)->get_inner_table_merged_scn();
   }
-  return !need_check_finish() && !exist;
+#endif
+  return need_check;
 }
 
-} //namespace compaction
+} // namespace compaction
 } // namespace oceanbase

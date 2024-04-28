@@ -33,6 +33,7 @@
 #include "observer/ob_server_struct.h"
 #include "observer/virtual_table/ob_virtual_table_iterator_factory.h"
 #include "observer/ob_req_time_service.h"
+#include "observer/ob_server_event_history_table_operator.h"
 #include "ob_inner_sql_connection_pool.h"
 #include "ob_inner_sql_read_context.h"
 #include "ob_inner_sql_result.h"
@@ -515,7 +516,8 @@ int ObInnerSQLConnection::process_record(sql::ObResultSet &result_set,
                                          ObExecTimestamp &exec_timestamp,
                                          bool has_tenant_resource,
                                          const ObString &ps_sql,
-                                         bool is_from_pl)
+                                         bool is_from_pl,
+                                         ObString *pl_exec_params)
 {
   int ret = OB_SUCCESS;
   const bool enable_perf_event = lib::is_diagnose_info_enabled();
@@ -544,10 +546,9 @@ int ObInnerSQLConnection::process_record(sql::ObResultSet &result_set,
   if (enable_sql_audit) {
     ret = process_audit_record(result_set, sql_ctx, session, last_ret, execution_id,
               ps_stmt_id, has_tenant_resource, ps_sql, is_from_pl);
-    if (is_from_pl && NULL != result_set.get_exec_context().get_physical_plan_ctx()) {
-      ObMPStmtExecute::store_params_value_to_str(alloc, session,
-        &result_set.get_exec_context().get_physical_plan_ctx()->get_param_store_for_update(),
-        audit_record.params_value_, audit_record.params_value_len_);
+    if (NULL != pl_exec_params) {
+      audit_record.params_value_ = pl_exec_params->ptr();
+      audit_record.params_value_len_ = pl_exec_params->length();
     }
   }
   ObSQLUtils::handle_audit_record(false, sql::PSCursor == audit_record.exec_timestamp_.exec_type_
@@ -1458,6 +1459,16 @@ int ObInnerSQLConnection::execute_write_inner(const uint64_t tenant_id, const Ob
       } else if (OB_FAIL(res.close())) {
         LOG_WARN("close result set failed", K(ret), K(tenant_id), K(sql));
       }
+      if (get_session().get_ddl_info().is_ddl()) {
+        SERVER_EVENT_ADD(
+          "ddl", "local execute ddl inner sql",
+          "tenant_id", tenant_id,
+          "trace_id", *ObCurTraceId::get_trace_id(),
+          "ret", ret,
+          "affected_rows", affected_rows,
+          "start_ts", res.execute_start_ts_,
+          "end_ts", res.execute_end_ts_);
+      }
     } else if (is_resource_conn()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("resource_conn of resource_svr still doesn't has the tenant resource",
@@ -1534,6 +1545,16 @@ int ObInnerSQLConnection::execute_write_inner(const uint64_t tenant_id, const Ob
             || ObStmt::is_savepoint_stmt(handler->get_result()->get_stmt_type());
           get_session().set_has_exec_inner_dml(dml_or_savepoint);
         }
+        if (get_session().get_ddl_info().is_ddl()) {
+          SERVER_EVENT_ADD(
+            "ddl", "send ddl inner sql",
+            "tenant_id", tenant_id,
+            "trace_id", *ObCurTraceId::get_trace_id(),
+            "ret", ret,
+            "affected_rows", affected_rows,
+            "start_ts", res.execute_start_ts_,
+            "end_ts", res.execute_end_ts_);
+        }
         if (OB_SUCC(ret)) {
           if (OB_FAIL(res.close())) {
             LOG_WARN("close result set failed", K(ret), K(tenant_id), K(sql));
@@ -1542,9 +1563,11 @@ int ObInnerSQLConnection::execute_write_inner(const uint64_t tenant_id, const Ob
         }
       }
     }
+#ifndef NDEBUG
     if (tenant_id < OB_MAX_RESERVED_TENANT_ID) {  //only print log for sys table
       LOG_INFO("execute write sql", K(ret), K(tenant_id), K(affected_rows), K(sql));
     }
+#endif
   }
 
   return ret;

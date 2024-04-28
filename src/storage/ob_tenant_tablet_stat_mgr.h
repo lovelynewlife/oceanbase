@@ -1,7 +1,13 @@
-/*
- * (C) Copyright 2022 Alipay Inc. All Rights Reserved.
- * Authors:
- *     Danling <>
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_STORAGE_TENANT_TABLET_STAT_MGR_H_
@@ -17,6 +23,7 @@
 #include "lib/lock/ob_tc_rwlock.h"
 #include "lib/queue/ob_fixed_queue.h"
 #include "lib/list/ob_dlist.h"
+#include "lib/literals/ob_literals.h"
 
 namespace oceanbase
 {
@@ -102,7 +109,7 @@ public:
 struct ObTabletStatAnalyzer
 {
 public:
-  ObTabletStatAnalyzer() = default;
+  ObTabletStatAnalyzer();
   ~ObTabletStatAnalyzer() = default;
   bool is_hot_tablet() const;
   bool is_insert_mostly() const;
@@ -307,6 +314,35 @@ private:
 };
 
 
+class ObTenantSysLoadShedder
+{
+public:
+  ObTenantSysLoadShedder();
+  ~ObTenantSysLoadShedder() = default;
+  void reset();
+  void refresh_sys_load();
+  int64_t get_load_shedding_factor() const { return ATOMIC_LOAD(&load_shedding_factor_); }
+
+  TO_STRING_KV(K_(load_shedding_factor), K_(last_cpu_time), K_(cpu_usage), K_(min_cpu_cnt), K_(effect_time));
+private:
+  int refresh_cpu_utility();
+  int refresh_cpu_usage();
+
+public:
+  static const int64_t DEFAULT_LOAD_SHEDDING_FACTOR = 2;
+  static const int64_t CPU_TIME_SAMPLING_INTERVAL = 20_s; //20 * 1000 * 1000 us
+  static constexpr double CPU_UTIL_THRESHOLD = 0.6; // 60%
+  static const int64_t SHEDDER_EXPIRE_TIME = 10_min;
+private:
+  int64_t effect_time_;
+  int64_t last_sample_time_;
+  int64_t load_shedding_factor_;
+  int64_t last_cpu_time_;
+  double cpu_usage_;
+  double min_cpu_cnt_;
+};
+
+
 class ObTenantTabletStatMgr
 {
 public:
@@ -332,13 +368,20 @@ public:
       const share::ObLSID &ls_id,
       const common::ObTabletID &tablet_id,
       common::ObIArray<ObTabletStat> &tablet_stats);
+  int get_all_tablet_stats(
+      common::ObIArray<ObTabletStat> &tablet_stats);
   int get_tablet_analyzer(
       const share::ObLSID &ls_id,
       const common::ObTabletID &tablet_id,
       ObTabletStatAnalyzer &analyzer);
+  int clear_tablet_stat(
+      const share::ObLSID &ls_id,
+      const common::ObTabletID &tablet_id);
   int get_sys_stat(ObTenantSysStat &sys_stat);
   void process_stats();
   void refresh_all(const int64_t step);
+  int64_t get_load_shedding_factor() const { return load_shedder_.get_load_shedding_factor(); }
+  void refresh_sys_load() { load_shedder_.refresh_sys_load(); }
 private:
   class TabletStatUpdater : public common::ObTimerTask
   {
@@ -366,8 +409,6 @@ private:
 
   static constexpr int64_t TABLET_STAT_PROCESS_INTERVAL = 5 * 1000L * 1000L; //5s
   static constexpr int64_t CHECK_INTERVAL = 120L * 1000L * 1000L; //120s
-  static constexpr int64_t CHECK_RUNNING_TIME_INTERVAL = 120L * 1000L * 1000L; //120s
-  static constexpr int64_t CHECK_SYS_STAT_INTERVAL = 10 * 1000LL * 1000LL; //10s
   static constexpr int32_t DEFAULT_MAX_FREE_STREAM_CNT = 5000;
   static constexpr int32_t DEFAULT_UP_LIMIT_STREAM_CNT = 20000;
   static constexpr int32_t DEFAULT_BUCKET_NUM = 1543; // should be a prime to guarantee the bucket nums of hashmap and bucketlock are equal
@@ -379,6 +420,7 @@ private:
   TabletStreamMap stream_map_;
   common::ObBucketLock bucket_lock_;
   ObTabletStat report_queue_[DEFAULT_MAX_PENDING_CNT]; // 12 * 8 * 40000 bytes
+  ObTenantSysLoadShedder load_shedder_;
   uint64_t report_cursor_;
   uint64_t pending_cursor_;
   int report_tg_id_;

@@ -157,7 +157,8 @@ int ObExprRegexpCount::eval_regexp_count(
     int64_t pos = 1;
     if (position != NULL && position->is_null()) {
       expr_datum.set_null();
-    } else if (OB_FAIL(ObExprUtil::get_int_param_val(position, pos))) {
+    } else if (OB_FAIL(ObExprUtil::get_int_param_val(
+                 position, expr.arg_cnt_ > 2 && expr.args_[2]->obj_meta_.is_decimal_int(), pos))) {
       LOG_WARN("truncate number to int64 failed", K(ret));
     } else if (pos <= 0) {
       ret = OB_ERR_ARGUMENT_OUT_OF_RANGE;
@@ -169,6 +170,7 @@ int ObExprRegexpCount::eval_regexp_count(
       int64_t res_count = 0;
       ObExprRegexContext local_regex_ctx;
       ObExprRegexContext *regexp_ctx = &local_regex_ctx;
+      ObExprRegexpSessionVariables regexp_vars;
       const bool reusable = (0 != expr.extra_) && ObExpr::INVALID_EXP_CTX_ID != expr.expr_ctx_id_;
       bool is_case_sensitive = ObCharset::is_bin_sort(expr.args_[0]->datum_meta_.cs_type_);
       uint32_t flags = 0;
@@ -190,9 +192,11 @@ int ObExprRegexpCount::eval_regexp_count(
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(ObExprRegexContext::get_regexp_flags(match_param, is_case_sensitive, flags))) {
         LOG_WARN("fail to get regexp flags", K(ret), K(match_param));
+      } else if (OB_FAIL(ctx.exec_ctx_.get_my_session()->get_regexp_session_vars(regexp_vars))) {
+        LOG_WARN("fail to get regexp");
       } else if (!pattern->is_null() &&
                  OB_FAIL(regexp_ctx->init(reusable ? ctx.exec_ctx_.get_allocator() : tmp_alloc,
-                                          ctx.exec_ctx_.get_my_session(),
+                                          regexp_vars,
                                           pattern->get_string(), flags, reusable, expr.args_[1]->datum_meta_.cs_type_))) {
         LOG_WARN("fail to init regexp", K(pattern), K(flags), K(ret));
       } else if (ob_is_text_tc(expr.args_[0]->datum_meta_.type_)) {

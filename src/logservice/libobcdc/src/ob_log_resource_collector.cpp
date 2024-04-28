@@ -80,7 +80,7 @@ int ObLogResourceCollector::init(const int64_t thread_num,
     ret = OB_INIT_TWICE;
   } else if (OB_UNLIKELY(thread_num <= 0)
       || OB_UNLIKELY(thread_num_for_br <= 0)
-      || OB_UNLIKELY(thread_num_for_br >= thread_num)
+      || OB_UNLIKELY(thread_num_for_br + 1 >= thread_num)
       || OB_UNLIKELY(queue_size <= 0)
       || OB_ISNULL(br_pool)
       || OB_ISNULL(trans_ctx_mgr)
@@ -299,7 +299,7 @@ int ObLogResourceCollector::revert_log_entry_task_(ObLogEntryTask *log_entry_tas
 
     const bool is_test_mode_on = TCONF.test_mode_on != 0;
     if (is_test_mode_on) {
-      LOG_INFO("LogEntryTask-free", "LogEntryTask", *log_entry_task, "addr", log_entry_task, K(data_len));
+      LOG_INFO("LogEntryTask-free", "LogEntryTask", *log_entry_task, "addr", log_entry_task, K(data_len), K(is_log_entry_stored));
     }
 
     if (is_log_entry_stored) {
@@ -336,7 +336,7 @@ int ObLogResourceCollector::del_store_service_data_(const uint64_t tenant_id,
     LOG_ERROR("get_tenant_guard fail", KR(ret), K(tenant_id));
   } else {
     tenant = guard.get_tenant();
-    column_family_handle = tenant->get_cf();
+    column_family_handle = tenant->get_redo_storage_cf_handle();
   }
 
   if (OB_SUCC(ret) && ! RCThread::is_stoped()) {
@@ -398,9 +398,14 @@ int ObLogResourceCollector::push_task_into_queue_(ObLogResourceRecycleTask &task
   static uint64_t br_push_seq = 0;
   uint64_t hash_value = 0;
 
+  // thread [0] for LOB_DATA_CLEAN_TASK
+  // thread [1, br_thread_num] for BR_TASK
+  // thread [br_thread_num + 1, thread_num] for PART_TRANS_TASK
+  // Do stat before actual push task into RCThread may leads to wraog stat if push failed,
+  // thus we will retry RCThread::push until success
   if (task.is_part_trans_task()) {
     hash_value = ATOMIC_FAA(&part_trans_task_push_seq, 1);
-    hash_value = (hash_value % (RCThread::get_thread_num() - br_thread_num_)) + br_thread_num_;
+    hash_value = (hash_value % (RCThread::get_thread_num() - br_thread_num_ - 1)) + br_thread_num_ + 1;
 
     PartTransTask *part_trans_task = static_cast<PartTransTask *>(&task);
 
@@ -414,8 +419,11 @@ int ObLogResourceCollector::push_task_into_queue_(ObLogResourceRecycleTask &task
     (void)ATOMIC_AAF(&br_count_, 1);
 
     hash_value = ATOMIC_FAA(&br_push_seq, 1);
-    hash_value = hash_value % br_thread_num_;
-  } else {}
+    hash_value = (hash_value % br_thread_num_) + 1;
+  } else {
+    // LOB_DATA_CLEAN_TASK, use thread 0
+    // hash_value = 0
+  }
 
   // push to thread queue, asynchronous recycling
   while (OB_SUCC(ret) && ! RCThread::is_stoped()) {
@@ -690,6 +698,7 @@ int ObLogResourceCollector::revert_dml_binlog_record_(ObLogBR &br, volatile bool
   return ret;
 }
 
+// @deperate: should not use it case redo_storage_key don't contain trans_id anymore
 int ObLogResourceCollector::del_trans_(const uint64_t tenant_id,
     const ObString &trans_id_str)
 {
@@ -710,7 +719,7 @@ int ObLogResourceCollector::del_trans_(const uint64_t tenant_id,
     LOG_ERROR("get_tenant_guard fail", KR(ret), K(tenant_id));
   } else {
     tenant = guard.get_tenant();
-    column_family_handle = tenant->get_cf();
+    column_family_handle = tenant->get_redo_storage_cf_handle();
   }
 
   if (OB_SUCC(ret)) {
@@ -740,10 +749,13 @@ int ObLogResourceCollector::dec_ref_cnt_and_try_to_recycle_log_entry_task_(ObLog
     LOG_ERROR("part_trans_task is NULL", KPC(log_entry_task));
     ret = OB_ERR_UNEXPECTED;
   } else {
+    const int64_t row_ref_cnt = log_entry_task->dec_row_ref_cnt();
+    const bool need_revert_log_entry_task = (row_ref_cnt == 0);
+
     if (TCONF.test_mode_on) {
-      LOG_INFO("revert_dml_binlog_record", KP(&br), K(br), KP(log_entry_task), KPC(log_entry_task));
+      // print while revert each row
+      LOG_INFO("revert_dml_binlog_record", KP(&br), K(br), KP(log_entry_task), K(need_revert_log_entry_task), KPC(log_entry_task));
     }
-    const bool need_revert_log_entry_task = (log_entry_task->dec_row_ref_cnt() == 0);
 
     if (need_revert_log_entry_task) {
       if (OB_FAIL(revert_log_entry_task_(log_entry_task))) {

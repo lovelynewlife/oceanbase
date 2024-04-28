@@ -1,12 +1,14 @@
-// Copyrigh(c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
 
 #ifndef OCEANBASE_DUP_TABLE_TABLETS_H
 #define OCEANBASE_DUP_TABLE_TABLETS_H
@@ -625,7 +627,7 @@ public:
                                     bool &is_dup_table,
                                     const share::SCN &from_scn,
                                     const share::SCN &to_scn);
-  int gc_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval);
+  int gc_tmporary_dup_tablets(const int64_t gc_ts, const int64_t max_task_interval);
   // new gc methods
   int scan_readable_set_for_gc();
 
@@ -654,7 +656,8 @@ public:
                         const share::SCN &scn,
                         const bool for_replay,
                         const DupTabletSetIDArray &unique_id_array,
-                        bool &modify_readable_set);
+                        bool &modify_readable_set,
+                        const int64_t start_sync_time);
 
   int try_to_confirm_tablets(const share::SCN &confirm_scn);
   // bool need_log_tablets();
@@ -795,6 +798,8 @@ private:
   };
 
 private:
+  int process_prepare_ser_err_test_();
+
   int lose_dup_tablet_(const common::ObTabletID &tablet_id);
   int discover_dup_tablet_(const common::ObTabletID &tablet_id, const int64_t refresh_time);
   int collect_confirmed_dup_tablet_(const share::SCN &max_replayed_scn);
@@ -899,6 +904,9 @@ private:
   int64_t gc_start_time_;
   int64_t last_no_free_set_time_;
   int64_t extra_free_set_alloc_count_;
+
+  int64_t last_readable_sync_succ_time_;
+  share::SCN last_readable_log_entry_scn_;
 
   char *tablet_set_diag_info_log_buf_;
   char *tablet_id_diag_info_log_buf_;

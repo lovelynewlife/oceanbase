@@ -11,11 +11,24 @@
  */
 
 #include "storage/tx/ob_tx_ctx_mds.h"
+#include "storage/tx/ob_trans_part_ctx.h"
 
 namespace oceanbase
 {
 namespace transaction
 {
+
+int ObTxMDSCache::init(int64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+
+  ObMemAttr attr(tenant_id, "MdsMemHash");
+  if (OB_FAIL(mem_stat_hash_.create(16, attr, attr))) {
+    TRANS_LOG(WARN, "create mds mem stat failed", K(ret), K(tenant_id));
+  }
+
+  return ret;
+}
 
 void ObTxMDSCache::reset()
 {
@@ -24,6 +37,8 @@ void ObTxMDSCache::reset()
   mds_list_.reset();
   submitted_iterator_ = mds_list_.end(); // ObTxBufferNodeList::iterator();
   need_retry_submit_mds_ = false;
+  max_register_no_ = 0;
+  mem_stat_hash_.destroy();
 }
 
 void ObTxMDSCache::destroy()
@@ -33,19 +48,133 @@ void ObTxMDSCache::destroy()
   while (!mds_list_.empty()) {
     mds_list_.pop_front(tmp_node);
     if (nullptr != tmp_node.data_.ptr()) {
-      share::mtl_free(tmp_node.data_.ptr());
+      free_mds_node(tmp_node.data_, tmp_node.get_register_no());
     }
     tmp_node.get_buffer_ctx_node().destroy_ctx();
   }
+  mem_stat_hash_.destroy();
 }
 
-int ObTxMDSCache::insert_mds_node(const ObTxBufferNode &buf_node)
+int ObTxMDSCache::alloc_mds_node(const ObPartTransCtx *tx_ctx,
+                                 const char *buf,
+                                 const int64_t buf_len,
+                                 common::ObString &data,
+                                 uint64_t register_no)
+{
+  int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
+  uint64_t cur_register_no = 0;
+
+  ObMDSMemStat tmp_mem_stat;
+  tmp_mem_stat.reset();
+
+  if (register_no <= 0) {
+    cur_register_no = max_register_no_ + 1;
+  } else {
+    cur_register_no = register_no;
+  }
+
+  void *ptr = nullptr;
+  if (OB_ISNULL(ptr =
+                    MultiTxDataFactory::alloc(buf_len, tx_ctx->get_trans_id(), (uint64_t)tx_ctx))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    TRANS_LOG(WARN, "allocate memory failed", KR(ret), K(buf_len));
+  } else {
+    MEMCPY(ptr, buf, buf_len);
+    data.assign_ptr(reinterpret_cast<char *>(ptr), buf_len);
+  }
+
+  if (OB_TMP_FAIL(mem_stat_hash_.get_refactored(cur_register_no, tmp_mem_stat))) {
+    if (OB_HASH_NOT_EXIST != tmp_ret) {
+      TRANS_LOG(ERROR, "get tmp_mem_stat from mem_stat_hash failed", K(ret), K(tmp_ret),
+                K(cur_register_no), K(tmp_mem_stat), KPC(tx_ctx));
+    }
+    tmp_mem_stat.reset();
+  }
+
+  if (OB_SUCCESS == tmp_ret || OB_HASH_NOT_EXIST == tmp_ret) {
+    tmp_mem_stat.alloc_cnt_++;
+    if (OB_TMP_FAIL(mem_stat_hash_.set_refactored(cur_register_no, tmp_mem_stat, 1))) {
+      TRANS_LOG(ERROR, "insert mem_stat_ into hash table failed", K(ret), K(tmp_ret),
+                K(cur_register_no), K(tmp_mem_stat),KPC(tx_ctx) );
+    }
+
+  }
+
+  return ret;
+}
+
+void ObTxMDSCache::free_mds_node(common::ObString &data, uint64_t register_no)
+{
+  int tmp_ret = OB_SUCCESS;
+  uint64_t cur_register_no = register_no;
+  ObMDSMemStat tmp_mem_stat;
+  tmp_mem_stat.reset();
+
+  if (register_no <= 0) {
+    cur_register_no = max_register_no_ + 1;
+  } else {
+    cur_register_no = register_no;
+  }
+
+  MultiTxDataFactory::free(data.ptr());
+
+  if (OB_TMP_FAIL(mem_stat_hash_.get_refactored(cur_register_no, tmp_mem_stat))) {
+    TRANS_LOG_RET(ERROR, tmp_ret, "get tmp_mem_stat from mem_stat_hash failed", K(ret), K(tmp_ret),
+                  K(cur_register_no), K(tmp_mem_stat));
+    tmp_mem_stat.reset();
+  }
+
+  if (OB_SUCCESS == tmp_ret) {
+    tmp_mem_stat.free_cnt_++;
+    if (tmp_mem_stat.free_cnt_ >= tmp_mem_stat.alloc_cnt_) {
+      if (OB_TMP_FAIL(mem_stat_hash_.erase_refactored(cur_register_no))) {
+        TRANS_LOG_RET(ERROR, tmp_ret, "insert mem_stat_ into hash table failed", K(ret), K(tmp_ret),
+                      K(cur_register_no), K(tmp_mem_stat));
+      }
+    }
+  }
+}
+
+bool ObTxMDSCache::is_mem_leak()
+{
+  bool mem_leak = !mem_stat_hash_.empty();
+
+  if (mem_leak) {
+    for (ObTxMDSMemStatHash::iterator iter = mem_stat_hash_.begin(); iter != mem_stat_hash_.end();
+         iter++) {
+      TRANS_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "mds node mem leak", K(iter->first), K(iter->second));
+    }
+  }
+
+  return mem_leak;
+}
+
+int ObTxMDSCache::try_recover_max_register_no(const ObTxBufferNodeArray &node_array)
+{
+  int ret = OB_SUCCESS;
+  int64_t array_cnt = node_array.count();
+  if (array_cnt > 0) {
+    int64_t max_register_no = node_array[array_cnt - 1].get_register_no();
+    if (max_register_no > max_register_no_) {
+      max_register_no_ = max_register_no;
+    }
+  }
+
+  return ret;
+}
+
+int ObTxMDSCache::insert_mds_node(ObTxBufferNode &buf_node)
 {
   int ret = OB_SUCCESS;
 
   if (!buf_node.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "insert MDS buf node", K(ret));
+  } else if (OB_FALSE_IT(max_register_no_++)) {
+    //do nothing
+  } else if (OB_FAIL(buf_node.set_mds_register_no(max_register_no_))) {
+    TRANS_LOG(WARN, "set mds register no failed", K(ret), K(buf_node), KPC(this));
   } else if (OB_FAIL(mds_list_.push_back(buf_node))) {
     TRANS_LOG(WARN, "push back MDS buf node", K(ret));
   } else {
@@ -63,7 +192,8 @@ int ObTxMDSCache::rollback_last_mds_node()
   if (OB_FAIL(mds_list_.pop_back())) {
     TRANS_LOG(WARN, "pop back last node failed", K(ret));
   } else {
-    share::mtl_free(buf_node.get_ptr());
+    TRANS_LOG(INFO, "rollback the last mds node", K(ret), K(buf_node), KPC(this));
+    free_mds_node(buf_node.data_, buf_node.get_register_no());
     buf_node.get_buffer_ctx_node().destroy_ctx();
   }
 
@@ -309,7 +439,18 @@ int ObTxMDSRange::move_from_cache_to_arr(ObTxMDSCache &mds_cache,
     TRANS_LOG(WARN, "empty range in move function", K(ret), KPC(tx_ctx_));
   } else {
     for (int64_t i = 0; i < range_array_.count() && OB_SUCC(ret); i++) {
-      if (OB_FAIL(mds_cache.earse_from_cache(range_array_[i]))) {
+      if (!ObTxBufferNode::is_valid_register_no(range_array_[i].get_register_no())) {
+        ret = OB_INVALID_ARGUMENT;
+        TRANS_LOG(ERROR, "invalid register no for a mds node in cache", K(ret), K(i),
+                  K(range_array_[i]));
+      } else if (!mds_durable_arr.empty()
+                 && ObTxBufferNode::is_valid_register_no(
+                     mds_durable_arr[mds_durable_arr.count() - 1].get_register_no())
+                 && range_array_[i].get_register_no()
+                        <= mds_durable_arr[mds_durable_arr.count() - 1].get_register_no()) {
+        TRANS_LOG(ERROR, "invalid smaller register no", K(ret), K(i), K(range_array_[i]),
+                  K(mds_durable_arr[mds_durable_arr.count() - 1]));
+      } else if (OB_FAIL(mds_cache.earse_from_cache(range_array_[i]))) {
         TRANS_LOG(WARN, "earse from mds cache failed", K(ret), K(range_array_[i]), K(mds_cache),
                   K(mds_durable_arr));
       } else if (OB_FALSE_IT(range_array_[i].set_synced())) {
@@ -324,70 +465,6 @@ int ObTxMDSRange::move_from_cache_to_arr(ObTxMDSCache &mds_cache,
   return ret;
 }
 
-// int ObTxMDSRange::move_to(ObTxBufferNodeArray &tx_buffer_node_arr)
-// {
-//   int ret = OB_SUCCESS;
-//
-//   ObTxBufferNodeList::iterator del_iterator, next_iterator;
-//
-//   if (OB_ISNULL(list_ptr_)) {
-//     ret = OB_NOT_INIT;
-//     TRANS_LOG(WARN, "MDS range is not init", K(ret));
-//   } else if (start_iter_ == list_ptr_->end() || 0 == count_) {
-//     // empty MDS range
-//     TRANS_LOG(WARN, "use empty mds range when move", K(this), K(lbt()));
-//   } else {
-//     int64_t i = 0;
-//     del_iterator = list_ptr_->end();
-//     next_iterator = start_iter_;
-//
-//     for (i = 0; i < count_ && OB_SUCC(ret) && next_iterator != list_ptr_->end(); i++) {
-//       del_iterator = next_iterator;
-//       next_iterator++;
-//
-//       if (!del_iterator->is_submitted()) {
-//         ret = OB_ERR_UNEXPECTED;
-//         TRANS_LOG(WARN, "try to move unsubmitted MDS node", K(ret));
-//       } else if (OB_FALSE_IT(del_iterator->set_synced())) {
-//         TRANS_LOG(WARN, "set synced MDS node failed", K(*del_iterator));
-//       } else if (OB_FAIL(tx_buffer_node_arr.push_back(*del_iterator))) {
-//         TRANS_LOG(WARN, "push back MDS node failed", K(ret));
-//       } else if (OB_FAIL(list_ptr_->erase(del_iterator))) {
-//         TRANS_LOG(WARN, "earse from MDS list failed", K(ret));
-//       }
-//     }
-//   }
-//
-//   return ret;
-// }
-//
-// int ObTxMDSRange::copy_to(ObTxBufferNodeArray &tx_buffer_node_arr) const
-// {
-//   int ret = OB_SUCCESS;
-//
-//   ObTxBufferNodeList::iterator next_iterator;
-//
-//   if (OB_ISNULL(list_ptr_)) {
-//     ret = OB_NOT_INIT;
-//     TRANS_LOG(WARN, "MDS range is not init", K(ret));
-//   } else if (start_iter_ == list_ptr_->end() || 0 == count_) {
-//     // empty MDS range
-//     TRANS_LOG(WARN, "use empty mds range when copy", K(this), K(lbt()));
-//   } else {
-//     int64_t i = 0;
-//     next_iterator = start_iter_;
-//
-//     for (i = 0; i < count_ && OB_SUCC(ret) && next_iterator != list_ptr_->end();
-//          i++, next_iterator++) {
-//       if (OB_FAIL(tx_buffer_node_arr.push_back(*next_iterator))) {
-//         TRANS_LOG(WARN, "push back MDS node failed", K(ret));
-//       }
-//     }
-//   }
-//
-//   return ret;
-// }
-//
 int ObTxMDSRange::range_submitted(ObTxMDSCache &cache)
 {
   int ret = OB_SUCCESS;

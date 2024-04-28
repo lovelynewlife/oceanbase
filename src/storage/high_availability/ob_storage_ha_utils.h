@@ -45,6 +45,11 @@ public:
   static int get_readable_scn_with_retry(share::SCN &readable_scn);
   static int64_t get_rpc_timeout();
   static int check_is_primary_tenant(const uint64_t tenant_id, bool &is_primary_tenant);
+  static int check_disk_space();
+  static int check_ls_is_leader(const uint64_t tenant_id, const share::ObLSID &ls_id, bool &is_leader);
+
+  static int calc_tablet_sstable_macro_block_cnt(
+      const ObTabletHandle &tablet_handle, int64_t &data_macro_block_count);
 
 private:
   static int check_merge_error_(const uint64_t tenant_id, common::ObISQLClient &sql_client);
@@ -65,6 +70,18 @@ struct ObTransferUtils
   static int get_gts(const uint64_t tenant_id, share::SCN &gts);
   static void set_transfer_module();
   static void clear_transfer_module();
+  static int get_need_check_member(
+      const common::ObIArray<ObAddr> &total_member_addr_list,
+      const common::ObIArray<ObAddr> &finished_member_addr_list,
+      common::ObIArray<ObAddr> &member_addr_list);
+  static int check_ls_replay_scn(
+      const uint64_t tenant_id,
+      const share::ObLSID &ls_id,
+      const share::SCN &check_scn,
+      const int32_t group_id,
+      const common::ObIArray<ObAddr> &member_addr_list,
+      ObTimeoutCtx &timeout_ctx,
+      common::ObIArray<ObAddr> &finished_addr_list);
 };
 
 } // end namespace storage

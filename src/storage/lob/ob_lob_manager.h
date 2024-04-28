@@ -147,8 +147,8 @@ private:
       allocator_(tenant_id),
       lob_ctxs_(),
       lob_ctx_(),
-      meta_manager_(),
-      piece_manager_()
+      meta_manager_(tenant_id),
+      piece_manager_(tenant_id)
   {}
 public:
   ~ObLobManager() { destroy(); }
@@ -223,7 +223,10 @@ public:
               ObLobLocatorV2& lob_right,
               ObLobCompareParams& cmp_params,
               int64_t& result);
-
+  int equal(ObLobLocatorV2& lob_left,
+            ObLobLocatorV2& lob_right,
+            ObLobCompareParams& cmp_params,
+            bool& result);
   // int insert(const common::ObTabletID &tablet_id, ObObj *obj, uint64_t offset, char *data, uint64_t len);
   // int erase(const common::ObTabletID &tablet_id, ObObj *obj, uint64_t offset, uint64_t len);
   int get_real_data(ObLobAccessParam& param,
@@ -238,7 +241,7 @@ public:
                       uint64_t len,
                       int64_t timeout,
                       ObLobLocatorV2 &lob);
-  inline bool can_write_inrow(uint64_t len) { return len <= LOB_IN_ROW_MAX_LENGTH; }
+  inline bool can_write_inrow(uint64_t len, int64_t inrow_threshold) { return len <= inrow_threshold; }
 private:
   // private function
   int write_inrow_inner(ObLobAccessParam& param, ObString& data, ObString& old_data);

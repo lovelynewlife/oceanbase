@@ -28,13 +28,36 @@ namespace transaction
 namespace tablelock
 {
 
-ObLockMemtableMgr::ObLockMemtableMgr() : ObIMemtableMgr(LockType::OB_QSYNC_LOCK, &lock_def_)
+ObLockMemtableMgr::ObLockMemtableMgr()
+  : ls_id_(),
+    lock_def_()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(lock_def_.init(lib::ObMemAttr(MTL_ID(), "LockMemtableMgr")))) {
     LOG_WARN("lock memtable mgr lock init error", K(ret), "tenant_id", MTL_ID());
   }
-  UNUSED(ret);
+  lock_.lock_type_ = LockType::OB_QSYNC_LOCK;
+  lock_.lock_ = &lock_def_;
+}
+
+ObLockMemtableMgr::~ObLockMemtableMgr()
+{
+  destroy();
+}
+
+void ObLockMemtableMgr::destroy()
+{
+  int ret = OB_SUCCESS;
+  const int64_t ref_cnt = get_ref();
+  if (OB_UNLIKELY(0 != ref_cnt)) {
+    LOG_ERROR("ref cnt is NOT 0", K(ret), K(ref_cnt), K_(ls_id), KPC(this));
+  }
+
+  MemMgrWLockGuard lock_guard(lock_);
+  reset_tables();
+  ls_id_.reset();
+  freezer_ = NULL;
+  is_inited_ = false;
 }
 
 int ObLockMemtableMgr::init(
@@ -67,25 +90,14 @@ int ObLockMemtableMgr::init(
   return ret;
 }
 
-void ObLockMemtableMgr::destroy()
-{
-  reset();
-}
-
-void ObLockMemtableMgr::reset()
-{
-  MemMgrWLockGuard lock_guard(lock_);
-  reset_tables();
-  freezer_ = NULL;
-  is_inited_ = false;
-}
-
 int ObLockMemtableMgr::create_memtable(const SCN clog_checkpoint_scn,
                                        const int64_t schema_version,
+                                       const SCN newest_clog_checkpoint_scn,
                                        const bool for_replay)
 {
   UNUSED(clog_checkpoint_scn);
   UNUSED(schema_version);
+  UNUSED(newest_clog_checkpoint_scn);
   UNUSED(for_replay);
 
   int ret = OB_SUCCESS;

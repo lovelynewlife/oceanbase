@@ -32,6 +32,7 @@ public:
   ObAlterTableStmt();
   virtual ~ObAlterTableStmt();
   int add_column(const share::schema::AlterColumnSchema &column_schema);
+  int add_column_group(const ObColumnGroupSchema &column_group);
   int add_index_arg(obrpc::ObIndexArg *index_arg);
   int check_drop_fk_arg_exist(obrpc::ObDropForeignKeyArg *drop_fk_arg, bool &has_same_fk_arg);
   int check_drop_cst_exist(const ObConstraint &constraint, bool &has_same_cst);
@@ -82,6 +83,7 @@ public:
   inline int set_nls_formats(const common::ObString &nls_date_format,
                              const common::ObString &nls_timestamp_format,
                              const common::ObString &nls_timestamp_tz_format);
+  int fill_session_vars(const ObBasicSessionInfo &session);
   inline const common::ObTimeZoneInfoWrap &get_tz_info_wrap()
   { return alter_table_arg_.tz_info_wrap_; }
   void set_tenant_id(const uint64_t tenant_id)

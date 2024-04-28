@@ -357,6 +357,7 @@ public:
   static int convert_lob(common::ObIAllocator &allocator, ObObj &obj);
   // read lob的allocator需要保证obj序列化到rpc buffer后才能析构
   static int read_real_lob(common::ObIAllocator &allocator, ObObj &obj);
+  int adjust_entity();
 private:
   // for common
   int get_tablet_by_rowkey(const common::ObRowkey &rowkey,
@@ -389,11 +390,10 @@ private:
   int construct_column_items();
   int cons_column_type(const share::schema::ObColumnSchemaV2 &column_schema,
                        sql::ObExprResType &column_type);
-  int adjust_column_type(const ObExprResType &column_type, ObObj &obj);
+  int adjust_column_type(const ObExprResType &column_type, ObObj &obj, bool is_autoincrement = false);
   int adjust_column(const ObColumnSchemaV2 &col_schema, ObObj &obj);
   int adjust_rowkey();
   int adjust_properties();
-  int adjust_entity();
   bool has_exist_in_columns(const common::ObIArray<common::ObString>& columns,
                             const common::ObString &name,
                             int64_t *idx = nullptr) const;
@@ -556,6 +556,7 @@ public:
         column_infos_(alloc),
         alloc_(alloc)
   {
+    das_ctdef_.is_table_api_ = true;
   }
   TO_STRING_KV(K_(das_ctdef),
                K_(related_ctdefs));
@@ -595,6 +596,7 @@ public:
         related_ins_ctdefs_(alloc),
         alloc_(alloc)
   {
+    das_ctdef_.is_table_api_ = true;
   }
   TO_STRING_KV(K_(full_row),
                K_(delta_row),
@@ -651,6 +653,7 @@ public:
         related_ctdefs_(alloc),
         alloc_(alloc)
   {
+    das_ctdef_.is_table_api_ = true;
   }
   TO_STRING_KV(K_(das_ctdef),
                K_(related_ctdefs));
@@ -742,6 +745,7 @@ public:
         das_ctdef_(alloc),
         alloc_(alloc)
   {
+    das_ctdef_.is_table_api_ = true;
   }
   TO_STRING_KV(K_(das_ctdef));
   ObDASLockCtDef das_ctdef_;

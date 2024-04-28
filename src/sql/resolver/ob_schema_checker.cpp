@@ -753,6 +753,9 @@ int ObSchemaChecker::get_table_schema(const uint64_t tenant_id, const ObString &
              && OB_INVALID_ID != schema_mgr_->get_session_id()) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(database_name), to_cstring(table_name));
+  } else if (table->is_materialized_view() && !(table->mv_available())) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(database_name), to_cstring(table_name));
   } else {
     table_schema = table;
   }
@@ -951,7 +954,8 @@ int ObSchemaChecker::get_can_write_index_array(const uint64_t tenant_id,
                                                uint64_t table_id,
                                                uint64_t *index_tid_array,
                                                int64_t &size,
-                                               bool only_global) const
+                                               bool only_global,
+                                               bool with_mlog) const
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
@@ -960,7 +964,7 @@ int ObSchemaChecker::get_can_write_index_array(const uint64_t tenant_id,
   } else if (OB_UNLIKELY(OB_INVALID_ID == table_id || size <= 0) || OB_ISNULL(index_tid_array)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(table_id), K(size), K(index_tid_array), K(ret));
-  } else if (OB_FAIL(schema_mgr_->get_can_write_index_array(tenant_id, table_id, index_tid_array, size, only_global))) {
+  } else if (OB_FAIL(schema_mgr_->get_can_write_index_array(tenant_id, table_id, index_tid_array, size, only_global, with_mlog))) {
     LOG_WARN("failed to get_can_write_index_array", K(tenant_id), K(table_id), K(ret));
   } else {}
   return ret;
@@ -1780,6 +1784,33 @@ int ObSchemaChecker::find_fake_cte_schema(common::ObString tblname, ObNameCaseMo
       exist = true;
       break;
     }
+  }
+  return ret;
+}
+
+int ObSchemaChecker::adjust_fake_cte_column_type(uint64_t table_id,
+                                                 uint64_t column_id,
+                                                 const common::ColumnType &type,
+                                                 const common::ObAccuracy &accuracy)
+{
+  int ret = OB_SUCCESS;
+  ObTableSchema *table = NULL;
+  ObColumnSchemaV2 *column_schema = NULL;
+  for (int64_t i = 0; i < tmp_cte_schemas_.count(); i++) {
+    if (tmp_cte_schemas_.at(i)->get_table_id() == table_id) {
+      table = tmp_cte_schemas_.at(i);
+      break;
+    }
+  }
+  if (NULL == table) {
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("table is not exist", K(table_id));
+  } else if (OB_ISNULL(column_schema = table->get_column_schema(column_id))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else {
+    column_schema->set_data_type(type);
+    column_schema->set_accuracy(accuracy);
   }
   return ret;
 }
@@ -2768,10 +2799,16 @@ int ObSchemaChecker::check_ora_ddl_priv(
 }
 
 /**检查用户user_id是否能access到obj_id，会检查系统权限和对象权限*/
+/*
+ *系统权限又分了两类:
+ * 1. 全局有效：create any table, create any view ....
+ * 2. user’s shema有效：create table，create view，create synonym, create index, ....
+ */
 int ObSchemaChecker::check_access_to_obj(
     const uint64_t tenant_id,
     const uint64_t user_id,
     const uint64_t obj_id,
+    const ObString &database_name,
     const sql::stmt::StmtType stmt_type,
     const ObIArray<uint64_t> &role_id_array,
     bool &accessible,
@@ -2800,6 +2837,7 @@ int ObSchemaChecker::check_access_to_obj(
                                                     static_cast<uint64_t>
                                                     (share::schema::ObObjectType::TABLE),
                                                     obj_id,
+                                                    database_name,
                                                     role_id_array,
                                                     accessible),
               K(tenant_id), K(user_id), K(stmt_type), K(role_id_array));
@@ -2815,8 +2853,21 @@ int ObSchemaChecker::check_access_to_obj(
                                                     static_cast<uint64_t>
                                                     (share::schema::ObObjectType::TABLE),
                                                     obj_id,
+                                                    database_name,
                                                     role_id_array,
                                                     accessible),
+              K(tenant_id), K(user_id), K(stmt_type), K(role_id_array));
+            break;
+          }
+          case stmt::T_CREATE_MLOG: {
+            OZ (ObOraSysChecker::check_access_to_mlog_base_table(
+                *schema_mgr_,
+                tenant_id,
+                user_id,
+                obj_id,
+                database_name,
+                role_id_array,
+                accessible),
               K(tenant_id), K(user_id), K(stmt_type), K(role_id_array));
             break;
           }
@@ -2936,6 +2987,21 @@ bool ObSchemaChecker::is_ora_priv_check()
     return true;
   else
     return false;
+}
+
+int ObSchemaChecker::remove_tmp_cte_schemas(const ObString& cte_table_name)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < tmp_cte_schemas_.count(); i++) {
+    if (cte_table_name == tmp_cte_schemas_.at(i)->get_table_name()) {
+      if(OB_FAIL(tmp_cte_schemas_.remove(i))) {
+        LOG_WARN("remove from tmp_cte_schemas_ failed.", K(ret));
+      } else {
+        break;
+      }
+    }
+  }
+  return ret;
 }
 
 }//end of namespace sql

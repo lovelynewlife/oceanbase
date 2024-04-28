@@ -17,6 +17,7 @@
 #include "storage/tablet/ob_tablet_meta.h"
 #include "storage/tablet/ob_tablet.h"
 #include "storage/tx/ob_defensive_check_mgr.h"
+#include "storage/column_store/ob_co_sstable_row_getter.h"
 
 namespace oceanbase
 {
@@ -33,7 +34,6 @@ ObSingleMerge::ObSingleMerge()
 
 ObSingleMerge::~ObSingleMerge()
 {
-  reset();
 }
 
 int ObSingleMerge::open(const ObDatumRowkey &rowkey)
@@ -41,11 +41,11 @@ int ObSingleMerge::open(const ObDatumRowkey &rowkey)
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObMultipleMerge::open())) {
     STORAGE_LOG(WARN, "Fail to open ObMultipleMerge, ", K(ret));
-  } else if (OB_UNLIKELY(!get_table_param_.is_valid())) {
+  } else if (OB_ISNULL(get_table_param_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObSingleMerge has not been inited", K(ret), K_(get_table_param));
   } else {
-    const ObTabletMeta &tablet_meta = get_table_param_.tablet_iter_.get_tablet()->get_tablet_meta();
+    const ObTabletMeta &tablet_meta = get_table_param_->tablet_iter_.get_tablet()->get_tablet_meta();
     if (!full_row_.is_valid()) {
       if (OB_FAIL(full_row_.init(*access_ctx_->stmt_allocator_, access_param_->get_max_out_col_cnt()))) {
         STORAGE_LOG(WARN, "Failed to init datum row", K(ret));
@@ -131,6 +131,10 @@ int ObSingleMerge::get_table_row(const int64_t table_idx,
       STORAGE_LOG(WARN, "failed to init get iter", K(ret), K(table_idx),
           K(iters_.count()), K(tables.count()));
     }
+  }
+  if (OB_SUCC(ret) && ObStoreRowIterator::IteratorCOSingleGet == iter->get_iter_type()
+      && !fuse_row.row_flag_.is_not_exist() && 0 != fuse_row.count_) {
+    reinterpret_cast<ObCOSSTableRowGetter *>(iter)->set_nop_pos(&nop_pos_);
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(iter->get_next_row(prow))) {
@@ -235,20 +239,18 @@ int ObSingleMerge::get_and_fuse_cache_row(const int64_t read_snapshot_version,
 int ObSingleMerge::inner_get_next_row(ObDatumRow &row)
 {
   int ret = OB_SUCCESS;
-  const ObITableReadInfo *read_info = access_param_->iter_param_.get_read_info();
-  if (OB_ISNULL(read_info)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpected null read_info", K(ret), KP(read_info));
-  } else if (NULL != rowkey_) {
+  if (NULL != rowkey_ && 0 < tables_.count()) {
     bool final_result = false;
     int64_t table_idx = -1;
-    ObITable *table = nullptr;
+    ObITable *table = tables_.at(0);
     bool have_uncommited_row = false;
-    const ObTabletMeta &tablet_meta = get_table_param_.tablet_iter_.get_tablet()->get_tablet_meta();
+    const ObITableReadInfo *read_info = access_param_->iter_param_.get_read_info();
+    const ObTabletMeta &tablet_meta = get_table_param_->tablet_iter_.get_tablet()->get_tablet_meta();
     const int64_t read_snapshot_version = access_ctx_->trans_version_range_.snapshot_version_;
     const bool enable_fuse_row_cache = access_ctx_->use_fuse_row_cache_ &&
                                        access_param_->iter_param_.enable_fuse_row_cache(access_ctx_->query_flag_) &&
                                        read_snapshot_version >= tablet_meta.snapshot_version_ &&
+                                       (!table->is_co_sstable() || static_cast<ObCOSSTableV2 *>(table)->is_all_cg_base()) &&
                                        !tablet_meta.has_transfer_table(); // The query in the transfer scenario does not enable fuse row cache
     bool need_update_fuse_cache = false;
     access_ctx_->query_flag_.set_not_use_row_cache();

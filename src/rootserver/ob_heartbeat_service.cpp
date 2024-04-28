@@ -71,6 +71,8 @@ int ObHeartbeatService::init()
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("has already inited", KR(ret), K(is_inited_));
+  } else if (MTL_ID() != OB_SYS_TENANT_ID) {
+    // only create hb service threads in sys tenant
   } else if (OB_ISNULL(srv_rpc_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
     HBS_LOG_ERROR("srv_rpc_proxy_ is null", KR(ret), KP(srv_rpc_proxy_));
@@ -289,6 +291,7 @@ int ObHeartbeatService::set_hb_responses_(const int64_t whitelist_epoch_id, ObSe
     need_process_hb_responses_ = true;
     hb_responses_epoch_id_ = whitelist_epoch_id;
     hb_responses_.reset();
+    // don't use arg/dest here because call() may has failue.
     ARRAY_FOREACH_X(proxy->get_results(), idx, cnt, OB_SUCC(ret)) {
       const ObHBResponse *hb_response = proxy->get_results().at(idx);
       if (OB_ISNULL(hb_response)) {

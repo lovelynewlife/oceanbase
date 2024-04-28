@@ -356,7 +356,7 @@ TEST_F(TestLSRestoreHandler, restore_start_1)
   EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_START, handler->state_handler_->ls_restore_status_);
   EXPECT_EQ(OB_SUCCESS, handler->state_handler_->do_restore());
   EXPECT_EQ(OB_SUCCESS, ls->get_restore_status(status));
-  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_NONE, status);
+  EXPECT_EQ(ObLSRestoreStatus::Status::NONE, status);
   ls->set_restore_status(ObLSRestoreStatus(ObLSRestoreStatus::Status::RESTORE_START), rebuild_seq);
   ls->disable_replay();
   LOG_INFO("TestLSRestoreHandler::restore_start_1 finish");
@@ -504,9 +504,10 @@ TEST_F(TestLSRestoreHandler, restore_sys)
 namespace storage
 {
 
-int ObLSTabletService::build_tablet_iter(ObLSTabletIterator &iterator)
+int ObLSTabletService::build_tablet_iter(ObLSTabletIterator &iter, const bool except_ls_inner_tablet)
 {
-  UNUSED(iterator);
+  UNUSED(iter);
+  UNUSED(except_ls_inner_tablet);
   return OB_SUCCESS;
 }
 
@@ -514,11 +515,6 @@ int ObLSTabletIterator::get_next_tablet(ObTabletHandle &handle)
 {
   UNUSED(handle);
   return OB_ITER_END;
-}
-
-int ObLS::load_ls_inner_tablet()
-{
-  return OB_SUCCESS;
 }
 
 }
@@ -584,7 +580,7 @@ TEST_F(TestLSRestoreHandler, wait_state)
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->update_state_handle_());
   EXPECT_EQ(ObLSRestoreStatus::Status::WAIT_RESTORE_MAJOR_DATA, ls->get_ls_restore_handler()->state_handler_->ls_restore_status_);
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->state_handler_->do_restore());
-  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_NONE, ls->ls_meta_.restore_status_);
+  EXPECT_EQ(ObLSRestoreStatus::Status::NONE, ls->ls_meta_.restore_status_);
 
   ob_role = ObRole::FOLLOWER;
   // follower in wait restore sys tablets
@@ -654,13 +650,13 @@ TEST_F(TestLSRestoreHandler, wait_state)
   EXPECT_EQ(ObLSRestoreStatus::Status::QUICK_RESTORE_FINISH, ls->ls_meta_.restore_status_);
 
   // follower in wait restore major data
-  leader_status = ObLSRestoreStatus::Status::RESTORE_NONE;
+  leader_status = ObLSRestoreStatus::Status::NONE;
   ls->get_ls_restore_handler()->state_handler_ = nullptr;
   ls->ls_meta_.restore_status_ = ObLSRestoreStatus::Status::WAIT_RESTORE_MAJOR_DATA;
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->update_state_handle_());
   EXPECT_EQ(ObLSRestoreStatus::Status::WAIT_RESTORE_MAJOR_DATA, ls->get_ls_restore_handler()->state_handler_->ls_restore_status_);
   EXPECT_EQ(OB_SUCCESS, ls->get_ls_restore_handler()->state_handler_->do_restore());
-  EXPECT_EQ(ObLSRestoreStatus::Status::RESTORE_NONE, ls->ls_meta_.restore_status_);
+  EXPECT_EQ(ObLSRestoreStatus::Status::NONE, ls->ls_meta_.restore_status_);
 
   leader_status = ObLSRestoreStatus::Status::RESTORE_MAJOR_DATA;
   ls->ls_meta_.restore_status_ = ObLSRestoreStatus::Status::WAIT_RESTORE_MAJOR_DATA;

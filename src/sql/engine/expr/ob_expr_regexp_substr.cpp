@@ -230,9 +230,12 @@ int ObExprRegexpSubstr::eval_regexp_substr(
                        (occurrence != NULL && occurrence->is_null()) ||
                        (subexpr != NULL && subexpr->is_null()) ||
                        (lib::is_mysql_mode() && match_type != NULL && match_type->is_null());
-    if (OB_FAIL(ObExprUtil::get_int_param_val(position, pos))
-        || OB_FAIL(ObExprUtil::get_int_param_val(occurrence, occur))
-        || OB_FAIL(ObExprUtil::get_int_param_val(subexpr, subexpr_val))) {
+    if (OB_FAIL(ObExprUtil::get_int_param_val(
+          position, (expr.arg_cnt_ > 2 && expr.args_[2]->obj_meta_.is_decimal_int()), pos))
+        || OB_FAIL(ObExprUtil::get_int_param_val(
+          occurrence, (expr.arg_cnt_ > 3 && expr.args_[3]->obj_meta_.is_decimal_int()), occur))
+        || OB_FAIL(ObExprUtil::get_int_param_val(
+          subexpr, expr.arg_cnt_ > 5 && expr.args_[5]->obj_meta_.is_decimal_int(), subexpr_val))) {
       LOG_WARN("get integer parameter value failed", K(ret));
     } else if (!null_result && (pos <= 0 || occur <= 0 || subexpr_val < 0)) {
       ret = OB_INVALID_ARGUMENT;
@@ -245,6 +248,7 @@ int ObExprRegexpSubstr::eval_regexp_substr(
       ObIAllocator &tmp_alloc = alloc_guard.get_allocator();
       ObExprRegexContext local_regex_ctx;
       ObExprRegexContext *regexp_ctx = &local_regex_ctx;
+      ObExprRegexpSessionVariables regexp_vars;
       const bool reusable = (0 != expr.extra_) && ObExpr::INVALID_EXP_CTX_ID != expr.expr_ctx_id_;
       bool is_case_sensitive = ObCharset::is_bin_sort(expr.args_[0]->datum_meta_.cs_type_);
       ObString res_substr;
@@ -268,9 +272,11 @@ int ObExprRegexpSubstr::eval_regexp_substr(
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(ObExprRegexContext::get_regexp_flags(match_param, is_case_sensitive, flags))) {
         LOG_WARN("fail to get regexp flags", K(ret), K(match_param));
+      } else if (OB_FAIL(ctx.exec_ctx_.get_my_session()->get_regexp_session_vars(regexp_vars))) {
+        LOG_WARN("fail to get regexp");
       } else if (!pattern->is_null() && !null_result &&
                 OB_FAIL(regexp_ctx->init(reusable ? ctx.exec_ctx_.get_allocator() : tmp_alloc,
-                                          ctx.exec_ctx_.get_my_session(),
+                                          regexp_vars,
                                           pattern->get_string(), flags, reusable,
                                           expr.args_[1]->datum_meta_.cs_type_))) {
         LOG_WARN("fail to init regexp", K(pattern), K(flags), K(ret));

@@ -73,13 +73,13 @@ Query Plan
 =============================================================
 |ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------
-|0 |PX COORDINATOR           |        |28      |87          |
-|1 |└─EXCHANGE OUT DISTR     |:EX10000|28      |59          |
-|2 |  └─PX PARTITION ITERATOR|        |28      |27          |
-|3 |    └─MERGE JOIN         |        |28      |27          |
-|4 |      ├─TABLE FULL SCAN  |score   |28      |13          |
-|5 |      └─SORT             |        |14      |13          |
-|6 |        └─TABLE FULL SCAN|stu     |14      |12          |
+|0 |PX COORDINATOR           |        |28      |77          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|28      |49          |
+|2 |  └─PX PARTITION ITERATOR|        |28      |17          |
+|3 |    └─MERGE JOIN         |        |28      |17          |
+|4 |      ├─TABLE FULL SCAN  |score   |28      |8           |
+|5 |      └─SORT             |        |14      |8           |
+|6 |        └─TABLE FULL SCAN|stu     |14      |7           |
 =============================================================
 Outputs & filters:
 -------------------------------------
@@ -93,13 +93,13 @@ Outputs & filters:
       merge_directions([ASC])
   4 - output([score.sid], [score.subject], [score.score]), filter(nil), rowset=256
       access([score.sid], [score.subject], [score.score]), partitions(p[0-5])
-      is_index_back=false, is_global_index=false,
+      is_index_back=false, is_global_index=false, 
       range_key([score.sid], [score.subject]), range(MIN,MIN ; MAX,MAX)always true
   5 - output([stu.sid], [stu.cls], [stu.name]), filter(nil), rowset=256
       sort_keys([stu.sid, ASC])
   6 - output([stu.cls], [stu.sid], [stu.name]), filter(nil), rowset=256
       access([stu.cls], [stu.sid], [stu.name]), partitions(p[0-5])
-      is_index_back=false, is_global_index=false,
+      is_index_back=false, is_global_index=false, 
       range_key([stu.cls], [stu.sid]), range(MIN,MIN ; MAX,MAX)always true
 select /*+ USE_PX parallel(2) */ * from stu, score where stu.sid = score.sid;
 sid	name	cls	sid	subject	score

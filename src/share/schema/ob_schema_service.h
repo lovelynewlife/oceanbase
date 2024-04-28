@@ -116,6 +116,7 @@ enum ObSchemaOperationCategory
   ACT(OB_DDL_TRUNCATE_TABLE, = 59)                               \
   ACT(OB_DDL_RENAME_PARTITION, = 60)                             \
   ACT(OB_DDL_RENAME_SUB_PARTITION, = 61)                         \
+  ACT(OB_DDL_MODIFY_MATERIALIZED_VIEW_STATUS, = 62)          \
   ACT(OB_DDL_TABLE_OPERATION_END, = 100)                         \
   ACT(OB_DDL_TENANT_OPERATION_BEGIN, = 101)                      \
   ACT(OB_DDL_ADD_TENANT,)                                        \
@@ -331,6 +332,14 @@ enum ObSchemaOperationCategory
   ACT(OB_DDL_CREATE_RLS_CONTEXT, = 2052)                         \
   ACT(OB_DDL_DROP_RLS_CONTEXT, = 2053)                           \
   ACT(OB_DDL_RLS_CONTEXT_OPERATION_END, = 2060)                  \
+  ACT(OB_DDL_ROUTINE_PRIV_OPERATION_BEGIN, = 2061)               \
+  ACT(OB_DDL_GRANT_REVOKE_ROUTINE_PRIV, = 2062)                  \
+  ACT(OB_DDL_DEL_ROUTINE_PRIV, = 2063)                           \
+  ACT(OB_DDL_ROUTINE_PRIV_OPERATION_END, = 2070)                 \
+  ACT(OB_DDL_COLUMN_PRIV_OPERATION_BEGIN, = 2071)               \
+  ACT(OB_DDL_GRANT_COLUMN_PRIV, = 2072)                         \
+  ACT(OB_DDL_DEL_COLUMN_PRIV, = 2073)                           \
+  ACT(OB_DDL_COLUMN_PRIV_OPERATION_END, = 2080)                 \
   ACT(OB_DDL_MAX_OP,)
 
 DECLARE_ENUM(ObSchemaOperationType, op_type, OP_TYPE_DEF);
@@ -480,7 +489,9 @@ public:
       is_no_zero_date_(false),
       next_column_name_(),
       prev_column_name_(),
-      is_first_(false)
+      is_first_(false),
+      column_group_name_(),
+      is_set_comment_(false)
   {}
 
   explicit AlterColumnSchema(common::ObIAllocator *allocator)
@@ -497,7 +508,9 @@ public:
       is_no_zero_date_(false),
       next_column_name_(),
       prev_column_name_(),
-      is_first_(false)
+      is_first_(false),
+      column_group_name_(),
+      is_set_comment_(false)
   {}
   AlterColumnSchema &operator=(const AlterColumnSchema &alter_column_schema);
   int assign(const ObColumnSchemaV2 &other);
@@ -510,7 +523,9 @@ public:
   const common::ObString& get_prev_column_name() const { return prev_column_name_;};
   int set_prev_column_name(const common::ObString& prev_column_name)
     { return deep_copy_str(prev_column_name, prev_column_name_); }
-
+  const common::ObString& get_column_group_name() const { return column_group_name_;};
+  int set_column_group_name(const common::ObString& column_group_name)
+    { return deep_copy_str(column_group_name, column_group_name_); }
   void reset();
 
   ObSchemaOperationType alter_type_;
@@ -526,7 +541,8 @@ public:
   common::ObString next_column_name_;
   common::ObString prev_column_name_;
   bool is_first_;
-
+  common::ObString column_group_name_;
+  bool is_set_comment_;
   DECLARE_VIRTUAL_TO_STRING;
 };
 
@@ -931,8 +947,19 @@ public:
                                           const ObRefreshSchemaStatus &schema_status,
                                           int64_t &baseline_schema_version) = 0;
 
+  virtual int fetch_new_object_ids(
+              const uint64_t tenant_id,
+              const int64_t object_cnt,
+              uint64_t &max_object_id) = 0;
   virtual int fetch_new_partition_ids(
-              const uint64_t tenant_id, const int64_t partition_num, uint64_t &new_partition_id) = 0;
+              const uint64_t tenant_id,
+              const int64_t partition_num,
+              uint64_t &max_partition_id) = 0;
+  virtual int fetch_new_tablet_ids(
+              const uint64_t tenant_id,
+              const bool gen_normal_tablet,
+              const uint64_t size,
+              uint64_t &min_tablet_id) = 0;
   virtual int fetch_new_table_id(const uint64_t tenant_id, uint64_t &new_table_id) = 0;
   virtual int fetch_new_tenant_id(uint64_t &new_tenant_id) = 0;
   virtual int fetch_new_database_id(const uint64_t tenant_id, uint64_t &new_database_id) = 0;
@@ -960,13 +987,6 @@ public:
   virtual int fetch_new_profile_id(const uint64_t tenant_id, uint64_t &new_profile_id) = 0;
   virtual int fetch_new_audit_id(const uint64_t tenant_id, uint64_t &new_audit_id) = 0;
   virtual int fetch_new_directory_id(const uint64_t tenant_id, uint64_t &new_directory_id) = 0;
-  virtual int fetch_new_normal_rowid_table_tablet_ids(const uint64_t tenant_id, uint64_t &tablet_id, const uint64_t size) = 0;
-  virtual int fetch_new_extended_rowid_table_tablet_ids(const uint64_t tenant_id, uint64_t &tablet_id, const uint64_t size) = 0;
-  virtual int fetch_new_tablet_ids(
-              const uint64_t tenant_id,
-              const bool gen_normal_tablet,
-              const uint64_t size,
-              uint64_t &min_tablet_id) = 0;
   virtual int fetch_new_context_id(const uint64_t tenant_id, uint64_t &new_context_id) = 0;
   virtual int fetch_new_rls_policy_id(const uint64_t tenant_id, uint64_t &new_rls_policy_id) = 0;
   virtual int fetch_new_rls_group_id(const uint64_t tenant_id, uint64_t &new_rls_group_id) = 0;

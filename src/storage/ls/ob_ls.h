@@ -67,6 +67,7 @@
 #include "storage/high_availability/ob_ls_block_tx_service.h"
 #include "storage/high_availability/ob_ls_transfer_info.h"
 #include "observer/table/ttl/ob_tenant_tablet_ttl_mgr.h"
+#include "storage/ls/ob_ls_transfer_status.h"
 
 namespace oceanbase
 {
@@ -78,9 +79,13 @@ namespace share
 {
 class SCN;
 }
-
+namespace compaction
+{
+class ObCompactionScheduleIterator;
+}
 namespace storage
 {
+const static int64_t LS_INNER_TABLET_FROZEN_TIMESTAMP = 1;
 
 struct ObLSVTInfo
 {
@@ -166,12 +171,11 @@ struct DiagnoseInfo
 };
 
 class ObIComponentFactory;
-enum class ObInnerLSStatus;
 
-// sizeof(ObLS): 77248
 class ObLS : public common::ObLink
 {
 public:
+  typedef common::ObLatch RWLock;
   friend ObLSLockGuard;
   friend class ObFreezer;
   friend class checkpoint::ObDataCheckpoint;
@@ -193,6 +197,34 @@ public:
   private:
     int64_t pos_;
   };
+  class RDLockGuard
+  {
+    static const int64_t LOCK_CONFLICT_WARN_TIME = 100 * 1000; // 100 ms
+  public:
+    [[nodiscard]] explicit RDLockGuard(RWLock &lock, const int64_t abs_timeout_us = INT64_MAX);
+    ~RDLockGuard();
+    inline int get_ret() const { return ret_; }
+  private:
+    RWLock &lock_;
+    int ret_;
+    int64_t start_ts_;
+  private:
+    DISALLOW_COPY_AND_ASSIGN(RDLockGuard);
+  };
+  class WRLockGuard
+  {
+    static const int64_t LOCK_CONFLICT_WARN_TIME = 100 * 1000; // 100 ms
+  public:
+    [[nodiscard]] explicit WRLockGuard(RWLock &lock, const int64_t abs_timeout_us = INT64_MAX);
+    ~WRLockGuard();
+    inline int get_ret() const { return ret_; }
+  private:
+    RWLock &lock_;
+    int ret_;
+    int64_t start_ts_;
+  private:
+    DISALLOW_COPY_AND_ASSIGN(WRLockGuard);
+  };
 public:
   ObLS();
   virtual ~ObLS();
@@ -211,11 +243,15 @@ public:
   void destroy();
   int offline();
   int online();
+  int online_without_lock();
   int offline_without_lock();
   int enable_for_restore();
-  bool is_offline() const { return is_offlined_; } // mock function, TODO(@yanyuan)
-  bool is_remove() const { return ATOMIC_LOAD(&is_remove_); }
-  void set_is_remove() { return ATOMIC_STORE(&is_remove_, true); }
+  bool is_offline() const
+  { return running_state_.is_offline(); }
+  bool is_stopped() const
+  { return running_state_.is_stopped(); }
+  int64_t get_state_seq() const
+  { return ATOMIC_LOAD(&state_seq_); }
 
   ObLSTxService *get_tx_svr() { return &ls_tx_svr_; }
   ObLockTable *get_lock_table() { return &lock_table_; }
@@ -248,14 +284,14 @@ public:
   ObTransferHandler *get_transfer_handler() { return &transfer_handler_; }
   ObLSTransferInfo &get_ls_startup_transfer_info() { return startup_transfer_info_; }
 
+  // for transfer record MDS phase
+  ObLSTransferStatus &get_transfer_status() { return ls_transfer_status_; }
   //remove member handler
   ObLSRemoveMemberHandler *get_ls_remove_member_handler() { return &ls_remove_member_handler_; }
 
   checkpoint::ObTabletGCHandler *get_tablet_gc_handler() { return &tablet_gc_handler_; }
   ObLSMemberListService *get_member_list_service() { return &member_list_service_; }
   checkpoint::ObTabletEmptyShellHandler *get_tablet_empty_shell_handler() { return &tablet_empty_shell_handler_; }
-  // make sure the schema version does not back off.
-  int save_base_schema_version();
 
   // get ls info
   int get_ls_info(ObLSVTInfo &ls_info);
@@ -263,15 +299,17 @@ public:
   // report the ls replica info to RS.
   int report_replica_info();
 
-  // set create state of ls.
-  // @param[in] new_status, the new create state which will be set.
-  void set_create_state(const ObInnerLSStatus new_status);
-  ObInnerLSStatus get_create_state() const;
+  // set disk state of ls.
+  int set_start_work_state();
+  int set_start_ha_state();
+  int set_finish_ha_state();
+  int set_remove_state();
+  ObLSPersistentState get_persistent_state() const;
+  int finish_create_ls();
 
   bool is_create_committed() const;
   bool is_need_gc() const;
   bool is_in_gc();
-  bool is_enable_for_restore() const;
   // for rebuild
   // remove inner tablet, the memtable and minor sstable of data tablet, disable replay
   // int prepare_rebuild();
@@ -286,7 +324,7 @@ public:
   int create_ls(const share::ObTenantRole tenant_role,
                 const palf::PalfBaseInfo &palf_base_info,
                 const common::ObReplicaType &replica_type,
-                const bool allow_log_sync);
+                const bool allow_log_sync = false);
   // load ls info from disk
   // @param[in] tenant_role, role of tenant, which determains palf access mode
   // @param[in] palf_base_info, all the info that palf needed
@@ -300,8 +338,6 @@ public:
   // create all the inner tablet.
   int create_ls_inner_tablet(const lib::Worker::CompatMode compat_mode,
                              const share::SCN &create_scn);
-  // load all the inner tablet.
-  int load_ls_inner_tablet();
 
   // get the meta package of ls: ObLSMeta, PalfBaseInfo
   // @param[in] check_archive, if need check archive,
@@ -316,10 +352,6 @@ public:
   // update the ls meta of ls.
   // @param[in] ls_meta, which is used to update the ls's meta.
   int set_ls_meta(const ObLSMeta &ls_meta);
-  // finish ls create process. set the create state to COMMITTED or ABORTED.
-  // @param[in] is_commit, whether the create process is commit or not.
-  void finish_create(const bool is_commit);
-
   // for ls gc
   int block_tablet_transfer_in();
   int block_tx_start();
@@ -350,11 +382,12 @@ public:
 
   int flush_if_need(const bool need_flush);
   int try_sync_reserved_snapshot(const int64_t new_reserved_snapshot, const bool update_flag);
-  bool is_stopped() const { return is_stopped_; }
   int check_can_replay_clog(bool &can_replay);
+  int check_can_online(bool &can_online);
 
   TO_STRING_KV(K_(ls_meta), K_(switch_epoch), K_(log_handler), K_(restore_handler), K_(is_inited), K_(tablet_gc_handler), K_(startup_transfer_info));
 private:
+  void update_state_seq_();
   int ls_init_for_dup_table_();
   int ls_destory_for_dup_table_();
   int stop_();
@@ -366,8 +399,14 @@ private:
   int online_compaction_();
   int offline_tx_(const int64_t start_ts);
   int online_tx_();
+  int update_tablet_table_store_without_lock_(
+      const ObTabletID &tablet_id,
+      const ObUpdateTableStoreParam &param,
+      ObTabletHandle &handle);
   int offline_advance_epoch_();
   int online_advance_epoch_();
+  bool is_required_to_switch_state_for_restore_() const;
+  bool is_required_to_switch_state_for_clone_() const;
 public:
   // ObLSMeta interface:
   int update_ls_meta(const bool update_restore_status,
@@ -432,7 +471,7 @@ public:
   DELEGATE_WITH_RET(ls_meta_, get_ls_replayable_point, int);
   int inc_update_transfer_scn(const share::SCN &transfer_scn);
   int set_transfer_scn(const share::SCN &transfer_scn);
-  // get ls_meta_package and unsorted tablet_ids, add read lock of LSLOCKLOGMETA.
+  // get ls_meta_package and unsorted tablet_ids, add read lock of LSLOCKLSMETA.
   // @param [in] check_archive if need check archive, for backup task is false, migration/rebuild is true
   // @param [out] meta_package
   // @param [out] tablet_ids
@@ -442,6 +481,7 @@ public:
   DELEGATE_WITH_RET(ls_meta_, get_migration_and_restore_status, int);
   DELEGATE_WITH_RET(ls_meta_, set_rebuild_info, int);
   DELEGATE_WITH_RET(ls_meta_, get_rebuild_info, int);
+  DELEGATE_WITH_RET(ls_meta_, get_create_type, int);
 
 
   // get ls_meta_package and sorted tablet_metas for backup. tablet gc is forbidden meanwhile.
@@ -497,17 +537,14 @@ public:
   // create_ls_inner_tablet
   // @param [in] ls_id
   // @param [in] tablet_id
-  // @param [in] memstore_version
   // @param [in] frozen_timestamp
-  // @param [in] table_schema
-  // @param [in] compat_mode
+  // @param [in] create_tablet_schema
   // @param [in] create_scn
   // int create_ls_inner_tablet(
   //     const share::ObLSID &ls_id,
   //     const common::ObTabletID &tablet_id,
-  //     const int64_t frozen_timestamp,
-  //     const share::schema::ObTableSchema &table_schema,
-  //     const lib::Worker::CompatMode &compat_mode,
+  //     const share::SCN &frozen_timestamp,
+  //     const ObCreateTabletSchema &create_tablet_schema,
   //     const share::SCN &create_scn);
   DELEGATE_WITH_RET(ls_tablet_svr_, create_ls_inner_tablet, int);
   // remove_ls_inner_tablet
@@ -527,6 +564,8 @@ public:
   DELEGATE_WITH_RET(ls_tablet_svr_, disable_to_read, void);
   DELEGATE_WITH_RET(ls_tablet_svr_, get_tablet_with_timeout, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, get_mds_table_mgr, int);
+  // for transfer to check tablet no active memtable
+  DELEGATE_WITH_RET(ls_tablet_svr_, check_tablet_no_active_memtable, int);
 
   // ObLockTable interface:
   // check whether the lock op is conflict with exist lock.
@@ -615,6 +654,15 @@ public:
   // @param[out] ls_recovery_stat
   // int get_ls_replica_readable_scn(share::SCN &readable_scn)
   DELEGATE_WITH_RET(ls_recovery_stat_handler_, get_ls_level_recovery_stat, int);
+  //gather all replicas of ls's readable scn
+  // If follower LS replica call this function, it will return OB_NOT_MASTER.
+  //int gather_replica_readable_scn();
+  DELEGATE_WITH_RET(ls_recovery_stat_handler_, gather_replica_readable_scn, int);
+
+  // get all ls readable_scn: it will be failed while has replica is offline
+  // @param[out] readable_scn ls readable_scn
+  // int get_all_replica_min_readable_scn(share::SCN &readable_scn)
+  DELEGATE_WITH_RET(ls_recovery_stat_handler_, get_all_replica_min_readable_scn, int);
 
   // disable clog sync.
   // with ls read lock and log write lock.
@@ -771,6 +819,19 @@ public:
   CONST_DELEGATE_WITH_RET(dup_table_ls_handler_, get_dup_table_ls_meta, int);
   DELEGATE_WITH_RET(dup_table_ls_handler_, set_dup_table_ls_meta, int);
 
+  // for transfer to modify active tx ctx state
+  DELEGATE_WITH_RET(ls_tx_svr_, transfer_out_tx_op, int);
+
+  // for transfer to wait tx write end
+  DELEGATE_WITH_RET(ls_tx_svr_, wait_tx_write_end, int);
+
+  // for transfer collect src_ls tx ctx
+  DELEGATE_WITH_RET(ls_tx_svr_, collect_tx_ctx, int);
+
+  // for transfer move tx ctx to dest_ls
+  DELEGATE_WITH_RET(ls_tx_svr_, move_tx_op, int);
+
+
   // ObReplayHandler interface:
   DELEGATE_WITH_RET(replay_handler_, replay, int);
 
@@ -786,10 +847,10 @@ public:
   int tablet_freeze(const ObTabletID &tablet_id,
                     const bool is_sync = false,
                     const int64_t abs_timeout_ts = INT64_MAX);
-  // force freeze tablet
+  // tablet_freeze_with_rewrite_meta
   // @param [in] abs_timeout_ts, wait until timeout if lock conflict
-  int force_tablet_freeze(const ObTabletID &tablet_id,
-                          const int64_t abs_timeout_ts = INT64_MAX);
+  int tablet_freeze_with_rewrite_meta(const ObTabletID &tablet_id,
+                                      const int64_t abs_timeout_ts = INT64_MAX);
   // batch tablet freeze
   // @param [in] tablet_ids
   // @param [in] is_sync
@@ -832,6 +893,8 @@ public:
   int build_ha_tablet_new_table_store(
       const ObTabletID &tablet_id,
       const ObBatchUpdateTableStoreParam &param);
+  int try_update_upper_trans_version_and_gc_sstable(
+      compaction::ObCompactionScheduleIterator &iter);
   int build_new_tablet_from_mds_table(
       const int64_t ls_rebuild_seq,
       const common::ObTabletID &tablet_id,
@@ -844,6 +907,8 @@ public:
   DELEGATE_WITH_RET(reserved_snapshot_mgr_, get_min_reserved_snapshot, int64_t);
   DELEGATE_WITH_RET(reserved_snapshot_mgr_, add_dependent_medium_tablet, int);
   DELEGATE_WITH_RET(reserved_snapshot_mgr_, del_dependent_medium_tablet, int);
+  int set_ls_migration_gc(bool &allow_gc);
+
 private:
   // StorageBaseUtil
   // table manager: create, remove and guard get.
@@ -914,9 +979,11 @@ private:
 private:
   bool is_inited_;
   uint64_t tenant_id_;
-  bool is_stopped_;
-  bool is_offlined_;
-  bool is_remove_;
+  // set running state of ls.
+  // WARN: MUST PROTECT WITH LS LOCK.
+  ObLSRunningState running_state_;
+  // protected by lock_, and change while running/disk state changed
+  int64_t state_seq_;
   uint64_t switch_epoch_;// started from 0, odd means online, even means offline
   ObLSMeta ls_meta_;
   observer::ObIMetaReport *rs_reporter_;
@@ -927,7 +994,10 @@ private:
   ObTransferHandler transfer_handler_;
   // Record the dependent transfer information when restarting
   ObLSTransferInfo startup_transfer_info_;
-
+  // for transfer MDS phase
+  ObLSTransferStatus ls_transfer_status_;
+  // this is used for the meta lock, and will be removed later
+  RWLock meta_rwlock_;
 };
 
 }

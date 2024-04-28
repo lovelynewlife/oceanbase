@@ -109,6 +109,7 @@ class ObDMLResolver : public ObStmtResolver
     }
     inline void set_is_with_resolver(bool is_with_resolver) { is_with_clause_resolver_ = is_with_resolver; }
     inline void set_current_cte_table_name(const ObString& table_name) { current_cte_table_name_ = table_name; }
+    inline ObString& get_current_cte_table_name() { return current_cte_table_name_; }
     inline bool is_with_resolver() const { return is_with_clause_resolver_; }
     inline void set_recursive(bool recursive) { is_recursive_cte_ = recursive; }
     inline void set_in_subquery() { is_cte_subquery_ = true; }
@@ -189,6 +190,7 @@ public:
                                 const ParseNode *alias_node,
                                 ObChildStmtResolver &child_resolver,
                                 TableItem *&table_item);
+  int extract_var_init_exprs(ObSelectStmt *ref_query, common::ObIArray<ObRawExpr*> &assign_exprs);
   int resolve_generate_table_item(ObSelectStmt *ref_query, const ObString &alias_name, TableItem *&tbl_item);
   int resolve_joined_table(const ParseNode &parse_node, JoinedTable *&joined_table);
   int resolve_joined_table_item(const ParseNode &parse_node, JoinedTable *&joined_table);
@@ -217,28 +219,34 @@ public:
                                        bool include_hidden,
                                        ColumnItem *&col_item);
   // dot notation
-  int pre_process_dot_notation(ParseNode &node);
+  int expand_column_in_json_object_star(ParseNode *node);
+  int pre_process_json_expr(ParseNode &node);
   int print_json_path(ParseNode *&tmp_path, ObJsonBuffer &res_str);
   int check_depth_obj_access_ref(ParseNode *node, int8_t &depth, bool &exist_fun, ObJsonBuffer &sql_str, bool obj_check = true);  // obj_check : whether need check dot notaion
   int check_first_node_name(const ObString &node_name, bool &check_res);
   int transform_dot_notation2_json_query(ParseNode &node, const ObString &sql_str);
   int transform_dot_notation2_json_value(ParseNode &node, const ObString &sql_str);
-  int check_column_json_type(ParseNode *tab_col, bool &is_json_col, int8_t only_is_json = 1);
+  int check_column_json_type(ParseNode *tab_col, bool &is_json_col, bool &is_json_type, int8_t only_is_json = 1);
   int check_size_obj_access_ref(ParseNode *node);
   /* json object resolve star */
   int get_target_column_list(ObSEArray<ColumnItem, 4> &target_list, ObString &tab_name, bool all_tab,
                             bool &tab_has_alias, TableItem *&tab_item, bool is_col = false);
-  int add_column_expr_for_json_object_node(ParseNode *node,
-                                common::ObIAllocator &allocator,
-                                ObVector<ParseNode *> &t_vec,
-                                ObString col_name,
-                                ObString table_name);
-  int expand_star_in_json_object(ParseNode *node, common::ObIAllocator &allocator, int64_t pos, int64_t& col_num);
-  int check_is_json_constraint(common::ObIAllocator &allocator, ParseNode *col_node, bool& format_json, int8_t only_is_json = 0); // 1 is json & json type ; 0 is json; 2 json type
+  int pre_process_json_expr_constraint(ParseNode *node, common::ObIAllocator &allocator);
+  int process_json_object_array_node(ParseNode *node, common::ObIAllocator &allocator);
+  int process_dot_notation_in_json_object(ParseNode*& expr_node,
+                                          ParseNode* cur_node,
+                                          common::ObIAllocator &allocator,
+                                          int& pos);
+  int process_json_agg_node(ParseNode*& node, common::ObIAllocator &allocator);
+  int pre_check_dot_notation(ParseNode &node, int8_t& depth, bool& exist_fun, ObJsonBuffer& sql_str, bool &is_scalar);
+  int check_is_json_constraint(common::ObIAllocator &allocator,
+                               ParseNode *col_node,
+                               bool& is_json_cst,
+                               bool& is_json_type,
+                               int8_t only_is_json = 0); // 1 is json & json type ; 0 is json; 2 json type
   bool is_array_json_expr(ParseNode *node);
   bool is_object_json_expr(ParseNode *node);
   int set_format_json_output(ParseNode *node);
-  int pre_process_json_object_contain_star(ParseNode *node, common::ObIAllocator &allocator);
   int transfer_to_inner_joined(const ParseNode &parse_node, JoinedTable *&joined_table);
   virtual int check_special_join_table(const TableItem &join_table, bool is_left_child, ObItemType join_type);
   /**
@@ -450,7 +458,7 @@ protected:
                                   bool &is_generated);
   virtual int expand_view(TableItem &view_item);
   int do_expand_view(TableItem &view_item, ObChildStmtResolver &view_resolver);
-  int check_pad_generated_column(const ObSQLSessionInfo &session_info,
+  int check_pad_generated_column(const ObSQLMode sql_mode,
                                  const share::schema::ObTableSchema &table_schema,
                                  const share::schema::ObColumnSchemaV2 &column_schema,
                                  bool is_link = false);
@@ -461,6 +469,12 @@ protected:
   int build_padding_expr(const ObSQLSessionInfo *session,
                          const share::schema::ObColumnSchemaV2 *column_schema,
                          ObRawExpr *&expr);
+
+  int build_padding_expr(const ObSQLMode sql_mode,
+                        const share::schema::ObColumnSchemaV2 *column_schema,
+                        ObRawExpr *&expr,
+                        const ObLocalSessionVar *local_vars = NULL,
+                        int64_t local_var_id = OB_INVALID_INDEX_INT64);
 
   virtual int check_need_use_sys_tenant(bool &use_sys_tenant) const;
   // check in sys view or show statement
@@ -609,6 +623,7 @@ protected:
   int resolve_generated_column_expr_temp(TableItem *table_item);
   int find_generated_column_expr(ObRawExpr *&expr, bool &is_found);
   int deduce_generated_exprs(common::ObIArray<ObRawExpr*> &exprs);
+  int collect_schema_version(ObRawExpr *expr);
   int resolve_external_name(ObQualifiedName &q_name,
                             ObIArray<ObQualifiedName> &columns,
                             ObIArray<ObRawExpr*> &real_exprs,
@@ -707,6 +722,8 @@ protected:
   int add_fake_schema(ObSelectStmt* left_stmt);
   int resolve_basic_table_without_cte(const ParseNode &parse_tree, TableItem *&table_item);
   int resolve_basic_table_with_cte(const ParseNode &parse_tree, TableItem *&table_item);
+  int check_is_table_supported_for_mview(const TableItem &table_item, const ObTableSchema &table_schema);
+  int check_is_table_supported_for_mview(const ObItemType table_node_type);
   int resolve_cte_table(const ParseNode &parse_tree, const TableItem *CTE_table_item, TableItem *&table_item);
   int resolve_recursive_cte_table(const ParseNode &parse_tree, TableItem *&table_item);
   int resolve_with_clause_opt_alias_colnames(const ParseNode *parse_tree, TableItem *&table_item);
@@ -907,7 +924,7 @@ private:
   int check_cast_multiset(const ObRawExpr *expr, const ObRawExpr *parent_expr = NULL);
 
   int replace_col_udt_qname(ObQualifiedName& q_name);
-  int check_column_udt_type(ParseNode *root_node);
+  int check_column_scalar_type(ParseNode *root_node, bool &is_scalar);
 
   int replace_pl_relative_expr_to_question_mark(ObRawExpr *&real_ref_expr);
   bool check_expr_has_colref(ObRawExpr *expr);
@@ -930,6 +947,8 @@ private:
                          ObIArray<ObColumnRefRawExpr*> &values_desc,
                          ObRawExpr *&expr);
   int build_row_for_empty_values(ObIArray<ObRawExpr*> &values_vector);
+
+  int add_udt_dependency(const pl::ObUserDefinedType &udt_type);
 protected:
   struct GenColumnExprInfo {
     GenColumnExprInfo():

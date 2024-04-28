@@ -61,6 +61,7 @@
 #include "observer/table/ob_table_service.h"
 #include "observer/dbms_job/ob_dbms_job_rpc_proxy.h"
 #include "observer/ob_inner_sql_rpc_proxy.h"
+#include "observer/ob_startup_accel_task_handler.h"
 #include "share/ls/ob_ls_table_operator.h" // for ObLSTableOperator
 #include "storage/ob_locality_manager.h"
 #include "storage/ob_partition_component_factory.h"
@@ -224,6 +225,7 @@ public:
   share::schema::ObMultiVersionSchemaService &get_schema_service() { return schema_service_; }
   ObInOutBandwidthThrottle &get_bandwidth_throttle() { return bandwidth_throttle_; }
   uint64_t get_cpu_frequency_khz() { return cpu_frequency_; }
+  int64_t get_network_speed() const { return ethernet_speed_; }
   const common::ObAddr &get_self() const { return self_addr_; }
   const ObGlobalContext &get_gctx() const { return gctx_; }
   ObGlobalContext &get_gctx() { return gctx_; }
@@ -252,6 +254,7 @@ private:
   int init_pre_setting();
   int init_network();
   int init_interrupt();
+  int init_zlib_lite_compressor();
   int init_multi_tenant();
   int init_sql_proxy();
   int init_io();
@@ -297,8 +300,9 @@ private:
   int set_running_mode();
   void check_user_tenant_schema_refreshed(const common::ObIArray<uint64_t> &tenant_ids, const int64_t expire_time);
   void check_log_replay_over(const common::ObIArray<uint64_t> &tenant_ids, const int64_t expire_time);
-  int try_create_hidden_sys();
+  int try_update_hidden_sys();
   int parse_mode();
+  void deinit_zlib_lite_compressor();
 
   // ------------------------------- arb server start ------------------------------------
   int start_sig_worker_and_handle();
@@ -338,6 +342,7 @@ private:
   // The two proxies by which local OceanBase server has ability to
   // communicate with other server.
   obrpc::ObSrvRpcProxy srv_rpc_proxy_;
+  obrpc::ObStorageRpcProxy storage_rpc_proxy_;
   obrpc::ObCommonRpcProxy rs_rpc_proxy_;
   common::ObMySQLProxy sql_proxy_;
   common::ObMySQLProxy ddl_sql_proxy_;
@@ -452,6 +457,11 @@ private:
   arbserver::ObArbServerTimer arb_timer_;
 #endif
   share::ObWorkloadRepositoryService wr_service_;
+
+  // This handler is used to process tasks during startup. it can speed up the startup process.
+  // If you have tasks that need to be processed in parallel, you can use this handler,
+  // but please note that this handler will be destroyed after observer startup.
+  ObStartupAccelTaskHandler startup_accel_handler_;
 }; // end of class ObServer
 
 inline ObServer &ObServer::get_instance()

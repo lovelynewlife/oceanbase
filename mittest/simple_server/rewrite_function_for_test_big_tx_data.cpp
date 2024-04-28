@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include "storage/tx_table/ob_tx_table_iterator.h"
 #include "storage/tx/ob_tx_data_define.h"
 #include "storage/tx/ob_trans_part_ctx.h"
@@ -11,8 +23,6 @@
 #include "env/ob_simple_cluster_test_base.h"
 #include "lib/mysqlclient/ob_mysql_result.h"
 #include "storage/tx_storage/ob_ls_handle.h"
-#include "storage/compaction/ob_partition_parallel_merge_ctx.h"
-#include "storage/compaction/ob_tablet_merge_ctx.h"
 #include <iostream>
 int64_t TEST_TX_ID = 0;
 bool DUMP_BIG_TX_DATA = false;
@@ -200,7 +210,7 @@ int ObTxDataSingleRowGetter::deserialize_tx_data_from_store_buffers_(ObTxData &t
       p_dest += tx_data_buffers_[idx].get_ob_string().length();
     }
     tx_data.tx_id_ = tx_id_;
-    if (OB_FAIL(tx_data.deserialize(merge_buffer, total_buffer_size, pos, slice_allocator_))) {
+    if (OB_FAIL(tx_data.deserialize(merge_buffer, total_buffer_size, pos, tx_data_allocator_))) {
       STORAGE_LOG(WARN, "deserialize tx data failed", KR(ret), KPHEX(merge_buffer, total_buffer_size));
       hex_dump(merge_buffer, total_buffer_size, true, OB_LOG_LEVEL_WARN);
     } else if (!tx_data.is_valid_in_tx_data_table()) {

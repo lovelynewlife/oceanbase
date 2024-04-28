@@ -276,6 +276,8 @@ struct DistinctObjMeta
 
   int transform_update_only_merge_into(ObDMLStmt* stmt);
 
+  int check_can_transform_insert_only_merge_into(const ObMergeStmt *merge_stmt, bool &is_valid);
+
   int create_source_view_for_merge_into(ObMergeStmt *merge_stmt, TableItem *&view_table);
 	/*
 	 * following functions are used for temporary and se table
@@ -432,6 +434,10 @@ struct DistinctObjMeta
   static int replace_cast_expr_align_date4cmp(ObRawExprFactory &expr_factory,
                                               const ObItemType &cmp_type,
                                               ObRawExpr *&expr);
+  static int replace_op_row_expr_align_date4cmp(ObRawExprFactory &expr_factory,
+                                                const ObItemType &cmp_type,
+                                                ObRawExpr *&left_row_expr,
+                                                ObRawExpr *&right_row_expr);
   static int check_and_transform_align_date4cmp(ObRawExprFactory &expr_factory,
                                                 ObRawExpr *&in_expr,
                                                 const ObItemType &cmp_type);
@@ -456,6 +462,9 @@ struct DistinctObjMeta
 
   int replace_group_id_in_stmt(ObSelectStmt *stmt);
   int replace_group_id_in_expr_recursive(ObRawExpr *&expr);
+  // transform json object with star
+  int transform_json_object_expr_with_star(const ObIArray<ObParentDMLStmt> &parent_stmts,
+                                           ObDMLStmt *stmt, bool &trans_happened);
   int transform_udt_columns(const common::ObIArray<ObParentDMLStmt> &parent_stmts, ObDMLStmt *stmt, bool &trans_happened);
   int transform_udt_column_conv_function(ObDmlTableInfo &table_info,
                                          ObIArray<ObRawExpr*> &column_conv_exprs,

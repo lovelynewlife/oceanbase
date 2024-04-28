@@ -75,6 +75,8 @@ enum ObJBVerType:uint8_t {
   J_OTIMESTAMPTZ_V0 = 27,
   J_ODAYSECOND_V0 = 28,
   J_OYEARMONTH_V0 = 29,
+  J_DOC_HEADER_V0 = 30,
+  J_FORWARD_V0 = 31,
 
   J_ERROR_V0 = 200
 };
@@ -87,6 +89,13 @@ typedef struct ObJsonBinKeyDict {
 } ObJsonBinKeyDict;
 
 typedef struct ObJsonBinHeader {
+  ObJsonBinHeader()
+      : type_(0),
+        entry_size_(0),
+        count_size_(0),
+        obj_size_size_(0),
+        is_continuous_(0),
+        reserved_(0) {}
   uint8_t type_;			 // node type for current node
   uint8_t entry_size_   : 2; // the size describe var size of key_entry，val_entry
   uint8_t count_size_   : 2; // the size describe var size of element count

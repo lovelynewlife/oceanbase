@@ -24,6 +24,7 @@
 #include "share/stat/ob_dbms_stats_history_manager.h"
 #include "lib/mysqlclient/ob_mysql_transaction.h"
 #include "share/ob_lob_access_utils.h"
+#include "sql/engine/expr/ob_expr_util.h"
 
 namespace oceanbase {
 using namespace sql;
@@ -70,7 +71,7 @@ namespace common {
 #define FETCH_COLUMN_STAT "select null statid, 'C' type, '8' version, case stat.histogram_type \
                            when 1 then 4096 + 4 when 3 then 8192 + 4 when 4 then 4 else 0 end flags,\
                            '%.*s' c1, %.*s c2, %.*s c3, %.*s c4, '%.*s' c5, null c6,\
-                           stat.distinct_cnt n1, stat.density n2, null n3, stat.sample_size n4, \
+                           stat.distinct_cnt n1, stat.density n2, stat.spare1 n3, stat.sample_size n4, \
                            stat.null_cnt n5, NULL n6, NULL n7, stat.avg_len n8, 1 n9, \
                            hist.endpoint_num n10, hist.endpoint_normalized_value n11, \
                            hist.endpoint_repeat_cnt n12, stat.bucket_cnt n13, last_analyzed d1, null t1, \
@@ -448,6 +449,7 @@ int ObDbmsStatsExportImport::import_column_stats(ObExecContext &ctx, const ObTab
   int ret = OB_SUCCESS;
   ObSqlString raw_sql;
   ObSqlString partition_list;
+  ObSqlString column_list;
   ObSqlString table_name_str;
   const char *histflag = lib::is_oracle_mode() ? "bitand(flags, 29700) histflg" :
                                                    "cast(flags&29700 as decimal) histflg";
@@ -465,10 +467,9 @@ int ObDbmsStatsExportImport::import_column_stats(ObExecContext &ctx, const ObTab
     LOG_WARN("fail to append SQL stmt string.", K(raw_sql), K(ret));
   } else if (OB_FAIL(raw_sql.append(" and type = 'C'"))) {
     LOG_WARN("fail to append SQL stmt string.", K(raw_sql), K(ret));
-  } else if (param.column_params_.count() == 1 &&
-             OB_FAIL(raw_sql.append_fmt(" and c4 = '%.*s'",
-                                        param.column_params_.at(0).column_name_.length(),
-                                        param.column_params_.at(0).column_name_.ptr()))) {
+  } else if (OB_FAIL(gen_import_column_list(param.column_params_, column_list))) {
+    LOG_WARN("failed to gen import partition list", K(ret));
+  } else if (OB_FAIL(raw_sql.append_fmt(" and c4 in %s", column_list.ptr()))) {
     LOG_WARN("fail to append SQL stmt string.", K(raw_sql), K(ret));
   } else if  (OB_FAIL(gen_import_partition_list(param, partition_list))) {
     LOG_WARN("failed to gen import partition list", K(ret));
@@ -603,21 +604,28 @@ int ObDbmsStatsExportImport::do_import_stats(ObExecContext &ctx,
         } else if (OB_FAIL(check_col_stat_validity(all_cstats))) {
           LOG_WARN("failed to check col stat validity", K(ret));
         } else {
-          ObSEArray<ObOptTableStatHandle, 4> history_tab_handles;
-          ObSEArray<ObOptColumnStatHandle, 4> history_col_handles;
           //before import, we need record history stats.
-          if (!is_index_stat && !all_tstats.empty() && !param.is_temp_table_ &&
-              OB_FAIL(ObDbmsStatsHistoryManager::get_history_stat_handles(ctx, param,
-                                                                          history_tab_handles,
-                                                                          history_col_handles))) {
+          ObMySQLTransaction trans;
+          //begin trans
+          if (OB_FAIL(trans.start(ctx.get_sql_proxy(), param.tenant_id_))) {
+            LOG_WARN("fail to start transaction", K(ret));
+          } else if (!is_index_stat && !all_tstats.empty() && !param.is_temp_table_ &&
+                     OB_FAIL(ObDbmsStatsHistoryManager::backup_opt_stats(ctx, trans, param, ObTimeUtility::current_time()))) {
             LOG_WARN("failed to get history stat handles", K(ret));
-          } else if (OB_FAIL(ObDbmsStatsUtils::split_batch_write(ctx, all_tstats, all_cstats, is_index_stat))) {
+          } else if (OB_FAIL(ObDbmsStatsUtils::split_batch_write(ctx, trans.get_connection(), all_tstats, all_cstats, is_index_stat))) {
             LOG_WARN("failed to split batch write", K(ret));
-          } else if (OB_FAIL(ObDbmsStatsUtils::batch_write_history_stats(ctx,
-                                                                         history_tab_handles,
-                                                                         history_col_handles))) {
-            LOG_WARN("failed to batch write history stats", K(ret));
-          } else {/*do nothing*/}
+          }
+          //end trans
+          if (OB_SUCC(ret)) {
+            if (OB_FAIL(trans.end(true))) {
+              LOG_WARN("fail to commit transaction", K(ret));
+            }
+          } else {
+            int tmp_ret = OB_SUCCESS;
+            if (OB_SUCCESS != (tmp_ret = trans.end(false))) {
+              LOG_WARN("fail to roll back transaction", K(tmp_ret));
+            }
+          }
         }
       }
       int tmp_ret = OB_SUCCESS;
@@ -628,6 +636,19 @@ int ObDbmsStatsExportImport::do_import_stats(ObExecContext &ctx,
         }
       }
     }
+  }
+  return ret;
+}
+
+static int get_nmb_val(const ObObj &obj, ObIAllocator &allocator, number::ObNumber &nmb_val)
+{
+  int ret = OB_SUCCESS;
+  if (obj.is_decimal_int()) {
+    if (OB_FAIL(wide::to_number(obj.get_decimal_int(), obj.get_int_bytes(), obj.get_scale(), allocator, nmb_val))) {
+      LOG_WARN("cast to number failed", K(ret));
+    }
+  } else if (OB_FAIL(obj.get_number(nmb_val))) {
+    LOG_WARN("get number failed", K(ret));
   }
   return ret;
 }
@@ -647,7 +668,7 @@ int ObDbmsStatsExportImport::do_import_stats(ObExecContext &ctx,
  *   9.C6 VARCHAR2(30)         <==>         NULL
  *   10.N1 NUMBER              <==>         Num rows('T') or Num distinct('C')
  *   11.N2 NUMBER              <==>         Blocks('T') or Density('C')
- *   12.N3 NUMBER              <==>         Average row length('T')
+ *   12.N3 NUMBER              <==>         Average row length('T') or compress_type('C')
  *   13.N4 NUMBER              <==>         Sample size
  *   14.N5 NUMBER              <==>         Num nulls('C')
  *   15.N6 NUMBER              <==>         Lower value('C')
@@ -693,6 +714,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
     ObString col_str;
     ObHistBucket hist_bucket;
     int64_t llc_bitmap_size = 0;
+    int64_t compress_type = ObOptStatCompressType::MAX_COMPRESS;
     for (int64_t i = 0; OB_SUCC(ret) && i < StatTableColumnName::MAX_COL; ++i) {
       if (OB_UNLIKELY(i >= StatTableColumnName::N1 &&
                      (stat_type == INVALID_STAT_TYPE ||
@@ -728,7 +750,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
             number::ObNumber num_val;
             int64_t int_val = 0;
             const int64_t valid_num = 8;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -742,7 +766,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::FLAGS: {//mark hist type('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret), K(result_objs.at(i)));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -817,7 +843,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N1: {//Num rows('T'/'I') or Num distinct('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -832,8 +860,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
             number::ObNumber num_val;
             int64_t int_val = 0;
             double double_val = 0.0;
-            if (result_objs.at(i).is_number() &&
-                (OB_FAIL(result_objs.at(i).get_number(num_val)) ||
+            ObNumStackOnceAlloc tmp_alloc;
+            if ((result_objs.at(i).is_number() || result_objs.at(i).is_decimal_int()) &&
+                (OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val)) ||
                  OB_FAIL(ObDbmsStatsUtils::cast_number_to_double(num_val, double_val)))) {
               LOG_WARN("failed to get double", K(ret));
             } else if (result_objs.at(i).is_double() && OB_FAIL(result_objs.at(i).get_double(double_val))) {
@@ -855,17 +884,20 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
             }
             break;
           }
-          case StatTableColumnName::N3: {//Average row length('T'/'I')
+          case StatTableColumnName::N3: {//Average row length('T'/'I') or compress_type('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (stat_type != TABLE_STAT && stat_type != INDEX_STAT) {
-              if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
-                ret = OB_ERR_DBMS_STATS_PL;
-                LOG_WARN("Invalid or inconsistent input values", K(ret), K(result_objs.at(i)));
-                LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
+            ObNumStackOnceAlloc tmp_alloc;
+            if (stat_type == COLUMN_STAT) {
+              if (result_objs.at(i).is_null()) {
+                compress_type = ObOptStatCompressType::ZLIB_COMPRESS;
+              } else if (OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
+                LOG_WARN("failed to get number", K(ret));
+              } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(compress_type))) {
+                LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(compress_type));
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -877,7 +909,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N4: {//Sample size
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -891,6 +925,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N5: {//Num nulls('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
+            ObNumStackOnceAlloc tmp_alloc;
             if (stat_type != COLUMN_STAT) {
               if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
                 ret = OB_ERR_DBMS_STATS_PL;
@@ -898,7 +933,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -916,6 +951,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N8: {//Average column length('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
+            ObNumStackOnceAlloc tmp_alloc;
             if (stat_type != COLUMN_STAT) {
               if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
                 ret = OB_ERR_DBMS_STATS_PL;
@@ -923,7 +959,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -938,6 +974,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N10: {//Endpoint number('C')
             number::ObNumber num_val;
             int64_t int_val = -1;
+            ObNumStackOnceAlloc tmp_alloc;
             if (stat_type != COLUMN_STAT) {
               if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
                 ret = OB_ERR_DBMS_STATS_PL;
@@ -945,7 +982,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -960,6 +997,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N12: {//ENDPOINT_REPEAT_COUNT('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
+            ObNumStackOnceAlloc tmp_alloc;
             if (stat_type != COLUMN_STAT) {
               if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
                 ret = OB_ERR_DBMS_STATS_PL;
@@ -967,7 +1005,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -979,6 +1017,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::N13: {//bucket_cnt('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
+            ObNumStackOnceAlloc tmp_alloc;
             if (stat_type != COLUMN_STAT) {
               if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
                 ret = OB_ERR_DBMS_STATS_PL;
@@ -986,7 +1025,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
               }
             } else if (!result_objs.at(i).is_null() &&
-                       OB_FAIL(result_objs.at(i).get_number(num_val))) {
+                       OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -1109,7 +1148,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::OB_SPEC1: {//ob macro block cnt('T') or ob llc bitmap size('C')
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -1123,7 +1164,9 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
           case StatTableColumnName::OB_SPEC2: {//ob micro block cnt('T')
             number::ObNumber num_val;
             int64_t int_val = 0;
-            if (!result_objs.at(i).is_null() && OB_FAIL(result_objs.at(i).get_number(num_val))) {
+            ObNumStackOnceAlloc tmp_alloc;
+            if (!result_objs.at(i).is_null()
+                && OB_FAIL(get_nmb_val(result_objs.at(i), tmp_alloc, num_val))) {
               LOG_WARN("failed to get number", K(ret));
             } else if (OB_FAIL(num_val.extract_valid_int64_with_trunc(int_val))) {
               LOG_WARN("extract_valid_int64_with_trunc failed", K(ret), K(num_val));
@@ -1144,8 +1187,11 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
               LOG_WARN("failed to get varchar", K(ret));
             } else if (stat_type == COLUMN_STAT && llc_bitmap_size > 0) {
               char *bitmap_buf = NULL;
-              if (OB_ISNULL(bitmap_buf = static_cast<char*>(param.allocator_->alloc(
-                                                                              hex_str.length())))) {
+              if (OB_UNLIKELY(compress_type < 0 || compress_type >= ObOptStatCompressType::MAX_COMPRESS)) {
+                ret = OB_ERR_DBMS_STATS_PL;
+                LOG_WARN("Invalid or inconsistent input values", K(ret), K(compress_type));
+                LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
+              } else if (OB_ISNULL(bitmap_buf = static_cast<char*>(param.allocator_->alloc(hex_str.length())))) {
                 ret = OB_ALLOCATE_MEMORY_FAILED;
                 LOG_ERROR("allocate memory for llc_bitmap failed.", K(hex_str.length()), K(ret));
               } else {
@@ -1155,6 +1201,7 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
                 int64_t decomp_size = ObOptColumnStat::NUM_LLC_BUCKET;
                 const int64_t bitmap_size = hex_str.length() / 2;
                 if (OB_FAIL(ObOptStatSqlService::get_decompressed_llc_bitmap(*param.allocator_,
+                                                                             bitmap_compress_lib_name[compress_type],
                                                                              bitmap_buf,
                                                                              bitmap_size,
                                                                              decomp_buf,
@@ -1166,8 +1213,8 @@ int ObDbmsStatsExportImport::get_opt_stat(ObExecContext &ctx,
               }
             } else if (OB_UNLIKELY(!result_objs.at(i).is_null())) {
               ret = OB_ERR_DBMS_STATS_PL;
-                LOG_WARN("Invalid or inconsistent input values", K(ret), K(result_objs.at(i)));
-                LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
+              LOG_WARN("Invalid or inconsistent input values", K(ret), K(result_objs.at(i)));
+              LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Invalid or inconsistent input values");
             }
             break;
           }
@@ -1226,11 +1273,10 @@ int ObDbmsStatsExportImport::init_opt_stat(ObExecContext &ctx,
       LOG_WARN("failed to get opt col stat", K(ret));
     } else if (col_stat != NULL) {//find already exists opt column stat
       /*do nothing*/
-    } else if (OB_ISNULL(ptr = param.allocator_->alloc(sizeof(ObOptColumnStat)))) {
+    } else if (OB_ISNULL(col_stat = ObOptColumnStat::malloc_new_column_stat(*param.allocator_))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("memory is not enough", K(ret), K(ptr));
     } else {
-      col_stat = new (ptr) ObOptColumnStat(*param.allocator_);
       col_stat->set_table_id(param.table_id_);
       col_stat->set_partition_id(part_id);
       col_stat->set_stat_level(type);

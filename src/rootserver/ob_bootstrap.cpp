@@ -51,11 +51,14 @@
 #include "rootserver/ob_rs_async_rpc_proxy.h"
 #include "rootserver/ob_server_zone_op_service.h"
 #include "observer/ob_server_struct.h"
-#include "rootserver/freeze/ob_freeze_info_manager.h"
+#include "share/ob_freeze_info_manager.h"
 #include "rootserver/ob_table_creator.h"
 #include "share/scn.h"
 #include "rootserver/ob_heartbeat_service.h"
 #include "rootserver/ob_root_service.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "close_modules/tde_security/share/ob_master_key_getter.h"
+#endif
 
 namespace oceanbase
 {
@@ -273,6 +276,9 @@ int ObPreBootstrap::notify_sys_tenant_root_key()
 #ifdef OB_BUILD_TDE_SECURITY
   ObArray<ObAddr> addrs;
   obrpc::ObRootKeyArg arg;
+  arg.tenant_id_ = OB_SYS_TENANT_ID;
+  arg.is_set_ = false;
+  obrpc::ObRootKeyResult result;
   if (OB_FAIL(addrs.reserve(rs_list_.count()))) {
     LOG_WARN("fail to reserve array", KR(ret));
   }
@@ -280,9 +286,18 @@ int ObPreBootstrap::notify_sys_tenant_root_key()
     if (OB_FAIL(addrs.push_back(rs_list_[i].server_))) {
       LOG_WARN("fail to push back server", KR(ret));
     }
-  } // end for
-  if (FAILEDx(ObDDLService::create_root_key(
-              rpc_proxy_, OB_SYS_TENANT_ID, addrs))) {
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObMasterKeyGetter::instance().get_root_key(OB_SYS_TENANT_ID,
+                                                                result.key_type_,
+                                                                result.root_key_))) {
+  } else if (obrpc::RootKeyType::INVALID != result.key_type_ || !result.root_key_.empty()) {
+    LOG_INFO("root key existed in local");
+  } else if (OB_FAIL(ObDDLService::notify_root_key(rpc_proxy_, arg, addrs, result, false))) {
+    LOG_WARN("fail to notify root key", K(ret));
+  } else if (obrpc::RootKeyType::INVALID != result.key_type_ || !result.root_key_.empty()) {
+    LOG_INFO("root key existed in remote");
+  } else if (OB_FAIL(ObDDLService::create_root_key(rpc_proxy_, OB_SYS_TENANT_ID, addrs))) {
     LOG_WARN("fail to create sys tenant root key", KR(ret), K(addrs));
   }
   BOOTSTRAP_CHECK_SUCCESS();
@@ -322,7 +337,11 @@ int ObPreBootstrap::notify_sys_tenant_server_unit_resource()
               unit_config,
               ObReplicaType::REPLICA_TYPE_FULL,
               false/*if not grant*/,
-              false/*create new*/))) {
+              false/*is_delete*/
+#ifdef OB_BUILD_TDE_SECURITY
+              , obrpc::ObRootKeyResult()/*invalid root_key*/
+#endif
+              ))) {
         LOG_WARN("fail to init tenant unit server config", KR(ret));
       } else if (OB_FAIL(notify_proxy.call(
               rs_list_[i].server_, rpc_timeout, tenant_unit_server_config))) {
@@ -331,9 +350,11 @@ int ObPreBootstrap::notify_sys_tenant_server_unit_resource()
       }
     }
     int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = notify_proxy.wait())) {
+    if (OB_TMP_FAIL(notify_proxy.wait())) {
       LOG_WARN("fail to wait notify resource", K(ret), K(tmp_ret));
       ret = (OB_SUCCESS == ret) ? tmp_ret : ret;
+    } else if (OB_SUCC(ret)) {
+      // can use arg/dest/result here.
     }
   }
 
@@ -909,18 +930,22 @@ int ObBootstrap::broadcast_sys_schema(const ObSArray<ObTableSchema> &table_schem
 
     ObArray<int> return_code_array;
     int tmp_ret = OB_SUCCESS; // always wait all
-    if (OB_SUCCESS != (tmp_ret = proxy.wait_all(return_code_array))) {
+    if (OB_TMP_FAIL(proxy.wait_all(return_code_array))) {
       LOG_WARN("wait batch result failed", KR(tmp_ret), KR(ret));
       ret = OB_SUCC(ret) ? tmp_ret : ret;
+    } else if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(proxy.check_return_cnt(return_code_array.count()))) {
+      LOG_WARN("return cnt not match", KR(ret), "return_cnt", return_code_array.count());
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); i++) {
+        int res_ret = return_code_array.at(i);
+        const ObAddr &addr = proxy.get_dests().at(i);
+        if (OB_SUCCESS != res_ret) {
+          ret = res_ret;
+          LOG_WARN("broadcast schema failed", KR(ret), K(addr));
+        }
+      } // end for
     }
-    for (int64_t i = 0; OB_SUCC(ret) && i < return_code_array.count(); i++) {
-      int res_ret = return_code_array.at(i);
-      const ObAddr &addr = proxy.get_dests().at(i);
-      if (OB_SUCCESS != res_ret) {
-        ret = res_ret;
-        LOG_WARN("broadcast schema failed", KR(ret), K(addr));
-      }
-    } // end for
   }
   BOOTSTRAP_CHECK_SUCCESS();
   return ret;
@@ -1008,7 +1033,7 @@ int ObBootstrap::batch_create_schema(ObDDLService &ddl_service,
         bool need_sync_schema_version = !(ObSysTableChecker::is_sys_table_index_tid(table.get_table_id()) ||
                                           is_sys_lob_table(table.get_table_id()));
         int64_t start_time = ObTimeUtility::current_time();
-        if (OB_FAIL(ddl_operator.create_table(table, trans, ddl_stmt,
+        if (FAILEDx(ddl_operator.create_table(table, trans, ddl_stmt,
                                               need_sync_schema_version,
                                               is_truncate_table))) {
           LOG_WARN("add table schema failed", K(ret),
@@ -1498,7 +1523,7 @@ int ObBootstrap::create_sys_resource_pool()
   } else if (OB_FAIL(unit_mgr_.grant_pools(
           trans, new_ug_id_array,
           lib::Worker::CompatMode::MYSQL, pool_names,
-          OB_SYS_TENANT_ID, is_bootstrap))) {
+          OB_SYS_TENANT_ID, is_bootstrap, OB_INVALID_TENANT_ID/*source_tenant_id*/))) {
     LOG_WARN("grant_pools_to_tenant failed", K(pool_names),
         "tenant_id", static_cast<uint64_t>(OB_SYS_TENANT_ID), K(ret));
   } else {

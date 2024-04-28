@@ -102,6 +102,7 @@ int ObRowConflictHandler::check_row_locked(const storage::ObTableIterParam &para
       ret = OB_SUCCESS;
     }
     if (OB_SUCC(ret)) {
+      ObRowState row_state;
       share::SCN snapshot_version = ctx->mvcc_acc_ctx_.get_snapshot_version();
       stores = &iter_tables;
       for (int64_t i = stores->count() - 1; OB_SUCC(ret) && i >= 0; i--) {
@@ -113,23 +114,24 @@ int ObRowConflictHandler::check_row_locked(const storage::ObTableIterParam &para
           ObMemtable *memtable = static_cast<ObMemtable *>(stores->at(i));
           if (OB_FAIL(memtable->get_mvcc_engine().check_row_locked(ctx->mvcc_acc_ctx_, &mtk, lock_state))) {
             TRANS_LOG(WARN, "mvcc engine check row lock fail", K(ret), K(mtk));
-          }
-        } else if (stores->at(i)->is_sstable()) {
-          blocksstable::ObSSTable *sstable = static_cast<blocksstable::ObSSTable *>(stores->at(i));
-          if (OB_FAIL(sstable->check_row_locked(param, context, rowkey, lock_state))) {
-            TRANS_LOG(WARN, "sstable check row lock fail", K(ret), K(rowkey));
-          }
-          TRANS_LOG(DEBUG, "check_row_locked meet sstable", K(ret), K(rowkey), K(*sstable));
-        } else {
-          ret = OB_ERR_UNEXPECTED;
-          TRANS_LOG(ERROR, "unknown store type", K(ret));
-        }
-        if (OB_SUCC(ret)) {
-          if (lock_state.is_locked_) {
+          } else if (lock_state.is_locked_) {
             break;
           } else if (max_trans_version < lock_state.trans_version_) {
             max_trans_version = lock_state.trans_version_;
           }
+        } else if (stores->at(i)->is_sstable()) {
+          blocksstable::ObSSTable *sstable = static_cast<blocksstable::ObSSTable *>(stores->at(i));
+          if (OB_FAIL(sstable->check_row_locked(param, rowkey, context, lock_state, row_state))) {
+            TRANS_LOG(WARN, "sstable check row lock fail", K(ret), K(rowkey));
+          } else if (lock_state.is_locked_) {
+            break;
+          } else if (max_trans_version < row_state.max_trans_version_) {
+            max_trans_version = row_state.max_trans_version_;
+          }
+          TRANS_LOG(DEBUG, "check_row_locked meet sstable", K(ret), K(rowkey), K(row_state), K(*sstable));
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          TRANS_LOG(ERROR, "unknown store type", K(ret));
         }
       }
     }
@@ -207,7 +209,7 @@ int ObRowConflictHandler::check_foreign_key_constraint_for_sstable(ObTxTableGuar
                                                                    ObStoreRowLockState &lock_state) {
   int ret = OB_SUCCESS;
   // If a transaction is committed, the trans_id of it is 0, which is invalid.
-  // So we can not use check_row_locekd interface to get the trans_version.
+  // So we can not use check_row_locked interface to get the trans_version.
   if (!data_trans_id.is_valid()) {
     if (trans_version > snapshot_version) {
       ret = OB_TRANSACTION_SET_VIOLATION;
@@ -275,7 +277,7 @@ int ObRowConflictHandler::post_row_read_conflict(ObMvccAccessCtx &acc_ctx,
       tx_desc->add_conflict_tx(conflict_tx);
     }
     // The addr in tx_desc is the scheduler_addr of current trans,
-    // and GCTX.self_addr() will retrun the addr where the row is stored
+    // and GCTX.self_addr() will return the addr where the row is stored
     // (i.e. where the trans is executing)
     bool remote_tx = tx_desc->get_addr() != GCTX.self_addr();
     ObFunction<int(bool&, bool&)> recheck_func([&](bool &locked, bool &wait_on_row) -> int {

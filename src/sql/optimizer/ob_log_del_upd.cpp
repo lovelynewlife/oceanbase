@@ -484,7 +484,8 @@ int ObLogDelUpd::generate_pdml_partition_id_expr()
   // 2. 如果当前pdml op对应的表是分区表，就分配partition id expr
   uint64_t table_id = OB_INVALID_ID;
   ObOpPseudoColumnRawExpr *partition_id_expr = nullptr;
-  ObLogicalOperator *producer = NULL;
+  ObLogExchange *producer = NULL;
+  ObLogTableScan *src_tsc = NULL;
   if (OB_UNLIKELY(!is_pdml()) ||
       OB_UNLIKELY(index_dml_infos_.count() != 1) ||
       OB_ISNULL(index_dml_infos_.at(0))) {
@@ -492,83 +493,79 @@ int ObLogDelUpd::generate_pdml_partition_id_expr()
     LOG_WARN("index info array is empty", K(ret));
   } else if (OB_FAIL(ObLogicalOperator::generate_pseudo_partition_id_expr(partition_id_expr))) {
     LOG_WARN("fail allocate part id expr", K(table_id), K(ret));
-  } else if (OB_FAIL(find_pdml_part_id_producer(*this,
+  } else if (OB_FAIL(find_pdml_part_id_producer(get_child(ObLogicalOperator::first_child),
+                                                index_dml_infos_.at(0)->loc_table_id_,
                                                 index_dml_infos_.at(0)->ref_table_id_,
-                                                producer))) {
+                                                producer,
+                                                src_tsc))) {
     LOG_WARN("find pdml partition id expr producer failed", K(ret));
-  } else if (NULL == producer) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("can not found pdml partition id expr producer", K(ret));
-  } else {
+  } else if (NULL != src_tsc && NULL != producer) {
     pdml_partition_id_expr_ = partition_id_expr;
-    if (producer->get_type() == log_op_def::LOG_EXCHANGE) {
-      static_cast<ObLogExchange *>(producer)->set_partition_id_expr(partition_id_expr);
-    } else if (producer->get_type() == log_op_def::LOG_TABLE_SCAN) {
-      static_cast<ObLogTableScan *>(producer)->set_tablet_id_expr(partition_id_expr);
-    } else {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected type of pdml partition id producer", K(ret), K(producer));
-    }
+    producer->set_partition_id_expr(partition_id_expr);
+  } else if (NULL != src_tsc) {
+    pdml_partition_id_expr_ = partition_id_expr;
+    src_tsc->set_tablet_id_expr(partition_id_expr);
+  } else if (NULL != producer) {
+    pdml_partition_id_expr_ = partition_id_expr;
+    producer->set_partition_id_expr(partition_id_expr);
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("can not found pdml partition id expr producer", K(ret), K(producer), K(src_tsc));
   }
   return ret;
 }
 
-int ObLogDelUpd::find_pdml_part_id_producer(ObLogicalOperator &op,
-                                            const uint64_t tid,
-                                            ObLogicalOperator *&producer)
+int ObLogDelUpd::find_pdml_part_id_producer(ObLogicalOperator *op,
+                                            const uint64_t loc_tid,
+                                            const uint64_t ref_tid,
+                                            ObLogExchange *&producer,
+                                            ObLogTableScan *&src_tsc)
 {
   int ret = OB_SUCCESS;
-  producer = NULL;
-  OZ(check_stack_overflow());
-  if (OB_SUCC(ret)) {
-    if (op.get_type() == log_op_def::LOG_EXCHANGE) {
-      ObLogExchange &log_ex = static_cast<ObLogExchange &>(op);
-      if (log_ex.is_producer() && log_ex.get_repartition_ref_table_id() == tid) {
-        producer = &op;
-      }
-    } else if (op.get_type() == log_op_def::LOG_TABLE_SCAN) {
-      // PDML partition id expr在table scan分配的逻辑
-      // pdml table scan分配partition id expr的producer
-      // table scan中分配partition id expr的producer的逻辑比较特殊：
-      //  分配partition id的时候，需要保证partition id expr对应的table id与table
-      // scan的table id是相同的
-      //  对应insert的dml操作，例如：insert into t1 select from t1，
-      //  产生的计划如下：
-      //      insert
-      //        subplan
-      //          GI
-      //            TSC
-      //            ....
-      //
-      // 这种情况下，如果给TSC算子分配partition idexpr，那么根据表达式分配的框架，
-      // 其会被裁剪掉，因此目前insert与subplan之间会添加一个EX算子.
-      // 后期会进行优化，如果insert与subplan是一个full partition wise
-      // join，那么就在insert算子上分配一个GI算子，目前先使用在subplan上分配EX算子的方式实现
-      ObLogTableScan &tsc = static_cast<ObLogTableScan &>(op);
-      if (tid
-          == (tsc.get_is_index_global() ? tsc.get_index_table_id() : tsc.get_ref_table_id())) {
-        producer = &op;
-      }
+  if (OB_ISNULL(op)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(op));
+  } else if (op->is_dml_operator()) {
+    // for pdml insert split by update, generate partition id by exchange above delete
+  } else if (op->get_type() == log_op_def::LOG_TABLE_SCAN) {
+    // PDML partition id expr在table scan分配的逻辑
+    // pdml table scan分配partition id expr的producer
+    // table scan中分配partition id expr的producer的逻辑比较特殊：
+    //  分配partition id的时候，需要保证partition id expr对应的table id与table
+    // scan的table id是相同的
+    //  对应insert的dml操作，例如：insert into t1 select from t1，
+    //  产生的计划如下：
+    //      insert
+    //        subplan
+    //          GI
+    //            TSC
+    //            ....
+    //
+    // 这种情况下，如果给TSC算子分配partition idexpr，那么根据表达式分配的框架，
+    // 其会被裁剪掉，因此目前insert与subplan之间会添加一个EX算子.
+    // 后期会进行优化，如果insert与subplan是一个full partition wise
+    // join，那么就在insert算子上分配一个GI算子，目前先使用在subplan上分配EX算子的方式实现
+    ObLogTableScan *tsc = static_cast<ObLogTableScan*>(op);
+    if (loc_tid == tsc->get_table_id() &&
+        ref_tid == (tsc->get_is_index_global() ? tsc->get_index_table_id() : tsc->get_ref_table_id())) {
+      src_tsc = tsc;
+      producer = NULL;
     }
-    for (int64_t i = 0; OB_SUCC(ret) && NULL == producer && i < op.get_num_of_child(); i++) {
-      if (OB_ISNULL(op.get_child(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("null child", K(ret));
-      } else if (log_op_def::LOG_JOIN == op.get_type()) {
-        ObLogJoin &join_op = static_cast<ObLogJoin&>(op);
-        if (IS_LEFT_SEMI_ANTI_JOIN(join_op.get_join_type()) &&
-            second_child == i) {
-          continue;
-        } else if (IS_RIGHT_SEMI_ANTI_JOIN(join_op.get_join_type()) &&
-                   first_child == i) {
-          continue;
-        }
-        if (OB_FAIL(find_pdml_part_id_producer(*op.get_child(i), tid, producer))) {
-          LOG_WARN("find pdml part id producer failed", K(ret));
-        }
-      } else if (OB_FAIL(find_pdml_part_id_producer(*op.get_child(i), tid, producer))) {
+  } else {
+    if (OB_SUCC(ret) && NULL == producer && op->get_type() == log_op_def::LOG_EXCHANGE
+        && static_cast<ObLogExchange*>(op)->is_producer()) {
+      // find the first exchange below dml, use this exchange generate partiton id for pdml insert
+      producer = static_cast<ObLogExchange*>(op);
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && NULL == src_tsc && i < op->get_num_of_child(); i++) {
+      if (OB_FAIL(SMART_CALL(find_pdml_part_id_producer(op->get_child(i), loc_tid, ref_tid, producer, src_tsc)))) {
         LOG_WARN("find pdml part id producer failed", K(ret));
       }
+    }
+    if (OB_SUCC(ret) && NULL != src_tsc && op->get_type() == log_op_def::LOG_EXCHANGE
+        && static_cast<ObLogExchange*>(op)->is_producer()) {
+      // generate partiton id by exchange above dml target table scan
+      producer = static_cast<ObLogExchange*>(op);
     }
   }
   return ret;
@@ -819,7 +816,7 @@ int ObLogDelUpd::est_cost()
   } else {
     ObOptimizerContext &opt_ctx = get_plan()->get_optimizer_context();
     card_ = child->get_card();
-    op_cost_ = ObOptEstCost::cost_get_rows(child->get_card(), opt_ctx.get_cost_model_type());
+    op_cost_ = ObOptEstCost::cost_get_rows(child->get_card(), opt_ctx);
     cost_ = op_cost_ + child->get_cost();
   }
   return ret;
@@ -1344,10 +1341,10 @@ int ObLogDelUpd::generate_fk_lookup_part_id_expr(IndexDMLInfo &index_dml_info)
     for (int64_t i = 0; OB_SUCC(ret) && i < fk_infos->count(); i++) {
       const ObForeignKeyInfo &fk_info = fk_infos->at(i);
       ObRawExpr* fk_scan_part_expr = nullptr;
-      if (fk_info.table_id_ != fk_info.child_table_id_) {
+      if (fk_info.table_id_ != fk_info.child_table_id_ || fk_info.is_parent_table_mock_) {
         // update parent table, check child table, don't use das task to perform foreign key check
         ret = index_dml_info.fk_lookup_part_id_expr_.push_back(fk_scan_part_expr);
-      } else if (!fk_info.is_parent_table_mock_) {
+      } else {
         const uint64_t parent_table_id = fk_info.parent_table_id_;
         const ObTableSchema *parent_table_schema = NULL;
         uint64_t scan_index_tid = OB_INVALID_ID;

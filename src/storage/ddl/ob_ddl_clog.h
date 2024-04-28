@@ -15,7 +15,7 @@
 
 #include "storage/ob_i_table.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "storage/blocksstable/ob_index_block_builder.h"
+#include "storage/blocksstable/index_block/ob_index_block_builder.h"
 #include "storage/meta_mem/ob_tablet_pointer.h"
 #include "logservice/ob_append_callback.h"
 
@@ -122,7 +122,6 @@ private:
   share::ObLSID ls_id_;
   blocksstable::ObDDLMacroBlockRedoInfo redo_info_;
   blocksstable::MacroBlockId macro_block_id_;
-  ObArenaAllocator arena_;
   ObSpinLock data_buffer_lock_;
   bool is_data_buffer_freed_;
   ObTabletHandle tablet_handle_;

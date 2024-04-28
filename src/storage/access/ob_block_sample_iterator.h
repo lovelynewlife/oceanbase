@@ -16,7 +16,7 @@
 #include "storage/ob_i_store.h"
 #include "ob_i_sample_iterator.h"
 #include "ob_multiple_scan_merge.h"
-#include "storage/blocksstable/ob_index_block_tree_cursor.h"
+#include "storage/blocksstable/index_block/ob_index_block_tree_cursor.h"
 
 namespace oceanbase
 {
@@ -157,13 +157,16 @@ public:
            ObGetTableParam &get_table_param,
            const bool is_reverse_scan);
   virtual int get_next_row(blocksstable::ObDatumRow *&row) override;
+  virtual int get_next_rows(int64_t &count, int64_t capacity) override;
 private:
   int open_range(blocksstable::ObDatumRange &range);
+  int inner_get_next_rows(int64_t &count, int64_t capacity);
 private:
   ObTableAccessContext *access_ctx_;
   const ObITableReadInfo *read_info_;
   ObMultipleScanMerge *scan_merge_;
   int64_t block_num_;
+  int64_t sample_block_cnt_;
   common::ObArenaAllocator range_allocator_;
   ObBlockSampleRangeIterator range_iterator_;
   blocksstable::ObDatumRange micro_range_;

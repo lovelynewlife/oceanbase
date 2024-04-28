@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
@@ -408,7 +420,10 @@ static SSL_CTX* ob_ssl_create_ssl_ctx(const ObSSLConfig& ssl_config)
     SSL_CTX_set_options(ctx, SSL_OP_TLS_BLOCK_PADDING_BUG);
     SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
     SSL_CTX_set_options(ctx, SSL_OP_SINGLE_DH_USE);
-    SSL_CTX_set_read_ahead(ctx, 1);
+    /*set_read_ahead may cause the first application data that been sent after
+    * SSL handshake being unprocessed, forbid it.
+    */
+    SSL_CTX_set_read_ahead(ctx, 0);
   }
   return ctx;
 }

@@ -14,7 +14,7 @@
 #define OCEANBASE_OBSERVER_OB_TABLE_TTL_TASK_H_
 #include "share/table/ob_table_ttl_common.h"
 #include "sql/ob_sql_trans_control.h"
-#include "share/scheduler/ob_dag_scheduler.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "observer/table/ob_table_context.h"
 #include "observer/table/ob_table_scan_executor.h"
 #include "share/table/ob_table.h"
@@ -49,7 +49,8 @@ public:
   };
 
 public:
-  common::ObArenaAllocator allocator_;
+  const static int64_t ONE_ITER_EXECUTE_MAX_TIME = 30 * 1000 * 1000; // 30s
+  common::ObArenaAllocator hbase_kq_allocator_;
   bool is_inited_;
   int32_t max_version_;
   int64_t time_to_live_ms_; // ttl in millisecond
@@ -70,6 +71,8 @@ public:
   common::ObSArray<uint64_t> rowkey_cell_ids_;
   // map new row -> normal column
   common::ObSArray<PropertyPair> properties_pairs_;
+  bool hbase_new_cq_;
+  int64_t iter_end_ts_;
 };
 
 

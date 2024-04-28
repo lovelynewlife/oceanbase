@@ -18,6 +18,7 @@
 #include "storage/meta_mem/ob_tablet_pointer.h"
 #include "storage/tablet/ob_tablet_mds_data.h"
 #include "storage/tablet/ob_tablet_member_wrapper.h"
+#include "storage/tablet/ob_tablet_obj_load_helper.h"
 #include "storage/ls/ob_ls_switch_checker.h"
 
 namespace oceanbase
@@ -41,8 +42,6 @@ public:
   template <typename Key, typename Value>// general remove for multi key unit
   int remove(const Key &key, mds::MdsCtx &ctx, const int64_t lock_timeout_us = 0);
   // sometimes mds ndoes needed be forcely released, e.g.: ls offline
-  template <int N>
-  int forcely_reset_mds_table(const char (&reason)[N]);// reason must be compile-time str
   template <typename T>
   int is_locked_by_others(bool &is_locked, const mds::MdsWriter &self = mds::MdsWriter()) const;
 

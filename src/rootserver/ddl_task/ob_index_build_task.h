@@ -52,6 +52,7 @@ public:
   virtual int process() override;
   virtual int64_t get_deep_copy_size() const override { return sizeof(*this); }
   virtual ObAsyncTask *deep_copy(char *buf, const int64_t buf_size) const override;
+  void add_event_info(const int ret, const ObString &ddl_event_stmt);
   TO_STRING_KV(K_(data_table_id), K_(dest_table_id), K_(schema_version), K_(snapshot_version),
                K_(execution_id), K_(consumer_group_id), K_(trace_id), K_(parallelism), K_(nls_date_format),
                K_(nls_timestamp_format), K_(nls_timestamp_tz_format));
@@ -85,11 +86,13 @@ public:
   int init(
       const uint64_t tenant_id,
       const int64_t task_id,
+      const share::ObDDLType &ddl_type,
       const share::schema::ObTableSchema *data_table_schema,
       const share::schema::ObTableSchema *index_schema,
       const int64_t schema_version,
       const int64_t parallel,
       const int64_t consumer_group_id,
+      const int32_t sub_task_trace_id,
       const obrpc::ObCreateIndexArg &create_index_arg,
       const int64_t parent_task_id /* = 0 */,
       const int64_t task_status = share::ObDDLTaskStatus::PREPARE,

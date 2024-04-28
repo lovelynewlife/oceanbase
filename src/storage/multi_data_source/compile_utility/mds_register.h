@@ -1,4 +1,15 @@
-/************************register header file with class defination********************************/
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 // the MDS FRAME must know the defination of some class type to generate legal CPP codes, including:
 // 1. DATA type defination if you need multi source data support.
 //    1.a. KEY type defination if you need multi source data support with multi key support.
@@ -21,6 +32,7 @@
   #include "src/storage/tablet/ob_tablet_start_transfer_mds_helper.h"
   #include "src/storage/tablet/ob_tablet_finish_transfer_mds_helper.h"
   #include "src/share/balance/ob_balance_task_table_operator.h"
+  #include "src/storage/tablet/ob_tablet_transfer_tx_ctx.h"
 #endif
 /**************************************************************************************************/
 
@@ -89,6 +101,22 @@ _GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION_(HELPER_CLASS, BUFFER_CTX_TYPE, ID, ENU
                                           ::oceanbase::storage::mds::MdsCtx,\
                                           24,\
                                           TRANSFER_TASK)
+  GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObTabletStartTransferOutPrepareHelper,\
+                                          ::oceanbase::storage::mds::MdsCtx,\
+                                          25,\
+                                          START_TRANSFER_OUT_PREPARE)
+  GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObTabletStartTransferOutV2Helper,\
+                                          ::oceanbase::storage::ObTransferOutTxCtx,\
+                                          26,\
+                                          START_TRANSFER_OUT_V2)
+  GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObStartTransferMoveTxHelper,\
+                                          ::oceanbase::storage::ObTransferMoveTxCtx,\
+                                          27,\
+                                          TRANSFER_MOVE_TX_CTX)
+  GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObStartTransferDestPrepareHelper,\
+                                          ::oceanbase::storage::ObTransferDestPrepareTxCtx,\
+                                          28,\
+                                          TRANSFER_DEST_PREPARE)
 #undef GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION
 #endif
 /**************************************************************************************************/

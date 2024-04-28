@@ -606,6 +606,7 @@ int ObTableLockService::lock_table(ObTxDesc &tx_desc,
     ctx.lock_op_type_ = arg.op_type_;
     ctx.is_from_sql_ = arg.is_from_sql_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -633,6 +634,7 @@ int ObTableLockService::unlock_table(ObTxDesc &tx_desc,
     ctx.tx_param_ = tx_param;
     ctx.lock_op_type_ = arg.op_type_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -664,6 +666,7 @@ int ObTableLockService::lock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -697,6 +700,7 @@ int ObTableLockService::lock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -729,6 +733,7 @@ int ObTableLockService::unlock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -762,6 +767,7 @@ int ObTableLockService::unlock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -795,6 +801,7 @@ int ObTableLockService::lock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -829,6 +836,7 @@ int ObTableLockService::unlock_tablet(ObTxDesc &tx_desc,
     } else if (OB_FAIL(process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_))) {
       LOG_WARN("process lock task failed", K(ret), K(arg));
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -894,6 +902,7 @@ int ObTableLockService::lock_partition(ObTxDesc &tx_desc,
     ctx.lock_op_type_ = arg.op_type_;
     ctx.is_from_sql_ = arg.is_from_sql_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -924,6 +933,7 @@ int ObTableLockService::unlock_partition(ObTxDesc &tx_desc,
     ctx.tx_param_ = tx_param;
     ctx.lock_op_type_ = arg.op_type_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -954,6 +964,7 @@ int ObTableLockService::lock_subpartition(ObTxDesc &tx_desc,
     ctx.lock_op_type_ = arg.op_type_;
     ctx.is_from_sql_ = arg.is_from_sql_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -984,6 +995,7 @@ int ObTableLockService::unlock_subpartition(ObTxDesc &tx_desc,
     ctx.tx_param_ = tx_param;
     ctx.lock_op_type_ = arg.op_type_;
     ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -1016,6 +1028,7 @@ int ObTableLockService::lock_obj(ObTxDesc &tx_desc,
     } else {
       ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -1049,6 +1062,7 @@ int ObTableLockService::unlock_obj(ObTxDesc &tx_desc,
     } else {
       ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -1083,6 +1097,7 @@ int ObTableLockService::lock_obj(ObTxDesc &tx_desc,
     } else {
       ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -1118,6 +1133,7 @@ int ObTableLockService::unlock_obj(ObTxDesc &tx_desc,
     } else {
       ret = process_lock_task_(ctx, arg.lock_mode_, arg.owner_id_);
     }
+    ret = rewrite_return_code_(ret);
   }
   return ret;
 }
@@ -1392,8 +1408,10 @@ int ObTableLockService::collect_rollback_info_(const ObArray<share::ObLSID> &ls_
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
 
-  // need wait rpcs that sent finish
-  // otherwise proxy reused or destructored will cause flying rpc core
+  // 1. need wait rpcs that sent finish
+  //    otherwise proxy reused or destructored will cause flying rpc core
+  // 2. don't use arg/dest here because call() may has failure.
+  // 3. return_array/result can be used only when wait_all() is success.
   ObArray<int> return_code_array;
   if (OB_TMP_FAIL(proxy_batch.wait_all(return_code_array))) {
     LOG_WARN("wait rpc failed", K(tmp_ret));
@@ -1422,9 +1440,10 @@ int ObTableLockService::handle_parallel_rpc_response_(RpcProxy &proxy_batch,
   // handle result
   ObArray<int> return_code_array;
   if (OB_TMP_FAIL(proxy_batch.wait_all(return_code_array))
+      || OB_TMP_FAIL(proxy_batch.check_return_cnt(return_code_array.count()))
       || retry_ctx.send_rpc_count_ != return_code_array.count()) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("rpc failed", K(tmp_ret), K(retry_ctx.send_rpc_count_), K(return_code_array.count()));
+    LOG_WARN("rpc failed", KR(ret), KR(tmp_ret), K(retry_ctx.send_rpc_count_), K(return_code_array.count()));
     // we need add the ls into touched to make rollback.
     can_retry = false;
     retry_ctx.need_retry_ = false;
@@ -2746,7 +2765,9 @@ int ObTableLockService::rewrite_return_code_(const int ret) const
 {
   int rewrite_rcode = ret;
   // rewrite to OB_EAGAIN, to make sure the ddl process will retry again.
-  if (OB_TRANS_KILLED == ret) {
+  if (OB_TRANS_KILLED == ret ||
+      OB_OBJ_UNLOCK_CONFLICT == ret ||
+      OB_OBJ_LOCK_NOT_COMPLETED == ret) {
     rewrite_rcode = OB_EAGAIN;
   }
   return rewrite_rcode;

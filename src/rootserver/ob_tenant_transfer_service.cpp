@@ -386,8 +386,6 @@ int ObTenantTransferService::get_member_lists_by_inner_sql_(
   } else {
     SMART_VAR(ObISQLClient::ReadResult, result) {
       ObSqlString sql;
-      ObString src_ls_member_list_str;
-      ObString dest_ls_member_list_str;
       common::sqlclient::ObMySQLResult *res = NULL;
       if (OB_FAIL(sql.assign_fmt(
           "SELECT PAXOS_MEMBER_LIST FROM %s WHERE TENANT_ID = %lu AND ROLE = 'LEADER'"
@@ -404,44 +402,51 @@ int ObTenantTransferService::get_member_lists_by_inner_sql_(
       } else if (OB_ISNULL(res = result.get_result())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get mysql result failed", KR(ret), K(sql));
-      } else if (OB_FAIL(res->next())) {
-        LOG_WARN("next failed, neither src_ls nor dest_ls was found", KR(ret), K_(tenant_id), K(src_ls), K(dest_ls));
-      } else if (OB_FAIL(res->get_varchar("PAXOS_MEMBER_LIST", src_ls_member_list_str))) {
-        LOG_WARN("fail to get PAXOS_MEMBER_LIST", KR(ret), K_(tenant_id), K(src_ls), K(dest_ls));
-      } else if (OB_FAIL(res->next())) {
-        LOG_WARN("next failed, src_ls or dest_ls not found", KR(ret), K_(tenant_id), K(src_ls), K(dest_ls));
-      } else if (OB_FAIL(res->get_varchar("PAXOS_MEMBER_LIST", dest_ls_member_list_str))) {
-        LOG_WARN("fail to get PAXOS_MEMBER_LIST", KR(ret), K_(tenant_id), K(src_ls), K(dest_ls));
-      } else if (OB_FAIL(ObLSReplica::text2member_list(
-          to_cstring(src_ls_member_list_str),
-          src_ls_member_list))) {
-        LOG_WARN("text2member_list failed", KR(ret), K_(tenant_id), K(src_ls), K(src_ls_member_list_str));
-      } else if (OB_FAIL(ObLSReplica::text2member_list(
-          to_cstring(dest_ls_member_list_str),
-          dest_ls_member_list))) {
-        LOG_WARN("text2member_list failed", KR(ret), K_(tenant_id), K(dest_ls), K(dest_ls_member_list_str));
+      } else if (OB_FAIL(construct_ls_member_list_(*res, src_ls_member_list))) {
+        LOG_WARN("construct src ls member list failed", KR(ret), K_(tenant_id), K(src_ls));
+      } else if (OB_FAIL(construct_ls_member_list_(*res, dest_ls_member_list))) {
+        LOG_WARN("construct dest ls member list failed", KR(ret), K_(tenant_id), K(dest_ls));
       }
       // double check sql result
       if (OB_FAIL(ret)) {
         if (OB_UNLIKELY(OB_ITER_END == ret)) { // read less than two rows
           ret = OB_LEADER_NOT_EXIST;
           LOG_WARN("leader of src_ls or dest_ls not found", KR(ret), K_(tenant_id), K(src_ls),
-              K(dest_ls), K(src_ls_member_list_str), K(dest_ls_member_list_str));
+              K(dest_ls), K(src_ls_member_list), K(dest_ls_member_list));
         } else {
           LOG_WARN("get ls member_list from inner table failed", KR(ret), K_(tenant_id),
-              K(src_ls), K(dest_ls), K(src_ls_member_list_str), K(dest_ls_member_list_str));
+              K(src_ls), K(dest_ls), K(src_ls_member_list), K(dest_ls_member_list));
         }
       } else if (OB_SUCC(res->next())) { // make sure read only two rows
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("read too much ls from inner table", KR(ret), K_(tenant_id),
-            K(src_ls), K(dest_ls), K(src_ls_member_list_str), K(dest_ls_member_list_str), K(sql));
+            K(src_ls), K(dest_ls), K(src_ls_member_list), K(dest_ls_member_list), K(sql));
       } else if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("next failed", KR(ret), K_(tenant_id), K(src_ls), K(dest_ls),
-            K(sql), K(src_ls_member_list_str), K(dest_ls_member_list_str));
+            K(sql), K(src_ls_member_list), K(dest_ls_member_list));
       } else {
         ret = OB_SUCCESS;
       }
     } // end SMART_VAR
+  }
+  return ret;
+}
+
+int ObTenantTransferService::construct_ls_member_list_(
+    sqlclient::ObMySQLResult &res,
+    ObLSReplica::MemberList &ls_member_list)
+{
+  int ret = OB_SUCCESS;
+  ls_member_list.reset();
+  ObString ls_member_list_str;
+  if (OB_FAIL(res.next())) {
+    LOG_WARN("next failed", KR(ret));
+  } else if (OB_FAIL(res.get_varchar("PAXOS_MEMBER_LIST", ls_member_list_str))) {
+    LOG_WARN("fail to get PAXOS_MEMBER_LIST", KR(ret));
+  } else if (OB_FAIL(ObLSReplica::text2member_list(
+      to_cstring(ls_member_list_str),
+      ls_member_list))) {
+    LOG_WARN("text2member_list failed", KR(ret), K(ls_member_list_str));
   }
   return ret;
 }
@@ -585,10 +590,10 @@ int ObTenantTransferService::lock_table_and_part_(
         }
       }
 
-      // Try to limit the number of tablet_list to TABLET_COUNT_THRESHOLD_IN_A_TRANSFER.
+      // Try to limit the number of tablet_list to _transfer_task_tablet_count_threshold.
       // This is not a precise limit. In the worst case, there will be
-      // TABLET_COUNT_THRESHOLD_IN_A_TRANSFER + 128(max index number) + 2(lob tablet number) tablets in tablet_list.
-      if (OB_SUCC(ret) && tablet_ids.count() > TABLET_COUNT_THRESHOLD_IN_A_TRANSFER) {
+      // _transfer_task_tablet_count_threshold + 128(max index number) + 2(lob tablet number) tablets in tablet_list.
+      if (OB_SUCC(ret) && tablet_ids.count() >= get_tablet_count_threshold_()) {
         break;
       }
     } // end ARRAY_FOREACH
@@ -1092,11 +1097,11 @@ int ObTenantTransferService::generate_transfer_task(
     trace_id.init(GCONF.self_addr_);
     ObTransferStatus status(ObTransferStatus::INIT);
     ObTransferPartList transfer_part_list;
-    const int64_t part_count = min(PART_COUNT_IN_A_TRANSFER, part_list.count());
+    const int64_t part_count = min(get_tablet_count_threshold_(), part_list.count());
     if (OB_FAIL(transfer_part_list.reserve(part_count))) {
       LOG_WARN("reserve failed", KR(ret), K(part_count));
-    } else if (OB_FAIL(ObCommonIDUtils::gen_unique_id(tenant_id_, task_id))) {
-      LOG_WARN("gen_unique_id failed", KR(ret), K(task_id), K_(tenant_id));
+    } else if (OB_FAIL(ObTransferTaskOperator::generate_transfer_task_id(trans, tenant_id_, task_id))) {
+      LOG_WARN("fail to generate transfer task id", KR(ret), K_(tenant_id));
     } else {
       // process from the back of part_list makes it easier to remove when task is done
       for (int64_t i = part_list.count() - 1; OB_SUCC(ret) && (i >= part_list.count() - part_count); --i) {
@@ -1639,6 +1644,19 @@ int ObTenantTransferService::update_comment_for_expected_errors_(
     LOG_WARN("update comment failed", KR(ret), K_(tenant_id), K(task_id), K(actual_comment));
   }
   return ret;
+}
+
+int64_t ObTenantTransferService::get_tablet_count_threshold_() const
+{
+  const int64_t DEFAULT_TABLET_COUNT_THRESHOLD = 100;
+  int64_t tablet_count_threshold = DEFAULT_TABLET_COUNT_THRESHOLD;
+  if (is_valid_tenant_id(tenant_id_)) {
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id_));
+    tablet_count_threshold = tenant_config.is_valid()
+        ? tenant_config->_transfer_task_tablet_count_threshold
+        : DEFAULT_TABLET_COUNT_THRESHOLD;
+  }
+  return tablet_count_threshold;
 }
 
 #undef TTS_INFO

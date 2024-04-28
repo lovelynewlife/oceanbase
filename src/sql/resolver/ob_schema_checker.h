@@ -225,7 +225,7 @@ public:
   //                      bool &is_rowkey_column) const;
   //int check_is_index_table(uint64_t table_id, bool &is_index_table) const;
   int get_can_read_index_array(const uint64_t tenant_id, uint64_t table_id, uint64_t *index_tid_array, int64_t &size, bool with_mv) const;
-  int get_can_write_index_array(const uint64_t tenant_id, uint64_t table_id, uint64_t *index_tid_array, int64_t &size, bool only_global = false) const;
+  int get_can_write_index_array(const uint64_t tenant_id, uint64_t table_id, uint64_t *index_tid_array, int64_t &size, bool only_global = false, bool with_mlog = false) const;
   // tenant
   int get_tenant_id(const common::ObString &tenant_name, uint64_t &teannt_id);
   int get_tenant_info(const uint64_t &tenant_id, const share::schema::ObTenantSchema *&tenant_schema);
@@ -402,6 +402,10 @@ public:
                                               ObString &policy_name);
   int add_fake_cte_schema(share::schema::ObTableSchema* tbl_schema);
   int find_fake_cte_schema(common::ObString tblname, ObNameCaseMode mode, bool& exist);
+  int adjust_fake_cte_column_type(uint64_t table_id,
+                                  uint64_t column_id,
+                                  const common::ColumnType &type,
+                                  const common::ObAccuracy &accuracy);
   int get_schema_version(const uint64_t tenant_id, uint64_t table_id, share::schema::ObSchemaType schema_type, int64_t &schema_version);
   share::schema::ObSchemaGetterGuard *get_schema_mgr() { return schema_mgr_; }
   int get_tablegroup_schema(const int64_t tenant_id, const common::ObString &tablegroup_name,
@@ -447,6 +451,7 @@ public:
   int check_access_to_obj(const uint64_t tenant_id,
                           const uint64_t user_id,
                           const uint64_t obj_id,
+                          const common::ObString &database_name,
                           const sql::stmt::StmtType stmt_type,
                           const ObIArray<uint64_t> &role_id_array,
                           bool &accessible,
@@ -514,6 +519,8 @@ public:
   int get_directory_id(const uint64_t tenant_id,
                        const common::ObString &directory_name,
                        uint64_t &directory_id);
+
+  int remove_tmp_cte_schemas(const ObString& cte_table_name);
 private:
   int get_link_table_schema_inner(uint64_t table_id,
                              const share::schema::ObTableSchema *&table_schema) const;

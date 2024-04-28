@@ -1,3 +1,15 @@
+/**
+ * Copyright (c) 2023 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
+ */
+
 #ifndef DEPS_OBLIB_SRC_COMMON_META_PROGRAMMING_OB_META_COPY_H
 #define DEPS_OBLIB_SRC_COMMON_META_PROGRAMMING_OB_META_COPY_H
 #include "ob_meta_define.h"
@@ -18,6 +30,7 @@ inline int copy_or_assign(const T &src,
                           T &dst,
                           ObIAllocator &alloc = DummyAllocator::get_instance())
 {
+  OCCAM_LOG(DEBUG, "call data assign method with allocator");
   return dst.assign(alloc, src);
 }
 
@@ -29,6 +42,7 @@ inline int copy_or_assign(const T &src,
                           ObIAllocator &alloc = DummyAllocator::get_instance())
 {
   UNUSED(alloc);
+  OCCAM_LOG(DEBUG, "call data assign method");
   return dst.assign(src);
 }
 
@@ -42,6 +56,7 @@ inline int copy_or_assign(const T &src,
                           ObIAllocator &alloc = DummyAllocator::get_instance())
 {
   UNUSED(alloc);
+  OCCAM_LOG(DEBUG, "call data assign operator");
   dst = src;
   return common::OB_SUCCESS;
 }
@@ -57,6 +72,7 @@ inline int copy_or_assign(const T &src,
                           ObIAllocator &alloc = DummyAllocator::get_instance())
 {
   UNUSED(alloc);
+  OCCAM_LOG(DEBUG, "call data copy construction");
   new (&dst) T (src);
   return common::OB_SUCCESS;
 }
@@ -86,20 +102,21 @@ inline int copy_or_assign(const T &src,
 // user will benefit from move sematic if dst is an rvalue and support move sematic
 // 1.1 try standard move assignment
 template <typename T,
-          typename std::enable_if<std::is_rvalue_reference<T>::value &&
+          typename std::enable_if<std::is_rvalue_reference<T &&>::value &&
                                   std::is_move_assignable<T>::value, bool>::type = true>
 inline int move_or_copy_or_assign(T &&src,
                                   T &dst,
                                   ObIAllocator &alloc = DummyAllocator::get_instance())
 {
   UNUSED(alloc);
+  OCCAM_LOG(DEBUG, "call data move assign operator");
   dst = std::move(src);
   return common::OB_SUCCESS;
 }
 
 // 1.2 try move construction
 template <typename T,
-          typename std::enable_if<std::is_rvalue_reference<T>::value &&
+          typename std::enable_if<std::is_rvalue_reference<T &&>::value &&
                                   !std::is_move_assignable<T>::value &&
                                   std::is_move_constructible<T>::value, bool>::type = true>
 inline int move_or_copy_or_assign(T &&src,
@@ -107,6 +124,7 @@ inline int move_or_copy_or_assign(T &&src,
                                   ObIAllocator &alloc = DummyAllocator::get_instance())
 {
   UNUSED(alloc);
+  OCCAM_LOG(DEBUG, "call data copy move construction");
   new (&dst) T (std::move(src));
   return common::OB_SUCCESS;
 }

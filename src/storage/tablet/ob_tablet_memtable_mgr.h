@@ -56,6 +56,7 @@ public:
   virtual int get_active_memtable(ObTableHandleV2 &handle) const override;
   virtual int get_all_memtables(ObTableHdlArray &handle) override;
   virtual void destroy() override;
+  void reset();
   uint32_t get_ls_freeze_clock();
 
   bool has_active_memtable();
@@ -65,9 +66,11 @@ public:
   int get_last_frozen_memtable(ObTableHandleV2 &handle) const;
   virtual int get_boundary_memtable(ObTableHandleV2 &handle) override;
   int release_tail_memtable(memtable::ObIMemtable *memtable);
-  int create_memtable(const share::SCN clog_checkpoint_scn,
-                      const int64_t schema_version,
-                      const bool for_replay);
+  virtual int create_memtable(
+      const share::SCN clog_checkpoint_scn,
+      const int64_t schema_version,
+      const share::SCN newest_clog_checkpoint_scn,
+      const bool for_replay) override;
   int get_memtables(
       ObTableHdlArray &handle,
       const bool reset_handle = true,
@@ -81,8 +84,7 @@ public:
       const bool include_active_memtable = true);
   int get_memtables_nolock(ObTableHdlArray &handle);
   int get_first_frozen_memtable(ObTableHandleV2 &handle) const;
-  int set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle,
-                                               bool is_force_freeze = false);
+  int set_is_tablet_freeze_for_active_memtable(ObTableHandleV2 &handle);
 
   ObStorageSchemaRecorder &get_storage_schema_recorder() { return schema_recorder_; }
   compaction::ObTabletMediumCompactionInfoRecorder &get_medium_info_recorder() { return medium_info_recorder_; }
@@ -143,6 +145,39 @@ private:
   ObStorageSchemaRecorder schema_recorder_; // 120B
   compaction::ObTabletMediumCompactionInfoRecorder medium_info_recorder_; // 96B
 };
+
+class ObTabletMemtableMgrPool
+{
+public:
+  ObTabletMemtableMgrPool()
+    : allocator_(sizeof(ObTabletMemtableMgr), lib::ObMemAttr(MTL_ID(), "TltMemtablMgr")),
+      count_(0) {}
+  static int mtl_init(ObTabletMemtableMgrPool* &m) { return OB_SUCCESS; }
+  void destroy() {}
+  ObTabletMemtableMgr* acquire()
+  {
+    void *ptr = allocator_.alloc();
+    ObTabletMemtableMgr *ret = NULL;
+    if (OB_NOT_NULL(ptr)) {
+      ret = new(ptr)ObTabletMemtableMgr();
+      ATOMIC_INC(&count_);
+    }
+    return ret;
+  }
+  void release(ObTabletMemtableMgr *mgr)
+  {
+    OB_ASSERT(OB_NOT_NULL(mgr));
+    mgr->~ObTabletMemtableMgr();
+    allocator_.free(static_cast<void*>(mgr));
+    ATOMIC_DEC(&count_);
+  }
+
+  int64_t get_count() { return ATOMIC_LOAD(&count_); }
+private:
+  common::ObSliceAlloc allocator_;
+  int64_t count_;
+};
+
 }
 }
 

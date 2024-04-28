@@ -134,6 +134,8 @@ public:
                                   common::ObISQLClient &sql_client,
                                   const common::ObString *ddl_stmt_str);
 
+  virtual int update_mview_status(const ObTableSchema &mview_table_schema,
+                                 common::ObISQLClient &sql_client);
   // TODO: merge these two API
   int sync_aux_schema_version_for_history(common::ObISQLClient &sql_client,
                                           const ObTableSchema &index_schema1,
@@ -307,6 +309,8 @@ private:
                                const ObTableSchema &table);
   int add_interval_range_val(share::ObDMLSqlSplicer &dml,
                                const ObTableSchema &table);
+  int gen_mview_dml(const uint64_t exec_tenant_id, const ObTableSchema &table,
+                    share::ObDMLSqlSplicer &dml);
   int gen_table_dml(const uint64_t exec_tenant_id, const ObTableSchema &table,
                     const bool update_object_status_ignore_version, share::ObDMLSqlSplicer &dml);
   int gen_table_options_dml(const uint64_t exec_tenant_id,
@@ -377,6 +381,16 @@ private:
                                          const uint64_t table_id);
 
 public:
+  int insert_column_ids_into_column_group(ObISQLClient &sql_client,
+                                          const ObTableSchema &table,
+                                          const int64_t schema_version,
+                                          const ObIArray<uint64_t> &column_ids,
+                                          const ObColumnGroupSchema &column_group,
+                                          const bool only_history = false);
+  int add_column_groups(ObISQLClient &sql_client,
+                        const ObTableSchema &table,
+                        const int64_t schema_version,
+                        const bool only_history = false);
   int insert_temp_table_info(common::ObISQLClient &trans, const ObTableSchema &table_schema);
   int delete_from_all_temp_table(common::ObISQLClient &sql_client,
                                  const uint64_t tenant_id,
@@ -410,6 +424,22 @@ private:
   bool is_user_subpartition_table(const ObTableSchema &table);
   int check_ddl_allowed(const ObSimpleTableSchemaV2 &table_schema);
 
+  int check_column_store_valid(const ObTableSchema &table,
+                               const uint64_t data_version);
+  int exec_insert_column_group(common::ObISQLClient &sql_client,
+                               const ObTableSchema &table,
+                               const int64_t schema_version,
+                               bool is_history);
+  int exec_insert_column_group_mapping(common::ObISQLClient &sql_client,
+                                       const ObTableSchema &table,
+	                                   const int64_t schema_version,
+                                       bool is_history);
+	int exec_insert_column_group_mapping(ObISQLClient &sql_client,
+                                         const ObTableSchema &table,
+                                         const int64_t schema_version,
+                                         const ObColumnGroupSchema &column_group,
+                                         const ObIArray<uint64_t> &column_ids,
+                                         const bool is_history);
 // MockFKParentTable begin
 public:
   int add_mock_fk_parent_table(

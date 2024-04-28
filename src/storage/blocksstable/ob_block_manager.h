@@ -24,6 +24,7 @@
 #include "storage/blocksstable/ob_macro_block_checker.h"
 #include "storage/blocksstable/ob_super_block_buffer_holder.h"
 #include "storage/ob_super_block_struct.h"
+#include "storage/tablet/ob_tablet_block_aggregated_info.h"
 
 namespace oceanbase
 {
@@ -32,6 +33,7 @@ namespace storage
 {
 class ObTenantCheckpointSlogHandler;
 class ObTabletHandle;
+struct ObTabletBlockInfo;
 }
 
 namespace blocksstable
@@ -93,18 +95,19 @@ struct ObMacroBlockWriteInfo final
 {
 public:
   ObMacroBlockWriteInfo()
-    : buffer_(NULL), offset_(0), size_(0), io_desc_(), io_callback_(NULL)
+    : buffer_(NULL), offset_(0), size_(0), io_timeout_ms_(DEFAULT_IO_WAIT_TIME_MS), io_desc_(), io_callback_(NULL)
   {}
   ~ObMacroBlockWriteInfo() = default;
   OB_INLINE bool is_valid() const
   {
-    return io_desc_.is_valid() && NULL != buffer_ && offset_ >= 0 && size_ > 0;
+    return io_desc_.is_valid() && NULL != buffer_ && offset_ >= 0 && size_ > 0 && io_timeout_ms_ > 0;
   }
-  TO_STRING_KV(KP_(buffer), K_(offset), K_(size), K_(io_desc), KP_(io_callback));
+  TO_STRING_KV(KP_(buffer), K_(offset), K_(size), K_(io_timeout_ms), K_(io_desc), KP_(io_callback));
 public:
   const char *buffer_;
   int64_t offset_;
   int64_t size_;
+  int64_t io_timeout_ms_;
   common::ObIOFlag io_desc_;
   common::ObIOCallback *io_callback_;
 };
@@ -113,20 +116,25 @@ struct ObMacroBlockReadInfo final
 {
 public:
   ObMacroBlockReadInfo()
-    : macro_block_id_(), offset_(), size_(), io_desc_(), io_callback_(NULL)
+    : macro_block_id_(), offset_(), size_(), io_timeout_ms_(DEFAULT_IO_WAIT_TIME_MS),
+    io_desc_(), io_callback_(NULL), buf_(NULL)
   {}
   ~ObMacroBlockReadInfo() = default;
   OB_INLINE bool is_valid() const
   {
-    return macro_block_id_.is_valid() && offset_ >= 0 && size_ > 0 && io_desc_.is_valid();
+    return macro_block_id_.is_valid() && offset_ >= 0 && size_ > 0
+        && io_desc_.is_valid() && (nullptr != io_callback_ || nullptr != buf_);
   }
-  TO_STRING_KV(K_(offset), K_(size), K_(io_desc), KP_(io_callback), K_(macro_block_id));
+  TO_STRING_KV(K_(offset), K_(size), K_(io_timeout_ms), K_(io_desc), KP_(io_callback),
+      KP_(buf), K_(macro_block_id));
 public:
   blocksstable::MacroBlockId macro_block_id_;
   int64_t offset_;
   int64_t size_;
+  int64_t io_timeout_ms_;
   common::ObIOFlag io_desc_;
   common::ObIOCallback *io_callback_;
+  char *buf_;
 };
 
 class ObMacroBlockSeqGenerator final
@@ -231,7 +239,6 @@ private:
     int64_t ref_cnt_;
     int64_t access_time_;
     int64_t last_write_time_;
-
     BlockInfo() : ref_cnt_(0), access_time_(0), last_write_time_(INT64_MAX) {}
     void reset()
     {
@@ -343,6 +350,16 @@ private:
       MacroBlkIdMap &mark_info,
       common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
       ObMacroBlockMarkerStatus &tmp_status);
+  int mark_tablet_block(
+      MacroBlkIdMap &mark_info,
+      storage::ObTabletHandle &handle,
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
+  int do_mark_tablet_block(
+      const ObTabletBlockInfo &block_info,
+      MacroBlkIdMap &mark_info,
+      common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
+      ObMacroBlockMarkerStatus &tmp_status);
   int mark_sstable_blocks(
       MacroBlkIdMap &mark_info,
       storage::ObTabletHandle &handle,
@@ -371,7 +388,7 @@ private:
       MacroBlkIdMap &mark_info,
       common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
       ObMacroBlockMarkerStatus &tmp_status);
-  bool continue_mark();
+  int set_group_id(const uint64_t tenant_id);
   int do_sweep(MacroBlkIdMap &mark_info);
 
   int update_mark_info(
@@ -472,6 +489,9 @@ private:
   ObMacroBlockSeqGenerator blk_seq_generator_;
   int64_t alloc_num_;
   lib::ObMutex resize_file_lock_;
+
+  // for resource_isolation
+  uint64_t group_id_;
 
   bool is_inited_;
   bool is_started_;

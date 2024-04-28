@@ -36,41 +36,41 @@
 
 English | [中文版](README_CN.md)
 
-**OceanBase Database** is a distributed relational database. It is developed entirely by Ant Group. OceanBase Database is built on a common server cluster. Based on the [Paxos](https://lamport.azurewebsites.net/pubs/lamport-paxos.pdf) protocol and its distributed structure, OceanBase Database provides high availability and linear scalability. OceanBase Database is not dependent on specific hardware architectures.
+**OceanBase Database** is a distributed relational database. It is developed entirely by Ant Group. The OceanBase Database is built on a common server cluster. Based on the [Paxos](https://lamport.azurewebsites.net/pubs/lamport-paxos.pdf) protocol and its distributed structure, the OceanBase Database provides high availability and linear scalability. The OceanBase Database is not dependent on specific hardware architectures.
 
 # Key features
 
 - **Transparent Scalability**
 
-    An OceanBase cluster can be scaled out to 1,500 nodes transparently, handling petabytes of data and a trillion rows of records.
+    An OceanBase cluster can be scaled to 1,500 nodes transparently, handling petabytes of data and a trillion rows of records.
 
 - **Ultra-fast Performance**
-    
-    The only distributed database that has refreshed both TPC-C record, at 707 million tmpC, and TPC-H record, at 15.26 million QphH @30000GB.
+
+    The only distributed database that has refreshed both the TPC-C record, at 707 million tmpC, and the TPC-H record, at 15.26 million QphH @30000GB.
 
 - **Real-time Operational Analytics**
-    
+
     A unified system for both transactional and real-time operational analytics workloads.
 
 - **Continuous Availability**
-    
-    OceanBase Database adopts Paxos Consensus algorithm to achieve Zero RPO and less than 8 seconds of RTO. Supports intra-city/remote disaster recovery, enabling multi-activity in multiple locations and zero data loss.
+
+    OceanBase Database adopts the Paxos Consensus algorithm to achieve Zero RPO and less than 8 seconds of RTO. Supports intra-city/remote disaster recovery, enabling multi-activity in multiple locations and zero data loss.
 
 - **MySQL Compatible**
-     
-     OceanBase Database is highly compatible with MySQL, which ensures that zero or few modification is needed for migration.
 
-- **Cost Effeciency**
+    OceanBase Database is highly compatible with MySQL, which ensures that zero or a few modifications are needed for migration.
 
-    The cutting-edge compression technology saves 70%-90% of storage costs without compromising performance. The multi-tenancy architecture achieves higher resource utilization.
+- **Cost Efficiency**
 
-See also [key features](https://en.oceanbase.com/product/opensource) for more details.
+    The cutting-edge compression technology saves 70%–90% of storage costs without compromising performance. The multi-tenancy architecture achieves higher resource utilization.
+
+See also [key features](https://en.oceanbase.com/product/opensource) for more details.
 
 # Quick start
 
 ## 🔥 Start with all-in-one
 
-You can quickly deploy a standalone OceanBase Database to experience with the following commands.
+You can quickly deploy a stand-alone OceanBase Database to experience with the following commands:
 
 **Note**: Linux Only
 
@@ -89,7 +89,7 @@ obd demo
 
     ```shell
     # Deploy a mini standalone instance.
-    docker run -p 2881:2881 --name oceanbase-ce -e MINI_MODE=1 -d oceanbase/oceanbase-ce
+    docker run -p 2881:2881 --name oceanbase-ce -e MODE=mini -d oceanbase/oceanbase-ce
     ```
 
 2. Connect to the OceanBase Database instance:
@@ -110,19 +110,17 @@ For future plans, see [Roadmap 2023](https://github.com/oceanbase/oceanbase/issu
 
 # Case study
 
-OceanBase has been serving more than 400 customers upgrade their database from different industries, including Financial Services, Telecom, Retail, Internet and more.
+OceanBase has been serving more than 400 customers and upgraded their database from different industries, including Financial Services, Telecom, Retail, Internet, and more.
 
 See also [success stories](https://en.oceanbase.com/customer/home) and [Who is using OceanBase](https://github.com/oceanbase/oceanbase/issues/1301) for more details.
 
 # System architecture
 
-![oceanbase architecture](https://cdn.nlark.com/yuque/0/2022/png/25820454/1667369873624-c1707034-471a-4f79-980f-6d1760dac8eb.png)
-
-[Learn More](https://en.oceanbase.com/docs/community-observer-en-10000000000829641)
+[Introduction to system architecture](https://en.oceanbase.com/docs/community-observer-en-10000000000829641)
 
 # Contributing
 
-Contributions are highly appreciated. Read the [development guide](docs/README.md) to getting started.
+Contributions are highly appreciated. Read the [development guide](docs/README.md) to get started.
 
 # License
 

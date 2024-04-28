@@ -496,8 +496,18 @@ public:
       const share::ObRawPriv p1,
       const uint64_t obj_type,
       const uint64_t obj_id,
+      const common::ObString &database_name,
       const ObIArray<uint64_t> &role_id_array,
       bool &exists);
+
+  static int check_access_to_mlog_base_table(
+      share::schema::ObSchemaGetterGuard &guard,
+      const uint64_t tenant_id,
+      const uint64_t user_id,
+      const uint64_t obj_id,
+      const common::ObString &database_name,
+      const ObIArray<uint64_t> &role_id_array,
+      bool &accessible);
 
   static int check_access_to_obj(
       share::schema::ObSchemaGetterGuard &guard,
@@ -505,6 +515,7 @@ public:
       const uint64_t user_id,
       const uint64_t obj_type,
       const uint64_t obj_id,
+      const common::ObString &database_name,
       const ObIArray<uint64_t> &role_id_array,
       bool &accessible);
 

@@ -125,15 +125,15 @@ protected:
   virtual int process_values_function(ObRawExpr *&expr);
   virtual int recursive_values_expr(ObRawExpr *&expr);
 
-  bool need_all_columns(const share::schema::ObTableSchema &table_schema, int64_t binlog_row_image);
+  bool need_all_columns(const share::schema::ObTableSchema &table_schema,
+                        const int64_t binlog_row_image);
 
   int add_all_columns_to_stmt(const TableItem &table_item,
                               common::ObIArray<ObColumnRefRawExpr*> &column_exprs);
   int add_all_columns_to_stmt_for_trigger(const TableItem &table_item,
                                           common::ObIArray<ObColumnRefRawExpr*> &column_exprs);
   int add_all_rowkey_columns_to_stmt(const TableItem &table_item,
-                                             common::ObIArray<ObColumnRefRawExpr*> &column_exprs);
-
+                                     common::ObIArray<ObColumnRefRawExpr*> &column_exprs);
   int add_index_related_columns_to_stmt(const TableItem &table_item,
                                         const uint64_t column_id,
                                         common::ObIArray<ObColumnRefRawExpr*> &column_exprs);
@@ -149,7 +149,7 @@ protected:
   // check the update view is key preserved
   int uv_check_key_preserved(const TableItem &table_item, bool &key_preserved);
 
-  int has_need_fired_trigger_on_view(const TableItem* view_item, bool &has);
+  int check_need_fired_trigger(const TableItem* table_item);
 
   int view_pullup_special_column_exprs();
   int view_pullup_part_exprs();

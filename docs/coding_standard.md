@@ -202,7 +202,7 @@ C++ allows the use of using, which can be divided into two categories:
 
 2. Using declaration: For example, using `common::ObSchemaManager`, which makes `ObSchemaManager` equivalent to `common::ObSchemaManager` from now on.
 
-Because using directive is likely to pollute the scope, **it is prohibited to use it in header files**, but using declaration is allowed. In .cpp files, using directive is allowed, for example, when implementing `ObChunkServer`, it may need to use classes from the common namespace. However, it is important to note that only other namespaces can be introduced using using directives in .cpp files. The code in the .cpp file itself still needs to be put in its own namespace. For example: 
+Because using directive is likely to pollute the scope, **it is prohibited to use it in header files**, but using declaration is allowed. In .cpp files, using directive is allowed, for example, when implementing `ObChunkServer`, it may need to use classes from the common namespace. However, it is important to note that only other namespaces can be introduced using directives in .cpp files. The code in the .cpp file itself still needs to be put in its own namespace. For example: 
 
 ```cpp
 // incorrect ways of using
@@ -402,22 +402,22 @@ class ObBar
 {
   static const int CONST_V;
 }
-// in the implenmentation file
+// in the implementation file
 const int ObBar::CONST_V = 1;
 ```
 
-Before C\+\+11, the C\+\+98 standard only allowed static const variables of intergral type to be initialized with definitions included in the class declaration. In C++11, constexpr is introduced, and static constexpr member variables (including types such as double) can also be initialized in the declaration. This kind of variable will not generate static area storage after compilation.
+Before C\+\+11, the C\+\+98 standard only allowed static const variables of integral type to be initialized with definitions included in the class declaration. In C++11, constexpr is introduced, and static constexpr member variables (including types such as double) can also be initialized in the declaration. This kind of variable will not generate static area storage after compilation.
 
 > Before C++11, the values of variables could be used in constant expressions only if the variables are declared const, have an initializer which is a constant expression, and are of integral or enumeration type. C++11 removes the restriction that the variables must be of integral or enumeration type if they  are defined with the constexpr keyword:
 >
 > constexpr double earth_gravitational_acceleration = 9.8;
 > constexpr double moon_gravitational_acceleration = earth_gravitational_acceleration / 6.0;
 
-> Such data variables are implicitly const, and must have an initializer whichmust be a constant expression.
+> Such data variables are implicitly const, and must have an initializer which must be a constant expression.
 
 **Case 1**
 
-According to the current code style of OceanBase, we will define static variables (such as `ob_define.h`) in the header file, so that each cpp file will generate a declaration and definition of this variable when including this header file. In particular, some large objects (latch, wait event, etc.) generate a static definition in the header file, resulting in the generation of binany and memory expansion.
+According to the current code style of OceanBase, we will define static variables (such as `ob_define.h`) in the header file, so that each cpp file will generate a declaration and definition of this variable when including this header file. In particular, some large objects (latch, wait event, etc.) generate a static definition in the header file, resulting in the generation of binary and memory expansion.
 
 Simply move the definition of several static variables from the header file to the cpp file, and change the header file to extern definition, the effect is quite obvious:
 binary size: 2.6G->2.4G, reduce 200M.
@@ -860,7 +860,7 @@ The function definitions in the .cpp file should be as consistent as possible wi
 The reason why the constant definition should be placed in front of the function definition (constructor/destructor, member function) instead of in the data member is because the constant may be referenced by the function.
 
 ## 4.12 Summary
-1. The constructor only does trival initialization. Each class needs to define at least one constructor, and the destructor with virtual function or subclass is declared as virtual.
+1. The constructor only does trivial initialization. Each class needs to define at least one constructor, and the destructor with virtual function or subclass is declared as virtual.
 2. In order to avoid implicit type conversion, the single-argument constructor needs to be declared as explicit.
 3. **In principle, the copy constructor shall not be used (except for the base classes that have been defined and used)**. If it must be violated, please discuss and approve it in advance, and explain the reasons in detail.
 4. Use `DISALLOW_COPY_AND_ASSIGN` to avoid abuse of copy constructor and assignment operation;
@@ -1606,7 +1606,7 @@ struct NoInt {
 **Allowed**. This feature is like tailor-made for OceanBase; the function of disabling a certain function is also very useful.
 ## 6.28 Type Alias (Alias Declaration)
 **What is**
-Use the new alias declration syntax to define an alias of a type, similar to the previous typedef; moreover, you can also define an alias template.
+Use the new alias declaration syntax to define an alias of a type, similar to the previous typedef; moreover, you can also define an alias template.
 **Example**
 ```cpp
 // C++11
@@ -2527,7 +2527,7 @@ Since the new log supports module and range settings, it will be more effective 
 5. **It is forbidden to declare non-simple variables in the loop body**. If it must be violated, please obtain the consent of the group leader in advance, and explain the reason in detail.
 6. **Resource management follows the principle of "who applies for release"**. If resources need to be released, release them before the function returns or at the end of the outermost else branch. So if you need to restore the input parameters, do so before the function returns. If it must be violated, please obtain the consent of the group leader in advance, and explain the reason in detail.
 ## 12.2 Class
-1. The constructor only does trival initialization. Each class needs to define at least one constructor, and the destructor with virtual functions or subclasses is declared as virtual.
+1. The constructor only does trivial initialization. Each class needs to define at least one constructor, and the destructor with virtual functions or subclasses is declared as virtual.
 2. In order to avoid implicit type conversion, the single-parameter constructor needs to be declared as explicit.
 3. **In principle, the copy constructor must not be used (except for the basic classes that have been defined and used)**. If it must be violated, please obtain the consent of the group leader in advance, and explain the reason in detail.
 4. Use `DISALLOW_COPY_AND_ASSIGN` to avoid abuse of copy constructor and assignment operation;

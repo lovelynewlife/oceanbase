@@ -44,13 +44,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.tinyint_t]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = tinyint_t from t limit 1;
 +------------------+
@@ -63,13 +63,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.smallint_t]), filter(nil), rowset=16
       access([t.smallint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  smallint_t from t limit 1;
 +--------------------+
@@ -82,13 +82,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.mediumint_t]), filter(nil), rowset=16
       access([t.mediumint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  mediumint_t from t limit 1;
 +---------------------+
@@ -101,13 +101,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.int32_t]), filter(nil), rowset=16
       access([t.int32_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  int32_t from t limit 1;
 +-----------------+
@@ -120,13 +120,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.bigint_t]), filter(nil), rowset=16
       access([t.bigint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  bigint_t from t limit 1;
 +------------------+
@@ -139,13 +139,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.utinyint_t]), filter(nil), rowset=16
       access([t.utinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = utinyint_t from t limit 1;
 +-------------------+
@@ -158,13 +158,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.usmallint_t]), filter(nil), rowset=16
       access([t.usmallint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  usmallint_t from t limit 1;
 +---------------------+
@@ -177,13 +177,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.umedium_t]), filter(nil), rowset=16
       access([t.umedium_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  umedium_t from t limit 1;
 +-------------------+
@@ -196,13 +196,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.uint32_t]), filter(nil), rowset=16
       access([t.uint32_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  uint32_t from t limit 1;
 +------------------+
@@ -215,13 +215,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.ubigint_t]), filter(nil), rowset=16
       access([t.ubigint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  ubigint_t from t limit 1;
 +-------------------+
@@ -234,13 +234,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.float_t]), filter(nil), rowset=16
       access([t.float_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = float_t from t limit 1;
 +----------------+
@@ -253,13 +253,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.ufloat_t]), filter(nil), rowset=16
       access([t.ufloat_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  ufloat_t from t limit 1;
 +------------------+
@@ -272,13 +272,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.double_t]), filter(nil), rowset=16
       access([t.double_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = double_t from t limit 1;
 +-----------------+
@@ -291,13 +291,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.udouble_t]), filter(nil), rowset=16
       access([t.udouble_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  udouble_t from t limit 1;
 +-------------------+
@@ -310,13 +310,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.number_t]), filter(nil), rowset=16
       access([t.number_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = number_t from t limit 1;
 +-----------------+
@@ -329,13 +329,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.unumber_t]), filter(nil), rowset=16
       access([t.unumber_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  unumber_t from t limit 1;
 +-------------------+
@@ -348,13 +348,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.datetime_t]), filter(nil), rowset=16
       access([t.datetime_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = datetime_t from t limit 1;
 +-------------------+
@@ -367,13 +367,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.timestamp_t]), filter(nil), rowset=16
       access([t.timestamp_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  timestamp_t from t limit 1;
 +---------------------+
@@ -386,13 +386,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.date_t]), filter(nil), rowset=16
       access([t.date_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  date_t from t limit 1;
 +----------------+
@@ -405,13 +405,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.time_t]), filter(nil), rowset=16
       access([t.time_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  time_t from t limit 1;
 +----------------+
@@ -424,13 +424,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.year_t]), filter(nil), rowset=16
       access([t.year_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  year_t from t limit 1;
 +----------------+
@@ -443,13 +443,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.varchar_t]), filter(nil), rowset=16
       access([t.varchar_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = varchar_t from t limit 1;
 +------------------+
@@ -462,13 +462,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.char_t]), filter(nil), rowset=16
       access([t.char_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  char_t from t limit 1;
 +----------------+
@@ -481,13 +481,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.tinytext_t]), filter(nil), rowset=16
       access([t.tinytext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  tinytext_t from t limit 1;
 +--------------------+
@@ -500,13 +500,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.mediumtext_t]), filter(nil)
       access([t.mediumtext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  mediumtext_t from t limit 1;
 +----------------------+
@@ -519,13 +519,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.longtext_t]), filter(nil)
       access([t.longtext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  longtext_t from t limit 1;
 +--------------------+
@@ -538,13 +538,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.bit_t]), filter(nil), rowset=16
       access([t.bit_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL = bit_t from t limit 1;
 +--------------+
@@ -557,13 +557,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.enum_t]), filter(nil), rowset=16
       access([t.enum_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  enum_t from t limit 1;
 +----------------+
@@ -576,13 +576,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([NULL = t.set_t]), filter(nil), rowset=16
       access([t.set_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select NULL =  set_t from t limit 1;
 +---------------+
@@ -596,13 +596,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.tinyint_t]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = tinyint_t from t limit 1;
 +-----------------------+
@@ -615,13 +615,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.smallint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.smallint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  smallint_t from t limit 1;
 +-------------------------+
@@ -634,13 +634,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.mediumint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.mediumint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  mediumint_t from t limit 1;
 +--------------------------+
@@ -653,13 +653,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.int32_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.int32_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  int32_t from t limit 1;
 +----------------------+
@@ -672,13 +672,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.bigint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.bigint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  bigint_t from t limit 1;
 +-----------------------+
@@ -691,13 +691,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.utinyint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.utinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = utinyint_t from t limit 1;
 +------------------------+
@@ -710,13 +710,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.usmallint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.usmallint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  usmallint_t from t limit 1;
 +--------------------------+
@@ -729,13 +729,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.umedium_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.umedium_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  umedium_t from t limit 1;
 +------------------------+
@@ -748,13 +748,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.uint32_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.uint32_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  uint32_t from t limit 1;
 +-----------------------+
@@ -767,13 +767,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.ubigint_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.ubigint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  ubigint_t from t limit 1;
 +------------------------+
@@ -786,13 +786,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DOUBLE(-1, -1)) = cast(t.float_t, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.float_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = float_t from t limit 1;
 +---------------------+
@@ -805,13 +805,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DOUBLE(-1, -1)) = cast(t.ufloat_t, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.ufloat_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  ufloat_t from t limit 1;
 +-----------------------+
@@ -824,13 +824,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DOUBLE(-1, -1)) = t.double_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.double_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = double_t from t limit 1;
 +----------------------+
@@ -843,13 +843,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DOUBLE(-1, -1)) = cast(t.udouble_t, DOUBLE(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.udouble_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  udouble_t from t limit 1;
 +------------------------+
@@ -862,13 +862,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
-  0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = t.number_t]), filter(nil), rowset=16
+  0 - output([cast(t.tinyint_t, DECIMAL_INT(10, 0)) = t.number_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.number_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = number_t from t limit 1;
 +----------------------+
@@ -881,13 +881,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.unumber_t, DECIMAL(10, 0))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.unumber_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  unumber_t from t limit 1;
 +------------------------+
@@ -900,13 +900,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([INTERNAL_FUNCTION(t.tinyint_t, 110, 17) = t.datetime_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.datetime_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = datetime_t from t limit 1;
 +------------------------+
@@ -919,13 +919,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, TIMESTAMP(-1, -1)) = t.timestamp_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.timestamp_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  timestamp_t from t limit 1;
 +--------------------------+
@@ -938,13 +938,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([INTERNAL_FUNCTION(t.tinyint_t, 110, 19) = t.date_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.date_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  date_t from t limit 1;
 +---------------------+
@@ -957,13 +957,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, TIME(-1, -1)) = t.time_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.time_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  time_t from t limit 1;
 +---------------------+
@@ -976,13 +976,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.year_t, DECIMAL(4, 0))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.year_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  year_t from t limit 1;
 +---------------------+
@@ -995,13 +995,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.varchar_t, DECIMAL(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.varchar_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = varchar_t from t limit 1;
 +-----------------------+
@@ -1014,13 +1014,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.char_t, DECIMAL(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.char_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  char_t from t limit 1;
 +---------------------+
@@ -1033,13 +1033,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.tinytext_t, DECIMAL(-1, -1))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.tinytext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  tinytext_t from t limit 1;
 +-------------------------+
@@ -1052,13 +1052,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.mediumtext_t, DECIMAL(-1, -1))]), filter(nil)
       access([t.tinyint_t], [t.mediumtext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  mediumtext_t from t limit 1;
 +---------------------------+
@@ -1071,13 +1071,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.longtext_t, DECIMAL(-1, -1))]), filter(nil)
       access([t.tinyint_t], [t.longtext_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  longtext_t from t limit 1;
 +-------------------------+
@@ -1090,13 +1090,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([cast(t.tinyint_t, DECIMAL(4, 0)) = cast(t.bit_t, DECIMAL(1, 0))]), filter(nil), rowset=16
       access([t.tinyint_t], [t.bit_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t = bit_t from t limit 1;
 +-------------------+
@@ -1109,13 +1109,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.enum_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.enum_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  enum_t from t limit 1;
 +---------------------+
@@ -1128,13 +1128,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([t.tinyint_t = t.set_t]), filter(nil), rowset=16
       access([t.tinyint_t], [t.set_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select tinyint_t =  set_t from t limit 1;
 +--------------------+
@@ -1359,13 +1359,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) = (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) = (1, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1378,13 +1378,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) = (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) = (2, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1398,13 +1398,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) < (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) < (1, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1417,13 +1417,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) < (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) < (2, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1437,13 +1437,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) <= (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) <= (1, tinyint_t) from t limit 1;
 +--------------------------+
@@ -1456,13 +1456,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) <= (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) <= (2, tinyint_t) from t limit 1;
 +--------------------------+
@@ -1476,13 +1476,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) > (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) > (1, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1495,13 +1495,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) > (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) > (2, tinyint_t) from t limit 1;
 +-------------------------+
@@ -1515,13 +1515,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) >= (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) >= (1, tinyint_t) from t limit 1;
 +--------------------------+
@@ -1534,13 +1534,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) >= (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) >= (2, tinyint_t) from t limit 1;
 +--------------------------+
@@ -1554,13 +1554,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) != (1, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) != (1, tinyint_t) from t limit 1;
 +--------------------------+
@@ -1573,13 +1573,13 @@ Query Plan
 ===============================================
 |ID|OPERATOR       |NAME|EST.ROWS|EST.TIME(us)|
 -----------------------------------------------
-|0 |TABLE FULL SCAN|t   |1       |4           |
+|0 |TABLE FULL SCAN|t   |1       |3           |
 ===============================================
 Outputs & filters:
 -------------------------------------
   0 - output([(1, 1) != (2, t.tinyint_t)]), filter(nil), rowset=16
       access([t.tinyint_t]), partitions(p0)
-      limit(1), offset(nil), is_index_back=false, is_global_index=false,
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
 select (1, 1) != (2, tinyint_t) from t limit 1;
 +--------------------------+
