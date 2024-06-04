@@ -35,6 +35,8 @@ public:
     int& udf_input_count, 
     int& level_count);
 
+  virtual int optimize_on_merged_onnx_model(string& out_path);
+
   virtual int push_predicate_into_onnx_model(
     ObIArray<ObRawExpr *> &src_exprs,
     string& out_path);
