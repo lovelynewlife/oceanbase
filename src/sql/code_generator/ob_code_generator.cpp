@@ -138,7 +138,7 @@ int ObCodeGenerator::detect_batch_size(
                                    scan_cardinality));
       // pile
       //change batch size (default 256)
-      batch_size = 4096;
+      batch_size = 256;
       //LOG_WARN("change batch size");
     }
     // TODO qubin.qb: remove the tracelog when rowsets/batch_size is displayed

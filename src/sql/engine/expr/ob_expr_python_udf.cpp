@@ -794,7 +794,7 @@ int ObExprPythonUdf::eval_test_udf_batch(const ObExpr &expr, ObEvalCtx &ctx,
     for (int j = 0; j < batch_size; j++) {
       if (my_skip.at(j) || eval_flags.at(j))
         continue;
-      else if (datum_array[j].is_null()) {
+      else if (datum_array[j].is_null()&&!expr.args_[i]->is_const_expr()) {
         //存在null推理结果即为空
         results[j].set_null();
         my_skip.set(j);
@@ -937,7 +937,7 @@ int ObExprPythonUdf::eval_test_udf_batch(const ObExpr &expr, ObEvalCtx &ctx,
             //PyArray_SETITEM((PyArrayObject *)numpyarray, (char *)PyArray_GETPTR1((PyArrayObject *)numpyarray, k++), PyFloat_FromDouble(argDatum[*index].get_double()));
             pdouble[k++] = argDatum[*index].get_double();
         }
-        numpyarray = PyArray_New(&PyArray_Type, 1, elements, NPY_FLOAT64, NULL, pdouble, real_param, 0, NULL);
+        numpyarray = PyArray_New(&PyArray_Type, 1, elements, NPY_FLOAT32, NULL, pdouble, real_param, 0, NULL);
         break;
       }
       case ObNumberType: {
@@ -1154,8 +1154,8 @@ int ObExprPythonUdf::cg_expr(ObExprCGCtx& expr_cg_ctx, const ObRawExpr& raw_expr
     }
   }
   if(is_batch) {
-    //rt_expr.eval_batch_func_ = ObExprPythonUdf::eval_test_udf_batch;
-    rt_expr.eval_batch_func_ = ObExprPythonUdf::eval_python_udf_batch_pyobject;
+    rt_expr.eval_batch_func_ = ObExprPythonUdf::eval_test_udf_batch;
+    //rt_expr.eval_batch_func_ = ObExprPythonUdf::eval_python_udf_batch_pyobject;
   } else {
     rt_expr.extra_buf_.buf_flag_ = false;
   }
