@@ -470,6 +470,8 @@ target_link_libraries(observer
   ${link_malloc_hook}
 )
 
+target_link_libraries(ob_server PUBLIC python_lib)
+
 execute_process(
   COMMAND sh -c "cd ${CMAKE_SOURCE_DIR} && git rev-parse HEAD"
   OUTPUT_STRIP_TRAILING_WHITESPACE

@@ -137,6 +137,8 @@ void oceanbase::observer::init_srv_xlator_for_rootserver(ObSrvRpcXlator *xlator)
     RPC_PROCESSOR(rootserver::ObRpcDropSynonymP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcCreateUserDefinedFunctionP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropUserDefinedFunctionP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcCreatePythonUdfP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcDropPythonUdfP, *gctx_.root_service_); // IMBridge_Metadata
     RPC_PROCESSOR(rootserver::ObRpcDoSequenceDDLP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcCreateUDTP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropUDTP, *gctx_.root_service_);

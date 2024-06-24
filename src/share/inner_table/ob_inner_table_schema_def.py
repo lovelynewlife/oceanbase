@@ -6925,6 +6925,31 @@ def_table_schema(**all_tenant_snapshot_ls_replica_history_def)
 # 516 : __all_service
 # 517 : __all_storage_io_usage
 
+
+def_table_schema(
+    owner = 'xujiahe.xjh',
+    table_name    = '__all_python_udf',
+    table_id      = '518',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('tenant_id', 'int'),
+        ('name', 'varchar:OB_MAX_UDF_NAME_LENGTH', 'false'),
+    ],
+    in_tenant_space = True,
+
+    normal_columns = [
+      ('udf_id', 'int'),
+      ('ret', 'int'),
+      ('arg_num', 'int'),
+      ('arg_names', 'varchar:OB_MAX_SYS_PARAM_INFO_LENGTH', 'false'),
+      ('arg_types', 'varchar:OB_MAX_SYS_PARAM_INFO_LENGTH', 'false'),
+      ('pycall', 'text:OB_MAX_TEXT_LENGTH', 'false'),
+      ('schema_version', 'int'),
+    ],
+)
+
+
 # 余留位置（此行之前占位）
 # 本区域占位建议：采用真实表名进行占位
 ################################################################################

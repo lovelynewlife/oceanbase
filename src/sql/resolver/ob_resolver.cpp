@@ -147,6 +147,9 @@
 #include "sql/resolver/ddl/ob_drop_udt_resolver.h"
 #include "sql/resolver/ddl/ob_audit_resolver.h"
 #endif
+#include "sql/resolver/ddl/ob_create_python_udf_resolver.h"
+#include "sql/resolver/ddl/ob_drop_python_udf_resolver.h"
+
 namespace oceanbase
 {
 using namespace common;
@@ -1183,6 +1186,14 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_CANCEL_CLONE: {
         REGISTER_STMT_RESOLVER(CancelClone);
+        break;
+      }
+      case T_CREATE_PYTHON_UDF: {
+        REGISTER_STMT_RESOLVER(CreatePythonUdf);
+        break;
+      }
+      case T_DROP_PYTHON_UDF: {
+        REGISTER_STMT_RESOLVER(DropPythonUdf);
         break;
       }
       default: {

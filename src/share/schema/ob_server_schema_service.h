@@ -41,6 +41,7 @@
 #include "share/schema/ob_udt_mgr.h"
 #include "share/schema/ob_context_mgr.h"
 #include "share/schema/ob_mock_fk_parent_table_mgr.h"
+#include "share/schema/ob_python_udf_mgr.h"
 
 namespace oceanbase
 {
@@ -106,6 +107,7 @@ struct SchemaKey
   union {
     common::ObString table_name_;
     common::ObString udf_name_;
+    common::ObString python_udf_name_;
     common::ObString sequence_name_;
     common::ObString keystore_name_;
     common::ObString tablespace_name_;
@@ -132,6 +134,7 @@ struct SchemaKey
                K_(sequence_id),
                K_(sequence_name),
                K_(udf_name),
+               K_(python_udf_name),
                K_(udt_id),
                K_(keystore_id),
                K_(keystore_name),
@@ -230,6 +233,10 @@ struct SchemaKey
   ObTenantUDFId get_udf_key() const
   {
     return ObTenantUDFId(tenant_id_, udf_name_);
+  }
+  ObTenantPythonUdfId get_python_udf_key() const
+  {
+    return ObTenantPythonUdfId(tenant_id_, python_udf_name_);
   }
   ObTenantUDTId get_udt_key() const
   {
@@ -467,6 +474,18 @@ public:
     }
   };
 
+  struct python_udf_key_hash_func {
+    uint64_t operator()(const SchemaKey &schema_key) const {
+      return common::murmurhash(schema_key.python_udf_name_.ptr(), schema_key.python_udf_name_.length(), 0);
+    }
+  };
+
+  struct python_udf_key_equal_to {
+    bool operator()(const SchemaKey &a, const SchemaKey &b) const {
+      return a.python_udf_name_ == b.python_udf_name_;
+    }
+  };
+
   struct db_priv_hash_func
   {
     int operator()(const SchemaKey &schema_key, uint64_t &hash_code) const
@@ -655,6 +674,7 @@ public:
   SCHEMA_KEYS_DEF(package, PackageKeys);
   SCHEMA_KEYS_DEF(trigger, TriggerKeys);
   SCHEMA_KEYS_DEF(udf, UdfKeys);
+  SCHEMA_KEYS_DEF(python_udf, PythonUdfKeys);
   SCHEMA_KEYS_DEF(udt, UDTKeys);
   SCHEMA_KEYS_DEF(sequence, SequenceKeys);
   SCHEMA_KEYS_DEF(sys_variable, SysVariableKeys);
@@ -728,6 +748,9 @@ public:
     // udf
     UdfKeys new_udf_keys_;
     UdfKeys del_udf_keys_;
+    // python udf
+    PythonUdfKeys new_python_udf_keys_;
+    PythonUdfKeys del_python_udf_keys_;
     // udt
     UDTKeys new_udt_keys_;
     UDTKeys del_udt_keys_;
@@ -820,6 +843,7 @@ public:
     common::ObArray<ObSimplePackageSchema> simple_package_schemas_;
     common::ObArray<ObSimpleTriggerSchema> simple_trigger_schemas_;
     common::ObArray<ObSimpleUDFSchema> simple_udf_schemas_;
+    common::ObArray<ObSimplePythonUdfSchema> simple_python_udf_schemas_;
     common::ObArray<ObSequenceSchema> simple_sequence_schemas_;
     common::ObArray<ObSimpleUserSchema> simple_user_schemas_;
     common::ObArray<ObDbLinkSchema> simple_dblink_schemas_;
@@ -998,6 +1022,7 @@ private:
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(package);
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(trigger);
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(udf);
+  GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(python_udf);
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(udt);
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(sequence);
   GET_INCREMENT_SCHEMA_KEY_FUNC_DECLARE(sys_variable);
@@ -1041,6 +1066,7 @@ private:
   APPLY_SCHEMA_TO_CACHE(table_priv, ObPrivMgr);
   APPLY_SCHEMA_TO_CACHE(synonym, ObSynonymMgr);
   APPLY_SCHEMA_TO_CACHE(udf, ObUDFMgr);
+  APPLY_SCHEMA_TO_CACHE(python_udf, ObPythonUDFMgr);
   APPLY_SCHEMA_TO_CACHE(udt, ObUDTMgr);
   APPLY_SCHEMA_TO_CACHE(sequence, ObSequenceMgr);
   APPLY_SCHEMA_TO_CACHE(keystore, ObKeystoreMgr);

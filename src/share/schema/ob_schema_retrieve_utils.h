@@ -388,6 +388,7 @@ public:
   static int retrieve_routine_param_schema(const uint64_t tenant_id, T &result, common::ObIArray<ObRoutineInfo> &routine_infos);
   RETRIEVE_SCHEMA_FUNC_DECLARE(synonym);
   RETRIEVE_SCHEMA_FUNC_DECLARE(udf);
+  RETRIEVE_SCHEMA_FUNC_DECLARE(python_udf);
   // udt
   RETRIEVE_SCHEMA_FUNC_DECLARE(udt);
   template<typename T>
@@ -466,6 +467,7 @@ public:
   FILL_SCHEMA_FUNC_DECLARE(package, ObSimplePackageSchema);
   FILL_SCHEMA_FUNC_DECLARE(trigger, ObSimpleTriggerSchema);
   FILL_SCHEMA_FUNC_DECLARE(udf, ObSimpleUDFSchema);
+  FILL_SCHEMA_FUNC_DECLARE(python_udf, ObSimplePythonUdfSchema);
   FILL_SCHEMA_FUNC_DECLARE(udt, ObSimpleUDTSchema);
   FILL_SCHEMA_FUNC_DECLARE(sequence, ObSequenceSchema);
   FILL_SCHEMA_FUNC_DECLARE(keystore, ObKeystoreSchema);
@@ -503,6 +505,7 @@ public:
   FILL_SCHEMA_FUNC_DECLARE(synonym, ObSynonymInfo);
   FILL_SCHEMA_FUNC_DECLARE(sysvar, ObSysVarSchema);
   FILL_SCHEMA_FUNC_DECLARE(udf, ObUDF);
+  FILL_SCHEMA_FUNC_DECLARE(python_udf, ObPythonUDF);
   // udt
   FILL_SCHEMA_FUNC_DECLARE(udt, ObUDTTypeInfo);
   FILL_SCHEMA_FUNC_DECLARE(udt_attr, ObUDTTypeAttr);

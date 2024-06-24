@@ -75,6 +75,8 @@
 #include "share/tenant_snapshot/ob_tenant_snapshot_id.h"
 #include "share/location_cache/ob_location_update_task.h"
 
+#include "share/schema/ob_python_udf.h"
+
 namespace oceanbase
 {
 namespace rootserver
@@ -6555,6 +6557,38 @@ public:
     return !name_.empty();
   }
   virtual bool is_allow_when_upgrade() const { return true; }
+  TO_STRING_KV(K_(tenant_id), K_(name));
+
+  uint64_t tenant_id_;
+  common::ObString name_;
+  bool if_exist_;
+};
+
+struct ObCreatePythonUdfArg : public ObDDLArg
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObCreatePythonUdfArg(): ObDDLArg(), python_udf_() {}
+  virtual ~ObCreatePythonUdfArg() {}
+
+  bool is_valid() const {
+    return !python_udf_.get_name_str().empty();
+  }
+  TO_STRING_KV(K_(python_udf));
+
+  share::schema::ObPythonUDF python_udf_;
+};
+
+struct ObDropPythonUdfArg : public ObDDLArg
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObDropPythonUdfArg(): ObDDLArg(), tenant_id_(common::OB_INVALID_ID), name_(), if_exist_(false) {}
+  virtual ~ObDropPythonUdfArg() {}
+
+  bool is_valid() const {
+    return !name_.empty();
+  }
   TO_STRING_KV(K_(tenant_id), K_(name));
 
   uint64_t tenant_id_;

@@ -386,6 +386,9 @@ public:
             // application context
             || stmt_type == stmt::T_CREATE_CONTEXT
             || stmt_type == stmt::T_DROP_CONTEXT
+            // python udf
+            || stmt_type == stmt::T_CREATE_PYTHON_UDF
+            || stmt_type == stmt::T_DROP_PYTHON_UDF
             );
   }
 

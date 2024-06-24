@@ -1076,4 +1076,5 @@
 #define N_INNER_DECODE_LIKE                 "inner_decode_like"
 #define N_EXTRACT_CERT_EXPIRED_TIME         "extract_cert_expired_time"
 #define N_INNER_ROW_CMP_VALUE               "inner_row_cmp_value"
+#define N_PYTHON_UDF                        "python_udf"  //IMBridge_Python
 #endif //OCEANBASE_LIB_OB_NAME_DEF_H_

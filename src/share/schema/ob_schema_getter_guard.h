@@ -23,6 +23,7 @@
 #include "share/schema/ob_udt_info.h"
 #include "share/schema/ob_outline_mgr.h"
 #include "share/schema/ob_udt_mgr.h"
+#include "share/schema/ob_python_udf.h"
 
 namespace oceanbase
 {
@@ -742,6 +743,16 @@ public:
                    const common::ObString &name,
                    const ObUDF *&udf_info,
                    bool &exist);
+
+  //about python user define function
+  int check_python_udf_exist_with_name(const uint64_t tenant_id,
+                                       const common::ObString &name,
+                                       bool &exist,
+                                       uint64_t &udf_id);
+  int get_python_udf_info(const uint64_t tenant_id,
+                          const common::ObString &name,
+                          ObPythonUDF &udf_info,
+                          bool &exist);
 
   // udt
   int check_udt_exist(uint64_t tenant_id, uint64_t database_id,

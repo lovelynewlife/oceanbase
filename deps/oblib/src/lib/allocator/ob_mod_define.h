@@ -141,6 +141,7 @@ LABEL_ITEM_DEF(OB_SCHEMA_UDT_ID_MAP, ScheUdtIdMap)
 LABEL_ITEM_DEF(OB_SCHEMA_UDT_NAME_MAP, ScheUdtNameMap)
 LABEL_ITEM_DEF(OB_SCHEMA_SYNONYM, SchemaSynonym)
 LABEL_ITEM_DEF(OB_SCHEMA_UDF, SchemaUdf)
+LABEL_ITEM_DEF(OB_SCHEMA_PYTHON_UDF, SchemaPythonUdf)   //IMBridge_Metadata
 LABEL_ITEM_DEF(OB_SCHEMA_SYS_VARIABLE, SchemaSysVariab)
 LABEL_ITEM_DEF(OB_SCHEMA_SEQUENCE, SchemaSequence)
 LABEL_ITEM_DEF(OB_SCHEMA_KEYSTORE, SchemaKeystore)
@@ -696,7 +697,7 @@ struct InnerModIds
   #undef LABEL_ITEM_DEF
   };
   enum { LABEL_COUNT_LIMIT = InnerModIds::OB_MOD_END };
-  STATIC_ASSERT(LABEL_COUNT_LIMIT == 453, "forbidden to add new label!!!");
+  STATIC_ASSERT(LABEL_COUNT_LIMIT == 454, "forbidden to add new label!!!");
 };
 
 #define ObNewModIds ObModIds

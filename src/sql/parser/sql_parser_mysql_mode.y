@@ -282,7 +282,7 @@ END_P SET_VAR DELIMITER
         ESCAPE EVENT EVENTS EVERY EXCHANGE EXCLUDING EXECUTE EXPANSION EXPIRE EXPIRE_INFO EXPORT OUTLINE EXTENDED
         EXTENDED_NOADDR EXTENT_SIZE EXTRACT EXCEPT EXPIRED ENCODING EMPTY_FIELD_AS_NULL EXTERNAL
 
-        FAILOVER FAST FAULTS FIELDS FILEX FINAL_COUNT FIRST FIRST_VALUE FIXED FLUSH FOLLOWER FORMAT
+        FAILOVER FAST FAULTS FIELDS FILEX FILE_PATH FINAL_COUNT FIRST FIRST_VALUE FIXED FLUSH FOLLOWER FORMAT
         FOUND FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FROZEN FILE_ID
         FIELD_OPTIONALLY_ENCLOSED_BY FIELD_DELIMITER
 
@@ -310,7 +310,7 @@ END_P SET_VAR DELIMITER
         MASTER_SSL_CRL MASTER_SSL_CRLPATH MASTER_SSL_KEY MASTER_USER MAX MAX_CONNECTIONS_PER_HOUR MAX_CPU
         LOG_DISK_SIZE MAX_IOPS MEMORY_SIZE MAX_QUERIES_PER_HOUR MAX_ROWS MAX_SIZE
         MAX_UPDATES_PER_HOUR MAX_USER_CONNECTIONS MEDIUM MEMORY MEMTABLE MESSAGE_TEXT META MICROSECOND
-        MIGRATE MIN MIN_CPU MIN_IOPS MIN_MAX MINOR MIN_ROWS MINUS MINUTE MODE MODIFY MONTH MOVE
+        MIGRATE MIN MIN_CPU MIN_IOPS MIN_MAX MINOR MIN_ROWS MINUS MINUTE MODE MODEL MODIFY MONTH MOVE
         MULTILINESTRING MULTIPOINT MULTIPOLYGON MUTEX MYSQL_ERRNO MIGRATION MAX_USED_PART_ID MAXIMIZE
         MATERIALIZED MEMBER MEMSTORE_PERCENT MINVALUE MY_NAME
 
@@ -325,7 +325,7 @@ END_P SET_VAR DELIMITER
         PERCENT_RANK PHASE PLAN PHYSICAL PLANREGRESS PLUGIN PLUGIN_DIR PLUGINS POINT POLYGON PERFORMANCE
         PROTECTION OBJECT PRIORITY PL POLICY POOL PORT POSITION PREPARE PRESERVE PRETTY PRETTY_COLOR PREV PRIMARY_ZONE PRIVILEGES PROCESS
         PROCESSLIST PROFILE PROFILES PROXY PRECEDING PCTFREE P_ENTITY P_CHUNK
-        PUBLIC PROGRESSIVE_MERGE_NUM PREVIEW PS PLUS PATTERN
+        PUBLIC PROGRESSIVE_MERGE_NUM PREVIEW PS PLUS PREDICT PYTHON_CODE PYTHON_UDF PATTERN
 
         QUARTER QUERY QUERY_RESPONSE_TIME QUEUE_TIME QUICK
 
@@ -535,6 +535,10 @@ END_P SET_VAR DELIMITER
 
 %type <node> ttl_definition ttl_expr ttl_unit
 %type <node> id_dot_id id_dot_id_dot_id
+
+/*IMBridge Metadata*/ 
+%type <node> create_python_udf_stmt drop_python_udf_stmt
+%type <node> function_element_list function_element param_name param_type python_code_type
 %start sql_stmt
 %%
 ////////////////////////////////////////////////////////////////
@@ -591,6 +595,8 @@ stmt:
   }
   | create_function_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_function_stmt      { $$ = $1; check_question_mark($$, result); }
+  | create_python_udf_stmt  { $$ = $1; check_question_mark($$, result); }
+  | drop_python_udf_stmt    { $$ = $1; check_question_mark($$, result); }
   | create_table_like_stmt  { $$ = $1; check_question_mark($$, result); }
   | create_database_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_database_stmt      { $$ = $1; check_question_mark($$, result); }
@@ -2919,6 +2925,21 @@ MOD '(' expr ',' expr ')'
   malloc_non_terminal_node(udf_node, result->malloc_pool_, T_FUN_UDF, 4, $3, params, id_node->children_[0], NULL);
   store_pl_ref_object_symbol(udf_node, result, REF_FUNC);
 }
+| PREDICT function_name '(' opt_expr_as_list ')'
+{
+  if (NULL != $4)
+  {
+    ParseNode *params = NULL;
+    merge_nodes(params, result, T_EXPR_LIST, $4);
+    malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_PYTHON_UDF, 2, $2, params);
+    store_pl_ref_object_symbol($$, result, REF_FUNC);
+  }
+  else
+  {
+    malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_PYTHON_UDF, 1, $2);
+    store_pl_ref_object_symbol($$, result, REF_FUNC);
+  }
+}
 | sys_interval_func
 {
   $$ = $1;
@@ -4942,6 +4963,97 @@ AGGREGATE
 }
 ;
 
+param_type:
+STRING
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
+|
+INTEGER
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 2;
+}
+|
+REAL
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 3;
+}
+|
+DECIMAL
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 4;
+}
+|
+FIXED {
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 4;
+}
+|
+NUMERIC
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 4;
+}
+;
+
+create_python_udf_stmt:
+CREATE PYTHON_UDF NAME_OB '(' function_element_list ')' RETURNS ret_type python_code_type
+{
+  ParseNode *function_elements = NULL;
+  ParseNode *code_type_node = NULL;
+  merge_nodes(function_elements, result, T_FUNCTION_ELEMENT_LIST, $5);
+  merge_nodes(code_type_node, result, T_PYTHON_CODE_TYPE, $9);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_PYTHON_UDF, 4, 
+                           $3,                             /* udf name */
+                           function_elements,              /* function parameter */
+                           $8,                             /* return type */
+                           code_type_node);                /* python code type */
+}
+|
+CREATE PYTHON_UDF NAME_OB MODEL NAME_OB python_code_type
+{
+  ParseNode *code_type_node = NULL;
+  merge_nodes(code_type_node, result, T_PYTHON_CODE_TYPE, $6);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_PYTHON_UDF, 3, 
+                           $3,                             /* udf name */
+                           $5,                             /* model name */
+                           code_type_node);               /* python code type */
+}
+;
+
+drop_python_udf_stmt:
+DROP PYTHON_UDF opt_if_exists NAME_OB
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_DROP_PYTHON_UDF, 2, $3, $4);
+}
+;
+
+function_element_list:
+function_element
+{
+  $$ = $1;
+}
+| function_element_list ',' function_element
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+function_element:
+param_name param_type
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_PARAM_DEFINITION, 2, $1, $2);
+}
+;
+
+param_name:
+NAME_OB { $$ = $1; }
+;
+
 ret_type:
 STRING
 {
@@ -4976,6 +5088,18 @@ NUMERIC
 {
   malloc_terminal_node($$, result->malloc_pool_, T_INT);
   $$->value_ = 4;
+}
+;
+
+python_code_type:
+'{' STRING_VALUE '}'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_PYTHON_CODE, 1, $2);
+}
+|
+FILE_PATH STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_PATH, 1, $2);
 }
 ;
 
@@ -20005,6 +20129,7 @@ ACCOUNT
 |       MINUTE
 |       MINUS
 |       MODE
+|       MODEL
 |       MODIFY
 |       MONTH
 |       MOVE

@@ -5159,6 +5159,14 @@ const char *const OB_ALL_VIRTUAL_RLS_CONTEXT_REAL_AGENT_ORA_IDX_RLS_CONTEXT_TABL
 const char *const OB_ALL_VIRTUAL_DBMS_LOCK_ALLOCATED_REAL_AGENT_ORA_IDX_DBMS_LOCK_ALLOCATED_LOCKHANDLE_REAL_AGENT_TNAME = "__idx_15397_idx_dbms_lock_allocated_lockhandle_real_agent";
 const char *const OB_ALL_VIRTUAL_DBMS_LOCK_ALLOCATED_REAL_AGENT_ORA_IDX_DBMS_LOCK_ALLOCATED_EXPIRATION_REAL_AGENT_TNAME = "__idx_15397_idx_dbms_lock_allocated_expiration_real_agent";
 
+// IMBridge Metadata
+const uint64_t OB_ALL_PYTHON_UDF_TID = 518; // "__all_python_udf"
+const uint64_t OB_ALL_PYTHON_UDF_AUX_LOB_META_TID = 50518; // "__all_python_udf_aux_lob_meta"
+const uint64_t OB_ALL_PYTHON_UDF_AUX_LOB_PIECE_TID = 60518; // "__all_python_udf_aux_lob_piece"
+const char *const OB_ALL_PYTHON_UDF_TNAME = "__all_python_udf";
+const char *const OB_ALL_PYTHON_UDF_AUX_LOB_META_TNAME = "__all_python_udf_aux_lob_meta";
+const char *const OB_ALL_PYTHON_UDF_AUX_LOB_PIECE_TNAME = "__all_python_udf_aux_lob_piece";
+
 // initial data for __all_privilege
 struct PrivilegeRow {
   const char *privilege_;

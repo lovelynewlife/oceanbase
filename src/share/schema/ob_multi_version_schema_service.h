@@ -343,6 +343,19 @@ public:
   int check_restore_tenant_exist(const common::ObIArray<uint64_t> &tenant_ids, bool &exist);
 
   int get_tenant_name_case_mode(const uint64_t tenant_id, ObNameCaseMode &name_case_mode);
+
+  int check_python_udf_exist(const uint64_t tenant_id,
+                             const common::ObString &name,
+                             bool &exist,
+                             uint64_t &model_id);
+  int get_python_udf_info(const uint64_t tenant_id,
+                          const common::ObString &udf_name,
+                          share::schema::ObPythonUDF &udf_info,
+                          bool &exist);
+  int fill_python_udf_schema(const uint64_t tenant_id,
+                             common::sqlclient::ObMySQLResult &result,
+                             ObPythonUDF &udf_info);
+
   /*------------- refresh schema interface -----------------*/
   int broadcast_tenant_schema(
       const uint64_t tenant_id,

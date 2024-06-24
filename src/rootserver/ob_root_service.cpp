@@ -6482,6 +6482,44 @@ int ObRootService::drop_user_defined_function(const obrpc::ObDropUserDefinedFunc
   return ret;
 }
 
+// IMBridge Metadata
+int ObRootService::create_python_udf(const obrpc::ObCreatePythonUdfArg &arg)
+{
+  int ret = OB_SUCCESS;
+  bool exist = false;
+  uint64_t udf_id = OB_INVALID_ID;
+  ObPythonUDF PythonUdf_info_ = arg.python_udf_;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(arg), K(ret));
+  } else if (OB_FAIL(ddl_service_.check_python_udf_exist(arg.python_udf_.get_tenant_id(), arg.python_udf_.get_name_str(), exist, udf_id))) {
+    LOG_WARN("failed to check_model_exist", K(arg.python_udf_.get_tenant_id()), K(arg.python_udf_.get_name_str()), K(exist), K(ret));
+  } else if (OB_FAIL(ddl_service_.create_python_udf(PythonUdf_info_, arg.ddl_stmt_str_))) {
+    LOG_WARN("failed to create python udf", K(arg), K(ret));
+  } else {/*do nothing*/}
+
+  return ret;
+}
+
+int ObRootService::drop_python_udf(const obrpc::ObDropPythonUdfArg &arg)
+{
+  int ret = OB_SUCCESS;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(arg), K(ret));
+  } else if (OB_FAIL(ddl_service_.drop_python_udf(arg))) {
+    LOG_WARN("failed to alter python udf", K(arg), K(ret));
+  } else {/*do nothing*/}
+
+  return ret;
+}
+
 bool ObRootService::is_sys_tenant(const ObString &tenant_name)
 {
   return (0 == tenant_name.case_compare(OB_SYS_TENANT_NAME)

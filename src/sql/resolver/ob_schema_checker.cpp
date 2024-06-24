@@ -29,6 +29,8 @@
 #include "common/ob_smart_call.h"
 #include "share/schema/ob_sys_variable_mgr.h" // ObSimpleSysVariableSchema
 #include "sql/resolver/ob_stmt_resolver.h"
+#include "share/schema/ob_python_udf.h"
+#include "share/schema/ob_schema_service_sql_impl.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -1907,6 +1909,24 @@ int ObSchemaChecker::get_udf_info(uint64_t tenant_id,
     LOG_WARN("invalid argument", K(ret), K(schema_mgr_));
   } else if (OB_FAIL(schema_mgr_->get_udf_info(tenant_id, udf_name, udf_info, exist))) {
     LOG_WARN("failed to get udf schema", K(ret));
+  }
+  return ret;
+}
+
+int ObSchemaChecker::get_python_udf_info(uint64_t tenant_id,
+                                         const common::ObString &udf_name,
+                                         share::schema::ObPythonUDF &udf_info,
+                                         bool &exist)
+{
+  int ret = OB_SUCCESS;
+  if (OB_INVALID_ID == tenant_id || udf_name.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(tenant_id), K(udf_name));
+  } else if (OB_ISNULL(schema_mgr_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("invalid argument", K(ret), K(schema_mgr_));
+  } else if (OB_FAIL(schema_mgr_->get_python_udf_info(tenant_id, udf_name, udf_info, exist))) {
+    LOG_WARN("failed to get python udf schema", K(ret));
   }
   return ret;
 }

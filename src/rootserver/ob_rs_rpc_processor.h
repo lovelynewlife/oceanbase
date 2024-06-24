@@ -436,6 +436,9 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_DBLINK, ObRpcDropDbLinkP, drop_dblink
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_USER_DEFINED_FUNCTION, ObRpcCreateUserDefinedFunctionP, create_user_defined_function(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_USER_DEFINED_FUNCTION, ObRpcDropUserDefinedFunctionP, drop_user_defined_function(arg_));
 
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_PYTHON_UDF, ObRpcCreatePythonUdfP, create_python_udf(arg_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_PYTHON_UDF, ObRpcDropPythonUdfP, drop_python_udf(arg_));
+
 //package ddl
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_PACKAGE, ObRpcCreatePackageP, create_package(arg_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ALTER_PACKAGE, ObRpcAlterPackageP, alter_package(arg_));

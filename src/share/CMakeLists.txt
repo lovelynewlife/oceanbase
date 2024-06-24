@@ -450,6 +450,9 @@ ob_set_subtarget(ob_share schema
   schema/ob_mview_info.cpp
   schema/ob_mview_refresh_stats_params.cpp
   schema/ob_mview_refresh_stats.cpp
+  schema/ob_python_udf.cpp
+  schema/ob_python_udf_mgr.cpp
+  schema/ob_python_udf_sql_service.cpp
 )
 
 ob_set_subtarget(ob_share stat
@@ -548,6 +551,8 @@ ob_set_subtarget(ob_share aggregate
 )
 
 ob_add_new_object_target(ob_share ob_share)
+
+target_link_libraries(ob_share PUBLIC python_lib)
 
 target_compile_options(ob_share PRIVATE)
 #target_compile_options(ob_share PRIVATE -Wshorten-64-to-32)

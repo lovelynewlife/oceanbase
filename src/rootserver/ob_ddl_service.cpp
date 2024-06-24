@@ -34877,6 +34877,127 @@ int ObDDLService::check_udf_exist(uint64 tenant_id, const common::ObString &name
   return ret;
 }
 
+// IMBrdige Metadata
+int ObDDLService::create_python_udf(share::schema::ObPythonUDF &PythonUdf_info,
+                                    const common::ObString &ddl_stmt_str)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = PythonUdf_info.get_tenant_id();
+  ObSchemaGetterGuard schema_guard;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("variable is not init", K(ret));
+  } 
+  else if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(tenant_id, schema_guard))) {
+    LOG_WARN("fail to get schema guard with version in inner table", K(ret), K(tenant_id));
+  } 
+  else {
+    ObDDLSQLTransaction trans(schema_service_);
+    ObDDLOperator ddl_operator(*schema_service_, *sql_proxy_);
+    int64_t refreshed_schema_version = 0;
+    if (OB_FAIL(schema_guard.get_schema_version(tenant_id, refreshed_schema_version))) {
+      LOG_WARN("failed to get tenant schema version", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(trans.start(sql_proxy_, tenant_id, refreshed_schema_version))) {
+      LOG_WARN("start transaction failed", KR(ret), K(tenant_id), K(refreshed_schema_version));
+    } else {
+      ret = ddl_operator.create_python_udf(PythonUdf_info, trans, &ddl_stmt_str);
+      if (OB_FAIL(ret)) {
+        LOG_WARN("failed to create python udf", K(PythonUdf_info), K(ddl_stmt_str), K(ret));
+      }
+    }
+    if (trans.is_started()) {
+      int temp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
+        LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
+        ret = (OB_SUCC(ret)) ? temp_ret : ret;
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(publish_schema(tenant_id))) {
+        LOG_WARN("publish schema failed", K(ret));
+      }
+    }
+  }
+  LOG_INFO("finish create python UDF", K(PythonUdf_info), K(ret));
+  return ret;
+}
+
+int ObDDLService::drop_python_udf(const obrpc::ObDropPythonUdfArg &drop_python_udf_arg)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = drop_python_udf_arg.tenant_id_;
+  const ObString &name = drop_python_udf_arg.name_;
+  const bool if_exist = drop_python_udf_arg.if_exist_;
+  ObDDLSQLTransaction trans(schema_service_);
+  ObSchemaGetterGuard schema_guard;
+  if (OB_FAIL(check_inner_stat())) {
+    LOG_WARN("variable is not init", K(ret));
+  } else if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(tenant_id, schema_guard))) {
+    LOG_WARN("fail to get schema guard with version in inner table", K(ret), K(tenant_id));
+  } else if (OB_UNLIKELY(false == drop_python_udf_arg.is_valid())
+             || OB_ISNULL(schema_service_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(drop_python_udf_arg), K(ret));
+  }
+
+  //check python udf exist & drop udf
+  if (OB_SUCC(ret)) {
+    bool is_exist = false;
+    uint64_t udf_id = OB_INVALID_ID;
+    int64_t refreshed_schema_version = 0;
+    if (OB_FAIL(schema_service_->check_python_udf_exist(tenant_id, name,
+                                                        is_exist, udf_id))) {
+      LOG_WARN("check_udf_exist failed", K(tenant_id), K(name), K(ret));
+    } else if (!is_exist) {
+      if (if_exist) {
+        LOG_USER_NOTE(OB_ERR_FUNCTION_UNKNOWN, "PYTHON UDF", name.length(), name.ptr());
+        LOG_INFO("function not exist, no need to delete it", K(tenant_id), K(name));
+      } else {
+        ret = OB_ERR_FUNCTION_UNKNOWN;
+        LOG_WARN("function not exist, can't delete it", K(tenant_id), K(name), K(ret));
+      }
+    } else if (OB_FAIL(schema_guard.get_schema_version(tenant_id, refreshed_schema_version))) {
+      LOG_WARN("failed to get tenant schema version", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(trans.start(sql_proxy_, tenant_id, refreshed_schema_version))) {
+      LOG_WARN("start transaction failed", KR(ret), K(tenant_id));
+    } else {
+      ObDDLOperator ddl_operator(*schema_service_, *sql_proxy_);
+      if (OB_FAIL(ObDependencyInfo::modify_dep_obj_status(trans, tenant_id, udf_id,
+                                                          ddl_operator, *schema_service_))) {
+        LOG_WARN("failed to modify obj status", K(ret));
+      } else if (OB_FAIL(ddl_operator.drop_python_udf(tenant_id, name, trans, &drop_python_udf_arg.ddl_stmt_str_))) {
+        LOG_WARN("ddl_operator drop_python_udf failed", K(tenant_id), K(ret));
+      } else {/*do nothing*/}
+    }
+  }
+
+  if (trans.is_started()) {
+    int temp_ret = OB_SUCCESS;
+    if (OB_SUCCESS != (temp_ret = trans.end(OB_SUCC(ret)))) {
+      LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, K(temp_ret));
+      ret = (OB_SUCC(ret)) ? temp_ret : ret;
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(publish_schema(tenant_id))) {
+      LOG_WARN("publish schema failed", K(ret));
+    }
+  }
+
+  LOG_INFO("finish drop UDF", K(tenant_id), K(name), K(ret));
+
+  return ret;
+}
+
+int ObDDLService::check_python_udf_exist(uint64 tenant_id, const common::ObString &name, bool &is_exist, uint64_t &udf_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(schema_service_->check_python_udf_exist(tenant_id, name, is_exist, udf_id))) {
+    LOG_WARN("failed to check if udf_name exists", K(name), K(ret));
+  }
+  return ret;
+}
+
 int ObDDLService::reconstruct_table_schema_from_recyclebin(ObTableSchema &index_table_schema,
                                                             const ObRecycleObject &recycle_obj,
                                                             ObSchemaGetterGuard &guard) {

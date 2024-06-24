@@ -7799,6 +7799,97 @@ int ObSchemaGetterGuard::get_udf_info(const uint64_t tenant_id,
   return ret;
 }
 
+int ObSchemaGetterGuard::check_python_udf_exist_with_name(const uint64_t tenant_id,
+                                                          const common::ObString &name,
+                                                          bool &exist,
+                                                          uint64_t &udf_id)
+{
+  int ret = OB_SUCCESS;
+  const ObSchemaMgr *mgr = NULL;
+  exist = false;
+  udf_id = OB_INVALID_ID;
+  if (!check_inner_stat()) {
+    ret = OB_INNER_STAT_ERROR;
+    LOG_WARN("inner stat error", KR(ret));
+  } else if (OB_INVALID_ID == tenant_id
+             || name.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(name));
+  } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
+    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
+  } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
+    LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
+  } else {
+    const ObSimplePythonUdfSchema *schema = NULL;
+    if (OB_FAIL(mgr->python_udf_mgr_.get_python_udf_schema_with_name(tenant_id,
+                                                                     name,
+                                                                     schema))) {
+      LOG_WARN("get python udf schema failed", KR(ret),
+               K(tenant_id), K(name));
+    } else if (OB_NOT_NULL(schema)) {
+      exist = true;
+      udf_id = schema->get_udf_id();
+    }
+  }
+  return ret;
+}
+
+// int ObSchemaGetterGuard::get_python_udf_info(const uint64_t tenant_id,
+//                                              const common::ObString &name,
+//                                              const share::schema::ObPythonUDF *&udf_info,
+//                                              bool &exist)
+// {
+//   int ret = OB_SUCCESS;
+//   const ObSchemaMgr *mgr = NULL;
+//   udf_info = nullptr;
+//   exist = false;
+//   if (!check_inner_stat()) {
+//     ret = OB_INNER_STAT_ERROR;
+//     LOG_WARN("inner stat error", KR(ret));
+//   } else if (OB_INVALID_ID == tenant_id
+//              || name.empty()) {
+//     ret = OB_INVALID_ARGUMENT;
+//     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(name));
+//   } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
+//     LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
+//   } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
+//     LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
+//   } else {
+//     const ObSimpleModelSchema *model_schema = NULL;
+//     if (OB_FAIL(mgr->python_udf_mgr_.get_model_schema_with_name(tenant_id,
+//                                                                 name,
+//                                                                 model_schema))) {
+//       LOG_WARN("get outline schema failed", KR(ret),
+//                K(tenant_id), K(name));
+//     } else if (OB_ISNULL(model_schema)) {
+//       LOG_INFO("model not exist", K(tenant_id), K(name));
+//     } else if (OB_FAIL(get_schema(MODEL_SCHEMA,
+//                                   model_schema->get_tenant_id(),
+//                                   model_schema->get_model_id(),
+//                                   udf_info,
+//                                   model_schema->get_schema_version()))) {
+//       LOG_WARN("get model schema failed", KR(ret), K(tenant_id), KPC(model_schema));
+//     } else if (OB_ISNULL(udf_info)) {
+//       LOG_INFO("model does not exist", K(tenant_id), K(name), KR(ret));
+//     } else {
+//       exist = true;
+//     }
+//   }
+//   return ret;
+// }
+
+int ObSchemaGetterGuard::get_python_udf_info(const uint64_t tenant_id,
+                                             const common::ObString &name,
+                                             share::schema::ObPythonUDF &udf_info,
+                                             bool &exist)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(schema_service_->get_python_udf_info(tenant_id, name, udf_info, exist))) {
+    LOG_WARN("failed to get python udf schema", K(ret));
+  }
+  return ret;
+}
+
 // This function return indexes which are in unavaliable status
 // It's used in the following scenes:
 // 1. Schedule unavaliable indexes build tasks in primary cluster.

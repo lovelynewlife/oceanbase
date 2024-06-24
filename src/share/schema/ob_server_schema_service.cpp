@@ -328,6 +328,8 @@ void ObServerSchemaService::AllSchemaKeys::reset()
   del_trigger_keys_.clear();
   new_udf_keys_.clear();
   del_udf_keys_.clear();
+  new_python_udf_keys_.clear();
+  del_python_udf_keys_.clear();
   new_udt_keys_.clear();
   del_udt_keys_.clear();
   new_sequence_keys_.clear();
@@ -432,6 +434,10 @@ int ObServerSchemaService::AllSchemaKeys::create(int64_t bucket_size)
     LOG_WARN("failed to create new_udf_ids hashset", K(bucket_size), K(ret));
   } else if (OB_FAIL(del_udf_keys_.create(bucket_size))) {
     LOG_WARN("failed to create del_udf_ids hashset", K(bucket_size), K(ret));
+  } else if (OB_FAIL(new_python_udf_keys_.create(bucket_size))) {
+    LOG_WARN("failed to create new_python_udf_ids hashset", K(bucket_size), K(ret));
+  } else if (OB_FAIL(del_python_udf_keys_.create(bucket_size))) {
+    LOG_WARN("failed to create del_python_udf_ids hashset", K(bucket_size), K(ret));
   } else if (OB_FAIL(new_sequence_keys_.create(bucket_size))) {
     LOG_WARN("failed to create new_sequence_ids hashset", K(bucket_size), K(ret));
   } else if (OB_FAIL(del_sequence_keys_.create(bucket_size))) {
@@ -3972,6 +3978,9 @@ int ObServerSchemaService::apply_increment_schema_to_cache(
   } else if (OB_FAIL(apply_udf_schema_to_cache(
              tenant_id, all_keys, simple_incre_schemas, schema_mgr.udf_mgr_))) {
     LOG_WARN("fail to apply udf schema to cache", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(apply_python_udf_schema_to_cache(
+             tenant_id, all_keys, simple_incre_schemas, schema_mgr.python_udf_mgr_))) {
+    LOG_WARN("fail to apply python udf schema to cache", KR(ret), K(tenant_id));
   } else if (OB_FAIL(apply_udt_schema_to_cache(
              tenant_id, all_keys, simple_incre_schemas, schema_mgr.udt_mgr_))) {
     LOG_WARN("fail to apply udt schema to cache", KR(ret), K(tenant_id));
@@ -4168,6 +4177,7 @@ APPLY_SCHEMA_TO_CACHE_IMPL(ObPrivMgr, db_priv, ObDBPriv, DBPrivKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObPrivMgr, table_priv, ObTablePriv, TablePrivKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObSynonymMgr, synonym, ObSimpleSynonymSchema, SynonymKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObUDFMgr, udf, ObSimpleUDFSchema, UdfKeys);
+APPLY_SCHEMA_TO_CACHE_IMPL(ObPythonUDFMgr, python_udf, ObSimplePythonUdfSchema, PythonUdfKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObUDTMgr, udt, ObSimpleUDTSchema, UDTKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObSequenceMgr, sequence, ObSequenceSchema, SequenceKeys);
 APPLY_SCHEMA_TO_CACHE_IMPL(ObKeystoreMgr, keystore, ObKeystoreSchema, KeystoreKeys);

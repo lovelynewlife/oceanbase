@@ -40,6 +40,7 @@
 #include "share/schema/ob_context_mgr.h"
 #include "share/schema/ob_mock_fk_parent_table_mgr.h"
 #include "share/schema/ob_rls_mgr.h"
+#include "share/schema/ob_python_udf_mgr.h"
 
 namespace oceanbase
 {
@@ -691,6 +692,11 @@ public:
       const uint64_t udf_id,
       const ObSimpleUDFSchema *&udf_schema) const;
 
+  int get_python_udf_schema(
+      const uint64_t tenant_id,
+      const uint64_t udf_id,
+      const ObSimplePythonUdfSchema *&python_udf_schema) const;
+
   int get_udt_schema(
       const uint64_t tenant_id,
       const uint64_t udt_id,
@@ -932,6 +938,7 @@ private:
   ObPackageMgr package_mgr_;
   ObTriggerMgr trigger_mgr_;
   ObUDFMgr udf_mgr_;
+  ObPythonUDFMgr python_udf_mgr_;
   ObUDTMgr udt_mgr_;
   ObSequenceMgr sequence_mgr_;
   ObLabelSePolicyMgr label_se_policy_mgr_;

@@ -10687,6 +10687,13 @@ int ObAdminUnlockMemberListOpArg::set(
 }
 OB_SERIALIZE_MEMBER(ObAdminUnlockMemberListOpArg, tenant_id_, ls_id_, lock_id_);
 
+OB_SERIALIZE_MEMBER((ObCreatePythonUdfArg, ObDDLArg),
+                     python_udf_);
+OB_SERIALIZE_MEMBER((ObDropPythonUdfArg, ObDDLArg),
+                     tenant_id_,
+                     name_,
+                     if_exist_);
+
 int ObCloneResourcePoolArg::init(
     const ObString &pool_name,
     const ObString &unit_config_name,
