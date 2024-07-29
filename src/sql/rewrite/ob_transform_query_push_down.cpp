@@ -544,6 +544,7 @@ int ObTransformQueryPushDown::check_rownum_push_down(ObSelectStmt *select_stmt,
               select_stmt->has_group_by() ||
               select_stmt->has_rollup() ||
               select_stmt->has_window_function() ||
+              select_stmt->has_python_udf() ||
               select_stmt->is_set_stmt() ||
               select_stmt->has_order_by())) { //判断2
     can_be = false;
@@ -608,6 +609,7 @@ int ObTransformQueryPushDown::check_select_item_push_down(ObSelectStmt *select_s
     can_be = true;
   } else if (view_stmt->is_scala_group_by() ||
              view_stmt->has_distinct() ||
+             view_stmt->has_python_udf() ||
              (view_stmt->is_recursive_union() && (!check_status || !select_offset.empty())) ||
              (view_stmt->is_set_stmt() && !view_stmt->is_recursive_union())) {
     can_be = false;
@@ -728,7 +730,8 @@ int ObTransformQueryPushDown::check_where_condition_push_down(ObSelectStmt *sele
     LOG_WARN("stmt is NULL", K(view_stmt), K(ret));
   } else if (view_stmt->is_set_stmt() ||
              view_stmt->has_limit() ||
-             view_stmt->has_window_function()) {
+             view_stmt->has_window_function() ||
+             view_stmt->has_python_udf()) {
     can_be = false;
   } else if (OB_FAIL(ObTransformUtils::check_has_assignment(*view_stmt, has_assign))) {
     LOG_WARN("check has assign failed", K(ret));

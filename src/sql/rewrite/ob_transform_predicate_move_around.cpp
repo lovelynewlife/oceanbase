@@ -1236,6 +1236,7 @@ int ObTransformPredicateMoveAround::pushdown_predicates(
   bool has_rownum = false;
   bool has_group = false;
   bool has_winfunc = false;
+  bool has_python_udf = false;
   ObSEArray<ObRawExpr *, 4> candi_preds;
   ObIArray<ObRawExpr *> *pullup_preds = NULL;
   ObSelectStmt *sel_stmt = static_cast<ObSelectStmt *>(stmt);
@@ -1293,10 +1294,11 @@ int ObTransformPredicateMoveAround::pushdown_predicates(
       has_group = sel_stmt->has_group_by();
       has_winfunc = sel_stmt->has_window_function();
       has_distinct = sel_stmt->has_distinct();
+      has_python_udf = sel_stmt->has_python_udf(); // can not be pushed down with python udf exprs
     }
     if (OB_SUCC(ret)) {
       if (stmt->has_limit() || stmt->has_sequence() ||
-          stmt->is_contains_assignment()) {
+          stmt->is_contains_assignment() || has_python_udf) {
         // no exprs can be pushed down
         OPT_TRACE("stmt has limit/sequence/assignmen, can not pushdown any pred");
       } else if (has_rownum && !has_group) {

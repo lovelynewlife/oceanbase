@@ -439,6 +439,7 @@ int ObTransformSimplifySubquery::try_remove_redundant_select(ObSelectStmt &stmt,
       0 == stmt.get_aggr_item_size() &&
       0 == stmt.get_having_expr_size() &&
       0 == stmt.get_window_func_count() &&
+      0 == stmt.get_python_udf_count() && 
       !stmt.has_limit()) {
     if (OB_ISNULL(sel_expr = stmt.get_select_item(0).expr_)) {
       ret = OB_ERR_UNEXPECTED;

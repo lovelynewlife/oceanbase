@@ -364,6 +364,7 @@ int ObTransformViewMerge::check_semi_right_table_can_be_merged(ObDMLStmt *stmt,
              || ref_query->has_group_by()
              || ref_query->has_rollup()
              || ref_query->has_window_function()
+             || ref_query->has_python_udf()
              || ref_query->has_limit()
              || ref_query->is_contains_assignment()
              || ref_query->has_sequence()
@@ -526,6 +527,7 @@ int ObTransformViewMerge::check_basic_validity(ObDMLStmt *parent_stmt,
              || child_stmt->has_limit()
              || child_stmt->get_aggr_item_size() != 0
              || child_stmt->has_window_function()
+             || child_stmt->has_python_udf()
              || child_stmt->has_sequence()
              || child_stmt->has_ora_rowscn()
              || child_stmt->is_values_table_query()) {
