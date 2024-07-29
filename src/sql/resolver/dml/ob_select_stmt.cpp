@@ -188,6 +188,8 @@ int ObSelectStmt::assign(const ObSelectStmt &other)
     LOG_WARN("assign other start with failed", K(ret));
   } else if (OB_FAIL(win_func_exprs_.assign(other.win_func_exprs_))) {
     LOG_WARN("assign window function exprs failed", K(ret));
+  } else if (OB_FAIL(python_udf_exprs_.assign(other.python_udf_exprs_))) {
+    LOG_WARN("assign python udf function exprs failed", K(ret));
   } else if (OB_FAIL(qualify_filters_.assign(other.qualify_filters_))) {
     LOG_WARN("assign window function filter exprs failed", K(ret));
   } else if (OB_FAIL(connect_by_exprs_.assign(other.connect_by_exprs_))) {
@@ -258,6 +260,8 @@ int ObSelectStmt::deep_copy_stmt_struct(ObIAllocator &allocator,
     LOG_WARN("deep copy agg item failed", K(ret));
   } else if (OB_FAIL(expr_copier.copy(other.win_func_exprs_, win_func_exprs_))) {
     LOG_WARN("deep copy window function expr failed", K(ret));
+  } else if (OB_FAIL(expr_copier.copy(other.python_udf_exprs_, python_udf_exprs_))) {
+    LOG_WARN("deep copy python udf expr failed", K(ret));
   } else if (OB_FAIL(expr_copier.copy(other.qualify_filters_, qualify_filters_))) {
     LOG_WARN("deep copy window function expr failed", K(ret));
   } else if (OB_FAIL(expr_copier.copy(other.start_with_exprs_, start_with_exprs_))) {
@@ -438,6 +442,8 @@ int ObSelectStmt::iterate_stmt_expr(ObStmtExprVisitor &visitor)
   if (OB_SUCC(ret)) {
     if (OB_FAIL(visitor.visit(win_func_exprs_, SCOPE_DICT_FIELDS))) {
       LOG_WARN("failed to visit winfunc exprs", K(ret));
+    } else if (OB_FAIL(visitor.visit(python_udf_exprs_, SCOPE_DICT_FIELDS))) {
+      LOG_WARN("failed to visit python udf exprs", K(ret));
     } else if (OB_FAIL(visitor.visit(cte_exprs_, SCOPE_DICT_FIELDS))) {
       LOG_WARN("failed to visit cte exprs", K(ret));
     } else if (OB_FAIL(visitor.visit(start_with_exprs_, SCOPE_START_WITH))) {
@@ -712,6 +718,7 @@ int ObSelectStmt::do_to_string(char *buf, const int64_t buf_len, int64_t &pos) c
            N_ORDER_BY, order_items_,
            N_LIMIT, limit_count_expr_,
            N_WIN_FUNC, win_func_exprs_,
+           N_PYTHON_UDF, python_udf_exprs_,
            N_OFFSET, limit_offset_expr_,
            N_SHOW_STMT_CTX, show_stmt_ctx_,
            N_STMT_HINT, stmt_hint_,
@@ -1402,5 +1409,52 @@ int ObSelectStmt::get_all_group_by_exprs(ObIArray<ObRawExpr*> &group_by_exprs) c
     }
   }
   LOG_TRACE("succeed to get all group by exprs", K(group_by_exprs));
+  return ret;
+}
+
+ObPythonUdfRawExpr *ObSelectStmt::get_same_python_udf_item(const ObRawExpr *expr)
+{
+  ObPythonUdfRawExpr *python_udf_expr = NULL;
+  for (int64_t i = 0; i < python_udf_exprs_.count(); ++i) {
+    if (python_udf_exprs_.at(i) != NULL && expr != NULL &&
+        expr->same_as(*python_udf_exprs_.at(i))) {
+      python_udf_expr = python_udf_exprs_.at(i);
+      break;
+    }
+  }
+  return python_udf_expr;
+}
+
+int ObSelectStmt::add_python_udf_expr(ObPythonUdfRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (OB_FAIL(python_udf_exprs_.push_back(expr))) {
+    LOG_WARN("failed to add python udf expr", K(ret));
+  } else {
+
+  }
+  return ret;
+}
+
+int ObSelectStmt::remove_python_udf_expr(ObPythonUdfRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < python_udf_exprs_.count(); i++) {
+      if (OB_ISNULL(python_udf_exprs_.at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (expr == python_udf_exprs_.at(i)) {
+        ret = python_udf_exprs_.remove(i);
+        break;
+      } else {}
+    }
+  }
   return ret;
 }

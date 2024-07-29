@@ -33,6 +33,7 @@
 #include "sql/resolver/expr/ob_expr_info_flag.h"
 #include "share/system_variable/ob_system_variable.h"
 #include "share/schema/ob_udf.h"
+#include "share/schema/ob_python_udf.h"
 #include "lib/worker.h"
 #include "sql/parser/parse_node.h"
 #include "sql/resolver/ob_resolver_define.h"
@@ -1532,6 +1533,7 @@ class ObAggFunRawExpr;
 class ObPseudoColumnRawExpr;
 class ObOpRawExpr;
 class ObWinFunRawExpr;
+class ObPythonUdfRawExpr;
 class ObUserVarIdentRawExpr;
 struct ObUDFInfo;
 template <typename ExprFactoryT>
@@ -1557,6 +1559,8 @@ struct ObResolveContext
     sub_query_info_(NULL),
     aggr_exprs_(NULL),
     win_exprs_(NULL),
+    //python_op_exprs_(NULL),
+    python_udf_exprs_(NULL),
     udf_info_(NULL),
     op_exprs_(NULL),
     user_var_exprs_(nullptr),
@@ -1594,6 +1598,8 @@ struct ObResolveContext
   common::ObIArray<ObSubQueryInfo> *sub_query_info_;
   common::ObIArray<ObAggFunRawExpr*> *aggr_exprs_;
   common::ObIArray<ObWinFunRawExpr*> *win_exprs_;
+  //common::ObIArray<ObPythonOpRawExpr*> *python_op_exprs_;
+  common::ObIArray<ObPythonUdfRawExpr*> *python_udf_exprs_; //temp
   common::ObIArray<ObUDFInfo> *udf_info_;
   common::ObIArray<ObOpRawExpr*> *op_exprs_;
   common::ObIArray<ObUserVarIdentRawExpr*> *user_var_exprs_;
@@ -4661,6 +4667,27 @@ private:
   const char *name_;
 };
 
+/*---------------------------------------------------------*/
+// python udf expr, for data calculation
+class ObPythonUdfRawExpr : public ObSysFunRawExpr
+{
+public:
+  ObPythonUdfRawExpr(common::ObIAllocator &alloc) : ObSysFunRawExpr(alloc), udf_meta_() { set_expr_class(ObIRawExpr::EXPR_PYTHON_UDF); }
+  ObPythonUdfRawExpr() : ObSysFunRawExpr(), udf_meta_() { set_expr_class(ObIRawExpr::EXPR_PYTHON_UDF); }
+  virtual ~ObPythonUdfRawExpr() {}
+  int assign(const ObRawExpr &other) override;
+  int inner_deep_copy(ObIRawExprCopier &copier) override;
+  int set_udf_meta(share::schema::ObPythonUDF &udf);
+  const share::schema::ObPythonUDFMeta &get_udf_meta() const { return udf_meta_; }
+  virtual bool inner_same_as(const ObRawExpr &expr,
+                             ObExprEqualCheckContext *check_context = NULL) const override;
+  virtual int get_name_internal(char *buf, const int64_t buf_len, int64_t &pos, ExplainType type) const override;
+private:
+  //data members
+  share::schema::ObPythonUDFMeta udf_meta_;
+};
+/*---------------------------------------------------------*/
+
 /// visitor interface
 class ObRawExprVisitor
 {
@@ -4696,6 +4723,7 @@ public:
   virtual int visit(ObSetOpRawExpr &expr) = 0;
   virtual int visit(ObAliasRefRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual int visit(ObWinFunRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
+  //virtual int visit(ObPythonOpRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual int visit(ObPseudoColumnRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual bool skip_child(ObRawExpr &expr) { UNUSED(expr); return false; }
 private:

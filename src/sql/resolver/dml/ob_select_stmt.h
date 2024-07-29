@@ -631,6 +631,17 @@ public:
   static ObRawExpr* get_pure_set_expr(ObRawExpr *expr);
   int get_all_group_by_exprs(ObIArray<ObRawExpr*> &group_by_exprs) const;
 
+  // for python udf
+  bool has_python_udf() const { return python_udf_exprs_.count() != 0; }
+  const common::ObIArray<ObPythonUdfRawExpr *> &get_python_udf_exprs() const { return python_udf_exprs_; };
+  common::ObIArray<ObPythonUdfRawExpr *> &get_python_udf_exprs() { return python_udf_exprs_; };
+  const ObPythonUdfRawExpr* get_python_udf_expr(int64_t i) const { return python_udf_exprs_.at(i); }
+  ObPythonUdfRawExpr* get_python_udf_expr(int64_t i) { return python_udf_exprs_.at(i); }
+  int64_t get_python_udf_count() const { return python_udf_exprs_.count(); }
+  int add_python_udf_expr(ObPythonUdfRawExpr *expr);
+  int remove_python_udf_expr(ObPythonUdfRawExpr *expr);
+  ObPythonUdfRawExpr* get_same_python_udf_item(const ObRawExpr *expr);
+
 private:
   SetOperator set_op_;
   /* these var is only used for recursive union */
@@ -650,6 +661,7 @@ private:
   common::ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> having_exprs_;
   common::ObSEArray<ObAggFunRawExpr*, 8, common::ModulePageAllocator, true> agg_items_;
   common::ObSEArray<ObWinFunRawExpr*, 8, common::ModulePageAllocator, true> win_func_exprs_;
+  common::ObSEArray<ObPythonUdfRawExpr*, 8, common::ModulePageAllocator, true> python_udf_exprs_;
   //a child set of the filters in the parent stmts, only used for partition topn sort
   common::ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> qualify_filters_;
   common::ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> start_with_exprs_;

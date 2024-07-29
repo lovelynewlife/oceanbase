@@ -184,6 +184,11 @@ int ObRawExprPrinter::print(ObRawExpr *expr)
       PRINT_EXPR(win_expr);
       break;
     }
+    case ObRawExpr::EXPR_PYTHON_UDF: {
+      ObPythonUdfRawExpr *python_udf_expr = static_cast<ObPythonUdfRawExpr *>(expr);
+      PRINT_EXPR(python_udf_expr);
+      break;
+    }
     case ObRawExpr::EXPR_PSEUDO_COLUMN: {
       ObPseudoColumnRawExpr *pse_expr = static_cast<ObPseudoColumnRawExpr *>(expr);
       PRINT_EXPR(pse_expr);

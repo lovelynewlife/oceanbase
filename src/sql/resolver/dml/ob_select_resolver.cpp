@@ -5677,6 +5677,32 @@ int ObSelectResolver::resolve_win_func_exprs(ObRawExpr *&expr, common::ObIArray<
   return ret;
 }
 
+int ObSelectResolver::resolve_python_udf_exprs(ObRawExpr *&expr, common::ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs)
+{
+  int ret = OB_SUCCESS;
+  ObSelectStmt *select_stmt = get_select_stmt();
+  if (OB_ISNULL(expr) || OB_ISNULL(select_stmt)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(ret), K(expr), K(select_stmt));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < python_udf_exprs.count(); ++i) {
+      ObPythonUdfRawExpr *python_udf_expr = static_cast<ObPythonUdfRawExpr *>(python_udf_exprs.at(i));
+      ObPythonUdfRawExpr *final_python_udf_expr = NULL;
+      //const int64_t N = select_stmt->get_python_udf_exprs().count();
+      // 消除冗余
+      if (OB_ISNULL(python_udf_expr)) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid arg", K(ret), K(python_udf_expr));
+      } else if (OB_ISNULL(final_python_udf_expr = select_stmt->get_same_python_udf_item(python_udf_expr))) {
+        ret = select_stmt->add_python_udf_expr(python_udf_expr);
+      } else if (OB_FAIL(ObRawExprUtils::replace_ref_column(expr, python_udf_exprs.at(i), final_python_udf_expr))) {
+          LOG_WARN("failed to replace ref column.", K(ret), K(*python_udf_exprs.at(i)));
+      } else {}
+    }
+  }
+  return ret;
+}
+
 int ObSelectResolver::add_aggr_expr(ObAggFunRawExpr *&final_aggr_expr)
 {
   int ret = OB_SUCCESS;

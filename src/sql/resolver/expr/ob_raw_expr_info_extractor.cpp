@@ -479,6 +479,7 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
         || T_OP_GET_SUBPROGRAM_VAR == expr.get_expr_type()
         || (T_FUN_SYS_SYSDATE == expr.get_expr_type() && !lib::is_oracle_mode())
         || T_FUN_NORMAL_UDF == expr.get_expr_type()
+        //|| T_FUN_PYTHON_UDF == expr.get_expr_type()
         || T_FUN_SYS_GENERATOR == expr.get_expr_type()
         || (T_FUN_UDF == expr.get_expr_type()
             && !static_cast<ObUDFRawExpr&>(expr).is_deterministic())) {
@@ -612,6 +613,19 @@ int ObRawExprInfoExtractor::visit(ObWinFunRawExpr &expr)
   } else if (OB_FAIL(expr.add_flag(IS_WINDOW_FUNC))) {
     LOG_WARN("add flag failed", K(ret));
   } else if (OB_FAIL(expr.add_flag(CNT_WINDOW_FUNC))) {
+    LOG_WARN("add flag failed", K(ret));
+  }
+  return ret;
+}
+
+int ObRawExprInfoExtractor::visit(ObPythonUdfRawExpr &expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(clear_info(expr))) {
+    LOG_WARN("fail to clear info", K(ret));
+  } else if (OB_FAIL(pull_info(expr))) {
+    LOG_WARN("pull match info failed", K(ret));
+  } else if (OB_FAIL(expr.add_flag(IS_PYTHON_UDF))) {
     LOG_WARN("add flag failed", K(ret));
   }
   return ret;

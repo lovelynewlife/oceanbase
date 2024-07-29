@@ -24,6 +24,7 @@
 #include "sql/engine/expr/ob_expr_operator.h"
 #include "sql/engine/expr/ob_expr_version.h"
 #include "sql/engine/expr/ob_expr_dll_udf.h"
+#include "sql/engine/expr/ob_expr_python_udf.h"
 #include "sql/engine/expr/ob_datum_cast.h"
 #include "sql/engine/expr/ob_expr_case.h"
 #include "sql/engine/aggregate/ob_aggregate_processor.h"
@@ -418,6 +419,9 @@ int ObRawExprDeduceType::calc_result_type(ObNonTerminalRawExpr &expr,
   } else if (expr.get_expr_type() == T_FUN_NORMAL_UDF
              && OB_FAIL(init_normal_udf_expr(expr, op))) {
     LOG_WARN("failed to init normal udf", K(ret));
+  } else if (expr.get_expr_type() == T_FUN_PYTHON_UDF
+             && OB_FAIL(init_python_udf_expr(expr, op))) {
+    LOG_WARN("failed to init python udf", K(ret));
   } else if (OB_FAIL(ori_types.assign(types))) {
     LOG_WARN("array assign failed", K(ret));
   } else {
@@ -2961,6 +2965,30 @@ int ObRawExprDeduceType::init_normal_udf_expr(ObNonTerminalRawExpr &expr, ObExpr
       LOG_WARN("failed to set udf to expr", K(ret));
     } else if (OB_FAIL(normal_udf_op->init_udf(fun_sys.get_param_exprs()))) {
       LOG_WARN("failed to init udf", K(ret));
+    } else {
+    }
+  }
+  return ret;
+}
+
+int ObRawExprDeduceType::init_python_udf_expr(ObNonTerminalRawExpr &expr, ObExprOperator *op)
+{
+  int ret = OB_SUCCESS;
+  if(expr.get_expr_type() != T_FUN_PYTHON_UDF) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_DEBUG("not python udf expr", K(ret));
+    return ret;
+  }
+  ObExprPythonUdf *python_udf_op = nullptr;
+  ObPythonUdfRawExpr &fun_sys = static_cast<ObPythonUdfRawExpr &>(expr);
+  if (OB_ISNULL(op)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid argument", K(ret), K(expr.get_expr_type()));
+  } else {
+    python_udf_op = static_cast<ObExprPythonUdf*>(op);
+    // set python udf meta, init specific python udf in code generation
+    if (OB_FAIL(python_udf_op->set_udf_meta(fun_sys.get_udf_meta()))) {
+      LOG_WARN("failed to set udf to expr", K(ret));
     } else {
     }
   }

@@ -37,6 +37,19 @@ public:
               common::ObIArray<ObOpRawExpr*> &op_exprs,
               common::ObIArray<ObUserVarIdentRawExpr*> &user_var_exprs);
 
+  // overload, add python udf resolver
+  int resolve(const ParseNode *node,
+              ObRawExpr *&expr,
+              common::ObIArray<ObQualifiedName> &columns,
+              common::ObIArray<ObVarInfo> &sys_vars,
+              common::ObIArray<ObSubQueryInfo> &sub_query_info,
+              common::ObIArray<ObAggFunRawExpr*> &aggr_exprs,
+              common::ObIArray<ObWinFunRawExpr*> &win_exprs,
+              common::ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs,
+              common::ObIArray<ObUDFInfo> &udf_exprs,
+              common::ObIArray<ObOpRawExpr*> &op_exprs,
+              common::ObIArray<ObUserVarIdentRawExpr*> &user_var_exprs);
+  
   bool is_contains_assignment() {return is_contains_assignment_;}
   void set_contains_assignment(bool v) {is_contains_assignment_ = v;}
   static int malloc_new_specified_type_node(common::ObIAllocator &allocator, ObString col_name, ParseNode *col_node, ObItemType type);
@@ -208,6 +221,10 @@ private:
   int process_xmlparse_node(const ParseNode *node, ObRawExpr *&expr);
   void get_special_func_ident_name(ObString &ident_name, const ObItemType func_type);
   int process_remote_sequence_node(const ParseNode *node, ObRawExpr *&expr);
+  int check_udf_info(const ParseNode *node, const share::schema::ObPythonUDF &udf_info);
+  int process_python_udf_node(const ParseNode *node, ObRawExpr *&expr);
+  int process_python_op_node(const ParseNode *node, ObRawExpr *&expr);
+  bool is_python_udf_expr_valid_scope(ObStmtScope scope) const;
 
 private:
   int process_sys_func_params(ObSysFunRawExpr &func_expr, int current_columns_count);
@@ -290,6 +307,11 @@ inline bool ObRawExprResolverImpl::is_win_expr_valid_scope(ObStmtScope scope) co
   return scope == T_FIELD_LIST_SCOPE
     || scope == T_NAMED_WINDOWS_SCOPE
     || scope == T_ORDER_SCOPE;
+}
+
+inline bool ObRawExprResolverImpl::is_python_udf_expr_valid_scope(ObStmtScope scope) const
+{
+  return scope == T_FIELD_LIST_SCOPE;
 }
 
 inline bool ObRawExprResolverImpl::is_pseudo_column_valid_scope(ObStmtScope scope) const

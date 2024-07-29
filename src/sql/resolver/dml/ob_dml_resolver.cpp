@@ -1397,6 +1397,7 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
   ObArray<ObVarInfo> sys_vars;
   ObArray<ObAggFunRawExpr*> aggr_exprs;
   ObArray<ObWinFunRawExpr*> win_exprs;
+  ObArray<ObPythonUdfRawExpr*> python_udf_exprs;
   ObArray<ObUDFInfo> udf_info;
   ObArray<ObOpRawExpr*> op_exprs;
   ObCollationType collation_connection = CS_TYPE_INVALID;
@@ -1443,7 +1444,8 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
       LOG_WARN("deal dot notation fail", K(ret));
     }
     if (OB_SUCC(ret)) {
-      OC( (expr_resolver.resolve)(&node,
+      //ctx.python_udf_exprs_ = &python_udf_exprs;
+      /*OC( (expr_resolver.resolve)(&node,
                                 expr,
                                 *output_columns,
                                 sys_vars,
@@ -1452,7 +1454,21 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
                                 win_exprs,
                                 udf_info,
                                 op_exprs,
+                                user_var_exprs));*/
+      
+      
+      OC( (expr_resolver.resolve)(&node,
+                                expr,
+                                *output_columns,
+                                sys_vars,
+                                sub_query_info,
+                                aggr_exprs,
+                                win_exprs,
+                                python_udf_exprs,
+                                udf_info,
+                                op_exprs,
                                 user_var_exprs));
+      
     }
 
     if (OB_SUCC(ret)) {
@@ -1523,7 +1539,13 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
         LOG_WARN("resolve aggr exprs failed", K(ret));
       }
     }
-
+    
+    if (OB_SUCC(ret) && python_udf_exprs.count() > 0) {
+      if (OB_FAIL(resolve_python_udf_exprs(expr, python_udf_exprs))) {
+        LOG_WARN("resolve python udf exprs failed", K(ret));
+      }
+    }
+    
     //process oracle compatible implimental cast
     LOG_DEBUG("is oracle mode", K(lib::is_oracle_mode()), K(lib::is_oracle_mode()), K(op_exprs));
     if (OB_SUCC(ret) && op_exprs.count() > 0) {
@@ -2958,6 +2980,13 @@ int ObDMLResolver::resolve_win_func_exprs(ObRawExpr *&expr, common::ObIArray<ObW
   UNUSED(expr);
   UNUSED(win_exprs);
   return OB_ERR_INVALID_WINDOW_FUNC_USE;
+}
+
+int ObDMLResolver::resolve_python_udf_exprs(ObRawExpr *&expr, common::ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs)
+{
+  UNUSED(expr);
+  UNUSED(python_udf_exprs);
+  return OB_ERR_INVALID_PYTHON_UDF;
 }
 
 int ObDMLResolver::check_resolve_oracle_sys_view(const ParseNode *node, bool &is_oracle_view)

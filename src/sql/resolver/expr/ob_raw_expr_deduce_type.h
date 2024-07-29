@@ -101,6 +101,8 @@ private:
   int deduce_type_visit_for_special_func(int64_t param_index, const ObRawExpr &expr, ObIExprResTypes &types);
   // init udf expr
   int init_normal_udf_expr(ObNonTerminalRawExpr &expr, ObExprOperator *op);
+  // init udf expr pile: refactor
+  int init_python_udf_expr(ObNonTerminalRawExpr &expr, ObExprOperator *op);
   // get agg udf result type
   int set_agg_udf_result_type(ObAggFunRawExpr &expr);
 

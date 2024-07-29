@@ -40,6 +40,7 @@ ObRawExprInfoExtractor()
   virtual int visit(ObSetOpRawExpr &expr);
   virtual int visit(ObAliasRefRawExpr &expr);
   virtual int visit(ObWinFunRawExpr &expr);
+  virtual int visit(ObPythonUdfRawExpr &expr);
   virtual int visit(ObPseudoColumnRawExpr &expr);
   virtual int visit(ObPlQueryRefRawExpr &expr);
 private:

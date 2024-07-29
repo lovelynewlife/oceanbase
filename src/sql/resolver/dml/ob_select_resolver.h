@@ -224,6 +224,7 @@ protected:
   virtual int resolve_aggr_exprs(ObRawExpr *&expr, common::ObIArray<ObAggFunRawExpr*> &aggr_exprs,
                                  const bool need_analyze = true);
   virtual int resolve_win_func_exprs(ObRawExpr *&expr, common::ObIArray<ObWinFunRawExpr*> &win_exprs);
+  virtual int resolve_python_udf_exprs(ObRawExpr *&expr, common::ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs);
   int resolve_column_ref_in_all_namespace(const ObQualifiedName &q_name, ObRawExpr *&real_ref_expr);
   /**
    * resolve column real ref expr, search order: alias name first, followed by table column

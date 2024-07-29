@@ -426,6 +426,7 @@ protected:
   virtual int resolve_aggr_exprs(ObRawExpr *&expr, common::ObIArray<ObAggFunRawExpr*> &aggr_exprs,
                                  const bool need_analyze = true);
   virtual int resolve_win_func_exprs(ObRawExpr *&expr, common::ObIArray<ObWinFunRawExpr*> &win_exprs);
+  virtual int resolve_python_udf_exprs(ObRawExpr *&expr, common::ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs);
   int do_resolve_subquery_info(const ObSubQueryInfo &subquery_info, ObChildStmtResolver &child_resolver);
   int resolve_partitions(const ParseNode *part_node,
                          const share::schema::ObTableSchema &table_schema,
