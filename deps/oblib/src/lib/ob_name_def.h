@@ -56,6 +56,7 @@
 #define N_INDEX_RANGE "index_range"
 #define N_LIMIT "limit"
 #define N_WIN_FUNC "win_func"
+#define N_PYTHON_UDF "python_udf"
 #define N_OFFSET "offset"
 #define N_ERROR_ON_OVERLAP_TIME "error_on_overlap_time"
 #define N_LIMIT_OFFSET "limit_offset"

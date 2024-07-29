@@ -21309,6 +21309,18 @@ static const _error _error_OB_ERR_VALUE_NOT_ALLOWED = {
       .oracle_str_error      = "ORA-24323: value not allowed",
       .oracle_str_user_error = "ORA-24323: value not allowed"
 };
+static const _error _error_OB_ERR_INVALID_PYTHON_UDF = {
+      .error_name            = "OB_ERR_INVALID_PYTHON_UDF",
+      .error_cause           = "Internal Error",
+      .error_solution        = "Contact OceanBase Support",
+      .mysql_errno           = -1,
+      .sqlstate              = "HY000",
+      .str_error             = "Python UDF not allowed here",
+      .str_user_error        = "Python UDF not allowed here",
+      .oracle_errno          = 600,
+      .oracle_str_error      = "ORA-00600: internal error code, arguments: -7300, Python UDF not allowed here",
+      .oracle_str_user_error = "ORA-00600: internal error code, arguments: -7300, Python UDF not allowed here"
+};
 static const _error _error_OB_ERR_INVALID_XML_DATATYPE = {
       .error_name            = "OB_ERR_INVALID_XML_DATATYPE",
       .error_cause           = "Internal Error",
@@ -28562,6 +28574,7 @@ struct ObStrErrorInit
     _errors[-OB_ERR_INVALID_DATA_IN_SDO_ELEM_INFO_ARRAY] = &_error_OB_ERR_INVALID_DATA_IN_SDO_ELEM_INFO_ARRAY;
     _errors[-OB_ERR_INVALID_DATA_IN_SDO_ORDINATE_ARRAY] = &_error_OB_ERR_INVALID_DATA_IN_SDO_ORDINATE_ARRAY;
     _errors[-OB_ERR_VALUE_NOT_ALLOWED] = &_error_OB_ERR_VALUE_NOT_ALLOWED;
+    _errors[-OB_ERR_INVALID_PYTHON_UDF] = &_error_OB_ERR_INVALID_PYTHON_UDF;
     _errors[-OB_ERR_INVALID_XML_DATATYPE] = &_error_OB_ERR_INVALID_XML_DATATYPE;
     _errors[-OB_ERR_XML_MISSING_COMMA] = &_error_OB_ERR_XML_MISSING_COMMA;
     _errors[-OB_ERR_INVALID_XPATH_EXPRESSION] = &_error_OB_ERR_INVALID_XPATH_EXPRESSION;

@@ -2048,6 +2048,7 @@ DEFINE_ORACLE_ERROR_DEP(OB_ERR_INVALID_NULL_SDO_GEOMETRY, -7294, -1, "HY000", "I
 DEFINE_ORACLE_ERROR_DEP(OB_ERR_INVALID_DATA_IN_SDO_ELEM_INFO_ARRAY, -7295, -1, "HY000", "Invalid data in the SDO_ELEM_INFO_ARRAY in SDO_GEOMETRY object", 13033, "Invalid data in the SDO_ELEM_INFO_ARRAY in SDO_GEOMETRY object");
 DEFINE_ORACLE_ERROR_DEP(OB_ERR_INVALID_DATA_IN_SDO_ORDINATE_ARRAY, -7296, -1, "HY000", "Invalid data in the SDO_ORDINATE_ARRAY in SDO_GEOMETRY object", 13034, "Invalid data in the SDO_ORDINATE_ARRAY in SDO_GEOMETRY object");
 DEFINE_ORACLE_ERROR_DEP(OB_ERR_VALUE_NOT_ALLOWED, -7297, -1, "HY000", "value not allowed", 24323, "value not allowed");
+DEFINE_ORACLE_ERROR_DEP(OB_ERR_INVALID_PYTHON_UDF, -7300, -1, "HY000", "Python UDF not allowed here", 600, "Python UDF not allowed here");
 
 // 余留位置
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -50,6 +50,7 @@ public:
     EXPR_SET_OP,
     EXPR_EXEC_PARAM,
     EXPR_PL_QUERY_REF,
+    EXPR_PYTHON_UDF,
   };
 
   typedef ObExprVisitor Visitor;
@@ -103,6 +104,7 @@ public:
   inline bool is_sys_func_expr() const { return EXPR_SYS_FUNC == expr_class_; }
   inline bool is_udf_expr() const { return EXPR_UDF == expr_class_; }
   inline bool is_win_func_expr() const { return EXPR_WINDOW == expr_class_; }
+  inline bool is_python_udf_expr() const { return EXPR_PYTHON_UDF == expr_class_; }
   inline bool is_pseudo_column_expr() const { return EXPR_PSEUDO_COLUMN == expr_class_; }
   inline bool is_alias_ref_expr() const { return EXPR_ALIAS_REF == expr_class_; }
   inline bool is_terminal_expr() const { return is_var_expr()
