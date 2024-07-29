@@ -406,6 +406,7 @@
 #include "sql/engine/expr/ob_expr_extract_cert_expired_time.h"
 #include "sql/engine/expr/ob_expr_transaction_id.h"
 #include "sql/engine/expr/ob_expr_inner_row_cmp_val.h"
+#include "sql/engine/expr/ob_expr_python_udf.h"
 
 using namespace oceanbase::common;
 namespace oceanbase
@@ -802,6 +803,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprInterval);
     REG_OP(ObExprTruncate);
     REG_OP(ObExprDllUdf);
+    REG_OP(ObExprPythonUdf);
     REG_OP(ObExprExp);
     REG_OP(ObExprAnyValue);
     REG_OP(ObExprUuidShort);

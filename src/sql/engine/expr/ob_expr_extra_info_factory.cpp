@@ -80,6 +80,7 @@ void ObExprExtraInfoFactory::register_expr_extra_infos()
   REG_EXTRA_INFO(T_FUN_SET_TO_INNER_TYPE, ObEnumSetInfo);
   REG_EXTRA_INFO(T_FUN_COLUMN_CONV, ObEnumSetInfo);
   REG_EXTRA_INFO(T_FUN_NORMAL_UDF, ObNormalDllUdfInfo);
+  REG_EXTRA_INFO(T_FUN_PYTHON_UDF, ObPythonUdfInfo);
   REG_EXTRA_INFO(T_FUN_PL_COLLECTION_CONSTRUCT, ObExprCollectionConstruct::ExtraInfo);
   REG_EXTRA_INFO(T_OBJ_ACCESS_REF, ObExprObjAccess::ExtraInfo);
   REG_EXTRA_INFO(T_REF_QUERY, ObExprSubQueryRef::ExtraInfo);
