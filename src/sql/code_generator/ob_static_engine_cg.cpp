@@ -34,6 +34,7 @@
 #include "sql/optimizer/ob_log_set.h"
 #include "sql/optimizer/ob_log_subplan_filter.h"
 #include "sql/optimizer/ob_log_subplan_scan.h"
+#include "sql/optimizer/ob_log_python_udf.h"
 #include "sql/optimizer/ob_log_material.h"
 #include "sql/optimizer/ob_log_distinct.h"
 #include "sql/optimizer/ob_log_window_function.h"
@@ -97,6 +98,7 @@
 #include "sql/engine/sequence/ob_sequence_op.h"
 #include "sql/engine/subquery/ob_subplan_filter_op.h"
 #include "sql/engine/subquery/ob_subplan_scan_op.h"
+#include "sql/engine/python_udf_engine/ob_python_udf_op.h"
 #include "sql/engine/subquery/ob_unpivot_op.h"
 #include "sql/engine/expr/ob_expr_subquery_ref.h"
 #include "sql/engine/aggregate/ob_scalar_aggregate_op.h"
@@ -381,6 +383,7 @@ int ObStaticEngineCG::check_expr_columnlized(const ObRawExpr *expr)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("expr is null", K(ret));
   } else if (expr->is_const_or_param_expr()
+             || expr->is_python_udf_expr()
              || expr->is_const_expr()
              || expr->has_flag(IS_PSEUDO_COLUMN)
              || expr->is_op_pseudo_column_expr()
@@ -6168,6 +6171,70 @@ int ObStaticEngineCG::generate_spec(
   return ret;
 }
 
+int ObStaticEngineCG::generate_spec(
+    ObLogPythonUDF &op, ObPythonUDFSpec &spec, const bool in_root_job)
+{
+  int ret = OB_SUCCESS;
+  // python udf rt exprs
+  int python_udf_size = op.get_python_udf_exprs().count();
+  OZ(spec.udf_exprs_.init(python_udf_size));
+  for (int i = 0; i < python_udf_size; ++i) {
+    ObExpr *rt_expr = NULL;
+    const ObRawExpr *raw_expr = op.get_python_udf_exprs().at(i);
+    OZ(generate_rt_expr(*raw_expr, rt_expr));
+    OZ(spec.udf_exprs_.push_back(rt_expr));
+  }
+
+  // generate other inputs
+  /*ExprIArray &output_exprs = op.get_output_exprs();
+  ObSEArray<ObRawExpr *, 4> other_output_exprs;
+  for (int i = 0; i < output_exprs.count(); ++i) {
+    ObRawExpr *expr = output_exprs.at(i);
+    if (T_FUN_PYTHON_UDF != expr->get_expr_type()) {
+      other_output_exprs.push_back()
+    }
+  }*/
+
+  std::function<void(ObRawExpr *, ObIArray<ObRawExpr *> &, ObIArray<ObRawExpr *> &)> findOtherInputs = 
+    [&findOtherInputs](ObRawExpr *expr, 
+                       ObIArray<ObRawExpr *> &other_input_exprs, 
+                       ObIArray<ObRawExpr *> &child_output_exprs) -> void {
+    if (expr->get_expr_type() == T_FUN_PYTHON_UDF) {
+      /* do nothing */
+    } else if (is_contain(child_output_exprs, expr)) {
+      add_var_to_array_no_dup(other_input_exprs, expr);
+    } else if (expr->get_param_count() == 0) {
+      /* do nothing */
+    } else {
+      for (int i = 0; i < expr->get_param_count(); ++i) {
+        findOtherInputs(expr->get_param_expr(i), other_input_exprs, child_output_exprs);
+      }
+    }
+  };
+
+  ExprIArray &self_output_exprs = op.get_output_exprs();
+  ExprIArray &child_output_exprs = op.get_child(0)->get_output_exprs();
+  ObSEArray<ObRawExpr *, 16> other_input_exprs;
+  for (int i = 0; i < self_output_exprs.count(); ++i) {
+    findOtherInputs(self_output_exprs.at(i), other_input_exprs, child_output_exprs);
+  }
+
+  //generate input exprs (not calculated by python udfs)
+  OZ(spec.input_exprs_.init(other_input_exprs.count()));
+  for (int i = 0; i < other_input_exprs.count(); ++i) {
+    ObRawExpr *raw_expr = other_input_exprs.at(i);
+    ObExpr *rt_expr = NULL;
+    OZ(generate_rt_expr(*raw_expr, rt_expr));
+    OZ(spec.input_exprs_.push_back(rt_expr));
+  }
+
+  // self produced exprs
+  OZ(mark_expr_self_produced(child_output_exprs));
+
+  LOG_DEBUG("finish generate python udf spec", K(spec), K(ret));
+  return ret;
+}
+
 int ObStaticEngineCG::generate_spec(ObLogErrLog &op,
                                     ObErrLogSpec &spec, const bool in_root_job)
 {
@@ -8300,6 +8367,10 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
     }
     case log_op_def::LOG_SUBPLAN_SCAN: {
       type = PHY_SUBPLAN_SCAN;
+      break;
+    }
+    case log_op_def::LOG_PYTHON_UDF: {
+      type = PHY_PYTHON_UDF;
       break;
     }
     case log_op_def::LOG_MATERIAL: {

@@ -90,6 +90,8 @@ class ObLogSubPlanFilter;
 class ObSubPlanFilterSpec;
 class ObLogSubPlanScan;
 class ObSubPlanScanSpec;
+class ObLogPythonUDF;
+class ObPythonUDFSpec;
 class ObGroupBySpec;
 class ObScalarAggregateSpec;
 class ObMergeGroupBySpec;
@@ -297,6 +299,8 @@ private:
   int generate_spec(ObLogSubPlanFilter &op, ObSubPlanFilterSpec &spec, const bool in_root_job);
 
   int generate_spec(ObLogSubPlanScan &op, ObSubPlanScanSpec &spec, const bool in_root_job);
+
+  int generate_spec(ObLogPythonUDF &op, ObPythonUDFSpec &spec, const bool in_root_job);
 
   int generate_spec(ObLogErrLog &op, ObErrLogSpec &spec, const bool in_root_job);
 

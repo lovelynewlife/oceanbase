@@ -48,6 +48,7 @@ class ObExprCollectionConstruct;
 class ObExprObjectConstruct;
 class ObExprCalcPartitionId;
 class ObExprOpSubQueryInPl;
+class ObExprPythonUdf;  // IMBridge_expr
 
 typedef common::ObSEArray<ObIterExprOperator*, 2> PhyIterExprDesc;
 
@@ -132,6 +133,7 @@ private:
   inline int visit_pl_object_construct_expr(ObRawExpr &expr, ObExprObjectConstruct *pl_object_construct);
   inline int visit_pl_get_cursor_attr_expr(
     ObRawExpr &expr, ObExprPLGetCursorAttr *pl_get_cursor_attr);
+  inline int visit_python_udf_expr(ObNonTerminalRawExpr &expr, ObExprPythonUdf *python_udf_expr_op);
 
   // %item_pos is the position of %raw_expr (infix expr item) in infix_expr_.exprs_ array.
   int add_child_infix_expr(ObRawExpr &raw_expr, const int64_t item_pos,

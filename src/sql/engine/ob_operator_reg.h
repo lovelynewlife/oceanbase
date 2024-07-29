@@ -505,6 +505,12 @@ class ObWindowFunctionOpInput;
 REGISTER_OPERATOR(ObLogWindowFunction, PHY_WINDOW_FUNCTION, ObWindowFunctionSpec,
                   ObWindowFunctionOp, ObWindowFunctionOpInput, VECTORIZED_OP);
 
+class ObLogPythonUDF;
+class ObPythonUDFSpec;
+class ObPythonUDFOp;
+REGISTER_OPERATOR(ObLogPythonUDF, PHY_PYTHON_UDF, ObPythonUDFSpec,
+                  ObPythonUDFOp, NOINPUT, VECTORIZED_OP);
+
 class ObLogJoin;
 class ObMergeJoinSpec;
 class ObMergeJoinOp;

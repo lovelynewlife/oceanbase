@@ -28,6 +28,7 @@
 #include "sql/engine/expr/ob_expr_type_to_str.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
 #include "sql/engine/expr/ob_expr_dll_udf.h"
+#include "sql/engine/expr/ob_expr_python_udf.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/engine/expr/ob_expr_udf.h"
 #include "sql/engine/expr/ob_expr_pl_integer_checker.h"
@@ -622,6 +623,11 @@ int ObExprGeneratorImpl::visit_simple_op(ObNonTerminalRawExpr &expr)
         case T_FUN_NORMAL_UDF: {
           ObExprDllUdf *normal_udf_op = static_cast<ObExprDllUdf*>(op);
           ret = visit_normal_udf_expr(expr, normal_udf_op);
+          break;
+        }
+        case T_FUN_PYTHON_UDF: {
+          ObExprPythonUdf *python_udf_op = static_cast<ObExprPythonUdf*>(op);
+          ret = visit_python_udf_expr(expr, python_udf_op);
           break;
         }
         case T_FUN_PL_GET_CURSOR_ATTR: {
@@ -1884,6 +1890,48 @@ int ObExprGeneratorImpl::visit(ObWinFunRawExpr &expr)
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("all window expr should have been generated", K(expr), K(&expr));
+  }
+  return ret;
+}
+
+int ObExprGeneratorImpl::visit_python_udf_expr(ObNonTerminalRawExpr &expr, ObExprPythonUdf *python_udf_expr_op)
+{
+  int ret = OB_SUCCESS;
+  /*ObPostExprItem item;
+  item.set_accuracy(expr.get_accuracy());
+  if (OB_ISNULL(sql_expr_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("sql_expr_ is NULL");
+  } else if (expr.has_flag(IS_COLUMNLIZED)) {
+    int64_t idx = OB_INVALID_INDEX;
+    if (OB_FAIL(column_idx_provider_.get_idx(&expr, idx))) {
+      LOG_WARN("get index failed", K(ret));
+    } else if (OB_FAIL(item.set_column(idx))) {
+      LOG_WARN("fail to set column", K(ret), K(expr));
+    } else if (OB_FAIL(sql_expr_->add_expr_item(item, &expr))) {
+      LOG_WARN("fail to add expr item", K(ret), K(expr));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("all python expr should have been generated", K(expr), K(&expr));
+  }*/
+  if (OB_SUCC(ret)) {
+    ObPythonUdfRawExpr &fun_sys = static_cast<ObPythonUdfRawExpr &>(expr);
+    //used to check the old python udf op exist or not
+    ObExprOperator *old_op = NULL;
+    if (OB_ISNULL(python_udf_expr_op)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("python udf op is null", K(ret));
+    } else if (OB_ISNULL(old_op = expr.get_op())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid old op", K(expr), K(ret));
+    } else if (OB_FAIL(python_udf_expr_op->set_udf_meta(fun_sys.get_udf_meta()))) { //copy udf metadata
+      LOG_WARN("failed to set udf to expr", K(ret));
+    } else if (OB_FAIL(python_udf_expr_op->init_udf(fun_sys.get_param_exprs()))) { //init python variables
+      LOG_WARN("failed to init udf", K(ret));
+    } else {
+      LOG_DEBUG("set udf meta to expr", K(fun_sys.get_udf_meta()));
+    }
   }
   return ret;
 }
