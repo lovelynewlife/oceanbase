@@ -35,6 +35,7 @@
 #include "sql/optimizer/ob_log_distinct.h"
 #include "sql/optimizer/ob_log_expr_values.h"
 #include "sql/optimizer/ob_log_window_function.h"
+#include "sql/optimizer/ob_log_python_udf.h"
 #include "sql/optimizer/ob_log_temp_table_insert.h"
 #include "sql/optimizer/ob_log_temp_table_transformation.h"
 #include "sql/optimizer/ob_log_topk.h"
@@ -4446,6 +4447,16 @@ int ObSelectLogPlan::allocate_plan_top()
             K(candidates_.candidate_plans_.count()));
       }
     }
+    
+    // step. allocate 'python udf' if needed
+    if (OB_SUCC(ret) && select_stmt->has_python_udf()) {
+      if (OB_FAIL(candi_allocate_python_udf())) {
+        LOG_WARN("failed to allocate python udf", K(ret));
+      } else {
+        LOG_TRACE("succeed to allocate python udf",
+            K(candidates_.candidate_plans_.count()));
+      }
+    }
 
     // step. allocate 'distinct' if needed
     if (OB_SUCC(ret) && select_stmt->has_distinct()) {
@@ -7899,6 +7910,220 @@ int ObSelectLogPlan::contain_enum_set_rowkeys(const ObLogTableScan &table_scan, 
       } else if (ob_is_enumset_tc(table_keys.at(i)->get_result_type().get_type())) {
         contain = true;
       }
+    }
+  }
+  return ret;
+}
+
+
+int ObSelectLogPlan::candi_allocate_python_udf()
+{
+  int ret = OB_SUCCESS;
+  const ObSelectStmt *stmt = get_stmt();
+  ObSEArray<ObRawExpr*, 8> candi_subquery_exprs;
+  ObSEArray<CandidatePlan, 8> python_udf_plans;
+  if (OB_ISNULL(stmt) || OB_UNLIKELY(!stmt->has_python_udf())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected params", K(ret), K(stmt), K(stmt->has_python_udf()));
+  } else if (OB_FAIL(append(candi_subquery_exprs, stmt->get_python_udf_exprs()))) {
+    LOG_WARN("failed to append exprs", K(ret));
+  } else if (OB_FAIL(candi_allocate_subplan_filter(candi_subquery_exprs))) {
+    LOG_WARN("failed to do allocate subplan filter", K(ret));
+  //} else if (OB_FAIL(candi_allocate_python_udf_with_hint(stmt->get_python_udf_exprs(),
+  //                                                       //stmt->get_qualify_filters(),
+  //                                                       python_udf_plans))) {
+  //  LOG_WARN("failed to allocate python_udf with hint", K(ret));
+  //} else if (!python_udf_plans.empty()) {
+  //  LOG_TRACE("succeed to allocate python udf using hint", K(python_udf_plans.count()));
+  //} else if (OB_FAIL(get_log_plan_hint().check_status())) {
+  //  LOG_WARN("failed to generate plans with hint", K(ret));
+  } else if (OB_FAIL(candi_allocate_python_udf(stmt->get_python_udf_exprs(),
+                                               //stmt->get_qualify_filters(),
+                                               python_udf_plans))) {
+    LOG_WARN("failed to allocate python udf", K(ret));
+  } else {
+    LOG_TRACE("succeed to allocate python udf without hint", K(python_udf_plans.count()));
+  }
+
+  // choose the best plan
+  if (OB_SUCC(ret)) {
+    int64_t check_scope = OrderingCheckScope::CHECK_DISTINCT |
+                          OrderingCheckScope::CHECK_SET |
+                          OrderingCheckScope::CHECK_ORDERBY;
+    if (OB_UNLIKELY(python_udf_plans.empty())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected empty python udf plans", K(ret));
+    } else if (OB_FAIL(update_plans_interesting_order_info(python_udf_plans, check_scope))) {
+      LOG_WARN("failed to update plans interesting order info", K(ret));
+    } else if (OB_FAIL(prune_and_keep_best_plans(python_udf_plans))) {
+      LOG_WARN("failed to add python udf plans", K(ret));
+    }
+  }
+  return ret;
+}
+
+
+// not supported yet
+/*int ObSelectLogPlan::candi_allocate_python_udf_with_hint(const ObIArray<ObWinFunRawExpr*> &python_udf_exprs,
+                                                         //const ObIArray<ObRawExpr*> &qualify_filters,
+                                                         common::ObIArray<CandidatePlan> &total_plans)
+{
+  int ret = OB_SUCCESS;
+  total_plans.reuse();
+  //const ObWindowDistHint *win_dist_hint = get_log_plan_hint().get_window_dist();
+  bool is_valid = false;
+  ObSEArray<CandidatePlan, 16> candi_plans;
+  ObSEArray<ObWinFunRawExpr*, 8> remaining_exprs;
+  ObLogicalOperator *orig_top = NULL;
+  if (OB_FAIL(check_is_python_udf_hint_valid(python_udf_exprs, win_dist_hint, is_valid))) {
+    LOG_WARN("failed to assign candidate plans", K(ret));
+  } else if (!is_valid) {
+    / * do nothing * /
+  } else if (OB_FAIL(candi_plans.assign(candidates_.candidate_plans_))) {
+    LOG_WARN("failed to assign candidate plans", K(ret));
+  } else if (OB_FAIL(remaining_exprs.assign(python_udf_exprs))) {
+    LOG_WARN("failed to assign remaining exprs", K(ret));
+  } else if (OB_UNLIKELY(candi_plans.empty()) || OB_ISNULL(orig_top = candi_plans.at(0).plan_tree_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(candi_plans.count()), K(orig_top));
+  } else {
+    ObSEArray<CandidatePlan, 16> tmp_plans;
+    WinFuncOpHelper win_func_helper(win_func_exprs,
+                                    win_dist_hint,
+                                    true,
+                                    orig_top->get_fd_item_set(),
+                                    orig_top->get_output_equal_sets(),
+                                    orig_top->get_output_const_exprs(),
+                                    orig_top->get_card(),
+                                    orig_top->get_is_at_most_one_row(),
+                                    qualify_filters);
+    while (OB_SUCC(ret) && !candi_plans.empty() && !remaining_exprs.empty()) {
+      tmp_plans.reuse();
+      if (OB_FAIL(init_win_func_helper_with_hint(candi_plans,
+                                                remaining_exprs,
+                                                win_func_helper,
+                                                is_valid))) {
+        LOG_WARN("failed to init win_func_helper with hint", K(ret));
+      } else if (!is_valid) {
+        candi_plans.reuse();
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < candi_plans.count(); ++i) {
+          if (OB_FAIL(calc_win_func_helper_with_hint(candi_plans.at(i).plan_tree_,
+                                                    win_func_helper,
+                                                    is_valid))) {
+            LOG_WARN("failed to calc win_func_helper with hint", K(ret));
+          } else if (!is_valid) {
+            / * do nothing * /
+          } else if (OB_FAIL(create_one_window_function(candi_plans.at(i),
+                                                        win_func_helper,
+                                                        tmp_plans))) {
+            LOG_WARN("failed to create one window function", K(ret));
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(candi_plans.assign(tmp_plans))) {
+          LOG_WARN("failed to assign candidate plans", K(ret));
+        } else {
+          ++win_func_helper.win_op_idx_;
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(total_plans.assign(candi_plans))) {
+        LOG_WARN("failed to assign candidate plans", K(ret));
+      }
+    }
+  }
+  return ret;
+}*/
+
+int ObSelectLogPlan::candi_allocate_python_udf(const ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs,
+                                               //const ObIArray<ObRawExpr*> &qualify_filters,
+                                               ObIArray<CandidatePlan> &total_plans)
+{
+  int ret = OB_SUCCESS;
+  total_plans.reuse();
+  ObLogicalOperator *orig_top = NULL;
+  ObIArray<CandidatePlan> &candi_plans = candidates_.candidate_plans_;
+  if (OB_UNLIKELY(candi_plans.empty()) || OB_ISNULL(orig_top = candi_plans.at(0).plan_tree_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(candi_plans.count()), K(orig_top));
+  } else {
+    OPT_TRACE_TITLE("start generate python udf operator");
+    //ObSEArray<ObOpPseudoColumnRawExpr*, 4> status_exprs;
+    PythonUDFOpHelper python_udf_helper(python_udf_exprs);
+    for (int64_t i = 0; OB_SUCC(ret) && i < candi_plans.count(); ++i) {
+      OPT_TRACE("generate window function for plan:", candi_plans.at(i));
+      if (OB_FAIL(generate_python_udf_plans(python_udf_helper,
+                                            //status_exprs,
+                                            total_plans,
+                                            candi_plans.at(i)
+                                           ))) {
+        LOG_WARN("failed to allocate window functions", K(ret));
+      } else { }
+    }
+  }
+  return ret;
+}
+
+int ObSelectLogPlan::generate_python_udf_plans(PythonUDFOpHelper &python_udf_helper,
+                                               //ObIArray<ObOpPseudoColumnRawExpr*> &status_exprs,
+                                               ObIArray<CandidatePlan> &total_plans,
+                                               CandidatePlan &orig_candidate_plan)
+{
+  int ret = OB_SUCCESS;
+  ObLogicalOperator *top = NULL;
+  const ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs = python_udf_helper.all_python_udf_exprs_;
+  ObExchangeInfo exch_info;
+  ObSEArray<OrderItem, 8> tmp_sort_keys; // empty
+  //const ObIArray<OrderItem> &sort_keys
+  //bool need_sort = false;
+  //int64_t prefix_pos = 0;
+  // 此处简单地只生成一个执行计划
+  // 理论上可以在此根据python udf执行次序和onnx计算图，进行顺序优化和融合过程
+  CandidatePlan candidate_plan = orig_candidate_plan;
+  if (OB_ISNULL(top = candidate_plan.plan_tree_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("got NULL plan tree", K(ret));
+  } else if (!top->is_distributed()) {
+    exch_info.dist_method_ = ObPQDistributeMethod::NONE;
+  } else {}
+  
+  if (OB_FAIL(allocate_sort_and_exchange_as_top(top, exch_info, tmp_sort_keys, false,
+                                                  0, top->get_is_local_order()))) {
+    LOG_WARN("failed to allocate sort and exchange as top", K(ret));
+  //} else if (OB_FAIL(allocate_exchange_as_top(top, exch_info))) {     
+  //  LOG_WARN("failed to allocate exchange as top", K(ret));
+  } else if (OB_FAIL(allocate_python_udf_op_as_top(top, python_udf_exprs))) {
+    LOG_WARN("failed to allocate python udf operator as top", K(ret));
+  } else if (OB_FAIL(total_plans.push_back(CandidatePlan(top)))) {
+    LOG_WARN("failed to push back", K(ret));
+  }
+  return ret;
+}
+
+int ObSelectLogPlan::allocate_python_udf_op_as_top(ObLogicalOperator *&top,
+                                                   const ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs)
+{
+  int ret = OB_SUCCESS;
+  ObLogPythonUDF *log_python_udf = NULL;
+  if (OB_ISNULL(top)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(top), K(ret));
+  } else if (OB_ISNULL(log_python_udf = static_cast<ObLogPythonUDF*>(
+                                        get_log_op_factory().allocate(*this, LOG_PYTHON_UDF)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_ERROR("failed to allocate python udf operator", K(ret));
+  } else if (OB_FAIL(append(log_python_udf->get_python_udf_exprs(), python_udf_exprs))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to append python udf exprs", K(ret));
+  } else {
+    log_python_udf->set_child(ObLogicalOperator::first_child, top);
+    if (OB_FAIL(log_python_udf->compute_property())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("failed to compute property", K(ret));
+    } else {
+      top = log_python_udf;
     }
   }
   return ret;

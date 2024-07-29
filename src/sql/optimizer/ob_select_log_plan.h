@@ -930,6 +930,36 @@ int generate_window_functions_plan(WinFuncOpHelper &win_func_helper,
 
   int contain_enum_set_rowkeys(const ObLogTableScan &table_scan, bool &contain);
 
+
+  // python udf resolver
+  struct PythonUDFOpHelper
+  {
+    PythonUDFOpHelper(const ObIArray<ObPythonUdfRawExpr*> &all_python_udf_exprs)
+      : all_python_udf_exprs_(all_python_udf_exprs)
+    {}
+    virtual ~PythonUDFOpHelper() {}
+
+    // const
+    const ObIArray<ObPythonUdfRawExpr*> &all_python_udf_exprs_;
+
+    // attributes
+
+  };
+
+  int candi_allocate_python_udf();
+
+  int candi_allocate_python_udf(const ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs,
+                                //const ObIArray<ObRawExpr*> &qualify_filters,
+                                ObIArray<CandidatePlan> &total_plans);
+
+  int generate_python_udf_plans(PythonUDFOpHelper &python_udf_helper,
+                                //ObIArray<ObOpPseudoColumnRawExpr*> &status_exprs,
+                                ObIArray<CandidatePlan> &total_plans,
+                                CandidatePlan &orig_candidate_plan);
+
+  int allocate_python_udf_op_as_top(ObLogicalOperator *&top,
+                                    const ObIArray<ObPythonUdfRawExpr*> &python_udf_exprs);
+  
   DISALLOW_COPY_AND_ASSIGN(ObSelectLogPlan);
 };
 }//end of namespace sql

@@ -32,6 +32,7 @@
 #include "ob_log_values.h"
 #include "ob_log_material.h"
 #include "ob_log_window_function.h"
+#include "ob_log_python_udf.h"
 #include "ob_log_select_into.h"
 #include "ob_log_topk.h"
 #include "ob_optimizer_context.h"
@@ -207,6 +208,13 @@ ObLogicalOperator *ObLogOperatorFactory::allocate(ObLogPlan &plan, ObLogOpType t
     if (NULL != ptr) {
       ret_op = new (ptr) ObLogWindowFunction(plan);
     } else { /* do nothing */ }
+    break;
+  }
+  case LOG_PYTHON_UDF: {
+    ptr = allocator_.alloc(sizeof(ObLogPythonUDF));
+    if (NULL != ptr) {
+      ret_op = new (ptr) ObLogPythonUDF(plan);
+    } else {  }
     break;
   }
   case LOG_SELECT_INTO: {

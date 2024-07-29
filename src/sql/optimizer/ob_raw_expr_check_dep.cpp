@@ -82,6 +82,7 @@ int ObRawExprCheckDep::check(const ObRawExpr &expr)
     case ObRawExpr::EXPR_QUERY_REF:
     case ObRawExpr::EXPR_SYS_FUNC:
     case ObRawExpr::EXPR_UDF:
+    case ObRawExpr::EXPR_PYTHON_UDF:
     case ObRawExpr::EXPR_AGGR:
     case ObRawExpr::EXPR_OPERATOR:
     case ObRawExpr::EXPR_SET_OP:

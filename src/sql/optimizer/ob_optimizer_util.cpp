@@ -1278,6 +1278,11 @@ int ObOptimizerUtil::clone_expr_for_topk(ObRawExprFactory &expr_factory, ObRawEx
         LOG_WARN("not support expr class", K(expr_class), K(ret));
         break;
       }
+      case ObRawExpr::EXPR_PYTHON_UDF: {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("not support expr class", K(expr_class), K(ret));
+        break;
+      }
       default: {
         // should not reach here
         ret = OB_ERR_UNEXPECTED;

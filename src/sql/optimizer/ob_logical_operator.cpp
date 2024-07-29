@@ -31,6 +31,7 @@
 #include "ob_log_table_scan.h"
 #include "ob_log_limit.h"
 #include "ob_log_window_function.h"
+#include "ob_log_python_udf.h"
 #include "ob_log_granule_iterator.h"
 #include "ob_log_update.h"
 #include "ob_log_merge.h"
@@ -977,6 +978,9 @@ int ObLogicalOperator::compute_op_other_info()
         } else if (log_op_def::LOG_WINDOW_FUNCTION == get_type()) {
           contain_pw_merge_op_ = is_block_op() &&
                                is_partition_wise();
+        } else if (log_op_def::LOG_PYTHON_UDF == get_type()) {
+          contain_pw_merge_op_ = is_block_op() &&
+                               is_partition_wise();
         } else { /*do nothing*/ }
       }
     }
@@ -1728,6 +1732,8 @@ int ObLogicalOperator::should_allocate_gi_for_dml(bool &is_valid)
     ObLogDistinct *log_distinct = static_cast<ObLogDistinct*>(this);
     is_valid = (AggregateAlgo::MERGE_AGGREGATE != log_distinct->get_algo());
   } else if (LOG_WINDOW_FUNCTION == get_type()) {
+    is_valid = false;
+  } else if (LOG_PYTHON_UDF == get_type()) {
     is_valid = false;
   } else { /*do nothing*/ }
 
@@ -4210,6 +4216,7 @@ int ObLogicalOperator::allocate_granule_nodes_above(AllocGIContext &ctx)
              && LOG_DISTINCT != get_type()
              && LOG_SUBPLAN_FILTER != get_type()
              && LOG_WINDOW_FUNCTION != get_type()
+             && LOG_PYTHON_UDF != get_type()
              && LOG_UPDATE != get_type()
              && LOG_DELETE != get_type()
              && LOG_INSERT != get_type()

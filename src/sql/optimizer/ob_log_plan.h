@@ -76,6 +76,7 @@ struct FunctionTableDependInfo;
 class ObLogSort;
 class ObLogJoinFilter;
 class ObLogSubPlanFilter;
+class ObLogPythonUDF;
 struct ObAllocExprContext;
 class ObLogTempTableInsert;
 class ObLogTempTableAccess;
@@ -685,6 +686,10 @@ public:
   /** @brief Allcoate operator for subquery path */
   int allocate_subquery_path(SubQueryPath *subpath,
                              ObLogicalOperator *&out_subquery_op);
+
+  /** @brief Allcoate operator for subquery path with python udf */
+  //int allocate_pyudf_subquery_path(SubQueryPath *subpath,
+  //                                 ObLogicalOperator *&out_pyudf_subquery_path_op);
 
   /** @brief Allcoate a ,aterial operator as parent of a path */
   int allocate_material_as_top(ObLogicalOperator *&old_top);
