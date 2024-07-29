@@ -2234,6 +2234,8 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
     json::Pair *rows = NULL;
     json::Pair *cost = NULL;
     json::Pair *output = NULL;
+    json::Pair *filter = NULL;
+    json::Pair *pyudf_metadata = NULL;
 
     Value *id_value = NULL;
     Value *op_value = NULL;
@@ -2241,6 +2243,8 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
     Value *rows_value = NULL;
     Value *cost_value = NULL;
     Value *output_value = NULL;
+    Value *filter_value = NULL;
+    Value *pyudf_metadata_value = NULL;
     if (OB_ISNULL(ret_val = (Value *)allocator->alloc(sizeof(Value)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("no memory");
@@ -2262,6 +2266,12 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
     } else if (OB_ISNULL(output = (Pair *)allocator->alloc(sizeof(Pair)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("no memory");
+   } else if (OB_ISNULL(filter = (Pair *)allocator->alloc(sizeof(Pair)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("no memory");
+    } else if (OB_ISNULL(pyudf_metadata = (Pair *)allocator->alloc(sizeof(Pair)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("no memory");
     } else if (OB_ISNULL(id_value = (Value *)allocator->alloc(sizeof(Value)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("no memory");
@@ -2278,6 +2288,12 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("no memory");
     } else if (OB_ISNULL(output_value = (Value *)allocator->alloc(sizeof(Value)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("no memory");
+    } else if (OB_ISNULL(filter_value = (Value *)allocator->alloc(sizeof(Value)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("no memory");
+    } else if (OB_ISNULL(pyudf_metadata_value = (Value *)allocator->alloc(sizeof(Value)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("no memory");
     } else if (OB_ISNULL(ret_val = new(ret_val) Value())) {
@@ -2301,6 +2317,12 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
     } else if (OB_ISNULL(output = new(output) Pair())) {
       ret = OB_ERROR;
       LOG_WARN("failed to new json Pair");
+    } else if (OB_ISNULL(filter = new(filter) Pair())) {
+      ret = OB_ERROR;
+      LOG_WARN("failed to new json Pair");
+    } else if (OB_ISNULL(pyudf_metadata = new(pyudf_metadata) Pair())) {
+      ret = OB_ERROR;
+      LOG_WARN("failed to new json Pair");
     } else if (OB_ISNULL(id_value = new(id_value) Value())) {
       ret = OB_ERROR;
       LOG_WARN("failed to new json Value");
@@ -2317,6 +2339,12 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
       ret = OB_ERROR;
       LOG_WARN("failed to new json Value");
     } else if (OB_ISNULL(output_value = new(output_value) Value())) {
+      ret = OB_ERROR;
+      LOG_WARN("failed to new json Value");
+    } else if (OB_ISNULL(filter_value = new(filter_value) Value())) {
+      ret = OB_ERROR;
+      LOG_WARN("failed to new json Value");
+    } else if (OB_ISNULL(pyudf_metadata_value = new(pyudf_metadata_value) Value())) {
       ret = OB_ERROR;
       LOG_WARN("failed to new json Value");
     } else {
@@ -2359,12 +2387,31 @@ int ObSqlPlan::inner_format_plan_to_json(ObIArray<ObSqlPlanItem*> &sql_plan_info
 
       output->name_ = "output";
       output->value_ = output_value;
+
+      //filter
+      filter_value->set_type(JT_STRING);
+      filter_value->set_string(plan_item->filter_predicates_,
+                               plan_item->filter_predicates_len_);
+      filter->name_ = "filter";
+      filter->value_ = filter_value;
+      //python udf metadata
+      pyudf_metadata_value->set_type(JT_STRING);
+      pyudf_metadata_value->set_string(plan_item->pyudf_metadata_,
+                                       plan_item->pyudf_metadata_len_);
+      pyudf_metadata->name_ = "pyudf_metadata";
+      pyudf_metadata->value_ = pyudf_metadata_value;
+
       ret_val->object_add(id);
       ret_val->object_add(op);
       ret_val->object_add(name);
       ret_val->object_add(rows);
       ret_val->object_add(cost);
       ret_val->object_add(output);
+      if(plan_item->filter_predicates_len_ > 0)
+        ret_val->object_add(filter);
+      if(plan_item->pyudf_metadata_len_ > 0)
+        ret_val->object_add(pyudf_metadata);
+
       // child operator
       Pair *child = NULL;
       const uint64_t OB_MAX_JSON_CHILD_NAME_LENGTH = 64;

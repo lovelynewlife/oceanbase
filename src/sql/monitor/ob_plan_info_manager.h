@@ -86,6 +86,9 @@ struct ObSqlPlanItem {
   int64_t remarks_len_;
   char* other_xml_;
   int64_t other_xml_len_;
+  // for python udf metadata
+  char* pyudf_metadata_;
+  int64_t pyudf_metadata_len_;
 
   TO_STRING_KV(
     K_(id)
