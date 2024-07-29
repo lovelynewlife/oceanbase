@@ -214,6 +214,7 @@ protected:
   bool cpu_dump_;
   bool has_synced_;
   static ObICtxMemConfigGetter *mcg_;
+  void* _save; //for Python Interpreter Thread State
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMultiTenant);
