@@ -126,6 +126,7 @@ ob_set_subtarget(ob_sql engine
   engine/user_defined_function/ob_udf_util.cpp
   engine/user_defined_function/ob_user_defined_function.cpp
   engine/window_function/ob_window_function_op.cpp
+  engine/python_udf_engine/ob_python_udf_op.cpp   # IMBridge_CMake
   engine/opt_statistics/ob_optimizer_stats_gathering_op.cpp
   engine/sort/ob_sort_vec_op.cpp
   engine/sort/ob_sort_vec_op_provider.cpp
@@ -242,6 +243,7 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_tenant_executor.cpp
   engine/cmd/ob_trigger_executor.cpp
   engine/cmd/ob_udf_executor.cpp
+  engine/cmd/ob_python_udf_executor.cpp
   engine/cmd/ob_user_cmd_executor.cpp
   engine/cmd/ob_variable_set_executor.cpp
   engine/cmd/ob_xa_executor.cpp
@@ -686,6 +688,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_extract_cert_expired_time.cpp
   engine/expr/ob_expr_transaction_id.cpp
   engine/expr/ob_expr_inner_row_cmp_val.cpp
+  engine/expr/ob_expr_python_udf.cpp
 )
 
 ob_set_subtarget(ob_sql engine_join
@@ -912,6 +915,7 @@ ob_set_subtarget(ob_sql optimizer
   optimizer/ob_log_unpivot.cpp
   optimizer/ob_log_update.cpp
   optimizer/ob_log_window_function.cpp
+  optimizer/ob_log_python_udf.cpp
   optimizer/ob_logical_operator.cpp
   optimizer/ob_merge_log_plan.cpp
   optimizer/ob_opt_est_cost.cpp
@@ -1146,6 +1150,8 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_use_database_resolver.cpp
   resolver/ddl/ob_create_context_resolver.cpp
   resolver/ddl/ob_drop_context_resolver.cpp
+  resolver/ddl/ob_create_python_udf_resolver.cpp
+  resolver/ddl/ob_drop_python_udf_resolver.cpp
 )
 
 ob_set_subtarget(ob_sql resolver_dml
@@ -1287,6 +1293,8 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
 		-mtune=core-avx2 -mavx2 -mfma -mbmi2 -mavx512vl -mavx512bw
 	)
 endif()
+
+target_link_libraries(ob_sql PUBLIC python_lib)
 
 target_link_libraries(ob_sql PUBLIC ob_base)
 
